@@ -32,3 +32,8 @@ venv/
 projects/
 output/
 test_runs/
+
+# Font binaries (download with scripts/fetch_fonts.py)
+fonts/**/*.ttf
+fonts/**/*.otf
+fonts/**/*.part

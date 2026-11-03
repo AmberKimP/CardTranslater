@@ -1,0 +1,73 @@
+{
+  "_comment": "Korean font catalog for typesetting and F28 font matching. Every font here is SIL OFL 1.1, so commercial use and PDF embedding are allowed. Font binaries are not committed; run scripts/fetch_fonts.py. style: sans | serif | rounded | handwriting | display. weight: 100-900. width: condensed | normal | wide.",
+  "families": [
+    {
+      "name": "Noto Sans KR", "ko_name": "본고딕", "dir": "notosanskr",
+      "source_files": ["NotoSansKR[wght].ttf"],
+      "static_weights": {"Regular": 400, "Bold": 700, "Black": 900},
+      "style": "sans", "width": "normal", "license": "OFL-1.1",
+      "notes": "기본 글꼴. 작은 글자에서도 잘 읽힌다"
+    },
+    {
+      "name": "Noto Serif KR", "ko_name": "본명조", "dir": "notoserifkr",
+      "source_files": ["NotoSerifKR[wght].ttf"],
+      "static_weights": {"Regular": 400, "Bold": 700, "Black": 900},
+      "style": "serif", "width": "normal", "license": "OFL-1.1",
+      "notes": "명조·세리프 원문용"
+    },
+    {
+      "name": "Black Han Sans", "ko_name": "검은고딕", "dir": "blackhansans",
+      "source_files": ["BlackHanSans-Regular.ttf"],
+      "style": "display", "weight": 900, "width": "normal", "license": "OFL-1.1",
+      "notes": "아주 굵은 제목용. 카드 이름 후보"
+    },
+    {
+      "name": "Do Hyeon", "ko_name": "도현", "dir": "dohyeon",
+      "source_files": ["DoHyeon-Regular.ttf"],
+      "style": "display", "weight": 700, "width": "condensed", "license": "OFL-1.1",
+      "notes": "굵고 각진 제목용, 폭이 좁아 긴 이름에 유리"
+    },
+    {
+      "name": "Jua", "ko_name": "주아", "dir": "jua",
+      "source_files": ["Jua-Regular.ttf"],
+      "style": "rounded", "weight": 700, "width": "normal", "license": "OFL-1.1",
+      "notes": "둥글고 굵은 제목·태그용"
+    },
+    {
+      "name": "Gowun Dodum", "ko_name": "고운돋움", "dir": "gowundodum",
+      "source_files": ["GowunDodum-Regular.ttf"],
+      "style": "sans", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "부드러운 돋움, 손글씨풍 본문의 읽기 쉬운 대안"
+    },
+    {
+      "name": "Gaegu", "ko_name": "개구", "dir": "gaegu",
+      "source_files": ["Gaegu-Regular.ttf", "Gaegu-Bold.ttf"],
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "손글씨풍 본문 후보, Bold 있음"
+    },
+    {
+      "name": "Nanum Pen Script", "ko_name": "나눔손글씨 펜", "dir": "nanumpenscript",
+      "source_files": ["NanumPenScript-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "condensed", "license": "OFL-1.1",
+      "notes": "펜 손글씨. 작게 쓰면 가늘어질 수 있음"
+    },
+    {
+      "name": "Hi Melody", "ko_name": "하이멜로디", "dir": "himelody",
+      "source_files": ["HiMelody-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "또박또박한 손글씨"
+    },
+    {
+      "name": "Gamja Flower", "ko_name": "감자꽃", "dir": "gamjaflower",
+      "source_files": ["GamjaFlower-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "귀여운 손글씨"
+    },
+    {
+      "name": "Poor Story", "ko_name": "서툰이야기", "dir": "poorstory",
+      "source_files": ["PoorStory-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "삐뚤빼뚤한 손글씨"
+    }
+  ]
+}
