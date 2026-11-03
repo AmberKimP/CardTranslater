@@ -27,3 +27,8 @@ venv/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Card files and per-project data (copyrighted originals, outputs)
+projects/
+output/
+test_runs/
