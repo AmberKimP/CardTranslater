@@ -86,13 +86,17 @@ def _clip_x1(rect: pymupdf.Rect, work: pymupdf.Rect | None) -> pymupdf.Rect:
 
 
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
-                 base_dir: Path = ROOT) -> dict:
-    """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다."""
+                 base_dir: Path = ROOT, styles: dict | None = None) -> dict:
+    """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
+
+    styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
+    서식만 바꿔 합성할 수 있게, 있으면 지우기 때 저장한 style_defaults보다 우선한다.
+    """
     card = card or {}
     out: dict = {}
     for reg in meta["regions"]:
         name = reg["name"]
-        style_d = reg.get("style_defaults") or {}
+        style_d = (styles or {}).get(name) or reg.get("style_defaults") or {}
         entry = card.get(name) or {}
         rect = pymupdf.Rect(reg["rect_pt"])
         work = pymupdf.Rect(reg["work_rect_pt"]) if reg.get("work_rect_pt") else None
@@ -200,6 +204,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: P
             raise FileNotFoundError(f"지우기 메타가 없습니다: {f}")
         metas[pno] = json.loads(f.read_text(encoding="utf-8"))
 
+    styles = {r.name: r.style for r in project.template.regions}
+
     out_doc = pymupdf.open()
     for pno in pages:
         idx = metas[pno]["output_page_index"]
@@ -208,7 +214,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: P
     page_recs = []
     for i, pno in enumerate(pages):
         print(f"[compose] page {pno} ...", flush=True)
-        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], project.samples.get(pno), ROOT)
+        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], project.samples.get(pno), ROOT, styles)
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)
@@ -264,7 +270,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: P
         "erased_sha256_after": sha_erased_after,
         "erased_unchanged": sha_erased_before == sha_erased_after,
         "output_pdf": str(out_pdf),
-        "size_rule": "min = max(시작크기 x 0.8, min(6pt, 시작크기)); 시작크기 = 원문 잉크 높이 / 글꼴 보정 배율",
+        "size_rule": "원문 글자 높이 기준: 시작크기 = 원문 잉크 높이 / 글꼴 보정 배율, min = 시작크기 x 0.8 (한글 글자 높이가 원문의 80% 아래로 가지 않음). 잉크 높이를 모르면 min = max(원문pt x 0.8, min(6pt, 원문pt))",
         "status_summary": summary,
         "pages_detail": page_recs,
     }

@@ -325,8 +325,9 @@ class FitParams:
     start_size: float  # 원문 크기(또는 F28 잉크 보정 크기)
     fixed_size: float | None = None  # 엑셀 H열
     min_ratio: float = 0.8
-    floor_pt: float = 6.0
-    max_tracking: float = 0.05  # 최대 -5%
+    floor_pt: float | None = 6.0  # None이면 pt 하한 없이 원문 크기(잉크 높이 보정)의 min_ratio만 쓴다
+    max_tracking: float = 0.05  # 최대 -5% (base_tracking에서 더 좁히는 양)
+    base_tracking: float = 0.0  # 영역 기본 자간 (글자 크기 대비, 음수면 좁힘). 글꼴별 보정용
     tracking_step: float = 0.01
     size_step: float = 0.05
     line_pitch: float | None = None  # start_size에서의 줄 간격(pt). None이면 1.2 x 크기
@@ -341,8 +342,15 @@ class FitParams:
         return 1.2 * size
 
 
-def min_size_rule(start: float, min_ratio: float = 0.8, floor_pt: float = 6.0) -> float:
-    """하한: 원문의 80%와 6pt 중 큰 값. 단 시작 크기가 6pt 미만이면 시작 크기가 하한."""
+def min_size_rule(start: float, min_ratio: float = 0.8, floor_pt: float | None = 6.0) -> float:
+    """하한.
+
+    - floor_pt=None (원문 글자 높이 기준, 기본): 시작 크기의 80%. 시작 크기가 원문 잉크 높이로
+      정해지므로, 한글 글자 높이가 원문 글자 높이의 80% 아래로 내려가지 않는다는 뜻이다.
+    - floor_pt 숫자 (pt 기준): 원문의 80%와 floor_pt 중 큰 값. 단 시작 크기가 floor_pt 미만이면 시작 크기.
+    """
+    if floor_pt is None:
+        return start * min_ratio
     return max(start * min_ratio, min(floor_pt, start))
 
 
@@ -393,7 +401,7 @@ def _size_ladder(p: FitParams) -> list[float]:
 def fit_text(atoms: list[Atom], p: FitParams, m: Measurer) -> FitResult:
     top, bottom = m.ink_extent([a for a in atoms if a.kind in ("char", "icon")])
     n_track = int(round(p.max_tracking / p.tracking_step))
-    trackings = [-(i * p.tracking_step) for i in range(n_track + 1)]
+    trackings = [p.base_tracking - i * p.tracking_step for i in range(n_track + 1)]
     sizes = _size_ladder(p)
     start = p.fixed_size or p.start_size
     lo = sizes[-1]

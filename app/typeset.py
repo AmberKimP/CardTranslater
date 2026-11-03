@@ -69,7 +69,9 @@ class TextStyle:
     fixed_size_pt: float | None = None  # 엑셀 H열
     line_pitch_pt: float | None = None  # 원문 줄 간격 (시작 크기 기준)
     min_ratio: float = 0.8
-    floor_pt: float = 6.0
+    floor_pt: float = 6.0  # floor_basis="pt"일 때만 쓴다
+    floor_basis: str = "ink"  # ink: 원문 글자 높이의 min_ratio까지 (잉크 높이를 모를 때는 pt 규칙) | pt
+    tracking: float = 0.0  # 영역 기본 자간 (글자 크기 대비, 예: -0.06). 맞추기는 여기서 -max_tracking까지 더 좁힌다
     max_tracking: float = 0.05
     italic: bool = False  # 영역 기본 서식이 기울임
     bold_file: str | None = None  # <b>용 글꼴. 없으면 이웃 굵기 파일 -> 없으면 가짜 굵게(획 덧그리기)
@@ -99,11 +101,18 @@ class TextStyle:
         if font.get("bold_file"):
             bp = Path(font["bold_file"])
             kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
-        for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt"):
+        for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
+                  "floor_basis", "tracking"):
             if k in style:
                 kw[k] = style[k]
         kw.update(overrides)
         return cls(**kw)
+
+    def floor_for_fit(self) -> float | None:
+        """FitParams.floor_pt: 원문 글자 높이 기준이고 잉크 높이를 알면 None(pt 하한 없음)."""
+        if self.floor_basis == "ink" and self.ink_height_pt:
+            return None
+        return self.floor_pt
 
     def start_size(self) -> float:
         """시작 크기: 고정 크기 > 잉크 높이 보정(F28) > 원문 pt."""
@@ -344,7 +353,8 @@ def typeset_region(page: pymupdf.Page, rect, text: str | None, style: TextStyle,
     box_h = rect.height if top_anchor is None else rect.y1 - top_anchor
     params = FitParams(
         box_w=rect.width, box_h=box_h, start_size=start, fixed_size=style.fixed_size_pt,
-        min_ratio=style.min_ratio, floor_pt=style.floor_pt, max_tracking=style.max_tracking,
+        min_ratio=style.min_ratio, floor_pt=style.floor_for_fit(), max_tracking=style.max_tracking,
+        base_tracking=style.tracking,
         line_pitch=style.line_pitch_pt, respect_manual=style.respect_manual,
     )
     fit: FitResult = fit_text(atoms, params, m)

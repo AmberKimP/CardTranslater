@@ -212,7 +212,7 @@ def find_tag_labels(
 def pushpull_fill(img: np.ndarray, known: np.ndarray) -> np.ndarray:
     """알려진 픽셀(known=True)로 나머지를 매끄럽게 메운다 (push-pull 피라미드 보간).
 
-    img: H×W×C float32, known: H×W bool. 알려진 픽셀 값은 그대로 유지된다.
+    img: H×W×C float32, known: H×W bool 또는 0~1 무게(float). 무게 1인 픽셀 값은 그대로 유지된다.
     """
     I = img.astype(np.float32)
     if I.ndim == 2:
@@ -233,7 +233,7 @@ def pushpull_fill(img: np.ndarray, known: np.ndarray) -> np.ndarray:
             cI = cI[..., None]
         cw = cv2.resize(cw, size, interpolation=cv2.INTER_AREA)
     cI, cw = levels[-1]
-    mean = I[known].mean(axis=0)
+    mean = (I * w[..., None]).sum(axis=(0, 1)) / float(w.sum())
     est = np.where(cw[..., None] > 1e-6, cI / np.maximum(cw, 1e-6)[..., None], mean)
     for cI, cw in reversed(levels[:-1]):
         up = cv2.resize(est, (cw.shape[1], cw.shape[0]), interpolation=cv2.INTER_LINEAR)
@@ -288,10 +288,12 @@ def fill_background(img: np.ndarray, known: np.ndarray, hole: np.ndarray, p: "Cl
     w = known.astype(np.float32)
     num = cv2.GaussianBlur(I * w[..., None], (0, 0), sigmaX=p.row_sigma_x, sigmaY=p.row_sigma_y)
     den = cv2.GaussianBlur(w, (0, 0), sigmaX=p.row_sigma_x, sigmaY=p.row_sigma_y)
-    valid = den > 0.02
+    # 같은 줄에 알려진 픽셀이 적은 곳(큰 구멍)일수록 위아래에서 보간한 값에 기대도록
+    # 무게를 부드럽게 준다. 딱 잘라 나누면 구멍 끝에서 세로 경계가 생긴다(2쪽 제목 오른쪽 끝).
+    conf = np.clip(den / p.row_conf, 0.0, 1.0)
     base = num / np.maximum(den, 1e-6)[..., None]
-    base[~valid] = 0
-    base = pushpull_fill(base, valid)
+    base[conf <= 0] = 0
+    base = pushpull_fill(base, conf)
     resid = I - base
     resid = normalized_blur(resid, known, 1.5)
     resid[~known] = 0
@@ -299,6 +301,47 @@ def fill_background(img: np.ndarray, known: np.ndarray, hole: np.ndarray, p: "Cl
     dist = cv2.distanceTransform(hole.astype(np.uint8), cv2.DIST_L2, 3)
     out = base + resid * np.exp(-dist / p.edge_decay_px)[..., None]
     return cv2.GaussianBlur(out, (0, 0), 1.0)
+
+
+def transfer_texture(
+    hp: np.ndarray, src: np.ndarray, box: tuple[int, int, int, int], rng: np.random.Generator,
+    block: int = 8, rows: int = 24,
+) -> np.ndarray | None:
+    """box(y0, y1, x0, x1)를 덮을 질감(H×W×3)을 src(깨끗한 픽셀)의 고주파 hp에서 블록째 빌려 온다.
+
+    블록마다 같은 높이(±rows px)의 깨끗한 블록 하나를 무작위로 고른다. 블록 격자는 이미지
+    원점 기준 block px 간격이라 JPEG 8×8 블록 결이 그대로 이어진다. 후보가 없으면 None.
+    """
+    H, W = src.shape
+    by0, by1, bx0, bx1 = box
+    # 블록 전체가 깨끗한 위치 (적분 영상으로 빠르게)
+    ii = cv2.integral(src.astype(np.uint8))
+    nby, nbx = H // block, W // block
+    if nby == 0 or nbx == 0:
+        return None
+    ys = np.arange(nby) * block
+    xs = np.arange(nbx) * block
+    full = (ii[ys[:, None] + block, xs[None, :] + block] - ii[ys[:, None], xs[None, :] + block]
+            - ii[ys[:, None] + block, xs[None, :]] + ii[ys[:, None], xs[None, :]]) == block * block
+    if not full.any():
+        return None
+    cand_r, cand_c = np.nonzero(full)
+    out = np.zeros((by1 - by0, bx1 - bx0, 3), np.float32)
+    gy0, gx0 = (by0 // block) * block, (bx0 // block) * block
+    for ty in range(gy0, by1, block):
+        sel = np.abs(cand_r * block - ty) <= rows
+        if not sel.any():
+            sel = np.abs(cand_r * block - ty) == np.abs(cand_r * block - ty).min()
+        rr, cc = cand_r[sel], cand_c[sel]
+        for tx in range(gx0, bx1, block):
+            k = rng.integers(len(rr))
+            sy, sx = rr[k] * block, cc[k] * block
+            tile = hp[sy:sy + block, sx:sx + block]
+            # 대상 칸과 겹치는 부분만 복사
+            oy0, oy1 = max(ty, by0), min(ty + block, by1)
+            ox0, ox1 = max(tx, bx0), min(tx + block, bx1)
+            out[oy0 - by0:oy1 - by0, ox0 - bx0:ox1 - bx0] = tile[oy0 - ty:oy1 - ty, ox0 - tx:ox1 - tx]
+    return out
 
 
 def _deviation(img: np.ndarray, bg: np.ndarray) -> np.ndarray:
@@ -317,12 +360,17 @@ class CleanParams:
     dilate_px: int = 3  # 마스크 넓히기 (테두리·그림자)
     smooth_sigma: float = 6.0  # 이상치 걷어내기용 배경 추정의 흐림 정도(px)
     outside_threshold: float = 80.0  # 영역 밖 기준 배경과 이만큼 다르면 무조건 글자로 본다
-    row_sigma_x: float = 80.0  # 채울 배경: 같은 줄 가로 평균 폭(px)
-    row_sigma_y: float = 3.0  # 채울 배경: 세로 평균 폭(px)
+    row_sigma_x: float = 30.0  # 채울 배경: 같은 줄 가로 평균 폭(px)
+    row_sigma_y: float = 5.0  # 채울 배경: 세로 평균 폭(px)
+    row_conf: float = 0.5  # 가로 평균의 무게: 알려진 픽셀 비율이 이 값 이상이면 그대로 믿는다
     edge_decay_px: float = 12.0  # 가장자리 잔차를 안쪽으로 이어 붙이는 거리(px)
     texture_sigma: float = 9.0  # 주변 잔차 표준편차가 이보다 크면 '질감' → 인페인팅
     inpaint_radius: int = 5
     strong_threshold: float = 50.0  # '이미지에 박힌 글자' 판정용 강한 차이
+    texture_sigma_hp: float = 3.0  # 빌려 올 질감(고주파)을 가르는 흐림 정도(px)
+    texture_block_px: int = 8  # 질감을 빌려 오는 블록 크기 (JPEG 8×8 블록과 같게)
+    texture_rows_px: int = 24  # 질감을 빌려 올 때 위아래로 찾는 범위(px). 배경은 세로로 변한다
+    feather_px: float = 3.0  # 마스크 가장자리에서 원본과 섞는 폭(px)
 
 
 @dataclass
@@ -390,6 +438,12 @@ def clean_area(
     flat_mask = np.zeros(M2.shape, bool)
     inpaint_mask = np.zeros(M2.shape, bool)
     rng = np.random.default_rng(seed)
+    # 질감: 주변 깨끗한 픽셀의 고주파 성분(종이 결 + JPEG 블록 결)을 블록째 빌려 온다.
+    # 가우시안 잡음만 얹으면 매끈한 면과 원본 JPEG 질감 사이에 경계가 보인다.
+    hp = I - normalized_blur(I, known2, p.texture_sigma_hp)
+    lim = max(12.0, 3.0 * noise)
+    hp = np.clip(hp, -lim, lim)
+    tex_src = cv2.erode(known2.astype(np.uint8), _disk(1)).astype(bool) & (_deviation(I, B3) < thr)
     n, labels = cv2.connectedComponents(M2.astype(np.uint8), connectivity=8)
     lumB = luminance(B3)
     for k in range(1, n):
@@ -399,17 +453,26 @@ def clean_area(
         if sig > p.texture_sigma:
             inpaint_mask |= comp
         else:
-            amp = float(np.clip(sig, 1.0, 6.0))
             ys, xs = np.nonzero(comp)
             y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-            g = rng.standard_normal((y1 - y0, x1 - x0)).astype(np.float32)
-            g = cv2.GaussianBlur(g, (0, 0), 0.7)
-            g *= amp / max(float(g.std()), 1e-6)
+            g = transfer_texture(hp, tex_src, (y0, y1, x0, x1), rng, p.texture_block_px, p.texture_rows_px)
+            if g is None:  # 빌려 올 질감이 없으면 종이 결 흉내 잡음
+                amp = float(np.clip(sig, 1.0, 6.0))
+                g1 = cv2.GaussianBlur(rng.standard_normal((y1 - y0, x1 - x0)).astype(np.float32), (0, 0), 0.7)
+                g = (g1 * amp / max(float(g1.std()), 1e-6))[..., None].repeat(3, axis=2)
             sub = comp[y0:y1, x0:x1]
-            patch = B3[y0:y1, x0:x1] + g[..., None]
+            patch = B3[y0:y1, x0:x1] + g
             region = out[y0:y1, x0:x1]
             region[sub] = patch[sub]
             flat_mask |= comp
+    # 가장자리 부드럽게: 마스크 바깥쪽 몇 px는 원본(깨끗한 픽셀일 때만)과 섞어 칼로 자른 듯한
+    # 경계(특히 그림 무늬가 영역 위쪽에서 수평으로 끊기는 것)를 줄인다.
+    if p.feather_px > 0:
+        dist = cv2.distanceTransform(M2.astype(np.uint8), cv2.DIST_L2, 3)
+        alpha = np.clip(dist / p.feather_px, 0.0, 1.0)
+        clean_orig = _deviation(I, B3) < thr
+        alpha = np.where(clean_orig & flat_mask, alpha, 1.0)[..., None]
+        out = np.where(M2[..., None], alpha * out + (1 - alpha) * I, out)
     out_u8 = np.clip(np.rint(out), 0, 255).astype(np.uint8)
     if inpaint_mask.any():
         bgr = cv2.cvtColor(out_u8, cv2.COLOR_RGB2BGR)
@@ -603,6 +666,10 @@ def place_patch(page, pixels: np.ndarray, box_px: tuple[int, int, int, int], bg:
     eps = PATCH_INSET_PT
     draw = pymupdf.Rect(rect[0] + eps, rect[1] + eps, rect[2] - eps, rect[3] - eps)
     xref = page.insert_image(draw, pixmap=pix, overlay=True, keep_proportion=False)
+    # MuPDF는 RGB 픽스맵을 ICCBased(sRGB)로 넣는다. 원본 배경은 DeviceRGB라 Acrobat·인쇄의
+    # 색 관리에서 경계에 미세한 색 차이가 날 수 있으므로 원본과 같은 DeviceRGB로 맞춘다.
+    kind, val = page.parent.xref_get_key(bg.xref, "ColorSpace")
+    page.parent.xref_set_key(xref, "ColorSpace", val if kind in ("name", "xref") else "/DeviceRGB")
     return {"bbox_pt": _r(rect, 4), "bbox_px": list(box_px), "size_px": [w, h], "xref": xref}
 
 
@@ -745,6 +812,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     # ---- 3. 이미지 정리
     work_px = {k: px_box_outer(to_px(v), size) for k, v in work_pt.items()}
     crop = px_box_outer(expand(union([tuple(map(float, b)) for b in work_px.values()]), 40), size)
+    # 자르는 시작점을 8px 격자에 맞춘다: 질감을 JPEG 8×8 블록 결 그대로 빌려 오기 위해
+    crop = (crop[0] // 8 * 8, crop[1] // 8 * 8, crop[2], crop[3])
     cx0, cy0, cx1, cy1 = crop
     ch, cw = cy1 - cy0, cx1 - cx0
 

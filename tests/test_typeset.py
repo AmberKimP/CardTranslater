@@ -151,6 +151,28 @@ def test_min_size_rule():
     assert min_size_rule(6.0) == pytest.approx(6.0)
 
 
+def test_min_size_rule_ink_basis():
+    # 원문 글자 높이 기준(floor_pt=None): pt 하한 없이 시작 크기(잉크 높이 보정)의 80%
+    assert min_size_rule(5.5, floor_pt=None) == pytest.approx(4.4)
+    assert min_size_rule(18.7, floor_pt=None) == pytest.approx(18.7 * 0.8)
+
+
+def test_fit_ink_basis_shrinks_below_6pt():
+    # 5.5pt 원문: pt 기준이면 5.5에서 넘침, 글자 높이 기준이면 4.4까지 줄여 들어간다
+    pt = _fit("가나다라마바사아", 40, 10, 5.5, max_tracking=0.0)
+    ink = _fit("가나다라마바사아", 40, 10, 5.5, max_tracking=0.0, floor_pt=None)
+    assert STATUS_OVERFLOW in pt.status
+    assert ink.status == [STATUS_SHRUNK] and 4.4 - 1e-9 <= ink.size < 5.5
+
+
+def test_fit_base_tracking():
+    # 기본 자간이 있으면 거기서 시작하고, 맞추기는 거기서 더 좁힌다
+    r = _fit("가나다", 100, 20, 10, base_tracking=-0.08)
+    assert r.tracking == pytest.approx(-0.08) and r.status == []
+    r2 = _fit("가나다라마", 45.4, 10, 10, base_tracking=-0.08)  # 50 - 4*0.8 = 46.8 > 45.4 -> 더 좁힘
+    assert -0.13 - 1e-9 <= r2.tracking < -0.08 and r2.size == 10
+
+
 def _fit(text, w, h, start, **kw):
     spans, _ = parse_markup(text)
     return fit_text(to_atoms(spans), FitParams(box_w=w, box_h=h, start_size=start, **kw), M)

@@ -11,6 +11,7 @@ from app.erase import (
     label_like_mask,
     pushpull_fill,
     rgb_to_hex,
+    transfer_texture,
 )
 
 
@@ -118,3 +119,24 @@ def test_clean_area_removes_dark_glyphs_on_gradient_and_respects_protect():
     assert np.array_equal(res.image[:, 265:], img[:, 265:])
     # 영역 밖은 그대로
     assert np.array_equal(res.image[:25], img[:25])
+
+
+def test_transfer_texture_copies_clean_blocks_on_grid():
+    rng = np.random.default_rng(0)
+    H, W = 64, 64
+    hp = rng.normal(0, 3, (H, W, 3)).astype(np.float32)
+    src = np.ones((H, W), bool)
+    src[16:40, 16:48] = False  # 구멍
+    g = transfer_texture(hp, src, (16, 40, 16, 48), rng, block=8, rows=24)
+    assert g.shape == (24, 32, 3)
+    # 블록마다 깨끗한 8x8 블록 하나를 그대로 복사한다
+    tile = g[0:8, 0:8]
+    found = any(np.array_equal(hp[y:y + 8, x:x + 8], tile)
+                for y in range(0, H, 8) for x in range(0, W, 8) if src[y:y + 8, x:x + 8].all())
+    assert found
+
+
+def test_transfer_texture_none_without_clean_blocks():
+    rng = np.random.default_rng(0)
+    hp = np.zeros((16, 16, 3), np.float32)
+    assert transfer_texture(hp, np.zeros((16, 16), bool), (0, 16, 0, 16), rng) is None
