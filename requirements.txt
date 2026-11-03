@@ -1,0 +1,7 @@
+# 1단계 핵심 실험 (Python 3.12, .venv + pip). 버전 고정.
+pymupdf==2.1
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
+pillow==13.0.0
+pytest==9.2.0
+fonttools==4.68.0
