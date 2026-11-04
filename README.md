@@ -45,6 +45,7 @@ python -m venv .venv
 .venv/Scripts/python -m app.cli new-project --name "Dungeon 1차" --game Dungeon
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차"
+.venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차" --limit 3   # 시험 모드: 파일마다 앞 3장만 (번역·검수·지우기·한글 넣기도 그 카드만, 0이면 끄고 남은 카드부터)
 .venv/Scripts/python -m app.cli finish-extraction --project "projects/Dungeon 1차"           # -> 용어집_검증.xlsx
 # (이름 없는 아이콘 [[?]]가 있으면 finish-extraction이 먼저 아이콘_검증.xlsx를 만든다)
 .venv/Scripts/python -m app.cli find-icons --project "projects/Dungeon 1차"

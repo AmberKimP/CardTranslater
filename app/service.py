@@ -120,11 +120,14 @@ def _discard(tmp: Path, final: Path) -> None:
 
 
 def _included(file_dir: Path, page_count: int) -> list[int]:
-    """쪽을 따로 주지 않았을 때 처리할 쪽: 파일 설정(file.json)에서 뺀 쪽을 제외한 전부."""
+    """쪽을 따로 주지 않았을 때 처리할 쪽: 파일 설정(file.json)에서 뺀 쪽을 제외한 전부
+    (프로젝트가 시험 모드면 그중 앞 card_limit장)."""
     from app.workspace import file_settings
 
+    from app.workspace import limit_pages
+
     excl = set(file_settings(file_dir).get("exclude_pages", []))
-    return [p for p in range(1, page_count + 1) if p not in excl]
+    return limit_pages(file_dir, [p for p in range(1, page_count + 1) if p not in excl])
 
 
 def _boxes(page) -> dict:
@@ -859,10 +862,10 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     out = ProjectStepResult("done")
     for fd in workspace.file_dirs(info, group):
         key = workspace.file_key(fd)
-        if (fd / "cleared" / "cleared.pdf").exists() and not redo:
+        pages = workspace.included_pages(fd)
+        if (fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd):
             out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ‘모두 다시 지우기’)"})
             continue
-        pages = workspace.included_pages(fd)
         if not pages:
             out.files.append({"file": key, "state": "skipped", "reason": "처리할 쪽 없음"})
             continue
@@ -878,6 +881,25 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
             out.state, out.reason = "failed", f"{key}: {r.error}"
             return out
     return out
+
+
+def _cleared_pages(fd: Path) -> set[int]:
+    """지운 결과(cleared/run.json)에 든 쪽. 시험 모드로 일부만 지웠다가 장수를 늘리면 다시 지운다."""
+    f = fd / "cleared" / "run.json"
+    try:
+        return set(json.loads(f.read_text(encoding="utf-8")).get("pages", []))
+    except (OSError, ValueError):
+        return set()
+
+
+def set_card_limit(project_dir: Path | str, n: int | None) -> int | None:
+    """시험 모드: 파일마다 앞 n장까지만 추출하고, 번역·검수 엑셀·지우기·한글 넣기도 그 카드만 한다.
+    None·0이면 끈다(전체). 늘리거나 끄고 다시 추출하면 남은 카드부터 이어 읽는다. 지금 값을 돌려준다."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    workspace.set_card_limit(info, n)
+    return workspace.card_limit(info)
 
 
 def compose_project(project_dir: Path | str, group: str | None = None, *, accept_issues: bool = False,
@@ -971,6 +993,7 @@ def project_overview(project_dir: Path | str) -> dict:
             fd = g["dir"] / "files" / name
             n = workspace.page_count(fd)
             inc = workspace.included_pages(fd)
+            all_inc = workspace.included_pages(fd, limited=False)
             done = set(load_extracted(fd)) & set(inc)
             if per_card:
                 tpl = load_template(rpath, file_name=name)
@@ -979,7 +1002,7 @@ def project_overview(project_dir: Path | str) -> dict:
                 no_regions = [] if rpath.exists() else list(inc)
             files.append({
                 "name": name, "key": workspace.file_key(fd), "dir": fd, "pages": n,
-                "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(inc)),
+                "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(all_inc)),
                 "exclude_reason": workspace.file_settings(fd).get("exclude_reason", ""),
                 "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
                 "composed": (fd / "translated" / "translated.pdf").exists(),
@@ -995,6 +1018,7 @@ def project_overview(project_dir: Path | str) -> dict:
     return {"name": info.name, "game": info.game, "dir": info.dir, "status": info.status,
             "status_label": STATUS_LABEL.get(info.status, info.status),
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
+            "card_limit": workspace.card_limit(info),
             "next_step": _next_step(info, groups)}
 
 
@@ -1032,7 +1056,7 @@ def set_pages(file_dir: Path | str, exclude: list[int], reason: str = "") -> dic
     if bad:
         raise ValueError(f"없는 쪽: {bad} (1~{n})")
     workspace.set_excluded_pages(Path(file_dir), exclude, reason)
-    return {"excluded": sorted(set(exclude)), "included": workspace.included_pages(Path(file_dir))}
+    return {"excluded": sorted(set(exclude)), "included": workspace.included_pages(Path(file_dir), limited=False)}
 
 
 def page_count(file_dir: Path | str) -> int:

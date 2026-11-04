@@ -127,6 +127,31 @@ def set_status(info: ProjectInfo, status: str, **extra) -> None:
     info.status = status
 
 
+def card_limit(info: ProjectInfo) -> int | None:
+    """시험 모드: 파일마다 앞에서부터 이 장수까지만 추출·번역·검수·지우기·한글 넣기 (없으면 전체)."""
+    n = info.extra.get("card_limit")
+    return int(n) if isinstance(n, int) and n > 0 else None
+
+
+def set_card_limit(info: ProjectInfo, n: int | None) -> None:
+    """n이 None이거나 0 이하면 시험 모드를 끈다 (전체 카드)."""
+    data = _read(info.dir / "project.json")
+    if n and int(n) > 0:
+        data["card_limit"] = int(n)
+        info.extra["card_limit"] = int(n)
+    else:
+        data.pop("card_limit", None)
+        info.extra.pop("card_limit", None)
+    _write(info.dir / "project.json", data)
+
+
+def limit_pages(file_dir: Path, pages: list[int]) -> list[int]:
+    """프로젝트가 시험 모드면 앞에서부터 card_limit장만."""
+    info = project_of(Path(file_dir))
+    n = card_limit(info) if info else None
+    return pages[:n] if n else pages
+
+
 def list_projects(root: Path = DEFAULT_ROOT) -> list[dict]:
     out = []
     d = projects_dir(root)
@@ -239,11 +264,13 @@ def page_count(file_dir: Path) -> int:
         return d.page_count
 
 
-def included_pages(file_dir: Path) -> list[int]:
+def included_pages(file_dir: Path, limited: bool = True) -> list[int]:
     """처리할 쪽 (1부터). 그룹 형식과 다른 쪽(예: 규칙 카드)을 뺀 나머지.
-    file.json이 없는 폴더(예전 방식 프로젝트 포함)는 모든 쪽."""
+    file.json이 없는 폴더(예전 방식 프로젝트 포함)는 모든 쪽.
+    limited=True면 프로젝트 시험 모드(card_limit)를 적용한다. 뺀 쪽을 보여 줄 때는 False."""
     excl = set(file_settings(file_dir).get("exclude_pages", []))
-    return [p for p in range(1, page_count(file_dir) + 1) if p not in excl]
+    pages = [p for p in range(1, page_count(file_dir) + 1) if p not in excl]
+    return limit_pages(file_dir, pages) if limited else pages
 
 
 def pages_spec(pages: list[int]) -> str:

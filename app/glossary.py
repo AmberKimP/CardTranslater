@@ -56,21 +56,21 @@ class Source:
 
 
 def collect_sources(info: ProjectInfo) -> list[Source]:
-    """프로젝트 모든 그룹·파일의 추출 결과(extract/)를 모은다."""
+    """프로젝트 모든 그룹·파일의 추출 결과(extract/)를 모은다 (처리할 쪽만)."""
     from app.extract import load_extracted, verification_label
     from app.project import load_project
-    from app.workspace import file_settings
+    from app.workspace import included_pages
 
     out: list[Source] = []
     for fd in file_dirs(info):
-        excluded = set(file_settings(fd).get("exclude_pages", []))
+        included = set(included_pages(fd))  # 뺀 쪽 제외, 시험 모드면 앞 card_limit장만
         try:
             proj = load_project(fd)
         except FileNotFoundError:
             continue  # 영역 템플릿이 아직 없는 그룹
         kinds = {r.name: r.kind for r in proj.template.regions}
         for pno, regs in sorted(load_extracted(fd).items()):
-            if pno in excluded:  # 그룹 형식과 다른 쪽 (예: 규칙 카드)
+            if pno not in included:  # 그룹 형식과 다른 쪽(예: 규칙 카드) 또는 시험 모드 밖
                 continue
             name_reg = next((n for n in regs if "이름" in n or "name" in n.lower()), None)
             card_name = regs[name_reg]["source"] if name_reg and isinstance(regs[name_reg]["source"], str) else None

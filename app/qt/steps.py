@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QRadioButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
@@ -57,7 +57,7 @@ def _fail(parent, msg: str):
 class ExtractDialog(QDialog):
     """추출할 그룹·모드·엔진 고르기."""
 
-    def __init__(self, groups: list[str], parent=None):
+    def __init__(self, groups: list[str], parent=None, card_limit: int | None = None):
         super().__init__(parent)
         self.setWindowTitle("글자 추출")
         self.group = QComboBox()
@@ -77,6 +77,25 @@ class ExtractDialog(QDialog):
         for k, t in ENGINE_LABELS:
             self.engine.addItem(t + ("" if st[k] else " — 사용할 수 없음"), k)
         self.engine.setCurrentIndex(max(0, self.engine.findData(service.get_settings().engine)))
+        # 시험 모드: 파일마다 앞 X장만 (번역·검수·지우기·한글 넣기도 그 카드만). 프로젝트에 저장된다
+        self.limit_on = QCheckBox("시험: 파일마다 앞에서부터")
+        self.limit_n = QSpinBox()
+        self.limit_n.setRange(1, 9999)
+        self.limit_n.setSuffix("장만")
+        self.limit_n.setValue(card_limit or 3)
+        self.limit_on.setChecked(bool(card_limit))
+        self.limit_n.setEnabled(bool(card_limit))
+        self.limit_on.toggled.connect(self.limit_n.setEnabled)
+        limit_row = QHBoxLayout()
+        limit_row.addWidget(self.limit_on)
+        limit_row.addWidget(self.limit_n)
+        limit_row.addStretch(1)
+        limit_note = QLabel("번역·검수 엑셀·지우기·한글 넣기도 이 카드만 합니다. 끄고 다시 추출하면 남은 카드부터 이어 읽습니다.")
+        limit_note.setWordWrap(True)
+        limit_note.setStyleSheet("color: #666")
+        limit_box = QVBoxLayout()
+        limit_box.addLayout(limit_row)
+        limit_box.addWidget(limit_note)
         note = QLabel("이미 읽은 카드는 다시 읽지 않습니다. 사용 한도로 멈추면 다시 시작한 곳부터 이어 갑니다.")
         note.setWordWrap(True)
         note.setStyleSheet("color: #666")
@@ -84,6 +103,7 @@ class ExtractDialog(QDialog):
         form.addRow("그룹", self.group)
         form.addRow("모드", mode_box)
         form.addRow("엔진", self.engine)
+        form.addRow("장수", limit_box)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("추출 시작")
         bb.accepted.connect(self.accept)
@@ -95,6 +115,10 @@ class ExtractDialog(QDialog):
 
     def choice(self) -> tuple[str | None, str, str]:
         return self.group.currentData(), self.modes.checkedButton().property("key"), self.engine.currentData()
+
+    def card_limit(self) -> int | None:
+        """시험 모드 장수 (끄면 None)."""
+        return self.limit_n.value() if self.limit_on.isChecked() else None
 
     def accept(self):
         if not service.engine_status()[self.engine.currentData()]:
@@ -568,9 +592,10 @@ class StepActions:
     # ---- 추출
     def extract(self):
         groups = [g["name"] for g in self.page.ov["groups"]]
-        dlg = ExtractDialog(groups, self.page)
+        dlg = ExtractDialog(groups, self.page, self.page.ov.get("card_limit"))
         if not dlg.exec():
             return
+        service.set_card_limit(self.pdir, dlg.card_limit())
         self._run_extract(*dlg.choice())
 
     def _run_extract(self, group, mode, engine):

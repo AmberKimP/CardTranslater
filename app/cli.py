@@ -262,6 +262,10 @@ def cmd_add_files(args: argparse.Namespace) -> int:
 
 
 def cmd_extract_project(args: argparse.Namespace) -> int:
+    if args.limit is not None:
+        n = service.set_card_limit(args.project, args.limit)
+        print(f"[extract-project] 시험 모드: 파일마다 앞 {n}장만 (번역·검수·지우기·한글 넣기도 그 카드만)" if n
+              else "[extract-project] 시험 모드 끔: 모든 카드")
     try:
         r = service.extract_project(args.project, args.group, mode=args.mode, engine=args.engine,
                                     progress=_print_progress("extract"))
@@ -391,7 +395,7 @@ def cmd_set_pages(args: argparse.Namespace) -> int:
 
     excl = parse_page_spec(args.exclude, workspace.page_count(fd)) if args.exclude else []
     workspace.set_excluded_pages(fd, excl, args.reason or "")
-    inc = workspace.included_pages(fd)
+    inc = workspace.included_pages(fd, limited=False)
     print(f"[set-pages] {args.file}: 뺀 쪽 {workspace.pages_spec(excl) or '없음'}, 처리할 쪽 {len(inc)}장 "
           f"({workspace.pages_spec(inc)})")
     return 0
@@ -496,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--group")
     ep.add_argument("--mode", default="double-check", choices=["double-check", "opus"])
     ep.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
+    ep.add_argument("--limit", type=int, help="시험 모드: 파일마다 앞 X장만 추출·번역·검수 (0이면 끄고 전체). 프로젝트에 저장됨")
     ep.set_defaults(func=cmd_extract_project)
     fx = sub.add_parser("finish-extraction", help="‘추출 완료’: 모은 원문으로 용어집 후보 -> 용어집_검증.xlsx")
     fx.add_argument("--project", required=True)

@@ -185,7 +185,8 @@ class ProjectPage(QWidget):
         o = self.ov
         self.title.setText(o["name"])
         gv = f" · 용어집 v{o['glossary_version']}" if o.get("glossary_version") else ""
-        self.sub.setText(f"게임: {o['game']} · 상태: {o['status_label']}{gv}")
+        lim = f" · 시험 모드: 파일마다 앞 {o['card_limit']}장만" if o.get("card_limit") else ""
+        self.sub.setText(f"게임: {o['game']} · 상태: {o['status_label']}{gv}{lim}")
         self.next.setText(f"다음 할 일: {o['next_step']}")
         self.tree.clear()
         for g in o["groups"]:

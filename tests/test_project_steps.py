@@ -93,3 +93,45 @@ def test_erase_and_compose_project_with_draft_and_excel(tmp_path):
     r = service.compose_project(info.dir, accept_issues=True)
     assert r.files[0]["from"] == "번역_검수.xlsx" and r.state == "done", r
     assert x.exists()
+
+
+def test_card_limit_test_mode_limits_every_step(tmp_path):
+    """시험 모드(앞 X장만): 추출·용어 원문·번역·검수 엑셀·지우기가 그 카드만. 끄면 남은 카드부터."""
+    from openpyxl import load_workbook
+
+    info, fd = _project(tmp_path)
+    ok = (0, json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0,
+                         "modelUsage": {}, "structured_output": {"regions": [
+                             {"name": "이름", "text": "HELLO", "uncertain": False, "note": ""}]}}), "")
+    assert service.set_card_limit(info.dir, 1) == 1
+    assert workspace.included_pages(fd) == [1] and workspace.included_pages(fd, limited=False) == [1, 2]
+    ov = service.project_overview(info.dir)
+    assert ov["card_limit"] == 1 and ov["groups"][0]["files"][0]["excluded"] == []  # 시험 밖 카드는 '뺀 쪽'이 아님
+    run = FakeRunner([ok])
+    r = service.extract_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
+    assert r.state == "done" and r.files[0]["done"] == 1 and len(run.calls) == 1
+    # 2쪽이 이미 읽혀 있어도 원문·번역·검수에서 빠진다
+    _write_extract(fd, 2, "OTHER")
+    assert [s.key for s in glossary.collect_sources(info)] == ["카드/cards#p1#이름"]
+    st = glossary.extraction_status(info)[0]
+    assert st["pages"] == 1 and st["extracted"] == 1
+    x = service.export_excel(fd)
+    keys = [row[0].value for row in load_workbook(x).active.iter_rows(min_row=2) if row[0].value]
+    assert keys and all("#p1#" in k for k in keys), keys
+    # 끄면 남은 카드부터 이어 읽는다
+    assert service.set_card_limit(info.dir, 0) is None
+    run2 = FakeRunner([ok])
+    r = service.extract_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
+    assert r.state == "done" and len(run2.calls) == 0  # 2쪽은 위에서 이미 읽힘 -> 다시 읽지 않음
+    assert len(glossary.collect_sources(info)) == 2
+
+
+def test_card_limit_erase_redoes_when_limit_grows(tmp_path):
+    info, fd = _project(tmp_path)
+    service.set_card_limit(info.dir, 1)
+    r = service.erase_project(info.dir)
+    assert r.state == "done" and r.files[0]["pages"] == 1
+    assert service.erase_project(info.dir).files[0]["state"] == "skipped"
+    service.set_card_limit(info.dir, None)  # 장수를 늘리면 일부만 지운 결과를 다시 만든다
+    r = service.erase_project(info.dir)
+    assert r.files[0]["state"] == "done" and r.files[0]["pages"] == 2
