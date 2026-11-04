@@ -365,16 +365,30 @@ Nov 3, 2026 · @암바
 | 선택지 | 장점 | 이번에 고르지 않은 이유 |
 | --- | --- | --- |
 | Python + Streamlit | 화면을 가장 빨리 만든다 | 사각형을 그리고 고치는 조작이 어색하고, 버튼을 누를 때마다 화면 전체가 다시 돈다 |
-| Python + PySide6 데스크톱 앱 | 설치형 프로그램처럼 동작 | 화면 코드가 길고 배우는 데 시간이 더 든다 |
+| Python + PySide6 데스크톱 앱 | 설치형 프로그램처럼 동작, 영역 그리기·확대가 강함(QGraphicsView), 실행 파일 하나로 배포, LGPL | 화면 코드가 길고, 휴대폰에서 진행·결과를 볼 수 없다. **나중에 바꿀 수 있게 열어 둔다(아래 ‘화면과 엔진 나누기’)** |
+| Python + PyQt6 | PySide6와 기능 같음 | GPL(배포 시 소스 공개) 또는 유료 라이선스. Qt로 간다면 PySide6를 쓴다 |
 | 브라우저만(JavaScript) | 설치가 필요 없다 | 배경 복원·PDF 편집·로컬 OCR이 약하고, API 키를 브라우저에 두기 어렵다 |
 | Photoshop 스크립트 | 글자 품질이 가장 좋다 | 유료 프로그램에 묶이고 AI 호출·엑셀 처리가 불편하다 |
+
+### 화면과 엔진 나누기 (PySide6 전환 대비)
+
+첫 화면은 로컬 웹으로 만들되, 설치형 배포가 중요해지면 PySide6 화면으로 바꿀 수 있게 만든다. 화면만 바꾸고 엔진은 그대로 쓰는 것이 목표다.
+
+- **층 구분:** `app/` 엔진(지우기·배치·엑셀 등) → `app/service.py` 작업 흐름 → 화면(`app/cli.py`, 웹 `app/main.py`+`web/`, 나중의 `app/qt/`). 화면끼리는 서로 모르고 모두 `service`만 부른다.
+- **엔진 규칙:** `app/`의 엔진 모듈과 `service`는 화면 라이브러리(PySide6, FastAPI 등)를 import하지 않고 print하지 않는다. 테스트(`tests/test_service.py`)가 이것을 검사한다.
+- **긴 작업:** 진행률은 콜백(`ProgressEvent`: 단계, 끝난 수, 전체, 메시지, 쪽)으로 알린다. 콜백은 작업 스레드에서 불리므로 화면이 자기 스레드로 넘긴다(웹: 큐·SSE, PySide6: Signal). 취소는 `CancelToken`으로 쪽마다 확인하고, 취소하면 작업 폴더를 지우고 예전 결과(`cleared/`·`translated/`)는 그대로 둔다.
+- **사용자에게 묻기:** 엑셀 확인 항목처럼 사람이 정할 일은 예외가 아니라 결과 상태(`needs_confirmation` + 목록)로 돌려준다. 화면이 물어보고 ‘계속’이면 다시 부른다. 그래서 명령줄의 `--yes`, 웹의 확인 창, PySide6의 대화상자가 같은 흐름을 쓴다.
+- **화면에 넘기는 것:** 결과는 경로·상태·경고를 담은 dataclass로 준다. 이미지는 파일 경로(PNG)로 넘겨, 웹은 URL로, PySide6는 QPixmap으로 바로 읽는다.
+- **좌표:** 영역은 지금처럼 카드 대비 비율로 저장한다. 웹 canvas와 PySide6 QGraphicsView가 같은 값을 쓴다.
 
 ### 폴더 구조 (안)
 
 ```text
 CardTranslater/
 ├─ app/
-│  ├─ main.py          FastAPI 시작점
+│  ├─ service.py       작업 흐름 (진행률·취소·확인 상태). 모든 화면이 이것만 부른다
+│  ├─ cli.py           명령줄 화면
+│  ├─ main.py          웹 화면 (FastAPI 시작점)
 │  ├─ project.py       프로젝트 폴더·설정 저장
 │  ├─ regions.py       비율 좌표 ↔ 픽셀 변환, 자르기
 │  ├─ extract.py       PDF 텍스트 추출 / 이미지 글자 인식
@@ -383,6 +397,7 @@ CardTranslater/
 │  ├─ erase.py         글자 마스크·채우기·복원
 │  └─ typeset.py       한글 줄바꿈·크기 맞추기·그리기
 ├─ web/               index.html, app.js, styles.css (영역 지정 화면)
+│                     (PySide6로 바꾸면 app/qt/ 를 더하고 service는 그대로 쓴다)
 ├─ fonts/
 ├─ tests/
 └─ projects/          프로젝트별 폴더 (원본 사본, 영역, 캐시, cleared/ 지운 카드, translated/ 한글 카드)

@@ -222,8 +222,17 @@ def erased_pdf_path(erase_run: Path) -> Path:
 
 def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_dir: Path,
                 cards: dict | None = None, translation_source: str = "samples.json",
-                out_name: str = "composed.pdf") -> tuple[Path, int]:
-    """run_dir(새로 만들 빈 폴더)에 결과를 쓴다. cards가 없으면 samples.json을 쓴다."""
+                out_name: str = "composed.pdf", progress=None, cancel=None) -> tuple[Path, int]:
+    """run_dir(새로 만들 빈 폴더)에 결과를 쓴다. cards가 없으면 samples.json을 쓴다.
+
+    progress: app.service.ProgressEvent를 받는 콜백, cancel: app.service.CancelToken (둘 다 선택).
+    """
+    from app.service import ProgressEvent
+
+    def _p(stage, done, total, msg, page=None):
+        if progress:
+            progress(ProgressEvent(stage, done, total, msg, page))
+
     project = load_project(Path(project_dir))
     src_path = project.source_pdf
     erase_run = Path(erase_run).resolve()
@@ -261,7 +270,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
 
     page_recs = []
     for i, pno in enumerate(pages):
-        print(f"[compose] page {pno} ...", flush=True)
+        if cancel:
+            cancel.check()
+        _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
         rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase)
         page_recs.append({"page": pno, "regions": rec})
 
@@ -275,6 +286,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     chk = pymupdf.open(out_pdf)
     cdir = run_dir / "compare"
     for i, pno in enumerate(pages):
+        if cancel:
+            cancel.check()
+        _p("render", i, len(pages), f"{pno}쪽 미리보기·비교 이미지", pno)
         cp, sp = chk[i], src_doc[pno - 1]
         cp.get_pixmap(dpi=300, alpha=False).save(str(run_dir / f"p{pno:03d}.png"))
         report.save(report.side_by_side(_render(sp, 300), _render(cp, 300)), cdir / f"p{pno:03d}_card.png")
