@@ -20,6 +20,7 @@ import numpy as np
 import pymupdf
 
 from app import report
+from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.typeset import ROOT, TextStyle, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
@@ -261,6 +262,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         metas[pno] = json.loads(f.read_text(encoding="utf-8"))
 
     styles = {r.name: r.style for r in project.template.regions}
+    icon_style = icon_style_for(project_dir)  # 게임 아이콘 사전 (영역 서식에 따로 적은 값이 우선)
+    if icon_style:
+        styles = {n: {**icon_style, **(s or {})} for n, s in styles.items()}
     region_erase = {r.name: r.erase for r in project.template.regions}
 
     out_doc = pymupdf.open()

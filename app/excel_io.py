@@ -25,7 +25,10 @@ from app.project import Project, sha256_file
 SHEET = "번역"
 INFO = "정보"
 HEADERS = ["key", "카드", "영역", "미리보기", "원문", "원문 확인", "초벌 번역", "번역", "글자 크기", "상태", "사용한 용어",
-           "메모"]
+           "메모", "그룹", "글꼴"]
+FONT_SHEET = "글꼴"
+ICON_SHEET = "아이콘"
+DEFAULT_FONT = "fonts/notosanskr/NotoSansKR-Regular.ttf"
 # '원문 확인' 값: Sonnet 1회 | 두 번 확인 | 결론 못 냄 | Opus 1회 | 라벨 색 | 손 입력 (+ " (확인 필요)")
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 APP_VERSION = "phase1"
@@ -49,6 +52,94 @@ def _project_translation(file_dir: Path) -> tuple[dict, list[dict]]:
     if info is None:
         return {}, []
     return load_cache(info.dir), load_glossary(info).get("terms", [])
+
+
+def font_label(style: dict | None) -> str:
+    """영역 서식의 글꼴 이름 (예: 'Gaegu (Gaegu-Regular.ttf)')."""
+    font = (style or {}).get("font") or {}
+    f = font.get("file")
+    if not f:
+        return f"Noto Sans KR ({Path(DEFAULT_FONT).name}, 기본값)"
+    return f"{font.get('family') or Path(f).stem} ({Path(f).name})"
+
+
+def group_of(project: Project) -> str:
+    """게임 프로젝트의 그룹 이름 (예전 방식 프로젝트는 '-')."""
+    from app.workspace import project_of
+
+    return project.root.parent.parent.name if project_of(project.root) else "-"
+
+
+def _font_sheet(wb, project: Project, group: str) -> None:
+    from openpyxl.styles import Font
+
+    ws = wb.create_sheet(FONT_SHEET)
+    head = ["그룹", "영역", "종류", "글꼴", "글꼴 파일", "대체 글꼴(없는 글자)", "굵은 글꼴", "색", "정렬", "회전", "고른 이유"]
+    ws.append(head)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for reg in project.template.regions:
+        st = reg.style or {}
+        font = st.get("font") or {}
+        ws.append([group, reg.name, reg.kind, font_label(st), font.get("file") or DEFAULT_FONT,
+                   font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf") or "-",
+                   font.get("bold_file") or "-", st.get("color", "#000000"), st.get("align", "left"),
+                   st.get("rotate") or 0, font.get("chosen") or ""])
+    for col, w in zip("ABCDEFGHIJK", (16, 10, 10, 34, 44, 40, 30, 9, 8, 6, 30)):
+        ws.column_dimensions[col].width = w
+    ws.protection.sheet = True
+
+
+def _icon_sheet(wb, project: Project, extracted: dict, pages: list[int], drafts: dict) -> int:
+    """원문에 든 아이콘의 쪽·영역·줄·순서와 상태. 사람이 확인할 줄 수를 돌려준다."""
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Font, PatternFill
+
+    from app import icons
+    from app.workspace import project_of
+
+    info = project_of(project.root)
+    dic = icons.load_dictionary(info)["icons"] if info else {}
+    idir = icons.icons_dir(info) if info else None
+    ws = wb.create_sheet(ICON_SHEET)
+    head = ["key", "카드", "영역", "줄", "줄에서 순서", "아이콘", "그림", "상태", "번역에 있음", "원문"]
+    ws.append(head)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    need = PatternFill("solid", fgColor="F4B183")
+    pdf = project.source_pdf.name
+    row, n_check = 2, 0
+    for pno in pages:
+        for reg in project.template.regions:
+            ext = (extracted.get(pno) or {}).get(reg.name) or {}
+            src = ext.get("source")
+            if not isinstance(src, str):
+                continue
+            key = make_key(pdf, pno, reg.name)
+            for li, k, name in icons.tokens_in(src):
+                st, check_it = icons.token_status(name, dic, ext.get("icon_note", ""))
+                ko = drafts.get(key) or ""
+                ws.append([key, f"{pdf} p{pno}", reg.name, li, k, f"[[{name}]]", None, st,
+                           ("예" if f"[[{name}]]" in ko else "아니오") if ko else "번역 없음", src])
+                if check_it:
+                    n_check += 1
+                    for c in (6, 8):
+                        ws.cell(row, c).fill = need
+                p = idir / dic[name].get("file", f"{name}.png") if idir and name in dic else None
+                if p and p.exists():
+                    img = XLImage(str(p))
+                    sc = 20 / max(img.height, 1)
+                    img.width, img.height = int(img.width * sc), int(img.height * sc)
+                    ws.add_image(img, ws.cell(row, 7).coordinate)
+                    ws.row_dimensions[row].height = 18
+                row += 1
+    if row == 2:
+        ws.append(["(아이콘 없음)"])
+    for col, w in zip("ABCDEFGHIJ", (28, 18, 10, 5, 9, 14, 7, 40, 10, 60)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+    ws.protection.sheet = True
+    return n_check
 
 
 def make_key(pdf_name: str, page: int, region: str) -> str:
@@ -87,7 +178,36 @@ def _region_preview(src_doc, page_no: int, rect_ratio: dict, dpi: int = 150):
     return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
 
-def export_translation(project: Project, out_path: Path, pages: list[int]) -> Path:
+KEEP_COLS = ("번역", "메모", "글자 크기")  # 사람이 고치는 열: 다시 내보낼 때 이전 엑셀에서 가져온다
+
+
+def read_human_edits(xlsx_path: Path) -> dict:
+    """이전 검수 엑셀에서 사람이 고친 칸 {key: {"번역", "메모", "글자 크기"}}.
+    번역이 초벌 번역과 다르거나, 메모·글자 크기를 적은 행만."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx_path, data_only=True)
+    if SHEET not in wb.sheetnames:
+        return {}
+    ws = wb[SHEET]
+    head = [c.value for c in ws[1]]
+    if "key" not in head:
+        return {}
+    ix = {h: head.index(h) for h in head if h}
+    out = {}
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        key = r[ix["key"]]
+        if not key:
+            continue
+        vals = {h: r[ix[h]] for h in KEEP_COLS if h in ix}
+        edited = ("초벌 번역" in ix and vals.get("번역") != r[ix["초벌 번역"]]) or vals.get("메모") or vals.get("글자 크기")
+        if edited:
+            out[str(key)] = vals
+    return out
+
+
+def export_translation(project: Project, out_path: Path, pages: list[int], keep: dict | None = None) -> Path:
+    """keep: read_human_edits()의 결과. 같은 key 행의 번역·메모·글자 크기를 그대로 옮긴다."""
     import pymupdf
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as XLImage
@@ -101,7 +221,7 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     for c in ws[1]:
         c.font = Font(bold=True)
     widths = {"key": 26, "카드": 14, "영역": 8, "미리보기": 48, "원문": 40, "원문 확인": 12, "초벌 번역": 40, "번역": 40,
-              "글자 크기": 9, "상태": 14, "사용한 용어": 16, "메모": 20}
+              "글자 크기": 9, "상태": 14, "사용한 용어": 16, "메모": 20, "그룹": 16, "글꼴": 30}
     for h, wdt in widths.items():
         ws.column_dimensions[ws.cell(1, COL[h]).column_letter].width = wdt
     ws.freeze_panes = "B2"
@@ -114,6 +234,9 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     pdf = project.source_pdf.name
     extracted = load_extracted(project.root)
     tr_cache, gl_terms = _project_translation(project.root)
+    group = group_of(project)
+    fonts = {r.name: font_label(r.style) for r in project.template.regions}
+    drafts: dict = {}
     row = 2
     for pno in pages:
         card = project.samples.get(pno) or {}
@@ -132,7 +255,12 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
                 "원문": _to_cell(src), "원문 확인": verdict, "초벌 번역": draft, "번역": draft,
                 "상태": ", ".join(status) or None,
                 "사용한 용어": ", ".join(f"{t['source']} → {t['ko']}" for t in used) or None,
+                "그룹": group, "글꼴": fonts[reg.name],
             }
+            kept = (keep or {}).get(vals["key"])
+            if kept:
+                vals.update({h: v for h, v in kept.items() if h in KEEP_COLS})
+            drafts[vals["key"]] = vals["번역"] or draft
             for h, v in vals.items():
                 ws.cell(row, COL[h], v)
             for h in HEADERS:
@@ -168,6 +296,9 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     ws.protection.formatColumns = False
     ws.protection.formatRows = False
 
+    n_icon_check = _icon_sheet(wb, project, extracted, pages, drafts)
+    _font_sheet(wb, project, group)
+
     info = wb.create_sheet(INFO)
     for k, v in [
         ("프로젝트", project.root.name),
@@ -177,6 +308,8 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
         ("내보낸 시각", time.strftime("%Y-%m-%d %H:%M:%S")),
         ("앱 버전", APP_VERSION),
         ("쪽", ",".join(map(str, pages))),
+        ("그룹", group),
+        ("확인할 아이콘", n_icon_check),
     ]:
         info.append([k, v])
     info.column_dimensions["A"].width = 14

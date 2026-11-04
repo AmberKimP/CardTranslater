@@ -191,8 +191,20 @@ def unique_sources(sources) -> list[tuple[str, str, str]]:
     return out
 
 
+def _icon_hint(batch, icons: dict | None) -> str:
+    """묶음에 나오는 아이콘의 뜻·한국어 이름 (조사 고르기와 보조형/대체형 판단에 쓴다)."""
+    names = sorted({n for text, _r, _k in batch for n in _ICON.findall(text)})
+    if not names or not icons:
+        return ""
+    info = {n: {"meaning": icons.get(n, {}).get("meaning", ""), "ko": icons.get(n, {}).get("ko", "")} for n in names}
+    return ("\nIcons (keep each [[name]] exactly as written; when an icon stands alone for a noun, pick the "
+            "Korean particle after it as if it were its ko name): " + json.dumps(info, ensure_ascii=False))
+
+
 def run_translate(project_dir: Path, sources, glossary: list[dict], client, model: str, *,
-                  game: str, work_dir: Path, progress=None, cancel=None) -> TranslateResult:
+                  game: str, work_dir: Path, progress=None, cancel=None,
+                  icons: dict | None = None) -> TranslateResult:
+    """icons: 게임 아이콘 사전 {이름: {"meaning", "ko", ...}}."""
     from app.extract import Paused, _iso_after
     from app.extract_cc import CardError, NotAvailable
     from app.llm import complete_json
@@ -234,6 +246,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
         prompt = (f"Game: {game}.\nGlossary (must use): " + json.dumps(gl, ensure_ascii=False)
                   + ("\nPreferred phrasing (follow when it reads naturally): " + json.dumps(phrases, ensure_ascii=False)
                      if phrases else "")
+                  + _icon_hint(batch, icons)
                   + f"\n{extra}\nItems (JSON lines):\n" + "\n".join(lines) + "\nReturn one item per id.")
         return complete_json(client, model, SYSTEM_PROMPT, prompt, _schema(), work_dir)
 

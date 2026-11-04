@@ -40,6 +40,9 @@ python -m venv .venv
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차"
 .venv/Scripts/python -m app.cli finish-extraction --project "projects/Dungeon 1차"           # -> 용어집_검증.xlsx
+# (이름 없는 아이콘 [[?]]가 있으면 finish-extraction이 먼저 아이콘_검증.xlsx를 만든다)
+.venv/Scripts/python -m app.cli find-icons --project "projects/Dungeon 1차"
+.venv/Scripts/python -m app.cli import-icons --project "projects/Dungeon 1차" --excel "projects/Dungeon 1차/아이콘_검증.xlsx"
 .venv/Scripts/python -m app.cli import-glossary --project "projects/Dungeon 1차" --excel "projects/Dungeon 1차/용어집_검증.xlsx"
 .venv/Scripts/python -m app.cli translate --project "projects/Dungeon 1차"              # 5단계: 확정 용어집 기준 초벌 번역
 .venv/Scripts/python -m app.cli export-excel --project "projects/Dungeon 1차"           # 파일마다 번역_검수.xlsx

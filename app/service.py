@@ -340,10 +340,11 @@ def _finish_erase(project, pages, page_metas, box_checks, final_dir, run_dir, pd
 # ---------------------------------------------------------------- 번역 엑셀
 def export_excel(project_dir: Path | str, out: Path | str | None = None, pages: str | None = None,
                  force: bool = False) -> Path:
-    """번역 검수 엑셀을 만든다. 이미 있으면 검수 내용을 지키려고 FileExistsError (force로 덮어씀)."""
+    """번역 검수 엑셀을 만든다. 이미 있으면 검수 내용을 지키려고 FileExistsError.
+    force로 다시 만들 때도 이전 엑셀에서 사람이 고친 번역·메모·글자 크기는 옮겨 담는다."""
     import pymupdf
 
-    from app.excel_io import export_translation
+    from app.excel_io import export_translation, read_human_edits
 
     project = load_project(Path(project_dir))
     out = Path(out) if out else project.root / "번역_검수.xlsx"
@@ -351,7 +352,8 @@ def export_excel(project_dir: Path | str, out: Path | str | None = None, pages: 
         raise FileExistsError(str(out))
     with pymupdf.open(project.source_pdf) as d:
         page_list = parse_page_spec(pages, d.page_count) if pages else _included(project.root, d.page_count)
-    return export_translation(project, out, page_list)
+    keep = read_human_edits(out) if out.exists() else {}
+    return export_translation(project, out, page_list, keep=keep)
 
 
 # ---------------------------------------------------------------- 8단계: 한글 넣기
@@ -599,6 +601,74 @@ def extract_project(project_dir: Path | str, group: str | None = None, *, mode: 
     return out
 
 
+# ---------------------------------------------------------------- 아이콘 찾기·사전 (PRD 5.6)
+@dataclass
+class IconScanResult:
+    state: str  # done | icons_review | blocked
+    review_xlsx: Path | None = None
+    auto: dict = field(default_factory=dict)  # 사전과 같아 바로 바꾼 아이콘 {이름: 횟수}
+    groups: int = 0  # 이름을 정해야 할 묶음
+    occurrences: int = 0
+    not_found: int = 0  # 위치를 못 찾은 [[?]]
+    reason: str = ""
+
+
+ICON_SUGGEST_MODEL = "claude-sonnet-5-5"
+
+
+def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=None,
+               suggest: bool = True) -> IconScanResult:
+    """원문의 이름 없는 아이콘 [[?]]를 찾아 사전과 같은 것은 바로 바꾸고, 나머지는 ‘아이콘_검증.xlsx’로 만든다."""
+    from app import icons, workspace
+    from app.extract import Paused, make_client
+    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+
+    info = workspace.load_project_info(project_dir)
+    if not icons.pending_count(info):
+        return IconScanResult("done")
+    work = info.dir / "work" / "icons"
+    res = icons.scan(info, work)
+    out = IconScanResult("done", auto=res.auto)
+    if not res.occurrences:
+        return out
+    note = ""
+    if suggest and any(g.get("rep") for g in res.groups.values()):
+        try:
+            if client is None:
+                client = ClaudeCodeClient() if engine == "claude-code" else make_client()
+            icons.suggest_names(res, client, ICON_SUGGEST_MODEL, work / "suggest")
+            icons._save_scan(work, res)
+        except (Paused, CardError, NotAvailable, Exception) as e:  # noqa: BLE001 - 제안 없이도 검증은 할 수 있다
+            note = f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
+    xlsx = icons.export_review(info, res, info.dir / "아이콘_검증.xlsx")
+    return IconScanResult("icons_review", xlsx, res.auto, len(res.groups), len(res.occurrences),
+                          sum(1 for o in res.occurrences if not o.png), note)
+
+
+@dataclass
+class IconImportResult:
+    state: str  # confirmed | blocked
+    added: list[str] = field(default_factory=list)
+    reused: list[str] = field(default_factory=list)
+    replaced: int = 0
+    removed: int = 0
+    blocking: list[str] = field(default_factory=list)
+
+
+def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
+    """아이콘 검증 엑셀을 가져와 게임 아이콘 사전에 넣고 원문의 [[?]]를 [[이름]]으로 바꾼다."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.dir / "work" / "icons"
+    if not (work / "scan.json").exists():
+        return IconImportResult("blocked", blocking=["아이콘 찾기 결과가 없습니다 (find-icons를 먼저 하세요)"])
+    r = icons.import_review(info, Path(xlsx), work)
+    if r.blocking:
+        return IconImportResult("blocked", blocking=r.blocking)
+    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed)
+
+
 # ---------------------------------------------------------------- 추출 완료 -> 용어집 검증 -> 확정 (PRD 5.3 가)
 @dataclass
 class GlossaryReviewResult:
@@ -639,6 +709,13 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
             issues.append(f"{s['file']}: ‘결론 못 냄’ {s['no_verdict']}칸 (원문이 틀렸을 수 있음)")
     if issues and not accept_issues:
         return GlossaryReviewResult("needs_confirmation", issues=issues)
+    # 이름 없는 아이콘이 남아 있으면 용어집으로 넘어가지 않는다 (PRD 2장 3단계 뒤 안전장치)
+    ic = find_icons(info.dir, engine=engine, client=client)
+    if ic.state == "icons_review":
+        return GlossaryReviewResult("icons_review", review_xlsx=ic.review_xlsx, issues=issues,
+                                    reason=f"이름을 정할 아이콘 묶음 {ic.groups}개 ({ic.occurrences}곳)"
+                                           + (f", 위치 못 찾음 {ic.not_found}곳" if ic.not_found else "")
+                                           + (f". {ic.reason}" if ic.reason else ""))
     sources = glossary.collect_sources(info)
     if not sources:
         return GlossaryReviewResult("blocked", issues=issues, reason="추출한 원문이 없습니다")
@@ -718,8 +795,11 @@ def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine:
         except Exception as e:  # noqa: BLE001
             return TranslateResult("blocked", reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
     workspace.set_status(info, "translating")
+    from app.icons import load_dictionary
+
     r = run_translate(info.dir, sources, terms, client, TRANSLATE_MODELS[model], game=info.game,
-                      work_dir=info.dir / "work" / "translate", progress=progress or _noop, cancel=cancel)
+                      work_dir=info.dir / "work" / "translate", progress=progress or _noop, cancel=cancel,
+                      icons=load_dictionary(info)["icons"])
     if r.state == "done":
         workspace.set_status(info, "translated")
     return r

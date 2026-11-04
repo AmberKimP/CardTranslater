@@ -16,12 +16,26 @@ from pathlib import Path
 from app.extract import FALLBACK_BETA, SERVER_FALLBACK_MODELS, classify_error, cost_usd
 
 
+def _content(prompt: str, images: list[Path] | None):
+    if not images:
+        return prompt
+    import base64
+
+    blocks = []
+    for p in images:
+        blocks.append({"type": "text", "text": f"Image file: {Path(p).name}"})
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                   "data": base64.standard_b64encode(Path(p).read_bytes()).decode()}})
+    return blocks + [{"type": "text", "text": prompt}]
+
+
 def complete_json(client, model: str, system: str, prompt: str, schema: dict,
-                  work_dir: Path) -> tuple[dict, float, float]:
+                  work_dir: Path, images: list[Path] | None = None) -> tuple[dict, float, float]:
+    """images: 함께 볼 PNG (예: 아이콘 이름 제안). 지시문에는 파일 이름으로 가리킨다."""
     from app.extract_cc import CardError
 
     if getattr(client, "engine", "api") == "claude-code":
-        reply = client.ask_json(prompt, schema, model, system, work_dir)
+        reply = client.ask_json(prompt, schema, model, system, work_dir, images=images)
         if not isinstance(reply.regions_json, dict):
             raise CardError("구조화 출력이 없음")
         return reply.regions_json, 0.0, reply.cost_equiv_usd
@@ -29,7 +43,7 @@ def complete_json(client, model: str, system: str, prompt: str, schema: dict,
         "model": model,
         "max_tokens": 32000,
         "system": system,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": _content(prompt, images)}],
         "output_config": {"format": {"type": "json_schema", "schema": schema}},
     }
     try:

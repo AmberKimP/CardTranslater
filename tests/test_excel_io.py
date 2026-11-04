@@ -101,3 +101,44 @@ def test_import_stops_for_other_project(tmp_path):
     x = export_translation(a, tmp_path / "a.xlsx", [1])
     res = import_translation(b, x)
     assert res.blocking and "다른 프로젝트" in res.blocking[0]
+
+
+def test_import_ignores_row_order(tmp_path):
+    """P0: 행 순서를 바꾸고 번역을 고쳐 가져와도 각 카드에 제대로 들어간다."""
+    proj = load_project(_make_project(tmp_path))
+    x = export_translation(proj, tmp_path / "t.xlsx", [1, 2])
+    wb = openpyxl.load_workbook(x)
+    ws = wb["번역"]
+    head = [c.value for c in ws[1]]
+    vals = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
+    vals.reverse()  # 행 순서를 거꾸로
+    for i, row in enumerate(vals, start=2):
+        for j, v in enumerate(row, start=1):
+            ws.cell(i, j).value = v
+        if row[head.index("key")] == make_key("cards.pdf", 2, "본문"):
+            ws.cell(i, head.index("번역") + 1).value = "고친 뼈"
+    wb.save(x)
+    res = import_translation(proj, x)
+    assert not res.blocking and res.rows == 4
+    assert res.cards[2]["본문"]["ko"] == "고친 뼈"
+    assert res.cards[1]["본문"]["ko"] == "한 줄기 열풍"
+    assert res.cards[1]["태그"]["ko"] == ["용", "불꽃"] and res.cards[2]["태그"]["ko"] == ["독"]
+
+
+def test_reexport_keeps_human_edits(tmp_path):
+    from app import service
+
+    proj = _make_project(tmp_path)
+    x = service.export_excel(proj, pages="1-2")
+
+    def change(rows, wb):
+        rows[make_key("cards.pdf", 2, "본문")]["번역"].value = "사람이 고친 뼈"
+        rows[make_key("cards.pdf", 1, "본문")]["메모"].value = "확인함"
+
+    _edit(x, change)
+    service.export_excel(proj, pages="1-2", force=True)
+    rows = {r[0]: r for r in openpyxl.load_workbook(x)["번역"].iter_rows(min_row=2, values_only=True)}
+    head = [c.value for c in openpyxl.load_workbook(x)["번역"][1]]
+    assert rows[make_key("cards.pdf", 2, "본문")][head.index("번역")] == "사람이 고친 뼈"
+    assert rows[make_key("cards.pdf", 1, "본문")][head.index("메모")] == "확인함"
+    assert rows[make_key("cards.pdf", 1, "본문")][head.index("번역")] == "한 줄기 열풍"

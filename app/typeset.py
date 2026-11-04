@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +43,9 @@ from app.typeset_layout import (
     parse_markup,
     to_atoms,
 )
+
+_ANY_ICON = re.compile(r"\[\[([^\[\]]*)\]\]")
+_ICON_NAME = re.compile(r"^[a-z0-9_]+$")
 
 __all__ = [
     "TextStyle", "TypesetResult", "FontMeasurer", "typeset_region", "typeset_tag", "typeset_tags",
@@ -83,6 +87,7 @@ class TextStyle:
     stroke_width: float = 0.0  # 글자 크기 대비
     icons_dir: str | None = None
     icon_scale: float = 1.1  # 글자(한글 잉크) 높이 대비
+    icon_scales: dict = field(default_factory=dict)  # 아이콘 사전의 아이콘별 표시 크기 {이름: 배율}
     # 180이면 글자를 pivot(pt) 둘레로 180도 돌려 그린다 (카드 위 반쪽처럼 거꾸로 인쇄된 영역).
     # 배치 계산은 돌린 틀(frame) 좌표에서 하고, 그릴 때만 돌린다.
     rotate: int = 0
@@ -111,7 +116,7 @@ class TextStyle:
             bp = Path(font["bold_file"])
             kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
-                  "floor_basis", "tracking", "rotate"):
+                  "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales"):
             if k in style:
                 kw[k] = style[k]
         kw.update(overrides)
@@ -185,7 +190,7 @@ class FontMeasurer:
 
     def icon_size(self, name: str, size: float) -> tuple[float, float]:
         top, bottom = self.hangul_ink()
-        h = self.style.icon_scale * (top + bottom) * size
+        h = self.style.icon_scales.get(name, self.style.icon_scale) * (top + bottom) * size
         aspect = 1.0
         path = self.icon_path(name)
         if path and path.exists():
@@ -220,7 +225,9 @@ class FontMeasurer:
         if any(a.kind == "icon" for a in atoms):
             ht, hb = self.hangul_ink()
             mid = (ht - hb) / 2
-            half = self.style.icon_scale * (ht + hb) / 2
+            scale = max([self.style.icon_scales.get(a.text, self.style.icon_scale)
+                         for a in atoms if a.kind == "icon"])
+            half = scale * (ht + hb) / 2
             top, bottom = max(top, mid + half), max(bottom, half - mid)
         return top, bottom
 
@@ -368,6 +375,10 @@ def _prepare(text, style: TextStyle, source_text, m: FontMeasurer):
         errors.append("색이 정해지지 않은 태그 " + ", ".join(unknown_colors))
     if errors:
         status.append(STATUS_TAG_MISMATCH)
+    unnamed = [t for t in _ANY_ICON.findall(text) if not _ICON_NAME.match(t)]
+    if unnamed:  # 이름이 정해지지 않은 아이콘([[?]])을 글자로 찍지 않는다
+        return TypesetResult(status + [STATUS_ICON_ERROR],
+                             errors=errors + [f"이름 없는 아이콘: [[{t}]] (아이콘 검증을 먼저 하세요)" for t in unnamed])
     missing_icons = [n for n in icon_names(text) if not (m.icon_path(n) and m.icon_path(n).exists())]
     if missing_icons:
         return TypesetResult(status + [STATUS_ICON_ERROR],

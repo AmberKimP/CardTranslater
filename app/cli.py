@@ -5,6 +5,8 @@
     python -m app.cli add-files --project projects/던전1차 --files a.pdf b.pdf   (그룹 목록을 보여 주고 고르게 함)
     python -m app.cli extract-project --project projects/던전1차 [--group 아이템]
     python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> 용어집_검증.xlsx)
+    python -m app.cli find-icons --project projects/던전1차               (이름 없는 아이콘 -> 아이콘_검증.xlsx)
+    python -m app.cli import-icons --project projects/던전1차 --excel projects/던전1차/아이콘_검증.xlsx
     python -m app.cli import-glossary --project projects/던전1차 --excel projects/던전1차/용어집_검증.xlsx
     python -m app.cli translate --project projects/던전1차                (확정 용어집 기준 초벌 번역)
     python -m app.cli export-excel --project projects/던전1차             (파일마다 번역_검수.xlsx)
@@ -273,9 +275,45 @@ def cmd_finish_extraction(args: argparse.Namespace) -> int:
         when = f" {r.retry_after} 이후 다시 실행하세요." if r.retry_after else ""
         print(f"[finish-extraction] {r.state}: {r.reason}.{when}", file=sys.stderr)
         return 3 if r.state == "paused" else 1
+    if r.state == "icons_review":
+        print(f"[finish-extraction] 먼저 아이콘 이름을 정해야 합니다: {r.reason}")
+        print(f"[finish-extraction] 아이콘 검증 엑셀: {r.review_xlsx}")
+        print("  이름·뜻·한국어 이름을 확인한 뒤 import-icons 로 가져오고 finish-extraction 을 다시 실행하세요.")
+        return 2
     print(f"[finish-extraction] 새 용어 후보 {r.new_terms}개, 이미 확정된 용어 {r.confirmed_terms}개")
     print(f"[finish-extraction] 용어집 검증 엑셀: {r.review_xlsx}")
     print("  B열(번역)을 확인·수정한 뒤 import-glossary 로 가져오면 용어집이 확정됩니다.")
+    return 0
+
+
+def cmd_find_icons(args: argparse.Namespace) -> int:
+    r = service.find_icons(args.project, engine=args.engine, suggest=not args.no_suggest)
+    if r.auto:
+        print("[find-icons] 아이콘 사전과 같아 바로 바꿈: " + ", ".join(f"[[{n}]] {c}곳" for n, c in r.auto.items()))
+    if r.state == "done":
+        print("[find-icons] 이름을 정할 아이콘이 없습니다.")
+        return 0
+    print(f"[find-icons] 이름을 정할 묶음 {r.groups}개 ({r.occurrences}곳)"
+          + (f", 위치 못 찾음 {r.not_found}곳" if r.not_found else ""))
+    if r.reason:
+        print(f"  [확인] {r.reason}")
+    print(f"[find-icons] 아이콘 검증 엑셀: {r.review_xlsx}")
+    print("  이름(영문 소문자)·뜻·한국어 이름을 확인한 뒤 import-icons 로 가져오세요.")
+    return 2
+
+
+def cmd_import_icons(args: argparse.Namespace) -> int:
+    r = service.import_icons(args.project, args.excel)
+    for b in r.blocking:
+        print(f"  [멈춤] {b}", file=sys.stderr)
+    if r.state == "blocked":
+        return 1
+    if r.added:
+        print(f"[import-icons] 사전에 새로 넣음: {', '.join(r.added)}")
+    if r.reused:
+        print(f"[import-icons] 사전에 있던 아이콘: {', '.join(r.reused)}")
+    print(f"[import-icons] 원문에서 [[?]] {r.replaced}곳을 이름으로 바꾸고 {r.removed}곳을 뺐습니다.")
+    print("  이제 finish-extraction 을 다시 실행하세요 (이미 번역했다면 translate 로 바뀐 칸만 다시 번역).")
     return 0
 
 
@@ -466,6 +504,15 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--model", default="sonnet", choices=["sonnet", "opus"])
     tr.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
     tr.set_defaults(func=cmd_translate)
+    fi = sub.add_parser("find-icons", help="이름 없는 아이콘 [[?]] 찾기 -> 아이콘_검증.xlsx")
+    fi.add_argument("--project", required=True)
+    fi.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
+    fi.add_argument("--no-suggest", action="store_true", help="모델에게 이름 제안을 받지 않음")
+    fi.set_defaults(func=cmd_find_icons)
+    ii = sub.add_parser("import-icons", help="아이콘 검증 엑셀을 가져와 게임 아이콘 사전에 넣고 [[?]]를 바꿈")
+    ii.add_argument("--project", required=True)
+    ii.add_argument("--excel", required=True)
+    ii.set_defaults(func=cmd_import_icons)
     ig = sub.add_parser("import-glossary", help="4단계: 검증한 용어집 엑셀을 가져와 게임 용어집 확정")
     ig.add_argument("--project", required=True)
     ig.add_argument("--excel", required=True)

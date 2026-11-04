@@ -96,16 +96,28 @@ class ClaudeCodeClient:
             raise NotAvailable("claude 명령을 실행하지 못했습니다")
         return parse_cc_output(code, out, err, model)
 
-    def ask_json(self, prompt: str, schema: dict, model: str, system: str, work_dir: Path) -> CCReply:
-        """이미지 없는 요청 (예: 용어 후보 뽑기·번역). 지시문은 표준 입력으로 보낸다. 도구는 쓰지 않는다."""
+    def ask_json(self, prompt: str, schema: dict, model: str, system: str, work_dir: Path,
+                 images: list[Path] | None = None) -> CCReply:
+        """JSON 요청 (예: 용어 후보 뽑기·번역). 지시문은 표준 입력으로 보낸다. 도구는 쓰지 않는다.
+        images가 있으면 작업 폴더에 복사해 두고 Read 도구로 열게 한다 (예: 아이콘 이름 제안)."""
+        import shutil
+
         work_dir = Path(work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
+        tools = ""
+        if images:
+            for p in images:
+                if Path(p).resolve().parent != work_dir.resolve():
+                    shutil.copy2(p, work_dir / Path(p).name)
+            prompt = ("Image files in the current folder (open each with Read): "
+                      + ", ".join(Path(p).name for p in images) + "\n" + prompt)
+            tools = "Read"
         args = [self.exe or "claude", "-p",
                 "--output-format", "json",
                 "--json-schema", json.dumps(schema, ensure_ascii=False),
                 "--model", CC_MODEL_ALIAS.get(model, model),
                 "--system-prompt", system,
-                "--tools", "",
+                "--tools", tools, *(["--allowedTools", "Read"] if tools else []),
                 "--permission-prompts", "none",
                 "--no-session-persistence"]
         try:
