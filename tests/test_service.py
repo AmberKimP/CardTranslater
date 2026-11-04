@@ -109,3 +109,19 @@ def test_engine_does_not_depend_on_any_ui():
                     assert n.split(".")[0] not in ui_libs, f"{f.name}: {n}"
             if f.name != "cli.py" and isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print":
                 pytest.fail(f"{f.name}:{node.lineno} print 대신 progress 콜백을 쓴다")
+
+
+def test_set_engine_saves_only_the_engine(tmp_path, monkeypatch):
+    """로그인 방식만 바꾸고 다른 설정은 그대로 둔다 (테스트용 설정 파일만 씀)."""
+    from app import settings
+
+    monkeypatch.setenv("CARDTRANSLATER_SETTINGS", str(tmp_path / "settings.json"))
+    before = settings.load()
+    other = before.model if hasattr(before, "model") else None
+    service.set_engine("api")
+    after = settings.load()
+    assert after.engine == "api"
+    if other is not None:
+        assert after.model == other
+    service.set_engine("claude-code")
+    assert settings.load().engine == "claude-code"

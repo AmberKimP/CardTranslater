@@ -232,3 +232,22 @@ def test_locate_ignores_card_frame_and_divider():
     assert 275 <= box[0] <= 285 and 315 <= box[2] <= 325 and 150 <= box[1] <= 160
     rgba = icons.cut_out(img, box)
     assert rgba[0, 0, 3] == 0 and rgba[rgba.shape[0] // 2, rgba.shape[1] // 2, 3] == 255  # 바깥은 투명, 안은 그대로
+
+
+def test_line_cells_skip_spaces_and_small_marks_and_count_icon_as_one():
+    """칸 세기: 공백·작은 문장부호는 칸이 아니고 [[아이콘]] 토큰은 한 칸이다 (위치 찾기 기준)."""
+    assert icons._line_cells("AB、 C。[[coin]]D…") == ["A", "B", "C", "■", "D"]
+    assert icons._token_cell_index("AB、C", "AB、C") == 3
+    assert "、" in icons.SMALL_MARKS and "A" not in icons.SMALL_MARKS
+
+
+def test_text_components_separates_rules_and_drops_card_frame():
+    """덩어리 찾기: 위·아래 가장자리에 닿은 조각은 버리고, 얇고 긴 가로선은 구분선으로 따로 돌려준다."""
+    ink = np.zeros((100, 300), dtype=bool)
+    ink[40:56, 20:30] = True      # 글자 크기 덩어리
+    ink[40:56, 60:70] = True
+    ink[70:72, 10:250] = True     # 구분선
+    ink[0:30, 150:160] = True     # 위 가장자리에 닿음 (그림 조각)
+    comps, rules = icons._text_components(ink)
+    assert sorted(c[0] for c in comps) == [20, 60]
+    assert rules == [(70, 72)]
