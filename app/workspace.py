@@ -211,3 +211,49 @@ def project_of(file_dir: Path) -> ProjectInfo | None:
 def file_key(file_dir: Path) -> str:
     """'그룹/파일' (용어 예문·번역 행 key 앞부분)."""
     return f"{file_dir.parent.parent.name}/{file_dir.name}"
+
+
+# ---------------------------------------------------------------- 파일별 설정 (뺄 쪽)
+def file_settings(file_dir: Path) -> dict:
+    """<파일 폴더>/file.json. {"exclude_pages": [1], "exclude_reason": "..."}"""
+    f = Path(file_dir) / "file.json"
+    return _read(f) if f.exists() else {}
+
+
+def set_excluded_pages(file_dir: Path, pages: list[int], reason: str = "") -> dict:
+    data = file_settings(file_dir)
+    data["exclude_pages"] = sorted(set(int(p) for p in pages))
+    if reason:
+        data["exclude_reason"] = reason
+    _write(Path(file_dir) / "file.json", data)
+    return data
+
+
+def page_count(file_dir: Path) -> int:
+    import pymupdf
+
+    pdfs = sorted((Path(file_dir) / "source").glob("*.pdf"))
+    if not pdfs:
+        return 0
+    with pymupdf.open(pdfs[0]) as d:
+        return d.page_count
+
+
+def included_pages(file_dir: Path) -> list[int]:
+    """처리할 쪽 (1부터). 그룹 형식과 다른 쪽(예: 규칙 카드)을 뺀 나머지.
+    file.json이 없는 폴더(예전 방식 프로젝트 포함)는 모든 쪽."""
+    excl = set(file_settings(file_dir).get("exclude_pages", []))
+    return [p for p in range(1, page_count(file_dir) + 1) if p not in excl]
+
+
+def pages_spec(pages: list[int]) -> str:
+    """[1,2,3,5,7,8] -> '1-3,5,7-8'"""
+    out, i = [], 0
+    pages = sorted(pages)
+    while i < len(pages):
+        j = i
+        while j + 1 < len(pages) and pages[j + 1] == pages[j] + 1:
+            j += 1
+        out.append(str(pages[i]) if i == j else f"{pages[i]}-{pages[j]}")
+        i = j + 1
+    return ",".join(out)

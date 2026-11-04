@@ -119,6 +119,14 @@ def _discard(tmp: Path, final: Path) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _included(file_dir: Path, page_count: int) -> list[int]:
+    """쪽을 따로 주지 않았을 때 처리할 쪽: 파일 설정(file.json)에서 뺀 쪽을 제외한 전부."""
+    from app.workspace import file_settings
+
+    excl = set(file_settings(file_dir).get("exclude_pages", []))
+    return [p for p in range(1, page_count + 1) if p not in excl]
+
+
 def _boxes(page) -> dict:
     doc = page.parent
     out = {"mediabox": [round(v, 3) for v in page.mediabox], "cropbox": [round(v, 3) for v in page.cropbox]}
@@ -342,7 +350,7 @@ def export_excel(project_dir: Path | str, out: Path | str | None = None, pages: 
     if out.exists() and not force:
         raise FileExistsError(str(out))
     with pymupdf.open(project.source_pdf) as d:
-        page_list = parse_page_spec(pages or f"1-{d.page_count}", d.page_count)
+        page_list = parse_page_spec(pages, d.page_count) if pages else _included(project.root, d.page_count)
     return export_translation(project, out, page_list)
 
 
@@ -457,7 +465,7 @@ def extract(project_dir: Path | str, pages: str | None = None, *, mode: str = "d
     alias = next((k for k, v in MODELS.items() if v == model_id), model_id) if model else mode
     out_dir = (Path(out_root).resolve() / f"extract-{project.root.name}-{alias}") if test else None
     with pymupdf.open(project.source_pdf) as d:
-        page_list = parse_page_spec(pages or f"1-{d.page_count}", d.page_count)
+        page_list = parse_page_spec(pages, d.page_count) if pages else _included(project.root, d.page_count)
     if engine not in ("claude-code", "api"):
         return ExtractResult("blocked", engine=engine, reason=f"모르는 엔진: {engine} (claude-code, api 중 하나)")
     if engine == "claude-code" and batch:
@@ -729,3 +737,118 @@ def export_project_excel(project_dir: Path | str, force: bool = False) -> list[P
         except FileExistsError:
             raise
     return out
+
+
+# ---------------------------------------------------------------- 7·8단계를 프로젝트 단위로 (모든 그룹·파일)
+def cards_from_translation(file_dir: Path) -> dict:
+    """번역 검수 엑셀 없이 초벌 번역(프로젝트 번역 캐시)으로 한글 넣기용 카드를 만든다.
+    {쪽: {영역: {"source", "ko"}}}. 번역이 없는 칸은 빠진다(그 칸은 지운 채로 남음)."""
+    from app.excel_io import source_of
+    from app.extract import load_extracted
+    from app.project import load_project
+    from app.translate import load_cache, lookup
+    from app.workspace import included_pages, project_of
+
+    info = project_of(file_dir)
+    proj = load_project(file_dir)
+    cache = load_cache(info.dir) if info else {}
+    extracted = load_extracted(file_dir)
+    cards: dict = {}
+    for pno in included_pages(file_dir):
+        for reg in proj.template.regions:
+            src, _ = source_of(proj, extracted, pno, reg.name)
+            tr = lookup(cache, src) if src else None
+            if tr:
+                cards.setdefault(pno, {"page": pno})[reg.name] = {"source": src, "ko": tr["ko"]}
+    return cards
+
+
+@dataclass
+class ProjectStepResult:
+    state: str  # done | blocked | needs_confirmation | failed
+    files: list[dict] = field(default_factory=list)
+    reason: str = ""
+
+
+def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bool = False,
+                  progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> ProjectStepResult:
+    """7단계를 모든 그룹·파일에. 이미 지운 파일(cleared/)은 건너뛴다(redo=True면 다시)."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    out = ProjectStepResult("done")
+    for fd in workspace.file_dirs(info, group):
+        key = workspace.file_key(fd)
+        if (fd / "cleared" / "cleared.pdf").exists() and not redo:
+            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (--redo로 다시)"})
+            continue
+        pages = workspace.included_pages(fd)
+        if not pages:
+            out.files.append({"file": key, "state": "skipped", "reason": "처리할 쪽 없음"})
+            continue
+        try:
+            r = erase(fd, workspace.pages_spec(pages), progress=progress, cancel=cancel)
+        except FileNotFoundError as e:  # 영역 템플릿 없음 등
+            out.files.append({"file": key, "state": "blocked", "reason": str(e)})
+            out.state, out.reason = "blocked", f"{key}: {e}"
+            return out
+        out.files.append({"file": key, "state": "done" if r.ok else "failed", "pages": len(r.pages),
+                          "warnings": sum(len(w) for w in r.warnings.values()), "dir": str(r.output_dir)})
+        if not r.ok:
+            out.state, out.reason = "failed", f"{key}: {r.error}"
+            return out
+    return out
+
+
+def compose_project(project_dir: Path | str, group: str | None = None, *, accept_issues: bool = False,
+                    use_draft: bool = False, progress: ProgressFn | None = None,
+                    cancel: CancelToken | None = None) -> ProjectStepResult:
+    """8단계를 모든 그룹·파일에. 파일마다 검수한 번역_검수.xlsx가 있으면 그것, 없으면(또는 use_draft)
+    초벌 번역으로 한글을 넣는다. 지우기는 다시 하지 않는다."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    out = ProjectStepResult("done")
+    for fd in workspace.file_dirs(info, group):
+        key = workspace.file_key(fd)
+        if not (fd / "cleared").exists():
+            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (erase-project 먼저)"})
+            out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
+            continue
+        xlsx = fd / "번역_검수.xlsx"
+        if xlsx.exists() and not use_draft:
+            r = compose(fd, excel=xlsx, accept_issues=accept_issues, progress=progress, cancel=cancel)
+            src = "번역_검수.xlsx"
+        else:
+            r = _compose_with_cards(fd, cards_from_translation(fd), progress, cancel)
+            src = "초벌 번역"
+        rec = {"file": key, "state": r.state, "from": src, "issues": r.issues, "blocking": r.blocking,
+               "summary": {k: len(v) for k, v in r.status_summary.items()},
+               "dir": str(r.output_dir) if r.output_dir else None}
+        out.files.append(rec)
+        if r.state in ("blocked", "failed"):
+            out.state, out.reason = r.state, f"{key}: {(r.blocking or [r.error or ''])[0]}"
+        elif r.state == "needs_confirmation" and out.state == "done":
+            out.state, out.reason = "needs_confirmation", f"{key}: 엑셀에 확인할 항목이 있습니다"
+    return out
+
+
+def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResult:
+    """번역 카드(dict)로 바로 한글 넣기 (엑셀 없이)."""
+    from app.typeset_compose import run_compose
+
+    project = load_project(fd)
+    final_dir, run_dir = _output_dirs(project.root, "translated", "compose", False, Path("test_runs"))
+    try:
+        run_dir, code = run_compose(project.root, fd / "cleared", None, run_dir, cards=cards,
+                                    translation_source="초벌 번역 (translate/cache.json)", out_name="translated.pdf",
+                                    progress=progress or _noop, cancel=cancel)
+        rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        if code:
+            return ComposeResult("failed", run_dir, status_summary=rep["status_summary"],
+                                 error="원본 또는 지운 PDF 해시가 바뀌었습니다")
+    except BaseException:
+        _discard(run_dir, final_dir)
+        raise
+    _commit(run_dir, final_dir)
+    return ComposeResult("done", final_dir, status_summary=rep["status_summary"])

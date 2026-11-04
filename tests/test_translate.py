@@ -158,3 +158,38 @@ def test_korean_inflection_counts_as_using_the_term():
     assert not ko_term_used("불꽃", "[화염] 카드")
     gl = [{"source": "破棄", "ko": "버리기", "variants": []}]
     assert check("このカードを破棄する", "이 카드를 버린다", gl) == ([], [])
+
+
+def test_terms_in_skips_term_covered_by_longer_term():
+    from app.translate import terms_in
+
+    gl = [{"source": "トラップ", "ko": "함정", "category": "분류어·태그"},
+          {"source": "ガストラップドア", "ko": "가스 트랩도어", "category": "카드 이름"},
+          {"source": "判定", "ko": "판정", "category": "기타"},
+          {"source": "すべての判定にボーナスがもらえる", "ko": "모든 판정에 보너스를 받는다", "category": "문구"}]
+    assert [t["source"] for t in terms_in("ガストラップドア", gl)] == ["ガストラップドア"]
+    assert {t["source"] for t in terms_in("最悪のトラップだ", gl)} == {"トラップ"}
+    # 문구는 검사하지 않으므로 그 안의 용어(判定)는 그대로 검사 대상
+    assert {t["source"] for t in terms_in("すべての判定にボーナスがもらえる", gl)} == {
+        "判定", "すべての判定にボーナスがもらえる"}
+
+
+def test_leftover_japanese_is_flagged_and_retranslated_once(tmp_path):
+    assert check("一挙手一投足が", "一挙手一投足이", [])[0] == ["원문 글자 남음"]
+    assert check("[[coin]]を得る", "[[coin]]을 얻는다", [])[0] == []
+    info, _ = _project(tmp_path, ["一挙手一投足が引き金"])
+    run = FakeRunner([_reply(["一挙手一投足이 방아쇠"]), _reply(["일거수일투족이 방아쇠"])])
+    r = service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
+    assert r.state == "done" and not r.leftover
+    assert "translate every Japanese word" in run.inputs[1]
+    assert load_cache(info.dir)["一挙手一投足が引き金"]["ko"] == "일거수일투족이 방아쇠"
+
+    # 예전 캐시에 일본어가 남아 있으면 한 번만 다시 번역한다
+    cache = load_cache(info.dir)
+    cache["一挙手一投足が引き金"].update(ko="一挙手이 방아쇠", status=[])
+    cache["一挙手一投足が引き金"].pop("retried_leftover", None)
+    from app.translate import save_cache
+    save_cache(info.dir, cache)
+    run2 = FakeRunner([_reply(["일거수일투족이 방아쇠"])])
+    r2 = service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
+    assert r2.translated == 1 and len(run2.calls) == 1

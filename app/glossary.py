@@ -19,7 +19,20 @@ from pathlib import Path
 
 from app.workspace import ProjectInfo, _read, _write, file_dirs, file_key
 
-CATEGORIES = ["카드 이름", "분류어·태그", "키워드·능력", "자원·토큰", "행동", "기타"]
+CATEGORIES = ["카드 이름", "분류어·태그", "키워드·능력", "자원·토큰", "행동", "문구", "기타"]
+# '문구': 조사·어미가 붙은 긴 구절(예: すべての判定にボーナスがもらえる). 번역 때 권장 표현으로만 주고
+# 용어 불일치 검사는 하지 않는다 (글자가 조금만 달라도 불일치가 나서 오히려 방해가 된다).
+_PHRASE_MARKS = set("をにがはでへとも。、！？!?")
+PHRASE_MIN_LEN = 11
+
+
+def is_phrase(source: str, category: str = "") -> bool:
+    """용어가 아니라 '문구'(권장 표현)로 볼 것인가. 카드 이름·태그는 길어도 용어다."""
+    if category == "문구":
+        return True
+    if category in ("카드 이름", "분류어·태그"):
+        return False
+    return len(source) >= PHRASE_MIN_LEN or any(ch in _PHRASE_MARKS for ch in source)
 REVIEW_SHEET = "용어집"
 INFO_SHEET = "정보"
 HEADERS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형",
@@ -46,15 +59,19 @@ def collect_sources(info: ProjectInfo) -> list[Source]:
     """프로젝트 모든 그룹·파일의 추출 결과(extract/)를 모은다."""
     from app.extract import load_extracted, verification_label
     from app.project import load_project
+    from app.workspace import file_settings
 
     out: list[Source] = []
     for fd in file_dirs(info):
+        excluded = set(file_settings(fd).get("exclude_pages", []))
         try:
             proj = load_project(fd)
         except FileNotFoundError:
             continue  # 영역 템플릿이 아직 없는 그룹
         kinds = {r.name: r.kind for r in proj.template.regions}
         for pno, regs in sorted(load_extracted(fd).items()):
+            if pno in excluded:  # 그룹 형식과 다른 쪽 (예: 규칙 카드)
+                continue
             name_reg = next((n for n in regs if "이름" in n or "name" in n.lower()), None)
             card_name = regs[name_reg]["source"] if name_reg and isinstance(regs[name_reg]["source"], str) else None
             for rname, r in regs.items():
@@ -79,15 +96,18 @@ def extraction_status(info: ProjectInfo) -> list[dict]:
         pdfs = sorted((fd / "source").glob("*.pdf"))
         if not pdfs:
             continue
-        with pymupdf.open(pdfs[0]) as d:
-            total = d.page_count
+        from app.workspace import file_settings, included_pages
+
+        pages = set(included_pages(fd))
+        total = len(pages)
         has_regions = (fd / "regions.json").exists() or (fd.parent.parent / "regions.json").exists()
-        ext = load_extracted(fd)
+        ext = {p: r for p, r in load_extracted(fd).items() if p in pages}
         st = ExtractState.load(extract_dir(fd) / "state.json")
         cells = [r for regs in ext.values() for r in regs.values()]
         rows.append({
             "file": file_key(fd), "dir": fd, "pages": total, "extracted": len(ext), "failed": dict(st.failed),
             "status": st.status, "has_regions": has_regions,
+            "excluded": file_settings(fd).get("exclude_pages", []),
             "no_verdict": sum(verification_label(r) == "결론 못 냄" for r in cells),
             "uncertain": sum(bool(r.get("uncertain")) for r in cells),
         })
@@ -251,6 +271,8 @@ From the card texts, list terms that must be translated the same way on every ca
 category words and tags, keywords and abilities, resources and tokens, repeated rule phrases
 (e.g. "判定にボーナスがもらえる" style fixed phrases), and game-specific nouns (e.g. 階層, ダイス目, バトル判定).
 Do not list ordinary words or whole flavor sentences.
+Prefer single words and short noun phrases. A fixed multi-word rule phrase with particles or a verb
+(e.g. すべての判定にボーナスがもらえる, ダイスを振り) goes under category 문구: it is a style hint, not a strict term.
 Write each term exactly as it appears in the texts (same characters). Suggest a natural Korean translation
 that fits a board game rulebook. Use the given category names."""
 
@@ -312,7 +334,8 @@ def find_candidates(info: ProjectInfo, sources: list[Source], client, model: str
         c, ex = count_and_examples(w, sources)
         if c == 0:
             continue  # 원문에 없는 용어(모델이 지어낸 것)는 버린다
-        terms[w] = Term(w, suggested=item["suggested_ko"], category=item["category"], count=c, examples=ex,
+        cat = "문구" if is_phrase(w, item["category"]) else item["category"]
+        terms[w] = Term(w, suggested=item["suggested_ko"], category=cat, count=c, examples=ex,
                         note="")
     for t in terms.values():
         t.verdict, t.verdict_keys = term_verdict(t.source, sources, t.variants)

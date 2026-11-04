@@ -20,6 +20,8 @@ from pathlib import Path
 
 STATUS_TERM = "용어 불일치"
 STATUS_ICON = "아이콘 불일치"
+STATUS_LEFTOVER = "원문 글자 남음"  # 번역문에 일본어(한자·가나)가 그대로 남음
+_JA_CHARS = re.compile("[぀-ヿ㐀-䶿一-鿿]")
 BATCH_CELLS = 30
 _ICON = re.compile(r"\[\[([a-z0-9_]+)\]\]")
 
@@ -55,15 +57,23 @@ def _schema() -> dict:
 
 # ---------------------------------------------------------------- 용어 검사
 def terms_in(text: str, glossary: list[dict]) -> list[dict]:
-    """원문에 들어 있는 확정 용어 (긴 용어 우선, 짧은 용어가 긴 용어 안에만 있으면 빼지 않는다)."""
-    from app.glossary import occurrences
+    """원문에 들어 있는 확정 용어 (긴 용어 우선). 짧은 용어가 더 긴 용어 안에만 들어 있으면 뺀다
+    (예: ガストラップドア 안의 トラップ — 이름 용어 '가스 트랩도어'를 따르므로 '함정'을 요구하지 않는다)."""
+    from app.glossary import is_phrase, occurrences
 
     out = []
-    for t in glossary:
-        forms = [t["source"], *t.get("variants", [])]
-        if any(occurrences(f, text) for f in forms):
+    rest = text
+    for t in sorted(glossary, key=lambda t: -len(t["source"])):
+        forms = sorted([t["source"], *t.get("variants", [])], key=len, reverse=True)
+        if is_phrase(t["source"], t.get("category", "")):
+            if any(occurrences(f, text) for f in forms):
+                out.append(t)  # 문구는 검사하지 않으므로 안의 용어를 가리지 않는다
+            continue
+        if any(occurrences(f, rest) for f in forms):
             out.append(t)
-    return sorted(out, key=lambda t: -len(t["source"]))
+            for f in forms:  # 이 용어가 차지한 자리는 더 짧은 용어 검사에서 가린다
+                rest = rest.replace(f, "　" * len(f))
+    return out
 
 
 _KO_ENDINGS = ("하기", "하다", "한다", "기", "다")  # 용어집 번역이 동사·명사형일 때 떼고 어간만 본다
@@ -100,13 +110,19 @@ def ko_term_used(term_ko: str, ko: str) -> bool:
 def check(source: str, ko: str, glossary: list[dict]) -> tuple[list[str], list[str]]:
     """(상태 목록, 어긴 용어 설명). 용어 불일치·아이콘 불일치."""
     status, missing = [], []
+    from app.glossary import is_phrase
+
     for t in terms_in(source, glossary):
+        if is_phrase(t["source"], t.get("category", "")):
+            continue  # 문구는 권장 표현일 뿐 검사하지 않는다
         if not ko_term_used(t["ko"], ko):
             missing.append(f"{t['source']} → {t['ko']}")
     if missing:
         status.append(STATUS_TERM)
     if sorted(_ICON.findall(source)) != sorted(_ICON.findall(ko)):
         status.append(STATUS_ICON)
+    if _JA_CHARS.search(_ICON.sub("", ko)):
+        status.append(STATUS_LEFTOVER)
     return status, missing
 
 
@@ -156,6 +172,7 @@ class TranslateResult:
     cached: int = 0  # 이미 번역되어 있던 칸
     term_mismatch: list[str] = field(default_factory=list)  # 고쳐 달라고 해도 남은 용어 불일치 원문
     icon_mismatch: list[str] = field(default_factory=list)
+    leftover: list[str] = field(default_factory=list)  # 다시 번역해도 일본어가 남은 원문
     reason: str = ""
     retry_after: str | None = None
     equiv_usd: float = 0.0
@@ -191,6 +208,10 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
             if cache[text].get("by") != "glossary":  # 검사 규칙이 바뀌었을 수 있으니 상태만 다시 매긴다 (모델 호출 없음)
                 st, missing = check(text, cache[text]["ko"], glossary)
                 cache[text].update(status=st, missing_terms=missing)
+                if STATUS_LEFTOVER in st and not cache[text].get("retried_leftover"):
+                    cache[text]["retried_leftover"] = True
+                    todo.append((text, region, kind))  # 일본어가 남은 번역은 한 번 다시 번역한다
+                    continue
             res.cached += 1
             continue
         t = by_source.get(text) or next((g for g in glossary if text in g.get("variants", [])), None)
@@ -203,14 +224,17 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
     save_cache(project_dir, cache)
 
     def ask(batch, extra=""):
-        lines, gl = [], {}
+        from app.glossary import is_phrase
+
+        lines, gl, phrases = [], {}, {}
         for i, (text, region, _kind) in enumerate(batch):
             lines.append(json.dumps({"id": str(i), "region": region, "source": text}, ensure_ascii=False))
             for t in terms_in(text, glossary):
-                gl[t["source"]] = t["ko"]
-        prompt = (f"Game: {game}.\nGlossary (must use): "
-                  + json.dumps(gl, ensure_ascii=False) + f"\n{extra}\nItems (JSON lines):\n" + "\n".join(lines)
-                  + "\nReturn one item per id.")
+                (phrases if is_phrase(t["source"], t.get("category", "")) else gl)[t["source"]] = t["ko"]
+        prompt = (f"Game: {game}.\nGlossary (must use): " + json.dumps(gl, ensure_ascii=False)
+                  + ("\nPreferred phrasing (follow when it reads naturally): " + json.dumps(phrases, ensure_ascii=False)
+                     if phrases else "")
+                  + f"\n{extra}\nItems (JSON lines):\n" + "\n".join(lines) + "\nReturn one item per id.")
         return complete_json(client, model, SYSTEM_PROMPT, prompt, _schema(), work_dir)
 
     try:
@@ -237,7 +261,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
                 if status:
                     retry.append((text, region, _k))
             if retry:  # 한 번 더: 어긴 용어를 짚어 고쳐 달라고 한다
-                notes = "; ".join(f"{t}: {', '.join(cache[t]['missing_terms']) or 'keep [[icons]]'}" for t, _r, _k in retry)
+                notes = "; ".join(f"{t}: {', '.join(cache[t]['missing_terms']) or ('translate every Japanese word into Korean' if STATUS_LEFTOVER in cache[t]['status'] else 'keep [[icons]]')}" for t, _r, _k in retry)
                 data2, api2, eq2 = ask(retry, extra=f"Previous attempt broke these required terms/icons: {notes}")
                 res.spent_usd += api2
                 res.equiv_usd += eq2
@@ -258,4 +282,6 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
             res.term_mismatch.append(text)
         if e and STATUS_ICON in e.get("status", []):
             res.icon_mismatch.append(text)
+        if e and STATUS_LEFTOVER in e.get("status", []):
+            res.leftover.append(text)
     return res

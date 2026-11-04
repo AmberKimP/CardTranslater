@@ -8,6 +8,9 @@
     python -m app.cli import-glossary --project projects/던전1차 --excel projects/던전1차/용어집_검증.xlsx
     python -m app.cli translate --project projects/던전1차                (확정 용어집 기준 초벌 번역)
     python -m app.cli export-excel --project projects/던전1차             (파일마다 번역_검수.xlsx)
+    python -m app.cli erase-project --project projects/던전1차            (7단계, 모든 파일)
+    python -m app.cli compose-project --project projects/던전1차          (8단계, 검수 엑셀 또는 초벌 번역)
+    python -m app.cli set-pages --project projects/던전1차 --file 아이템/Items --exclude 1   (뺄 쪽)
 
 3단계 글자 추출 (파일 하나) -> <파일 폴더>/extract/  (끊겨도 같은 명령으로 이어 감)
     python -m app.cli extract --project projects/sample [--mode double-check|opus] [--engine claude-code|api]
@@ -310,12 +313,62 @@ def cmd_translate(args: argparse.Namespace) -> int:
         print(f"  [확인] 용어 불일치 {len(r.term_mismatch)}칸 (엑셀 상태에 표시): " + ", ".join(r.term_mismatch[:5]))
     if r.icon_mismatch:
         print(f"  [확인] 아이콘 불일치 {len(r.icon_mismatch)}칸")
+    if r.leftover:
+        print(f"  [확인] 일본어가 남은 번역 {len(r.leftover)}칸: " + ", ".join(r.leftover[:5]))
     if r.state == "paused":
         when = f" {r.retry_after} 이후" if r.retry_after else ""
         print(f"[translate] 일시 정지: {r.reason}.{when} 다시 실행하면 이어 갑니다.", file=sys.stderr)
         return 3
     print("[translate] 완료. export-excel --project <프로젝트> 로 번역 검수 엑셀을 만드세요.")
     return 0
+
+
+def cmd_set_pages(args: argparse.Namespace) -> int:
+    from app import workspace
+
+    info = workspace.load_project_info(args.project)
+    fds = {workspace.file_key(fd): fd for fd in workspace.file_dirs(info)}
+    if args.file not in fds:
+        print(f"[set-pages] 파일이 없습니다: {args.file}. 있는 파일: {', '.join(fds) or '없음'}", file=sys.stderr)
+        return 1
+    fd = fds[args.file]
+    from app.project import parse_page_spec
+
+    excl = parse_page_spec(args.exclude, workspace.page_count(fd)) if args.exclude else []
+    workspace.set_excluded_pages(fd, excl, args.reason or "")
+    inc = workspace.included_pages(fd)
+    print(f"[set-pages] {args.file}: 뺀 쪽 {workspace.pages_spec(excl) or '없음'}, 처리할 쪽 {len(inc)}장 "
+          f"({workspace.pages_spec(inc)})")
+    return 0
+
+
+def _print_step(tag: str, r) -> int:
+    for f in r.files:
+        extra = ", ".join(f"{k}={v}" for k, v in f.items() if k not in ("file", "state", "dir", "issues", "blocking") and v)
+        print(f"  {f['file']}: {f['state']}" + (f" ({extra})" if extra else ""))
+        for b in f.get("blocking") or []:
+            print(f"    [멈춤] {b}", file=sys.stderr)
+        for i in f.get("issues") or []:
+            print(f"    [확인] {i}")
+    if r.state == "done":
+        print(f"[{tag}] 완료")
+        return 0
+    print(f"[{tag}] {r.state}: {r.reason}", file=sys.stderr)
+    return 1
+
+
+def cmd_erase_project(args: argparse.Namespace) -> int:
+    return _print_step("erase-project", service.erase_project(args.project, args.group, redo=args.redo,
+                                                               progress=_print_progress("erase")))
+
+
+def cmd_compose_project(args: argparse.Namespace) -> int:
+    r = service.compose_project(args.project, args.group, accept_issues=args.yes, use_draft=args.draft,
+                                progress=_print_progress("compose"))
+    code = _print_step("compose-project", r)
+    if r.state == "needs_confirmation":
+        print("  확인한 뒤 계속하려면 --yes를 붙여 다시 실행하세요.", file=sys.stderr)
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -391,6 +444,23 @@ def main(argv: list[str] | None = None) -> int:
     fx.add_argument("--yes", action="store_true", help="남은 카드·결론 못 낸 칸이 있어도 계속")
     fx.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
     fx.set_defaults(func=cmd_finish_extraction)
+    sp = sub.add_parser("set-pages", help="파일에서 뺄 쪽 지정 (그룹 형식과 다른 쪽, 예: 규칙 카드)")
+    sp.add_argument("--project", required=True)
+    sp.add_argument("--file", required=True, help="'그룹/파일' (예: 아이템/Items)")
+    sp.add_argument("--exclude", default="", help="뺄 쪽 (예: 1 또는 1,30). 비우면 빼지 않음")
+    sp.add_argument("--reason", help="뺀 이유 (기록용)")
+    sp.set_defaults(func=cmd_set_pages)
+    er = sub.add_parser("erase-project", help="7단계: 모든 그룹·파일 글자 지우기 (이미 지운 파일은 건너뜀)")
+    er.add_argument("--project", required=True)
+    er.add_argument("--group")
+    er.add_argument("--redo", action="store_true", help="이미 지운 파일도 다시 지운다")
+    er.set_defaults(func=cmd_erase_project)
+    cp = sub.add_parser("compose-project", help="8단계: 모든 그룹·파일 한글 넣기 (검수 엑셀이 있으면 그것, 없으면 초벌 번역)")
+    cp.add_argument("--project", required=True)
+    cp.add_argument("--group")
+    cp.add_argument("--yes", action="store_true", help="엑셀 확인 항목이 있어도 계속")
+    cp.add_argument("--draft", action="store_true", help="검수 엑셀이 있어도 초벌 번역으로 넣는다")
+    cp.set_defaults(func=cmd_compose_project)
     tr = sub.add_parser("translate", help="5단계: 확정 용어집 기준으로 프로젝트 전체 원문 초벌 번역")
     tr.add_argument("--project", required=True)
     tr.add_argument("--model", default="sonnet", choices=["sonnet", "opus"])
