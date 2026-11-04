@@ -9,7 +9,8 @@ import sys
 from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QSpinBox,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
 
@@ -146,8 +147,14 @@ class NewProjectDialog(QDialog):
         super().accept()
 
 
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
+
+
 class AddFilesDialog(QDialog):
-    """카드 PDF를 기존 그룹에 넣거나 새 그룹을 만든다 (PRD 1단계)."""
+    """카드 파일(PDF 또는 이미지)을 기존 그룹에 넣거나 새 그룹을 만든다 (PRD 1단계).
+
+    이미지(JPG·PNG 등)는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣는다. 이미지 한 장에 카드가
+    가로 X × 세로 Y로 놓여 있으면 ‘여러 장 배열’을 고르고, 미리 보기로 자를 자리를 확인한다."""
 
     def __init__(self, project_dir: Path, parent=None, files: list[str] | None = None):
         super().__init__(parent)
@@ -156,10 +163,18 @@ class AddFilesDialog(QDialog):
         self.setWindowTitle("파일 넣기")
         self.groups = service.list_groups(self.project_dir)
         self.files = QListWidget()
+        self.files.setTextElideMode(Qt.TextElideMode.ElideMiddle)  # 긴 경로는 가운데를 줄여 파일 이름이 보이게
+        self.files.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         for f in files or []:
             self.files.addItem(f)
-        pick = QPushButton("PDF 고르기…")
+        pick = QPushButton("파일 고르기… (PDF·JPG·PNG)")
         pick.clicked.connect(self._pick)
+        remove = QPushButton("목록에서 빼기")
+        remove.clicked.connect(self._remove)
+        prow = QHBoxLayout()
+        prow.addWidget(pick)
+        prow.addWidget(remove)
+        prow.addStretch(1)
         self.r_exist = QRadioButton("기존 그룹에 넣기")
         self.r_new = QRadioButton("새 그룹 만들기")
         bg = QButtonGroup(self)
@@ -181,53 +196,172 @@ class AddFilesDialog(QDialog):
             self.r_new.setChecked(True)
             self.r_exist.setEnabled(False)
         self.r_exist.toggled.connect(self._sync)
-        self._sync()
         form = QFormLayout()
         form.addRow(self.r_exist, self.group_combo)
         form.addRow(self.r_new, self.new_name)
         form.addRow("새 그룹 영역", self.copy_from)
+
+        # ---- 이미지일 때
+        self.img_box = QGroupBox("이미지로 된 카드")
+        self.r_single = QRadioButton("이미지 한 장에 카드 한 장")
+        self.r_grid = QRadioButton("이미지 한 장에 카드 여러 장 (배열)")
+        ib = QButtonGroup(self)
+        ib.addButton(self.r_single)
+        ib.addButton(self.r_grid)
+        self.r_single.setChecked(True)
+        self.cols, self.rows = QSpinBox(), QSpinBox()
+        for sp, v in ((self.cols, 3), (self.rows, 3)):
+            sp.setRange(1, 20)
+            sp.setValue(v)
+        grow = QHBoxLayout()
+        grow.addWidget(QLabel("가로"))
+        grow.addWidget(self.cols)
+        grow.addWidget(QLabel("장 × 세로"))
+        grow.addWidget(self.rows)
+        grow.addWidget(QLabel("장"))
+        grow.addStretch(1)
+        self.img_name = QLineEdit()
+        self.img_name.setPlaceholderText("비워 두면 첫 이미지 이름")
+        self.b_preview = QPushButton("자를 자리 미리 보기")
+        self.b_preview.clicked.connect(self.preview)
+        self.img_info = QLabel()
+        self.img_info.setWordWrap(True)
+        self.img_info.setStyleSheet("color: #666")
+        il = QFormLayout(self.img_box)
+        il.addRow(self.r_single)
+        il.addRow(self.r_grid, grow)
+        il.addRow("파일 이름", self.img_name)
+        il.addRow(self.b_preview)
+        il.addRow(self.img_info)
+        for w in (self.r_single, self.r_grid):
+            w.toggled.connect(lambda _c: self._sync())
+        for sp in (self.cols, self.rows):
+            sp.valueChanged.connect(lambda _v: self._sync())
+        self.files.model().rowsInserted.connect(lambda *_a: self._sync())
+        self.files.model().rowsRemoved.connect(lambda *_a: self._sync())
+
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "넣기")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("카드 PDF (같은 카드 형식끼리 한 그룹)"))
+        lay.addWidget(QLabel("카드 파일 (같은 카드 형식끼리 한 그룹). 이미지는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣습니다."))
         lay.addWidget(self.files)
-        lay.addWidget(pick)
+        lay.addLayout(prow)
         lay.addLayout(form)
+        lay.addWidget(self.img_box)
         lay.addWidget(bb)
-        self.resize(560, 420)
+        self.resize(620, 560)
+        self._sync()
+
+    def all_files(self) -> list[str]:
+        return [self.files.item(i).text() for i in range(self.files.count())]
+
+    def image_files(self) -> list[str]:
+        return [f for f in self.all_files() if Path(f).suffix.lower() in IMAGE_EXTS]
 
     def _sync(self):
         ex = self.r_exist.isChecked()
         self.group_combo.setEnabled(ex)
         self.new_name.setEnabled(not ex)
         self.copy_from.setEnabled(not ex)
+        imgs = self.image_files()
+        self.img_box.setVisible(bool(imgs))
+        grid = self.r_grid.isChecked()
+        self.cols.setEnabled(grid)
+        self.rows.setEnabled(grid)
+        if imgs:
+            per = self.cols.value() * self.rows.value() if grid else 1
+            self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 약 {len(imgs) * per}장 (한 쪽에 한 장씩 PDF로)")
 
     def _pick(self):
-        fs, _ = QFileDialog.getOpenFileNames(self, "카드 PDF 고르기", "", "PDF (*.pdf)")
-        for f in fs:
+        exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
+        fs, _ = QFileDialog.getOpenFileNames(self, "카드 파일 고르기", "",
+                                             f"카드 파일 (*.pdf {exts});;PDF (*.pdf);;이미지 ({exts})")
+        for f in sorted(fs):
             if not self.files.findItems(f, Qt.MatchFlag.MatchExactly):
                 self.files.addItem(f)
 
+    def _remove(self):
+        for it in self.files.selectedItems():
+            self.files.takeItem(self.files.row(it))
+
+    def layout_choice(self) -> tuple[int, int]:
+        return (self.cols.value(), self.rows.value()) if self.r_grid.isChecked() else (1, 1)
+
+    def preview(self):
+        imgs = self.image_files()
+        if not imgs:
+            return
+        sel = [it.text() for it in self.files.selectedItems() if Path(it.text()).suffix.lower() in IMAGE_EXTS]
+        path = sel[0] if sel else imgs[0]
+        cols, rows = self.layout_choice()
+        try:
+            png, info = service.image_preview(path, cols, rows)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "미리 볼 수 없음", str(e))
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"자를 자리 — {Path(path).name}")
+        pic = QLabel()
+        pm = QPixmap()
+        pm.loadFromData(png, "PNG")
+        pic.setPixmap(pm)
+        msg = f"카드 {info['cards']}장으로 자릅니다 (빨간 상자)."
+        if info["warnings"]:
+            msg += "\n" + "\n".join(info["warnings"])
+        note = QLabel(msg)
+        note.setWordWrap(True)
+        close = QPushButton("닫기")
+        close.clicked.connect(dlg.accept)
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(pic)
+        dl.addWidget(note)
+        dl.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
+        dlg.exec()
+
     def accept(self):
-        files = [self.files.item(i).text() for i in range(self.files.count())]
+        files = self.all_files()
         if not files:
-            QMessageBox.warning(self, "파일 없음", "PDF를 고르세요")
+            QMessageBox.warning(self, "파일 없음", "PDF나 이미지를 고르세요")
             return
         new = self.r_new.isChecked()
         group = self.new_name.text().strip() if new else self.group_combo.currentData()
         if not group:
             QMessageBox.warning(self, "그룹 이름", "새 그룹 이름을 넣으세요")
             return
+        regions_from = (self.copy_from.currentData() or None) if new else None
+        pdfs = [f for f in files if Path(f).suffix.lower() == ".pdf"]
+        imgs = self.image_files()
+        others = [f for f in files if f not in pdfs and f not in imgs]
+        added, skipped, warnings = [], [f"{Path(f).name}: PDF·이미지가 아님" for f in others], []
+        has_regions = False
         try:
-            self.result_info = service.add_files(self.project_dir, files, group, new_group=new,
-                                                 regions_from=(self.copy_from.currentData() or None) if new else None)
-        except (FileExistsError, KeyError, ValueError) as e:
+            if pdfs:
+                r = service.add_files(self.project_dir, pdfs, group, new_group=new, regions_from=regions_from)
+                added += r["added"]
+                skipped += r["skipped"]
+                has_regions = r["has_regions"]
+                new, regions_from = False, None  # 그룹은 이미 만들어졌다
+            if imgs:
+                cols, rows = self.layout_choice()
+                ri = service.add_images(self.project_dir, imgs, group, cols=cols, rows=rows,
+                                        name=self.img_name.text().strip() or None, new_group=new,
+                                        regions_from=regions_from)
+                if ri.file_dir:
+                    added.append(ri.file_dir)
+                skipped += ri.skipped
+                warnings += ri.warnings
+                has_regions = ri.has_regions
+                if ri.file_dir:
+                    warnings.insert(0, f"이미지 {len(imgs)}장 → 카드 {ri.pages}장 ({ri.file_dir.name})")
+        except (FileExistsError, KeyError, ValueError, OSError) as e:
             QMessageBox.warning(self, "넣을 수 없음", str(e).strip("'"))
             return
-        if self.result_info["skipped"]:
-            QMessageBox.information(self, "건너뛴 파일", "\n".join(self.result_info["skipped"]))
+        self.result_info = {"group": group, "added": added, "skipped": skipped, "has_regions": has_regions,
+                            "warnings": warnings}
+        if skipped or warnings:
+            QMessageBox.information(self, "파일 넣기", "\n".join(warnings + skipped))
         super().accept()
 
 

@@ -1550,3 +1550,56 @@ def set_engine(engine: str) -> None:
     s = settings.load()
     s.engine = engine
     settings.save(s)
+
+
+# ---------------------------------------------------------------- 이미지(JPG·PNG) 카드 넣기 (F27)
+@dataclass
+class ImageAddResult:
+    group: str
+    file_dir: Path | None
+    pages: int = 0
+    warnings: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    has_regions: bool = False
+
+
+def image_preview(image: Path | str, cols: int = 1, rows: int = 1) -> tuple[bytes, dict]:
+    """자를 자리를 표시한 미리 보기 PNG와 {"cards", "gutters_found", "warnings", "size"}."""
+    from app import images
+
+    png, cut = images.preview_png(image, cols, rows)
+    return png, {"cards": len(cut.boxes), "gutters_found": cut.gutters_found, "warnings": cut.warnings,
+                 "size": cut.size}
+
+
+def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 1, rows: int = 1,
+               name: str | None = None, new_group: bool = False,
+               regions_from: Path | str | None = None) -> ImageAddResult:
+    """이미지 여러 장을 카드 한 장이 한 쪽인 PDF 하나로 바꿔 그룹에 넣는다 (파일 이름 name, 없으면 첫 이미지 이름).
+    한 이미지에 카드가 가로 cols × 세로 rows로 놓여 있으면 잘라서 넣는다. 원본 이미지는 source/images/에 사본을 둔다."""
+    import tempfile
+
+    from app import images, workspace
+
+    info = workspace.load_project_info(project_dir)
+    imgs = [Path(f) for f in files if images.is_image(f)]
+    skipped = [f"{Path(f).name}: 이미지가 아님" for f in files if not images.is_image(f)]
+    if not imgs:
+        raise ValueError("넣을 이미지가 없습니다 (JPG·PNG·WEBP·BMP·TIFF)")
+    stem = (name or imgs[0].stem).strip()
+    with tempfile.TemporaryDirectory() as td:
+        pdf = Path(td) / f"{stem}.pdf"
+        res = images.images_to_pdf(imgs, pdf, cols, rows)
+        r = workspace.add_files(info, [pdf], group, new_group=new_group, regions_from=regions_from)
+    skipped += r["skipped"]
+    if not r["added"]:
+        return ImageAddResult(group, None, 0, res.warnings, skipped, r["has_regions"])
+    fd = Path(r["added"][0])
+    keep = fd / "source" / "images"
+    keep.mkdir(parents=True, exist_ok=True)
+    for f in imgs:  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
+        shutil.copyfile(f, keep / f.name)
+    settings = workspace.file_settings(fd)
+    settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows}
+    workspace._write(fd / "file.json", settings)
+    return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])

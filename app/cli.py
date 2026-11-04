@@ -3,6 +3,7 @@
 게임·프로젝트·그룹 (PRD 2장)
     python -m app.cli new-project --name 던전1차 [--game Dungeon]      (게임 목록을 보여 주고 고르게 함)
     python -m app.cli add-files --project projects/던전1차 --files a.pdf b.pdf   (그룹 목록을 보여 주고 고르게 함)
+    python -m app.cli add-files --project projects/던전1차 --files s1.jpg s2.jpg --cols 3 --rows 3 --name 시트   (이미지)
     python -m app.cli extract-project --project projects/던전1차 [--group 아이템]
     python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> 용어집_검증.xlsx)
     python -m app.cli find-icons --project projects/던전1차               (이름 없는 아이콘 -> 아이콘_검증.xlsx)
@@ -228,8 +229,24 @@ def cmd_add_files(args: argparse.Namespace) -> int:
             print("[add-files] --group <기존 그룹> 또는 --group <새 이름> --new-group 으로 정하세요.", file=sys.stderr)
             return 1
         new = group not in [g["name"] for g in groups]
+    from app.images import is_image
+
+    imgs = [f for f in args.files if is_image(f)]
+    pdfs = [f for f in args.files if not is_image(f)]
     try:
-        r = service.add_files(args.project, args.files, group, new_group=new, regions_from=args.regions_from)
+        r = {"added": [], "skipped": [], "has_regions": False}
+        if pdfs:
+            r = service.add_files(args.project, pdfs, group, new_group=new, regions_from=args.regions_from)
+        if imgs:  # 이미지는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣는다 (배열이면 --cols --rows)
+            ri = service.add_images(args.project, imgs, group, cols=args.cols, rows=args.rows, name=args.name,
+                                    new_group=new and not pdfs, regions_from=None if pdfs else args.regions_from)
+            if ri.file_dir:
+                r["added"].append(ri.file_dir)
+                print(f"[add-files] 이미지 {len(imgs)}장 -> 카드 {ri.pages}장 ({ri.file_dir.name})")
+            for w in ri.warnings:
+                print(f"  [확인] {w}")
+            r["skipped"] += ri.skipped
+            r["has_regions"] = ri.has_regions
     except KeyError:
         print(f"[add-files] 그룹 '{group}'이 없습니다. 새 그룹이면 --new-group 을 붙이세요.", file=sys.stderr)
         return 1
@@ -470,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--group", help="넣을 그룹 (없으면 목록에서 고르게 함)")
     a.add_argument("--new-group", action="store_true", help="--group 이름으로 새 그룹을 만든다")
     a.add_argument("--regions-from", help="새 그룹의 영역 템플릿으로 복사할 regions.json")
+    a.add_argument("--cols", type=int, default=1, help="이미지 한 장에 가로로 놓인 카드 수 (배열 이미지)")
+    a.add_argument("--rows", type=int, default=1, help="이미지 한 장에 세로로 놓인 카드 수 (배열 이미지)")
+    a.add_argument("--name", help="이미지를 묶은 파일 이름 (기본: 첫 이미지 이름)")
     a.set_defaults(func=cmd_add_files)
     ep = sub.add_parser("extract-project", help="3단계: 그룹(없으면 전체)의 모든 파일에서 텍스트 추출")
     ep.add_argument("--project", required=True)
