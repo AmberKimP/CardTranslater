@@ -224,8 +224,16 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
     if not comps:
         return None, "그 줄에 잉크가 없음"
-    cells = _glyph_cells(comps, em, (y0, y1))
     seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
+    cells = _glyph_cells(comps, em, (y0, y1))
+    if len(cells) != len(seq):
+        # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
+        # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
+        alt = _glyph_cells(_line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
+        if len(alt) == len(seq):
+            cells = [(c[0], max(0, c[1] - 2), c[2], c[3] + 2) for c in alt]
+    if not cells:
+        return None, "그 줄에서 글자 칸을 찾지 못함"
     k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
     tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
     if len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
@@ -264,6 +272,8 @@ def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[
     hs = sorted(b[3] - b[1] for b in boxes)
     tall = [h for h in hs if h >= hs[-1] * 0.5]
     gh = tall[len(tall) // 2]  # 이 줄 글자의 높이
+    # 아주 작은 점·잡티는 묶기 전에 뺀다 (이웃 글자와 아이콘 사이에서 다리처럼 둘을 이어 붙이지 않게)
+    boxes = [b for b in boxes if (b[2] - b[0]) >= gh * 0.2 or (b[3] - b[1]) >= gh * 0.2]
     cells: list[list[int]] = []
     for b in boxes:
         if cells:
@@ -275,7 +285,56 @@ def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[
                 continue
         cells.append(list(b))
     # 점·잡티와 작은 문장부호(、。…)는 칸으로 세지 않는다 (원문 쪽도 SMALL_MARKS를 뺀다)
-    return [tuple(c) for c in cells if (c[3] - c[1]) >= gh * 0.4 or (c[2] - c[0]) >= gh * 0.4]
+    cells = [c for c in cells if (c[3] - c[1]) >= gh * 0.4 or (c[2] - c[0]) >= gh * 0.4]
+    return [tuple(c) for c in _tidy_cells(cells, gh)]
+
+
+def _tidy_cells(cells: list[list[int]], gh: float) -> list[list[int]]:
+    """줄 양 끝에서 멀리 떨어진 작은 조각(카드 테두리 조각)은 빼고, 바로 옆에 붙은 아주 작은 점은 이웃 칸에 합친다."""
+    def small(c):
+        return (c[2] - c[0]) < gh * 0.3  # 가는 조각 (높이와 관계없이: 카드 테두리 조각은 글자만큼 높기도 하다)
+
+    while len(cells) > 1 and small(cells[0]) and cells[1][0] - cells[0][2] > gh * 1.2:
+        cells = cells[1:]
+    while len(cells) > 1 and small(cells[-1]) and cells[-1][0] - cells[-2][2] > gh * 1.2:
+        cells = cells[:-1]
+    out: list[list[int]] = []
+    for c in cells:
+        tiny = (c[2] - c[0]) < gh * 0.25 and (c[3] - c[1]) < gh * 0.7
+        if tiny and out and c[0] - out[-1][2] < gh * 0.25:
+            o = out[-1]
+            o[0], o[1], o[2], o[3] = min(o[0], c[0]), min(o[1], c[1]), max(o[2], c[2]), max(o[3], c[3])
+            continue
+        out.append(list(c))
+    return out
+
+
+def _line_components(ink: np.ndarray, em: float, band: tuple[int, int], band_h: int):
+    """한 줄 높이(위아래 20% 여유) 안의 덩어리 [(x, y, w, h, 넓이)]. 긴 가로선은 지우고 센다."""
+    import cv2
+
+    y0, y1 = band
+    top, bot = max(0, int(y0 - band_h * 0.2)), min(ink.shape[0], int(y1 + band_h * 0.2) + 1)
+    strip = ink[top:bot] & ~_long_lines(ink[top:bot], em)
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(strip.astype(np.uint8), connectivity=8)
+    out = []
+    for c in range(1, n):
+        x, y, w, h, a = (int(v) for v in st[c])
+        cy = top + y + h / 2
+        if a >= 6 and y0 - band_h * 0.2 <= cy <= y1 + band_h * 0.2:
+            out.append((x, top + y, w, h, a))
+    return out
+
+
+def _long_lines(ink: np.ndarray, em: float) -> np.ndarray:
+    """글자보다 훨씬 긴 가로·세로 선(띠 테두리·구분선)만 골라낸 마스크 (조금 두껍게)."""
+    import cv2
+
+    k = max(15, int(em * 1.6))
+    m = ink.astype(np.uint8)
+    horiz = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1)))
+    lines = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    return lines.astype(bool)
 
 
 SMALL_MARKS = set("、。，．・,.'`:;…‥")  # 이미지에서 칸으로 세지 않을 만큼 작은 글자

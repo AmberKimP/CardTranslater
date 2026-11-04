@@ -251,3 +251,24 @@ def test_text_components_separates_rules_and_drops_card_frame():
     comps, rules = icons._text_components(ink)
     assert sorted(c[0] for c in comps) == [20, 60]
     assert rules == [(70, 72)]
+
+
+def test_locate_banner_edge_and_dot_do_not_glue_glyph_to_icon():
+    """띠 테두리 선이 글자 밑동에 닿고, 글자와 아이콘 사이에 작은 점이 있어도 앞 글자가 아이콘에 붙지 않는다
+    (마족의 맹약 던전 20쪽 ‘…なら[[?]]+2’), 줄 왼쪽 끝의 카드 테두리 조각은 칸으로 세지 않는다(캐릭터 4쪽)."""
+    import cv2
+
+    img = np.full((220, 900, 3), (245, 235, 220), np.uint8)
+    cv2.rectangle(img, (10, 60), (16, 120), (40, 40, 40), -1)  # 왼쪽 끝 카드 테두리 조각 (가늘고 글자만큼 높음)
+    for k in range(5):  # 글자 5개
+        cv2.rectangle(img, (120 + k * 70, 60), (170 + k * 70, 120), (40, 40, 40), 5)
+    cv2.circle(img, (482, 116), 3, (40, 40, 40), -1)  # 글자와 아이콘 사이 작은 점
+    cv2.rectangle(img, (490, 52), (580, 128), (40, 40, 40), 6)  # 아이콘 (카드 두 장 흉내)
+    cv2.rectangle(img, (520, 46), (600, 124), (40, 40, 40), 6)
+    cv2.line(img, (100, 121), (700, 121), (40, 40, 40), 4)  # 띠 아래 테두리: 글자·아이콘 밑동에 닿음
+    cv2.line(img, (620, 90), (650, 90), (40, 40, 40), 5)  # +
+    cv2.line(img, (635, 75), (635, 105), (40, 40, 40), 5)
+    cv2.rectangle(img, (670, 65), (690, 118), (40, 40, 40), -1)  # 2
+    box, why = icons.locate(img, "가나다라마[[?]]+2", 0)
+    assert box is not None, why
+    assert 455 < box[0] <= 495 and 595 <= box[2] <= 606, box  # 앞 글자(마, 오른쪽 끝 450)가 섞이지 않은 아이콘만
