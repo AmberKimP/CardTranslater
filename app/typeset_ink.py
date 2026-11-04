@@ -113,10 +113,32 @@ def representative_height_px(m: np.ndarray, pct: float = 75.0, min_w_ratio: floa
     return float(np.percentile(hs, pct))
 
 
+def drop_tall_ink(mask: np.ndarray, max_h_px: float) -> np.ndarray:
+    """세로로 max_h_px보다 큰 잉크 덩어리(그림, +2 같은 큰 숫자)를 뺀다."""
+    import cv2
+
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    tall = np.zeros(n, bool)
+    tall[1:] = st[1:, cv2.CC_STAT_HEIGHT] > max_h_px
+    return mask & ~tall[lab]
+
+
 def measure_source_ink(page: pymupdf.Page, rect, *, polarity: str = "dark", color: str | None = None,
-                       dpi: int = 1200, **mask_kw) -> SourceInk:
-    """원문 영역의 잉크 줄과 대표 글자 높이를 잰다 (좌표는 pt, page 좌표계)."""
+                       dpi: int = 1200, rotate: int = 0, drop_taller_than_pt: float | None = None,
+                       **mask_kw) -> SourceInk:
+    """원문 영역의 잉크 줄과 대표 글자 높이를 잰다 (좌표는 pt, page 좌표계).
+
+    rotate=180: 영역을 180도 돌려 잰다. 돌려받는 좌표는 '돌린 틀' 좌표다. 틀은 (rect & page.rect)와
+    같은 사각형이고, 틀의 점 (x, y)는 페이지의 (x0 + x1 - x, y0 + y1 - y)다 (중심 둘레 180도).
+    drop_taller_than_pt: 이보다 큰 잉크 덩어리는 글자가 아니라고 보고 뺀다.
+    """
     mask, r, s = ink_mask(page, rect, polarity=polarity, color=color, dpi=dpi, **mask_kw)
+    if rotate % 360 == 180:
+        mask = mask[::-1, ::-1]
+    elif rotate % 360:
+        raise NotImplementedError(f"회전은 180도만 지원합니다: {rotate}")
+    if drop_taller_than_pt:
+        mask = drop_tall_ink(mask, drop_taller_than_pt / s)
     if not mask.any():
         return SourceInk(None)
     bands = _bands(mask.sum(1))

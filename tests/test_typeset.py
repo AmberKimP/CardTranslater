@@ -20,6 +20,7 @@ from app.typeset_layout import (  # noqa: E402
     Atom,
     FitParams,
     check_tags,
+    icon_names,
     fit_text,
     min_size_rule,
     parse_markup,
@@ -88,20 +89,20 @@ def test_kinsoku_no_line_end_with_opening_bracket():
 
 
 def test_icon_with_particle_not_split():
-    # [coin]을 은 한 덩어리: 폭 3(=1.1+1)를 넘지 않으면 함께 다음 줄로
-    out = lines_of("가나 [coin]을 얻는다", 3)
-    assert "[coin]을" in out
+    # [[coin]]을 은 한 덩어리: 폭 3(=1.1+1)를 넘지 않으면 함께 다음 줄로
+    out = lines_of("가나 [[coin]]을 얻는다", 3)
+    assert "[[coin]]을" in out
 
 
 def test_icon_glued_inside_long_word_not_split():
-    # 금화[coin]을 이 줄 폭보다 길어도 아이콘 앞뒤에서는 끊지 않는다
-    out = lines_of("금화[coin]을", 2.5)
+    # 금화[[coin]]을 이 줄 폭보다 길어도 아이콘 앞뒤에서는 끊지 않는다
+    out = lines_of("금화[[coin]]을", 2.5)
     joined = "|".join(out)
-    assert "화|[coin]" not in joined and "[coin]|을" not in joined
+    assert "화|[[coin]]" not in joined and "[[coin]]|을" not in joined
 
 
 def test_icon_only_line():
-    assert lines_of("[coin]", 5) == ["[coin]"]
+    assert lines_of("[[coin]]", 5) == ["[[coin]]"]
 
 
 def test_manual_newline_respected_and_not_rewrapped():
@@ -258,7 +259,7 @@ def test_special_inputs():
     assert typeset_region(page, (0, 0, 100, 20), "-", st).status == ["지우기만"]
     r = typeset_region(page, (0, 0, 100, 20), "<b>깨진", st)
     assert "서식 불일치" in r.status and r.lines == ["깨진"]
-    r = typeset_region(page, (0, 0, 100, 20), "[nosuch]을 얻는다", st)
+    r = typeset_region(page, (0, 0, 100, 20), "[[nosuch]]을 얻는다", st)
     assert "아이콘 오류" in r.status and not r.drawn
 
 
@@ -325,3 +326,13 @@ def test_fallback_font_for_missing_glyphs(tmp_path):
     # 대체 글꼴이 없으면 예전처럼 막는다
     st2 = TextStyle(font_file=GAEGU, size_pt=8)
     assert "글리프 없음" in typeset_region(doc.new_page(), (0, 0, 190, 50), "♥", st2).status
+
+
+def test_single_brackets_are_text_double_brackets_are_icons():
+    """[4층]·[炎]은 카드에 인쇄된 괄호(글자), [[coin]]만 아이콘. 예전 전각 ［］도 보통 괄호로 그린다."""
+    atoms = to_atoms(parse_markup("[4층]에 있을 때 [[coin]] ［炎］")[0])
+    texts = [a.text for a in atoms if a.kind == "char"]
+    assert texts[:4] == ["[", "4", "층", "]"]
+    assert texts[-3:] == ["[", "炎", "]"]
+    assert [a.text for a in atoms if a.kind == "icon"] == ["coin"]
+    assert icon_names("[4층] [[coin]] [[gem_red]]") == ["coin", "gem_red"]

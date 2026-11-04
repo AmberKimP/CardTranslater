@@ -86,8 +86,20 @@ def _clip_x1(rect: pymupdf.Rect, work: pymupdf.Rect | None) -> pymupdf.Rect:
     return r
 
 
+def _rot_rect(r, pivot) -> pymupdf.Rect:
+    px, py = pivot
+    r = pymupdf.Rect(r)
+    return pymupdf.Rect(2 * px - r.x1, 2 * py - r.y1, 2 * px - r.x0, 2 * py - r.y0)
+
+
+def safe_name(name: str, idx: int) -> str:
+    """파일 이름용 영역 이름 (ASCII)."""
+    return SAFE.get(name) or f"r{idx}"
+
+
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
-                 base_dir: Path = ROOT, styles: dict | None = None) -> dict:
+                 base_dir: Path = ROOT, styles: dict | None = None,
+                 region_erase: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
@@ -154,9 +166,16 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
         # ---- 이름·본문
         text = entry.get("ko")
-        mrect = _clip_x1(rect | work if work else rect, work)
-        ink = measure_source_ink(src_page, mrect, polarity="dark")
+        rot = int(style_d.get("rotate", 0)) % 360
+        mrect = _clip_x1(rect | work if work else rect, work) & src_page.rect
+        keep_pt = (region_erase or {}).get(name, {}).get("keep_ink_taller_than_pt")
+        ink = measure_source_ink(src_page, mrect, polarity="dark", rotate=rot, drop_taller_than_pt=keep_pt)
         draw_rect = _clip_x1(rect, work)
+        pivot = None
+        if rot:
+            # 돌린 틀 좌표: 잴 때 쓴 사각형(mrect)의 중심 둘레로 180도. 그릴 사각형도 틀로 옮긴다.
+            pivot = ((mrect.x0 + mrect.x1) / 2, (mrect.y0 + mrect.y1) / 2)
+            draw_rect = _rot_rect(draw_rect, pivot)
         if ink.bbox and style_d.get("align", "left") == "left":
             draw_rect.x0 = max(draw_rect.x0, ink.bbox[0])
         top = ink.lines[0][0] if ink.lines else None
@@ -165,11 +184,19 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         st = TextStyle.from_region_style(
             style_d, base_dir, size_pt=tl.get("size_pt"), ink_height_pt=ink.glyph_height,
             line_pitch_pt=ink.line_pitch, fixed_size_pt=entry.get("fixed_size_pt"),
+            pivot=pivot,
         )
         if ink.glyph_height is None:
             rec["warnings"].append("원문 잉크를 못 잼 -> 텍스트 레이어 크기(pt) 사용")
         res = typeset_region(page, draw_rect, text, st, source_text=entry.get("source"), top_anchor=top)
-        rec.update(source_ink=ink.to_dict(), draw_rect_pt=[round(v, 3) for v in draw_rect], **res.to_dict())
+        rd = res.to_dict()
+        if rot:  # 보고서에는 페이지 좌표로 적는다 (틀 좌표는 frame_ 접두사)
+            rec["rotate"] = rot
+            rec["frame_draw_rect_pt"] = [round(v, 3) for v in draw_rect]
+            rec["frame_line_boxes_pt"] = rd["line_boxes_pt"]
+            rd["line_boxes_pt"] = [[round(v, 2) for v in _rot_rect(b, pivot)] for b in rd["line_boxes_pt"]]
+            draw_rect = _rot_rect(draw_rect, pivot)
+        rec.update(source_ink=ink.to_dict(), draw_rect_pt=[round(v, 3) for v in draw_rect], **rd)
         out[name] = rec
     return out
 
@@ -180,7 +207,9 @@ def _render(page: pymupdf.Page, dpi: int, clip=None) -> np.ndarray:
     return np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, 3).copy()
 
 
-SAFE = {"태그": "tag", "이름": "name", "본문": "body"}
+SAFE = {"태그": "tag", "이름": "name", "본문": "body",
+        "위_이름": "top_name", "위_설명": "top_flavor", "위_효과": "top_effect",
+        "아래_이름": "bot_name", "아래_설명": "bot_flavor", "아래_효과": "bot_effect"}
 
 
 def erased_pdf_path(erase_run: Path) -> Path:
@@ -223,6 +252,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         metas[pno] = json.loads(f.read_text(encoding="utf-8"))
 
     styles = {r.name: r.style for r in project.template.regions}
+    region_erase = {r.name: r.erase for r in project.template.regions}
 
     out_doc = pymupdf.open()
     for pno in pages:
@@ -232,7 +262,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     page_recs = []
     for i, pno in enumerate(pages):
         print(f"[compose] page {pno} ...", flush=True)
-        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles)
+        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase)
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)
@@ -248,7 +278,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         cp, sp = chk[i], src_doc[pno - 1]
         cp.get_pixmap(dpi=300, alpha=False).save(str(run_dir / f"p{pno:03d}.png"))
         report.save(report.side_by_side(_render(sp, 300), _render(cp, 300)), cdir / f"p{pno:03d}_card.png")
-        for reg in metas[pno]["regions"]:
+        for ri, reg in enumerate(metas[pno]["regions"]):
+            sn = safe_name(reg["name"], ri)
             r = pymupdf.Rect(reg["rect_pt"])
             for lab in reg.get("tag_labels") or []:
                 r |= pymupdf.Rect(lab["bbox_pt"])
@@ -259,9 +290,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
                 if t.get("label_rect_pt"):
                     r |= pymupdf.Rect(t["label_rect_pt"])
             clip = pymupdf.Rect(r.x0 - 3, r.y0 - 3, r.x1 + 3, r.y1 + 3) & sp.rect
-            img = report.stacked([(f"ORIGINAL p{pno} {SAFE.get(reg['name'], 'r')} 600dpi", _render(sp, 600, clip)),
+            img = report.stacked([(f"ORIGINAL p{pno} {sn} 600dpi", _render(sp, 600, clip)),
                                   ("COMPOSED", _render(cp, 600, clip))], scale=1)
-            report.save(img, cdir / f"p{pno:03d}_{SAFE.get(reg['name'], 'r')}.png")
+            report.save(img, cdir / f"p{pno:03d}_{sn}.png")
         page_recs[i]["extracted_text"] = cp.get_text()
     chk.close()
 

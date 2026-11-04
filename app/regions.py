@@ -43,6 +43,7 @@ class Region:
     kind: str = "text"  # "text" | "tag_pills"
     style: dict = field(default_factory=dict)
     notes: str = ""
+    erase: dict = field(default_factory=dict)  # 지우기 옵션 (예: keep_ink_taller_than_pt)
 
 
 @dataclass
@@ -62,6 +63,7 @@ def load_template(path: Path) -> RegionTemplate:
             kind=r.get("kind", "text"),
             style=r.get("style", {}),
             notes=r.get("notes", ""),
+            erase=r.get("erase", {}),
         )
         for r in data["regions"]
     ]

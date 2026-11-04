@@ -4,7 +4,7 @@
     {
       "name": "Noto Sans KR", "ko_name": "본고딕", "dir": "notosanskr",
       "source_files": ["NotoSansKR[wght].ttf"],
-      "static_weights": {"Regular": 400, "Bold": 700, "Black": 900},
+      "static_weights": {"Regular": 400, "Medium": 500, "Bold": 700, "Black": 900},
       "style": "sans", "width": "normal", "license": "OFL-1.1",
       "notes": "기본 글꼴. 작은 글자에서도 잘 읽힌다"
     },
@@ -68,6 +68,42 @@
       "source_files": ["PoorStory-Regular.ttf"],
       "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
       "notes": "삐뚤빼뚤한 손글씨"
+    },
+    {
+      "name": "Bagel Fat One", "ko_name": "베이글 팻 원", "dir": "bagelfatone",
+      "source_files": ["BagelFatOne-Regular.ttf"],
+      "style": "display", "weight": 900, "width": "normal", "license": "OFL-1.1",
+      "notes": "아주 굵고 통통한 팝 제목용. 일본 카드의 두꺼운 장식 제목과 인상이 비슷"
+    },
+    {
+      "name": "Gasoek One", "ko_name": "가석 원", "dir": "gasoekone",
+      "source_files": ["GasoekOne-Regular.ttf"],
+      "style": "display", "weight": 900, "width": "normal", "license": "OFL-1.1",
+      "notes": "아주 굵은 각진 제목용. 속공간이 작아 큰 글자에 어울림"
+    },
+    {
+      "name": "Gothic A1", "ko_name": "고딕 A1", "dir": "gothica1",
+      "source_files": ["GothicA1-Medium.ttf", "GothicA1-SemiBold.ttf", "GothicA1-Bold.ttf", "GothicA1-Black.ttf"],
+      "style": "sans", "weight": 500, "width": "normal", "license": "OFL-1.1",
+      "notes": "단정한 고딕, 굵기가 많아 원문 획 굵기에 맞추기 쉬움"
+    },
+    {
+      "name": "IBM Plex Sans KR", "ko_name": "IBM 플렉스 산스 KR", "dir": "ibmplexsanskr",
+      "source_files": ["IBMPlexSansKR-Medium.ttf", "IBMPlexSansKR-SemiBold.ttf"],
+      "style": "sans", "weight": 500, "width": "normal", "license": "OFL-1.1",
+      "notes": "또렷한 고딕. 작은 본문에서 잘 읽힘"
+    },
+    {
+      "name": "Nanum Gothic", "ko_name": "나눔고딕", "dir": "nanumgothic",
+      "source_files": ["NanumGothic-Bold.ttf", "NanumGothic-ExtraBold.ttf"],
+      "style": "sans", "weight": 700, "width": "normal", "license": "OFL-1.1",
+      "notes": "획 끝이 약간 둥근 친숙한 고딕"
+    },
+    {
+      "name": "Sunflower", "ko_name": "해바라기", "dir": "sunflower",
+      "source_files": ["Sunflower-Medium.ttf", "Sunflower-Bold.ttf"],
+      "style": "sans", "weight": 500, "width": "condensed", "license": "OFL-1.1",
+      "notes": "손맛이 살짝 있는 좁은 고딕. 부드러운 본문 후보"
     }
   ]
 }

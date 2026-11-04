@@ -39,7 +39,8 @@ NO_LINE_END = set("([{<" "（［｛〈《「『【〔〘〖‘“")
 
 TAG_RE = re.compile(r"<(/?)(b|i|c\d+)>")
 TAG_LIKE_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9]*>")
-ICON_RE = re.compile(r"\[([a-z0-9_]+)\]")
+# 아이콘 자리: [[단어]] (이중 대괄호). 한 겹 [ ]는 카드에 인쇄된 괄호라서 그냥 글자다 (PRD 4장)
+ICON_RE = re.compile(r"\[\[([a-z0-9_]+)\]\]")
 
 
 # ---------------------------------------------------------------- 서식 태그
@@ -126,7 +127,7 @@ class Atom:
 
     @property
     def display(self) -> str:
-        return f"[{self.text}]" if self.kind == "icon" else self.text
+        return f"[[{self.text}]]" if self.kind == "icon" else self.text
 
 
 def to_atoms(spans: list[Span]) -> list[Atom]:
@@ -141,8 +142,14 @@ def to_atoms(spans: list[Span]) -> list[Atom]:
     return atoms
 
 
+# 예전 규칙(아이콘이 [단어]이던 때)으로 쓴 전각 ［］도 받아 준다. 전각 괄호는 양옆이 넓게 비어
+# '［1층］ 에'처럼 벌어지므로 보통 괄호로 그린다. 지금 규칙은 카드 괄호를 보통 [ ]로 쓴다.
+DRAW_AS = {"［": "[", "］": "]"}
+
+
 def _char_atoms(s: str, fmt: Fmt) -> list[Atom]:
     out = []
+    s = "".join(DRAW_AS.get(c, c) for c in s)
     for ch in s.replace("\r\n", "\n").replace("\r", "\n"):
         if ch == "\n":
             out.append(Atom("newline", "\n", fmt))

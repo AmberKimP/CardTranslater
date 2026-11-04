@@ -83,6 +83,10 @@ class TextStyle:
     stroke_width: float = 0.0  # 글자 크기 대비
     icons_dir: str | None = None
     icon_scale: float = 1.1  # 글자(한글 잉크) 높이 대비
+    # 180이면 글자를 pivot(pt) 둘레로 180도 돌려 그린다 (카드 위 반쪽처럼 거꾸로 인쇄된 영역).
+    # 배치 계산은 돌린 틀(frame) 좌표에서 하고, 그릴 때만 돌린다.
+    rotate: int = 0
+    pivot: tuple | None = None
     respect_manual: bool = True
 
     @classmethod
@@ -107,7 +111,7 @@ class TextStyle:
             bp = Path(font["bold_file"])
             kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
-                  "floor_basis", "tracking"):
+                  "floor_basis", "tracking", "rotate"):
             if k in style:
                 kw[k] = style[k]
         kw.update(overrides)
@@ -268,6 +272,24 @@ def _font_name(page: pymupdf.Page, font_file: str) -> str:
     return name
 
 
+def _rotation(style: TextStyle):
+    """TextWriter·insert_text의 morph (180도 회전) 또는 None."""
+    if not style.rotate:
+        return None
+    if style.rotate % 360 != 180:
+        raise NotImplementedError(f"회전은 180도만 지원합니다: {style.rotate}")
+    if style.pivot is None:
+        raise ValueError("rotate=180이면 pivot(돌릴 중심 pt)이 있어야 합니다")
+    return pymupdf.Point(*style.pivot), pymupdf.Matrix(-1, 0, 0, -1, 0, 0)
+
+
+def _rotate_rect(r, pivot) -> pymupdf.Rect:
+    """사각형을 pivot 둘레로 180도 돌린 사각형."""
+    px, py = pivot
+    r = pymupdf.Rect(r)
+    return pymupdf.Rect(2 * px - r.x1, 2 * py - r.y1, 2 * px - r.x0, 2 * py - r.y0)
+
+
 def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, tracking: float,
                style: TextStyle, m: FontMeasurer) -> None:
     """한 줄을 그린다. 글자는 글자마다 위치를 정해(자간) TextWriter로 벡터 텍스트로 넣는다.
@@ -278,13 +300,16 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
     - 외곽선(stroke_color)은 insert_text(border_width)로 그린다 (이때 기울임은 지원 안 함).
     """
     t_shear = math.tan(math.radians(style.italic_angle))
+    rot = _rotation(style)
     cur = None  # (key, TextWriter, x0): 같은 서식이 이어지는 동안 한 번에 쓴다 (내용 순서 = 읽는 순서)
 
     def _flush(c) -> None:
         if c is None:
             return
         (color, fake_bold, italic), tw, x0 = c
-        morph = (pymupdf.Point(x0, baseline), pymupdf.Matrix(1, 0, t_shear, 1, 0, 0)) if italic else None
+        if italic and rot:
+            raise NotImplementedError("기울임 + 180도 회전 영역은 아직 지원하지 않습니다")
+        morph = (pymupdf.Point(x0, baseline), pymupdf.Matrix(1, 0, t_shear, 1, 0, 0)) if italic else rot
         tw.write_text(page, color=hex_to_rgb01(color), render_mode=2 if fake_bold else 0, morph=morph)
 
     for i, a in enumerate(atoms):
@@ -299,7 +324,10 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
             cy = baseline - (ht - hb) / 2 * size
             p = m.icon_path(a.text)
             if p and p.exists():
-                page.insert_image(pymupdf.Rect(x, cy - h / 2, x + w, cy + h / 2), filename=str(p))
+                r_icon = pymupdf.Rect(x, cy - h / 2, x + w, cy + h / 2)
+                if rot:
+                    r_icon = _rotate_rect(r_icon, style.pivot)
+                page.insert_image(r_icon, filename=str(p), rotate=180 if rot else 0)
         elif a.kind == "char":
             ff, fake_bold = m.file_for_char(a.text, a.fmt)
             color = style.color
@@ -312,6 +340,8 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
                 kw: dict = dict(fontname=_font_name(page, ff), fontsize=size, render_mode=2,
                                 color=hex_to_rgb01(style.stroke_color), fill=hex_to_rgb01(color),
                                 border_width=style.stroke_width + (style.fake_bold_width if fake_bold else 0))
+                if rot:
+                    kw["morph"] = rot
                 page.insert_text(pymupdf.Point(x, baseline), s, **kw)
             else:
                 key = (color, fake_bold, italic)

@@ -26,6 +26,7 @@ import numpy as np
 from app import report
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
+from app.typeset_compose import safe_name
 
 SCHEMA = "cardtranslater.erase-page/2"  # 2: 원본 이미지 유지 + patches
 
@@ -142,7 +143,7 @@ def cmd_erase(args: argparse.Namespace) -> int:
             b = op.get_pixmap(dpi=600, clip=clip, alpha=False)
             A = np.frombuffer(a.samples, np.uint8).reshape(a.h, a.w, 3)
             B = np.frombuffer(b.samples, np.uint8).reshape(b.h, b.w, 3)
-            safe_r = {"태그": "tag", "이름": "name", "본문": "body"}.get(pt["region"], "r")
+            safe_r = safe_name(pt["region"], [m["name"] for m in page_metas[i]["regions"]].index(pt["region"]))
             pth = run_dir / "compare" / f"p{pno:03d}_seam600_{safe_r}.png"
             report.save(report.stacked([("ORIGINAL 600dpi (left edge of patch)", A), ("RESULT 600dpi", B)], scale=1), pth)
             pt["seam_png_600dpi"] = str(pth)
@@ -170,7 +171,7 @@ def cmd_erase(args: argparse.Namespace) -> int:
                 ],
                 scale=2,
             )
-            safe = {"태그": "tag", "이름": "name", "본문": "body"}.get(m["name"], f"r{page_metas[i]['regions'].index(m)}")
+            safe = safe_name(m["name"], page_metas[i]["regions"].index(m))
             path = report.save(img, pdir / f"{tag}_{safe}.png")
             m["compare_png"] = str(path)
         page_metas[i]["compare_card_png"] = str(pdir / f"{tag}_card.png")

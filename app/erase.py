@@ -45,6 +45,7 @@ TAG_SEARCH_PAD = 0.25  # 라벨 찾을 때 태그 영역 높이 대비 위아래
 LABEL_MAX_ASPECT = 5.5  # 라벨 폭 / 높이 상한 (실측 ≈4.3)
 TAG_MIN_H = 0.60  # 라벨 최소 높이 (태그 영역 높이 대비). 실측 라벨 ≈0.72, 17쪽 연기 조각 0.50
 TAG_MAX_H = 1.0  # 라벨 최대 높이. 14·28쪽 연기 덩어리 ≈1.1
+IMAGE_TEXT_PAD_PT = 1.2  # 이미지에 박힌 글자: 잉크 상자 둘레 여유 (번짐·그림자)
 MAX_BG_ROTATION_DEG = 5.0  # 이보다 많이 돌아간 배경 이미지는 지원하지 않음
 PATCH_INSET_PT = 0.002  # 패치 사각형을 안쪽으로 넣는 양 (grid-fit 바깥 번짐 방지)
 
@@ -583,6 +584,88 @@ def clean_area(
     return CleanResult(out_u8, M2, flat_mask, inpaint_mask, strong, thr, noise)
 
 
+def dark_ink(img: np.ndarray, dark_delta: float = 70.0, bg_px: int = 61) -> np.ndarray:
+    """주변 종이보다 dark_delta 이상 어두운 픽셀 (회색 띠 214 vs 흰 종이 250 ≈ 36은 잉크가 아님; 글자 ≈ 160).
+
+    배경은 bg_px 크기의 최대값 필터(가장 밝은 이웃)를 흐린 것이다. 중앙값 흐림은 굵은 획(+2 숫자)
+    안쪽에서 배경까지 어두워져 획 가장자리만 잉크로 잡힌다.
+    """
+    # 종이 결 잡음(밝은 점)에 최대값 필터가 끌려가지 않도록 먼저 살짝 흐린다
+    lum = cv2.GaussianBlur(luminance(img.astype(np.float32)), (0, 0), 1.2)
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (bg_px, bg_px))
+    bg = cv2.GaussianBlur(cv2.dilate(lum, k), (0, 0), bg_px / 6)
+    return (bg - lum) > dark_delta
+
+
+def text_ink_box(img: np.ndarray, box: tuple[int, int, int, int], max_h_px: float,
+                 dark_delta: float = 70.0, keep_above: str | None = None,
+                 above_gap_px: float = 1.0) -> tuple[tuple[int, int, int, int] | None, list]:
+    """box 안 글자 잉크(세로 max_h_px 이하 덩어리)를 감싸는 상자와, 남길 덩어리 상자 목록 (img 좌표).
+
+    keep_above="up"|"down": 글자 줄(가장 큰 글자들의 위끝)보다 완전히 위(down이면 아래, 180도 돌린 영역)에
+    있는 덩어리(예: 이름 위 왕관 아이콘)는 글자가 아니라고 보고 상자에서 빼고 남길 목록에 넣는다.
+    """
+    x0, y0, x1, y1 = box
+    ink = dark_ink(img, dark_delta)[y0:y1, x0:x1].astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    keep = [k for k in range(1, n) if st[k, cv2.CC_STAT_HEIGHT] <= max_h_px and st[k, cv2.CC_STAT_AREA] >= 4]
+    if not keep:
+        return None, []
+    kept_out: list = []
+    if keep_above in ("up", "down"):
+        hmax = max(st[k, cv2.CC_STAT_HEIGHT] for k in keep)
+        main = [k for k in keep if st[k, cv2.CC_STAT_HEIGHT] >= 0.6 * hmax]
+        if keep_above == "up":
+            line_edge = min(st[k, 1] for k in main)
+            out = [k for k in keep if st[k, 1] + st[k, 3] <= line_edge - above_gap_px]
+        else:
+            line_edge = max(st[k, 1] + st[k, 3] for k in main)
+            out = [k for k in keep if st[k, 1] >= line_edge + above_gap_px]
+        kept_out = [(x0 + st[k, 0], y0 + st[k, 1], x0 + st[k, 0] + st[k, 2], y0 + st[k, 1] + st[k, 3]) for k in out]
+        keep = [k for k in keep if k not in out]
+    bx0 = min(st[k, 0] for k in keep)
+    by0 = min(st[k, 1] for k in keep)
+    bx1 = max(st[k, 0] + st[k, 2] for k in keep)
+    by1 = max(st[k, 1] + st[k, 3] for k in keep)
+    return (x0 + bx0, y0 + by0, x0 + bx1, y0 + by1), kept_out
+
+
+def tall_ink_mask(img: np.ndarray, box: tuple[int, int, int, int], max_h_px: float,
+                  dark_delta: float = 70.0, grow_px: int = 6) -> np.ndarray:
+    """box에 걸친 잉크 덩어리 중 세로로 max_h_px보다 큰 것(그림·큰 숫자)의 마스크 (img 크기).
+
+    잉크 = 주변 배경(큰 중앙값 흐림)보다 dark_delta 이상 어두운 픽셀. 덩어리는 img 전체에서 찾으므로
+    영역 밖으로 이어지는 그림도 통째로 잡힌다. 테두리 번짐(안티에일리어싱 회색 테)까지 덮도록 grow_px 넓힌다.
+    덜 넓히면 테가 배경으로 쓰여 옆 글자 자리에 회색 얼룩이 생긴다.
+    """
+    ink = dark_ink(img, dark_delta).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    x0, y0, x1, y1 = box
+    out = np.zeros(ink.shape, bool)
+    for k in range(1, n):
+        x, y, w, h, _a = st[k]
+        if h <= max_h_px:
+            continue
+        if x + w <= x0 or x >= x1 or y + h <= y0 or y >= y1:
+            continue
+        out |= lab == k
+    if out.any() and grow_px:
+        out = cv2.dilate(out.astype(np.uint8), _disk(grow_px)).astype(bool)
+    return out
+
+
+def non_paper_mask(img: np.ndarray, lum_delta: float = 25.0, min_sat: float = 0.12,
+                   bg_px: int = 31, grow_px: int = 4) -> np.ndarray:
+    """종이가 아닌 픽셀(그림, 색 번짐, 글자): 주변 종이보다 lum_delta 이상 어둡거나 채도가 min_sat 이상."""
+    f = img.astype(np.float32) / 255.0
+    mx, mn = f.max(axis=2), f.min(axis=2)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    m = dark_ink(img, lum_delta, bg_px) | (sat > min_sat)
+    if grow_px:
+        m = cv2.dilate(m.astype(np.uint8), _disk(grow_px)).astype(bool)
+    return m
+
+
 def fill_box(mask: np.ndarray, box: tuple[int, int, int, int], value: bool = True) -> None:
     x0, y0, x1, y1 = box
     mask[max(0, y0) : max(0, y1), max(0, x0) : max(0, x1)] = value
@@ -919,6 +1002,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     ]
 
     region_metas = []
+    keep_above_px: dict[str, list] = {}  # 영역별 남길 덩어리(왕관 등) px 상자
     redact_boxes: list[Box] = []
     work_pt: dict[str, Box] = {}
     forced_pt: list[Box] = []
@@ -978,6 +1062,21 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
 
         inline_here = [b for b in small_images if overlap_ratio(b, rect_pt) > 0.5]
         boxes += inline_here
+        image_text_box = None
+        kt = (reg.erase or {}).get("keep_ink_taller_than_pt")
+        if not assigned and reg.kind != "tag_pills" and kt:
+            rpx = px_box_outer(to_px(rect_pt), size)
+            ka = (reg.erase or {}).get("keep_ink_above_text")
+            if ka:  # 180도 돌린 영역은 '글자 위'가 페이지에서 아래쪽
+                ka = "down" if int((reg.style or {}).get("rotate", 0)) % 360 == 180 else "up"
+            ib, kept_boxes = text_ink_box(raw, rpx, kt / bg.pt_per_px, keep_above=ka)
+            if kept_boxes:
+                keep_above_px[reg.name] = kept_boxes
+            if ib is not None:
+                pad = IMAGE_TEXT_PAD_PT
+                image_text_box = expand(to_pt(tuple(float(v) for v in ib)), pad)
+                image_text_box = intersect(image_text_box, rect_pt)
+                boxes = [image_text_box]
         wpt = clip_horizontally(union(boxes), protect_pt)
         work_pt[reg.name] = wpt
         for s in assigned:
@@ -1006,6 +1105,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
                 },
                 "tag_labels": labels_meta if reg.kind == "tag_pills" else None,
                 "inline_images_pt": [_r(b) for b in inline_here],
+                "image_text_box_pt": _r(image_text_box) if image_text_box else None,
                 "warnings": partial_warn,
             }
         )
@@ -1057,6 +1157,22 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     protect_m = np.zeros((ch, cw), bool)
     for b in protect_pt:
         fill_box(protect_m, local(px_box_outer(to_px(b), size)))
+    # 영역 안의 큰 잉크 덩어리(+2 같은 큰 숫자, 영역에 걸친 그림)는 글자가 아니므로 지키기
+    keep_meta = {}
+    for reg in template.regions:
+        kt = (reg.erase or {}).get("keep_ink_taller_than_pt")
+        if not kt:
+            continue
+        kept = tall_ink_mask(raw[cy0:cy1, cx0:cx1], local(work_px[reg.name]), kt / bg.pt_per_px)
+        protect_m |= kept
+        keep_meta[reg.name] = int(kept.sum())
+    for name, bxs in keep_above_px.items():  # 글자 줄 위의 작은 그림(왕관): 테두리까지 넉넉히 지킨다
+        for b in bxs:
+            fill_box(protect_m, local((b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3)))
+    # 이미지에 박힌 글자 영역(텍스트 레이어 없음): 작업 범위 밖의 그림·색 번짐은 배경 추정에 쓰지 않는다.
+    # 영역 밖이라 바뀌지도 않는다(protect). 쓰면 줄 방향 배경 평균에 그림 색이 끌려와 얼룩이 남는다.
+    if any(m_.get("image_text_box_pt") for m_ in region_metas):
+        protect_m |= non_paper_mask(raw[cy0:cy1, cx0:cx1]) & ~work_m
 
     res = clean_area(raw[cy0:cy1, cx0:cx1], work_m, forced_m, protect_m, params, seed=seed)
     new_img = raw.copy()
@@ -1115,6 +1231,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         if bg_change > 0.02:
             flags.append("배경 변화 큼")
         m_["work_rect_px"] = list(work_px[m_["name"]])
+        if m_["name"] in keep_meta:
+            m_["kept_large_ink_px"] = keep_meta[m_["name"]]
+        if m_["name"] in keep_above_px:
+            m_["kept_above_text_boxes_px"] = [list(map(int, b)) for b in keep_above_px[m_["name"]]]
         m_["missing_from_text_layer"] = bool(missing)
         m_["image_text_detected"] = bool(img_text)
         m_["erase"] = {
