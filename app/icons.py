@@ -615,10 +615,15 @@ def import_review(info, xlsx: Path, work: Path) -> IconImport:
     """검증 엑셀을 읽어 사전에 넣고 원문 [[?]]를 바꾼다. 막는 문제가 있으면 아무것도 바꾸지 않는다."""
     from openpyxl import load_workbook
 
-    res = load_scan(work)
     ws = load_workbook(xlsx)["아이콘"]
     head = [c.value for c in ws[1]]
     rows = [dict(zip(head, r)) for r in ws.iter_rows(min_row=2, values_only=True) if any(r)]
+    return import_rows(info, rows, work)
+
+
+def import_rows(info, rows: list[dict], work: Path) -> IconImport:
+    """검증 행(엑셀이나 화면): {"묶음", "이름", "뜻(원문)", "한국어 이름", "처리", "표시 크기"}."""
+    res = load_scan(work)
     d = load_dictionary(info)
     out = IconImport()
     decision: dict[str, str] = {}  # 묶음 -> 이름 ('' = 아이콘 아님)

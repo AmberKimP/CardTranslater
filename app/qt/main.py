@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt.dialogs import AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog
 from app.qt.region_editor import RegionEditor
+from app.qt.results import OutputActions
+from app.qt.steps import StepActions
 
 APP_NAME = "CardTranslater"
 
@@ -107,11 +109,45 @@ class ProjectPage(QWidget):
         for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, ref):
             btns.addWidget(b)
         btns.addStretch(1)
+        # 2단계 작업: 추출 -> 원문 확인 -> 아이콘 -> 추출 완료(용어집) -> 용어집 가져오기 -> 번역 -> 검수 엑셀
+        self.steps = StepActions(self)
+        self.step_buttons = {}
+        steps = QHBoxLayout()
+        steps.addWidget(QLabel("작업:"))
+        for key, text, fn in (
+                ("extract", "① 글자 추출", self.steps.extract),
+                ("review", "② 원문 확인", self.steps.review_sources),
+                ("icons", "③ 아이콘 이름", self.steps.icons),
+                ("finish", "④ 추출 완료 → 용어집", self.steps.finish),
+                ("glossary", "⑤ 용어집 가져오기", self.steps.import_glossary),
+                ("translate", "⑥ 번역", self.steps.translate),
+                ("excel", "⑦ 검수 엑셀", self.steps.export_excel)):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            self.step_buttons[key] = b
+            steps.addWidget(b)
+        steps.addStretch(1)
+        # 3단계: 지우기 -> 한글 넣기 -> 결과 보기, 시험 실행
+        self.out = OutputActions(self)
+        outs = QHBoxLayout()
+        outs.addWidget(QLabel("결과:"))
+        for key, text, fn in (
+                ("erase", "⑧ 글자 지우기", self.out.erase),
+                ("compose", "⑨ 한글 넣기", self.out.compose),
+                ("results", "결과 보기", self.out.results),
+                ("test", "시험 실행 (몇 쪽만)", self.out.test_run)):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            self.step_buttons[key] = b
+            outs.addWidget(b)
+        outs.addStretch(1)
         lay = QVBoxLayout(self)
         lay.addWidget(self.title)
         lay.addWidget(self.sub)
         lay.addWidget(self.next)
         lay.addLayout(btns)
+        lay.addLayout(steps)
+        lay.addLayout(outs)
         lay.addWidget(self.tree, 1)
 
     def load(self, project_dir: Path):
@@ -143,6 +179,27 @@ class ProjectPage(QWidget):
                 gi.addChild(fi)
             gi.setExpanded(True)
         self._sync_buttons()
+        self._sync_steps()
+
+    def _sync_steps(self):
+        o = self.ov
+        files = [f for g in o["groups"] for f in g["files"]]
+        ready = bool(files) and all(g["has_regions"] for g in o["groups"] if g["files"])
+        extracted = any(f["extracted"] for f in files)
+        st = o["status"]
+        on = {
+            "extract": ready, "review": extracted, "icons": extracted,
+            "finish": extracted and st in ("extracting", "glossary_review", "glossary_confirmed", "translated"),
+            "glossary": st == "glossary_review",
+            "translate": st in ("glossary_confirmed", "translating", "translated"),
+            "excel": st == "translated",
+            "erase": ready,
+            "compose": any(f["erased"] for f in files) and st == "translated",
+            "results": any(f["composed"] for f in files),
+            "test": ready and st == "translated",
+        }
+        for k, b in self.step_buttons.items():
+            b.setEnabled(on[k])
 
     def _selected(self):
         it = self.tree.currentItem()
@@ -185,7 +242,9 @@ class ProjectPage(QWidget):
         if not g["files"]:
             QMessageBox.information(self, "파일 없음", "그룹에 파일을 먼저 넣으세요")
             return
-        ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]], self)
+        groups = [{"name": x["name"], "dir": x["dir"], "files": [f["dir"] for f in x["files"]]}
+                  for x in self.ov["groups"]]
+        ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]], self, groups=groups)
         ed.saved.connect(self.refresh)
         ed.setWindowState(ed.windowState() | Qt.WindowState.WindowMaximized)
         ed.exec()
@@ -230,6 +289,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(st["message"])
         self.show_home()
 
+    def resume_last(self) -> bool:
+        """앱을 다시 켜면 마지막에 연 프로젝트를 이어서 연다 (데이터 폴더 안의 것만)."""
+        last = service.last_project()
+        if last and self.root.resolve() in last.resolve().parents:
+            self.open_project(last)
+            return True
+        return False
+
     def show_home(self):
         self.home.refresh()
         self.stack.setCurrentWidget(self.home)
@@ -237,6 +304,7 @@ class MainWindow(QMainWindow):
     def open_project(self, project_dir: Path):
         self.project.load(project_dir)
         self.stack.setCurrentWidget(self.project)
+        service.remember_project(project_dir)
 
     def open_settings(self):
         if SettingsDialog(self).exec():
@@ -249,6 +317,23 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName(APP_NAME)
     if sys.platform == "win32" and not os.environ.get("QT_QPA_PLATFORM"):
         app.setFont(QFont("Malgun Gothic", 10))
+    args = list(argv if argv is not None else sys.argv)
+    if "--selftest" in args:  # exe 점검: 창을 띄우지 않고 결과를 JSON으로 쓴다
+        import json
+
+        out = Path(args[args.index("--selftest") + 1]) if len(args) > args.index("--selftest") + 1 else None
+        res = service.self_check()
+        try:
+            MainWindow()
+            res["ui"] = True
+        except Exception as e:  # noqa: BLE001
+            res["ui"] = f"실패: {e}"
+            res["ok"] = False
+        text = json.dumps(res, ensure_ascii=False, indent=2, default=str)
+        if out:
+            out.write_text(text, encoding="utf-8")
+        return 0 if res["ok"] else 1
     win = MainWindow()
+    win.resume_last()
     win.show()
     return app.exec()

@@ -277,6 +277,8 @@ def verification_label(r: dict | None) -> str:
     """엑셀 '원문 확인' 열 값. r = load_extracted의 칸 하나 (없으면 손 입력)."""
     if r is None:
         return "손 입력"
+    if r.get("edited_by"):  # 화면에서 사람이 고친 칸
+        return "사람이 고침"
     if r.get("readings"):  # 두 번째 모델로 다시 읽은 칸
         return "결론 못 냄" if r.get("uncertain") else "두 번 확인"
     if (r.get("note") or "").startswith("라벨 색"):
@@ -632,7 +634,9 @@ def make_client():
     """기본 Anthropic client. 키는 환경 변수·.env·`ant auth login` 프로필에서 찾는다 (코드에 적지 않는다)."""
     import anthropic
 
-    env = Path(__file__).resolve().parent.parent / ".env"
+    from app.settings import env_files
+
+    env = next((e for e in env_files() if e.exists()), Path(__file__).resolve().parent.parent / ".env")
     if env.exists() and not os.environ.get("ANTHROPIC_API_KEY"):
         for line in env.read_text(encoding="utf-8").splitlines():
             if line.startswith("ANTHROPIC_API_KEY="):

@@ -22,6 +22,7 @@ ENGINES = ("claude-code", "api")
 class Settings:
     data_dir: str = ""
     engine: str = "claude-code"
+    last_project: str = ""
 
 
 def settings_path() -> Path:
@@ -67,3 +68,12 @@ def save(s: Settings) -> Path:
 def data_dir(s: Settings | None = None) -> Path:
     s = s or load()
     return Path(s.data_dir) if s.data_dir else default_data_dir()
+
+
+def env_files() -> list[Path]:
+    """API 키를 찾을 .env 후보: 데이터 폴더, 저장소(개발) 폴더. 키 값은 이 모듈에서 읽지 않는다."""
+    out = []
+    for p in (data_dir() / ".env", REPO_ROOT / ".env"):
+        if p not in out:
+            out.append(p)
+    return out

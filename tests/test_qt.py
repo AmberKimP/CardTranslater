@@ -30,6 +30,17 @@ def _settings(tmp_path, monkeypatch):
     monkeypatch.setenv("CARDTRANSLATER_SETTINGS", str(tmp_path / "settings.json"))
 
 
+@pytest.fixture(autouse=True)
+def _no_modal_boxes(monkeypatch):
+    """테스트에서는 알림 창이 사람을 기다리지 않게 바로 닫는다."""
+    from PySide6.QtWidgets import QMessageBox
+
+    for name in ("information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.StandardButton.No)
+
+
 def _pdf(path: Path, pages: int = 3) -> Path:
     import pymupdf
 
@@ -269,3 +280,218 @@ def test_region_editor_mouse_draw_move_resize(qapp, tmp_path):
     assert it.rect().width() == pytest.approx(130, abs=2) and it.rect().left() == pytest.approx(70, abs=1.5)
     ed.dirty = False
     ed.close()
+
+
+# ================================================================ 2차: 추출 → 원문 확인 → 아이콘 → 용어집 → 번역
+def _project_with_extract(tmp_path):
+    """영역 2개(이름, 태그) + 1쪽은 결론 못 냄, 2쪽은 두 번 확인, 3쪽은 아직 안 읽음."""
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "kind": "text", "rect": {"x": 0.1, "y": 0.7, "w": 0.6, "h": 0.15}},
+        {"name": "태그", "kind": "tag_pills", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    fd = Path(g["files"][0]["dir"])
+    d = fd / "extract" / "pages"
+    d.mkdir(parents=True)
+    (d / "page-001.json").write_text(json.dumps({"page": 1, "model": "claude-sonnet-5-5", "regions": {
+        "이름": {"source": "盗賊フェレット", "uncertain": True, "note": "다르게 읽음",
+                "readings": [{"model": "claude-sonnet-5-5", "source": "盗賊フェレット"},
+                             {"model": "claude-opus-5-5", "source": "盗掘フェレット"}]},
+        "태그": {"source": ["人族"], "uncertain": False, "note": ""}}}, ensure_ascii=False), encoding="utf-8")
+    (d / "page-002.json").write_text(json.dumps({"page": 2, "model": "claude-sonnet-5-5", "regions": {
+        "이름": {"source": "竜", "uncertain": False, "note": "",
+                "readings": [{"model": "claude-sonnet-5-5", "source": "竜"}, {"model": "claude-opus-5-5", "source": "竜"}]},
+        "태그": {"source": ["竜"], "uncertain": False, "note": ""}}}, ensure_ascii=False), encoding="utf-8")
+    return info, fd
+
+
+def test_extracted_cells_and_save_source(tmp_path):
+    info, fd = _project_with_extract(tmp_path)
+    cells = {(c["page"], c["region"]): c for c in service.extracted_cells(fd)}
+    assert cells[(1, "이름")]["label"] == "결론 못 냄" and cells[(1, "이름")]["readings"][1]["model"] == "Opus"
+    assert cells[(2, "이름")]["label"] == "두 번 확인" and cells[(3, "이름")]["label"] == "읽지 않음"
+    assert service.region_crop(fd, 1, "이름")[:4] == b"\x89PNG"
+    service.save_source(fd, 1, "이름", "盗掘フェレット")
+    service.save_source(fd, 3, "태그", ["人族", "魔"])  # 읽지 않은 쪽도 손으로 넣을 수 있다
+    cells = {(c["page"], c["region"]): c for c in service.extracted_cells(fd)}
+    c = cells[(1, "이름")]
+    assert c["source"] == "盗掘フェレット" and not c["uncertain"] and c["label"] == "사람이 고침" and c["edited"]
+    assert "盗賊フェレット" in c["note"] and cells[(3, "태그")]["source"] == ["人族", "魔"]
+
+
+def test_source_review_dialog_edits_unresolved_cell(qapp, tmp_path):
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files)
+    # 확인할 칸: 1쪽 이름(결론 못 냄) + 3쪽 두 칸(읽지 않음)
+    assert dlg.table.rowCount() == 3 and dlg.table.item(0, 2).text() == "결론 못 냄"
+    assert "Opus: 盗掘フェレット" in dlg.info.text() and dlg.image.pixmap() is not None
+    dlg.edit.setPlainText("盗掘フェレット")
+    dlg.save_current()
+    assert dlg.table.rowCount() == 2 and dlg.saved == 1  # 고친 칸은 확인 목록에서 빠진다
+    dlg.only.setChecked(False)
+    assert dlg.table.rowCount() == 6
+
+
+def test_icon_review_dialog_confirms_names(qapp, tmp_path):
+    from app.qt.steps import IconReviewDialog
+    from tests.test_icons import _project as icon_project, _source
+
+    info, fd = icon_project(tmp_path, "1차", pages=2)
+    assert service.find_icons(info.dir, suggest=False).state == "icons_review"
+    review = service.icon_review(info.dir)
+    assert review["groups"][0]["count"] == 2 and review["groups"][0]["image"]
+    dlg = IconReviewDialog(info.dir, review)
+    _g, name, meaning, ko, _ni, _sc = dlg.widgets[0]
+    name.setText("Bad Name")
+    dlg.accept()
+    assert dlg.result is None  # 규칙을 어기면 확정하지 않는다
+    name.setText("coin")
+    meaning.setText("Gold")
+    ko.setText("금화")
+    dlg.accept()
+    assert dlg.result.state == "confirmed" and dlg.result.added == ["coin"] and _source(fd, 2) == "AB[[coin]]CD"
+
+
+def test_project_step_buttons_follow_status(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info, _fd = _project_with_extract(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    on = {k: b.isEnabled() for k, b in win.project.step_buttons.items()}
+    assert on == {"extract": True, "review": True, "icons": True, "finish": True, "glossary": False,
+                  "translate": False, "excel": False, "erase": True, "compose": False, "results": False,
+                  "test": False}
+    workspace.set_status(workspace.load_project_info(info.dir), "glossary_confirmed")
+    win.project.refresh()
+    assert win.project.step_buttons["translate"].isEnabled() and not win.project.step_buttons["glossary"].isEnabled()
+
+
+def test_step_flows_ask_and_continue(qapp, tmp_path, monkeypatch):
+    """엔진이 확인을 요구하면 묻고, ‘예’면 accept로 다시 부른다. 한도로 멈추면 자동 이어 하기 타이머."""
+    from app.qt import steps
+    from app.qt.main import MainWindow
+
+    info, _fd = _project_with_extract(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    act = win.project.steps
+    monkeypatch.setattr(steps, "_ask_list", lambda *a, **k: True)
+    called = {}
+    monkeypatch.setattr(act, "finish", lambda accept=False: called.update(accept=accept))
+    act._finish_done(service.GlossaryReviewResult("needs_confirmation", issues=["카드 1장 남음"]))
+    assert called == {"accept": True}
+
+    import datetime as dt
+    soon = (dt.datetime.now() + dt.timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    r = service.ProjectExtractResult("paused", files=[{"file": "카드/cards", "state": "paused", "done": 1,
+                                                       "remaining": 2, "failed": 0, "recheck": (0, 0)}],
+                                     reason="사용 한도", retry_after=soon)
+    act._extract_done(r, (None, "double-check", "claude-code"))
+    assert act.resume_timer is not None and act.resume_timer.isActive()
+    assert 5 * 60_000 <= act.resume_timer.remainingTime() <= 7 * 60_000
+    act.resume_timer.stop()
+
+
+def test_region_editor_moves_between_groups_and_shows_used_fonts_first(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    service.add_files(info.dir, [_pdf(tmp_path / "in2" / "items.pdf", 2)], "아이템", new_group=True)
+    ov = service.project_overview(info.dir)
+    g1, g2 = sorted(ov["groups"], key=lambda g: g["name"] != "카드")
+    service.save_region_template(g1["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1},
+         "style": {"font": {"family": "Jua", "file": "fonts/jua/Jua-Regular.ttf"}}},
+        {"name": "본문", "rect": {"x": 0.1, "y": 0.5, "w": 0.3, "h": 0.1}}]})
+    service.save_region_template(g2["dir"], {"regions": [
+        {"name": "효과", "rect": {"x": 0.2, "y": 0.6, "w": 0.5, "h": 0.2},
+         "style": {"font": {"family": "Gaegu", "file": "fonts/gaegu/Gaegu-Regular.ttf"}}}]})
+    groups = [{"name": g["name"], "dir": g["dir"], "files": [f["dir"] for f in g["files"]]} for g in (g1, g2)]
+    ed = RegionEditor(Path(g1["dir"]), groups[0]["files"], groups=groups)
+    assert ed.file_combo.count() == 2 and ed.file_combo.itemText(1).startswith("아이템 / ")
+
+    # 본문을 고르면 글꼴 목록 맨 위에 다른 영역(이름: Jua, 아이템/효과: Gaegu)에서 쓰는 글꼴이 굵게
+    body = next(i for i in ed.items() if i.name == "본문")
+    body.setSelected(True)
+    top = [ed.f_font.itemText(i) for i in range(2)]
+    assert "Jua" in top[0] and "쓰는 곳: 이름" in top[0] and "Gaegu" in top[1] and "아이템/효과" in top[1]
+    assert ed.f_font.itemData(0, Qt.ItemDataRole.FontRole).bold()
+    assert not (ed.f_font.itemData(4, Qt.ItemDataRole.FontRole) or ed.f_font.font()).bold()
+
+    # 바꾼 게 있으면 그룹을 옮길 때 묻는다: 취소면 그대로
+    ed._mark_dirty()
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Cancel))
+    ed.file_combo.setCurrentIndex(1)
+    assert ed.group_dir == Path(g1["dir"]) and ed.file_combo.currentIndex() == 0
+    # 버리면 아이템 그룹 영역으로
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Discard))
+    ed.file_combo.setCurrentIndex(1)
+    assert ed.group_dir == Path(g2["dir"]) and [i.name for i in ed.items()] == ["효과"] and not ed.dirty
+    assert "아이템" in ed.windowTitle() and ed.page_total.text() == "/ 2"
+
+
+# ================================================================ 3차: 지우기 → 한글 넣기 → 결과 보기, 시험 실행, 이어 하기
+def _translated_project(tmp_path):
+    from app.extract_cc import ClaudeCodeClient
+    from app import glossary
+    from tests.test_extract import FakeRunner
+    from tests.test_project_steps import _project as steps_project
+    from tests.test_service import GAEGU
+    from tests.test_translate import _write_extract
+
+    if not GAEGU.exists():
+        pytest.skip("fonts/ 없음")
+    info, fd = steps_project(tmp_path)
+    _write_extract(fd, 1, "HELLO")
+    _write_extract(fd, 2, "HELLO")
+    glossary.confirm(info, [{"source": "HELLO", "ko": "안녕", "category": "기타"}])
+    workspace.set_status(info, "glossary_confirmed")
+    service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=FakeRunner([])))
+    return info, fd
+
+
+def test_test_run_and_results_do_not_touch_project(tmp_path):
+    import hashlib
+
+    info, fd = _translated_project(tmp_path)
+    assert service.erase_project(info.dir).state == "done"
+    assert service.compose_project(info.dir).state == "done"
+    pdf = fd / "translated" / "translated.pdf"
+    before = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    pages = service.result_pages(fd / "translated")
+    assert [p["page"] for p in pages] == [1, 2] and pages[0]["card_png"].exists()
+    assert pages[0]["regions"][0]["name"] == "이름" and pages[0]["regions"][0]["png"].exists()
+
+    r = service.test_run(fd, "2", out_root=tmp_path / "runs")
+    assert r.state == "done" and r.pages == [2] and r.run_dir.parent == tmp_path / "runs"
+    assert [p["page"] for p in service.result_pages(r.run_dir)] == [2]
+    assert hashlib.sha256(pdf.read_bytes()).hexdigest() == before  # 프로젝트 결과는 그대로
+
+
+def test_result_viewer_and_output_buttons(qapp, tmp_path):
+    from app.qt.main import MainWindow
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    assert v.pages.count() == 2 and v.image.pixmap() is not None and v.regions.count() == 1
+    v.regions.setCurrentRow(0)
+    v.only.setChecked(True)  # 문제 있는 쪽만: 없음
+    assert v.pages.count() == 0 and "문제 있는 쪽 0" in v.info.text()
+
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    on = {k: win.project.step_buttons[k].isEnabled() for k in ("erase", "compose", "results", "test")}
+    assert on == {"erase": True, "compose": True, "results": True, "test": True}
+    # 다시 켜면 마지막 프로젝트를 연다
+    win2 = MainWindow(root=tmp_path)
+    assert win2.resume_last() and win2.stack.currentWidget() is win2.project
+    assert win2.project.project_dir.resolve() == info.dir.resolve()

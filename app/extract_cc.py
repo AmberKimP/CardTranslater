@@ -47,8 +47,9 @@ class CCReply:
 
 def _run_subprocess(args: list[str], cwd: Path, timeout: float, input_text: str | None = None) -> tuple[int, str, str]:
     """input_text: 긴 지시문은 명령줄 대신 표준 입력으로 (Windows 명령줄 길이 제한 ≈ 32K자)."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # 창 프로그램(exe)에서 콘솔 창이 깜빡이지 않게
     p = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout, input=input_text)
+                       timeout=timeout, input=input_text, creationflags=flags)
     return p.returncode, p.stdout, p.stderr
 
 

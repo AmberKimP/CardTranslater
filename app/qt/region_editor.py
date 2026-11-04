@@ -264,10 +264,16 @@ class RegionEditor(QDialog):
 
     saved = Signal()
 
-    def __init__(self, group_dir: Path, file_dirs: list[Path], parent: QWidget | None = None):
+    def __init__(self, group_dir: Path, file_dirs: list[Path], parent: QWidget | None = None,
+                 groups: list[dict] | None = None):
+        """groups: 프로젝트의 모든 그룹 [{"name", "dir", "files": [파일 폴더]}]. 주면 파일 목록에서 다른 그룹의
+        파일을 골라 그 그룹의 영역으로 옮겨 갈 수 있다."""
         super().__init__(parent)
         self.group_dir = Path(group_dir)
         self.file_dirs = [Path(f) for f in file_dirs]
+        self.groups = [{"name": g["name"], "dir": Path(g["dir"]), "files": [Path(f) for f in g["files"]]}
+                       for g in (groups or []) if g["files"]] or [
+            {"name": self.group_dir.name, "dir": self.group_dir, "files": self.file_dirs}]
         self.template = service.load_region_template(self.group_dir)
         self.fonts = service.font_choices()
         self.dirty = False
@@ -291,10 +297,16 @@ class RegionEditor(QDialog):
     # ------------------------------------------------------------ 화면 구성
     def _build_ui(self):
         top = QHBoxLayout()
-        top.addWidget(QLabel("파일"))
+        top.addWidget(QLabel("그룹 / 파일"))
         self.file_combo = QComboBox()
-        for fd in self.file_dirs:
-            self.file_combo.addItem(fd.name, str(fd))
+        self.file_combo.setMinimumWidth(260)
+        for g in self.groups:  # 모든 그룹의 파일. 다른 그룹 파일을 고르면 그 그룹 영역으로 옮겨 간다
+            for fd in g["files"]:
+                self.file_combo.addItem(f"{g['name']} / {fd.name}", (str(g["dir"]), str(fd)))
+        cur = next((i for i in range(self.file_combo.count())
+                    if Path(self.file_combo.itemData(i)[0]) == self.group_dir), 0)
+        self.file_combo.setCurrentIndex(cur)
+        self._combo_index = cur
         top.addWidget(self.file_combo)
         top.addWidget(QLabel("쪽"))
         self.page_spin = QSpinBox()
@@ -360,9 +372,7 @@ class RegionEditor(QDialog):
         crow.addWidget(self.f_color)
         crow.addWidget(color_btn)
         self.f_font = QComboBox()
-        self.f_font.addItem("(기본: Noto Sans KR)", "")
-        for f in self.fonts:
-            self.f_font.addItem(f["label"], f["file"])
+        self._fill_fonts()
         self.f_keep_tall = QDoubleSpinBox()
         self.f_keep_tall.setRange(0, 200)
         self.f_keep_tall.setDecimals(1)
@@ -412,8 +422,49 @@ class RegionEditor(QDialog):
 
         self.page_spin.setValue(int(self.template.get("reference_page", 1) or 1))
         self.page_spin.valueChanged.connect(lambda _v: self._change_page())
-        self.file_combo.currentIndexChanged.connect(lambda _i: self._change_page())
+        self.file_combo.currentIndexChanged.connect(self._on_file_combo)
         self._update_form_enabled()
+
+    def used_fonts(self, exclude: RegionItem | None = None) -> list[tuple[str, str, list[str]]]:
+        """다른 영역에서 이미 고른 글꼴 [(파일, 이름, [쓰는 곳])]: 이 창의 영역 + 프로젝트의 다른 그룹."""
+        used: dict[str, tuple[str, list[str]]] = {}
+
+        def add(font, where: str):
+            f = (font or {}).get("file")
+            if f:
+                fam = font.get("family") or next((x["family"] for x in self.fonts if x["file"] == f), Path(f).stem)
+                used.setdefault(f, (fam, []))[1].append(where)
+
+        for it in self.items():
+            if it is not exclude and it.kind != "protect":
+                add((it.data.get("style") or {}).get("font"), it.name)
+        for g in self.groups:
+            if g["dir"] == self.group_dir:
+                continue
+            for r in service.load_region_template(g["dir"]).get("regions", []):
+                add((r.get("style") or {}).get("font"), f"{g['name']}/{r.get('name')}")
+        return [(f, fam, where) for f, (fam, where) in used.items()]
+
+    def _fill_fonts(self, exclude: RegionItem | None = None):
+        """글꼴 목록: 맨 위에 다른 영역에서 쓰는 글꼴(굵게), 그다음 기본값과 전체 목록."""
+        self.f_font.blockSignals(True)
+        self.f_font.clear()
+        used = self.used_fonts(exclude)
+        bold = QFont(self.f_font.font())
+        bold.setBold(True)
+        for f, fam, where in used:
+            label = next((x["label"] for x in self.fonts if x["file"] == f), fam)
+            more = " …" if len(where) > 3 else ""
+            self.f_font.addItem(f"{label}  (쓰는 곳: {', '.join(where[:3])}{more})", f)
+            self.f_font.setItemData(self.f_font.count() - 1, bold, Qt.ItemDataRole.FontRole)
+        if used:
+            self.f_font.insertSeparator(self.f_font.count())
+        self.f_font.addItem("(기본: Noto Sans KR)", "")
+        top = {f for f, _fam, _w in used}
+        for f in self.fonts:
+            if f["file"] not in top:
+                self.f_font.addItem(f["label"], f["file"])
+        self.f_font.blockSignals(False)
 
     def _ratio_spin(self):
         s = QDoubleSpinBox()
@@ -424,7 +475,56 @@ class RegionEditor(QDialog):
 
     # ------------------------------------------------------------ 쪽·영역 불러오기
     def current_file(self) -> Path:
-        return Path(self.file_combo.currentData())
+        return Path(self.file_combo.currentData()[1])
+
+    def _on_file_combo(self, idx: int):
+        gdir = Path(self.file_combo.itemData(idx)[0])
+        if gdir == self.group_dir:
+            self._combo_index = idx
+            self._change_page()
+            return
+        if not self._confirm_leave():  # 저장 안 한 변경이 있으면 묻는다. 취소면 원래 파일로
+            self.file_combo.blockSignals(True)
+            self.file_combo.setCurrentIndex(self._combo_index)
+            self.file_combo.blockSignals(False)
+            return
+        self._combo_index = idx
+        self.switch_group(gdir)
+
+    def switch_group(self, gdir: Path):
+        """다른 그룹의 영역 템플릿으로 바꾼다 (같은 창에서)."""
+        for it in self.items():
+            self.scene.removeItem(it)
+        self._order = []
+        self.group_dir = Path(gdir)
+        g = next(g for g in self.groups if g["dir"] == self.group_dir)
+        self.file_dirs = g["files"]
+        self.template = service.load_region_template(self.group_dir)
+        self.page_spin.blockSignals(True)
+        self.page_spin.setMaximum(9999)
+        self.page_spin.setValue(int(self.template.get("reference_page", 1) or 1))
+        self.page_spin.blockSignals(False)
+        self._load_page()
+        self._load_regions()
+        self.dirty = False
+        self._update_title()
+        self._update_form_enabled()
+        self.view.fit()
+        self.status.setText(f"그룹: {g['name']}")
+
+    def _confirm_leave(self) -> bool:
+        """바뀐 영역이 있으면 저장할지 묻는다. 계속해도 되면 True."""
+        if not self.dirty:
+            return True
+        r = QMessageBox.question(self, "저장하지 않은 변경", f"‘{self.group_dir.name}’의 바뀐 영역을 저장할까요?",
+                                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                                 | QMessageBox.StandardButton.Cancel)
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Save:
+            return self.save()
+        self.dirty = False
+        return True
 
     def _load_page(self):
         fd = self.current_file()
@@ -591,6 +691,7 @@ class RegionEditor(QDialog):
                                              if st.get("align", "left") in dict(ALIGN_LABELS) else 0))
             self.f_color.setText(st.get("color", ""))
             ff = (st.get("font") or {}).get("file", "")
+            self._fill_fonts(exclude=it)
             idx = self.f_font.findData(ff)
             if idx < 0 and ff:  # 목록에 없는 글꼴 파일도 보여 준다
                 self.f_font.addItem(f"{(st.get('font') or {}).get('family') or Path(ff).stem} (목록 밖)", ff)
@@ -713,11 +814,7 @@ class RegionEditor(QDialog):
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}{' *' if self.dirty else ''}")
 
     def closeEvent(self, ev):
-        if self.dirty:
-            r = QMessageBox.question(self, "저장하지 않은 변경", "바뀐 영역을 저장할까요?",
-                                     QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-                                     | QMessageBox.StandardButton.Cancel)
-            if r == QMessageBox.StandardButton.Cancel or (r == QMessageBox.StandardButton.Save and not self.save()):
-                ev.ignore()
-                return
+        if not self._confirm_leave():
+            ev.ignore()
+            return
         super().closeEvent(ev)

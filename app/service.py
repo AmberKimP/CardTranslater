@@ -1050,7 +1050,7 @@ def font_choices() -> list[dict]:
     out = []
     for fam in cat.get("families", []):
         d = ROOT / "fonts" / fam["dir"]
-        for f in sorted(d.glob("*.[ot]tf")) if d.exists() else []:
+        for f in sorted(p for p in d.glob("*.[ot]tf") if "[" not in p.name) if d.exists() else []:  # 가변 글꼴 원본 제외
             weight = f.stem.split("-")[-1] if "-" in f.stem else ""
             family = fam["name"] + (f" {weight}" if weight and weight != "Regular" else "")
             out.append({"label": f"{family} — {fam.get('ko_name', '')}", "family": family,
@@ -1121,9 +1121,10 @@ def engine_status() -> dict:
     import os
 
     cc = bool(shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd"))
-    env = Path(__file__).resolve().parent.parent / ".env"
-    api = bool(os.environ.get("ANTHROPIC_API_KEY")) or (
-        env.exists() and "ANTHROPIC_API_KEY" in env.read_text(encoding="utf-8", errors="ignore"))
+    from app.settings import env_files
+
+    api = bool(os.environ.get("ANTHROPIC_API_KEY")) or any(
+        e.exists() and "ANTHROPIC_API_KEY" in e.read_text(encoding="utf-8", errors="ignore") for e in env_files())
     msg = ("Claude Code를 찾았습니다 (요금제로 실행)" if cc else
            "Claude Code가 없습니다. 설치·로그인하거나 API 키 방식을 쓰세요")
     return {"claude-code": cc, "api": api, "message": msg}
@@ -1139,7 +1140,9 @@ def get_settings():
 def save_settings(data_dir: str | Path, engine: str = "claude-code") -> Path:
     from app import settings
 
-    return settings.save(settings.Settings(str(data_dir), engine))
+    s = settings.load()
+    s.data_dir, s.engine = str(data_dir), engine
+    return settings.save(s)
 
 
 def data_dir() -> Path:
@@ -1147,3 +1150,235 @@ def data_dir() -> Path:
     from app import settings
 
     return settings.data_dir()
+
+
+# ---------------------------------------------------------------- 화면용: 원문 확인 (2차)
+def extracted_cells(file_dir: Path | str) -> list[dict]:
+    """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
+    "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None."""
+    from app import workspace
+    from app.extract import MODEL_LABEL, load_extracted, verification_label
+
+    fd = Path(file_dir)
+    proj = load_project(fd)
+    ext = load_extracted(fd)
+    out = []
+    for pno in workspace.included_pages(fd):
+        for reg in proj.template.regions:
+            r = (ext.get(pno) or {}).get(reg.name)
+            out.append({
+                "page": pno, "region": reg.name, "kind": reg.kind,
+                "source": None if r is None else r.get("source"),
+                "label": "읽지 않음" if r is None else verification_label(r),
+                "uncertain": bool(r and r.get("uncertain")),
+                "note": (r or {}).get("note", ""),
+                "readings": [{"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"]}
+                             for x in (r or {}).get("readings") or []],
+                "edited": bool(r and r.get("edited_by")),
+            })
+    return out
+
+
+def region_crop(file_dir: Path | str, page: int, region: str) -> bytes:
+    """원본에서 영역을 잘라 바로 세운 PNG (원문 확인 화면)."""
+    import pymupdf
+
+    from app.extract import region_crop_png
+
+    fd = Path(file_dir)
+    proj = load_project(fd)
+    reg = next(r for r in proj.template.regions if r.name == region)
+    with pymupdf.open(proj.source_pdf) as d:
+        return region_crop_png(d[page - 1], reg, 1600)
+
+
+def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
+    """사람이 고친 원문을 추출 결과에 저장한다 (확인 필요를 지우고, 모델이 읽은 값은 note에 남긴다).
+    source: 글자 칸은 문자열, 태그 칸은 목록. 그 칸의 번역은 다음 번역 때 새 원문으로 다시 한다."""
+    from app.extract import page_file
+
+    fd = Path(file_dir)
+    files = [p for p in (page_file(fd / "extract", page), fd / "extract" / f"page-{page:03d}.json") if p.exists()]
+    if not files:  # 아직 읽지 않은 쪽: 손 입력으로 새로 만든다
+        f = page_file(fd / "extract", page)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"page": page, "model": "사람", "regions": {}}, ensure_ascii=False), encoding="utf-8")
+        files = [f]
+    for f in files:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
+        old = r.get("source")
+        if old == source:
+            continue
+        r["source"] = source
+        r["uncertain"] = False
+        r["edited_by"] = "사람"
+        r["note"] = (f"사람이 고침 (모델: {json.dumps(old, ensure_ascii=False)})" if old is not None
+                     else "사람이 입력")
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
+
+
+# ---------------------------------------------------------------- 화면용: 아이콘 이름 확인 (2차)
+def icon_review(project_dir: Path | str) -> dict | None:
+    """find_icons 뒤 이름을 정할 묶음: {"groups": [{"group", "image", "suggest", "meaning", "ko", "count",
+    "examples"}], "known": [사전 이름]}. 찾기 결과가 없으면 None."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.dir / "work" / "icons"
+    if not (work / "scan.json").exists():
+        return None
+    res = icons.load_scan(work)
+    by_id = {o.id: o for o in res.occurrences}
+    groups = []
+    for g, gi in res.groups.items():
+        members = [o for o in res.occurrences if o.group == g]
+        groups.append({"group": g, "image": by_id[gi["rep"]].png if gi.get("rep") else None,
+                       "suggest": gi.get("suggest", ""), "meaning": gi.get("meaning", ""), "ko": gi.get("ko", ""),
+                       "count": len(members),
+                       "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
+                       "reason": members[0].reason if members and not gi.get("rep") else ""})
+    return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
+
+
+def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult:
+    """화면에서 정한 아이콘 이름을 사전에 넣고 원문을 바꾼다.
+    rows: [{"group", "name", "meaning", "ko", "scale", "not_icon"}]."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.dir / "work" / "icons"
+    if not (work / "scan.json").exists():
+        return IconImportResult("blocked", blocking=["아이콘 찾기 결과가 없습니다"])
+    xl = [{"묶음": r["group"], "이름": r.get("name", ""), "뜻(원문)": r.get("meaning", ""),
+           "한국어 이름": r.get("ko", ""), "처리": icons.NOT_ICON if r.get("not_icon") else "",
+           "표시 크기": r.get("scale") or icons.DEFAULT_SCALE} for r in rows]
+    r = icons.import_rows(info, xl, work)
+    if r.blocking:
+        return IconImportResult("blocked", blocking=r.blocking)
+    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed)
+
+
+# ---------------------------------------------------------------- 화면용: 결과 보기·테스트 실행 (3차)
+def result_pages(run_dir: Path | str) -> list[dict]:
+    """한글 넣기 결과 폴더(translated/ 또는 시험 폴더)의 쪽마다: {"page", "card_png", "status": [..],
+    "regions": [{"name", "status", "png"}]}. 상태(넘침·글자 축소·아이콘 오류 등)가 있는 칸을 표시하는 데 쓴다."""
+    from app.typeset_compose import safe_name
+
+    d = Path(run_dir)
+    rep_f = d / "report.json"
+    if not rep_f.exists():
+        return []
+    rep = json.loads(rep_f.read_text(encoding="utf-8"))
+    out = []
+    for pd in rep.get("pages_detail", []):
+        pno = int(pd["page"])
+        regions, page_status = [], set()
+        for idx, (name, rec) in enumerate(pd.get("regions", {}).items()):
+            st = list(rec.get("status") or [])
+            for r in rec.get("results") or []:  # 태그 라벨마다
+                st += [s for s in r.get("status") or [] if s not in st]
+            page_status.update(st)
+            png = d / "compare" / f"p{pno:03d}_{safe_name(name, idx)}.png"
+            regions.append({"name": name, "status": st, "png": png if png.exists() else None,
+                            "errors": rec.get("errors") or []})
+        card = d / "compare" / f"p{pno:03d}_card.png"
+        out.append({"page": pno, "card_png": card if card.exists() else None, "status": sorted(page_status),
+                    "regions": regions})
+    return out
+
+
+@dataclass
+class TestRunResult:
+    state: str  # done | blocked
+    run_dir: Path | None = None  # 시험 한글 넣기 폴더 (compare/, report.json)
+    erase_dir: Path | None = None
+    pages: list[int] = field(default_factory=list)
+    status_summary: dict = field(default_factory=dict)
+    reason: str = ""
+
+
+def test_run(file_dir: Path | str, pages: str, *, out_root: Path | str | None = None,
+             progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> TestRunResult:
+    """고른 쪽만 시험 폴더(데이터 폴더/test_runs)에서 지우기 -> 한글 넣기. 프로젝트의 cleared/·translated/는
+    건드리지 않는다. 번역은 검수 엑셀이 있으면 그것, 없으면 초벌 번역."""
+    from app.excel_io import import_translation
+    from app.typeset_compose import run_compose
+
+    fd = Path(file_dir)
+    root = Path(out_root) if out_root else data_dir() / "test_runs"
+    project = load_project(fd)
+    import pymupdf
+
+    with pymupdf.open(project.source_pdf) as d:
+        page_list = parse_page_spec(pages, d.page_count)
+    if not page_list:
+        return TestRunResult("blocked", reason="쪽을 고르세요")
+    er = erase(fd, pages, test=True, out_root=root, progress=progress, cancel=cancel)
+    if not er.ok:
+        return TestRunResult("blocked", erase_dir=er.output_dir, reason=er.error or "지우기 실패")
+    xlsx = fd / "번역_검수.xlsx"
+    if xlsx.exists():
+        imp = import_translation(project, xlsx)
+        cards, source = imp.cards, str(xlsx)
+    else:
+        cards, source = cards_from_translation(fd), "초벌 번역 (translate/cache.json)"
+    _final, run_dir = _output_dirs(project.root, "translated", "compose", True, root)
+    run_dir, _code = run_compose(project.root, er.output_dir, pages, run_dir, cards=cards, translation_source=source,
+                                 out_name="composed.pdf", progress=progress or _noop, cancel=cancel)
+    rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    return TestRunResult("done", run_dir, er.output_dir, page_list, rep.get("status_summary", {}))
+
+
+def remember_project(project_dir: Path | str) -> None:
+    """마지막으로 연 프로젝트 (다음에 앱을 켜면 이어서 연다)."""
+    from app import settings
+
+    s = settings.load()
+    s.last_project = str(Path(project_dir).resolve())
+    settings.save(s)
+
+
+def last_project() -> Path | None:
+    from app import settings
+
+    p = settings.load().last_project
+    return Path(p) if p and (Path(p) / "project.json").exists() else None
+
+
+def self_check() -> dict:
+    """설치(exe) 점검: 글꼴·라이브러리·한글 그리기가 되는지. {"ok": bool, ...}."""
+    import pymupdf
+
+    from app.typeset import ROOT, TextStyle, finalize, typeset_region
+
+    from app import settings
+
+    out: dict = {"root": str(ROOT), "data_dir": str(data_dir()), "frozen": settings.is_frozen()}
+    fonts = font_choices()
+    out["fonts"] = len(fonts)
+    libs = {}
+    for name in ("pymupdf", "cv2", "numpy", "openpyxl", "PIL", "anthropic", "fontTools"):
+        try:
+            m = __import__(name)
+            libs[name] = getattr(m, "__version__", getattr(m, "VersionBind", "ok"))
+        except Exception as e:  # noqa: BLE001
+            libs[name] = f"없음: {e}"
+    out["libs"] = libs
+    try:
+        doc = pymupdf.open()
+        page = doc.new_page(width=200, height=100)
+        ff = ROOT / (fonts[0]["file"] if fonts else "fonts/notosanskr/NotoSansKR-Regular.ttf")
+        r = typeset_region(page, (10, 10, 190, 60), "한글 점검", TextStyle(font_file=str(ff), size_pt=10))
+        finalize(doc)
+        data = doc.tobytes()
+        text = pymupdf.open(stream=data, filetype="pdf")[0].get_text()
+        out["typeset"] = bool(r.drawn and "한글점검" in "".join(text.split()))
+    except Exception as e:  # noqa: BLE001
+        out["typeset"] = f"실패: {e}"
+    out["engine"] = engine_status()
+    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and not any(
+        str(v).startswith("없음") for v in libs.values())
+    return out
