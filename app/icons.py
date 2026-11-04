@@ -94,27 +94,97 @@ def _ink(img: np.ndarray, em_px: float) -> np.ndarray:
     return dark | ((sat > 0.35) & dark_ink(img, 20.0, bg_px))
 
 
-def _bands(ink: np.ndarray) -> list[tuple[int, int]]:
-    """잉크가 있는 가로 줄 띠 (y0, y1)."""
-    rows = ink.sum(axis=1) > max(2, ink.shape[1] * 0.004)
-    bands, start = [], None
-    for y, v in enumerate(list(rows) + [False]):
-        if v and start is None:
-            start = y
-        elif not v and start is not None:
-            bands.append([start, y])
-            start = None
+def _text_components(ink: np.ndarray) -> tuple[list[tuple[int, int, int, int, int]], list[tuple[int, int]]]:
+    """(글자·아이콘 덩어리 [(x, y, w, h, 넓이)], 구분선이 있는 높이 [(y0, y1)]).
+    영역 가장자리에 닿은 덩어리는 글자 크기일 때만 남기고(카드 테두리·그림 조각 제외), 얇고 긴 가로선은
+    구분선으로 따로 돌려준다 (그 높이의 장식, 예: 가운데 ◆도 줄로 세지 않도록)."""
+    import cv2
+
+    H, W = ink.shape
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    raw = [tuple(int(v) for v in st[c]) for c in range(1, n)]
+    rules, inner, edge = [], [], []
+    for x, y, w, h, a in raw:
+        if a < 6:
+            continue
+        if w > W * 0.15 and h < w * 0.12:
+            rules.append((y, y + h))
+            continue
+        if y <= 0 or y + h >= H:
+            continue  # 위·아래 가장자리 (카드 테두리·그림 조각)
+        (edge if (x <= 0 or x + w >= W) else inner).append((x, y, w, h, a))
+    hs = sorted(c[3] for c in inner if c[4] >= 30) or [H // 6]
+    med = hs[len(hs) // 2]
+    keep = inner + [c for c in edge if c[3] <= med * 1.3 and c[2] <= med * 2]
+    return keep, rules
+
+
+def _bands_from(comps: list[tuple[int, int, int, int, int]],
+                rules: list[tuple[int, int]] = ()) -> list[tuple[int, int]]:
+    """덩어리들을 세로로 겹치는 것끼리 묶어 줄 띠 (y0, y1)로. 구분선 높이에 걸친 띠는 뺀다."""
+    if not comps:
+        return []
+    hs = sorted(c[3] for c in comps)
+    med = hs[len(hs) // 2]
+    main = sorted((c for c in comps if c[3] >= med * 0.5), key=lambda c: c[1])  # 탁점·점은 줄을 만들지 않는다
+    bands: list[list[int]] = []
+    for x, y, w, h, _a in main:
+        if bands and y < bands[-1][1] - min(h, bands[-1][1] - bands[-1][0]) * 0.3:
+            bands[-1][1] = max(bands[-1][1], y + h)
+        else:
+            bands.append([y, y + h])
+    bands = [b for b in bands if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
     hmax = max(b[1] - b[0] for b in bands)
-    merged = []
-    for b in bands:  # 가까운 띠(글자 윗부분 점, 탁점)는 합친다
-        if merged and b[0] - merged[-1][1] < hmax * 0.25:
-            merged[-1][1] = b[1]
-        else:
-            merged.append(b)
-    hmax = max(b[1] - b[0] for b in merged)
-    return [(a, b) for a, b in merged if b - a >= hmax * 0.4]
+    bands = [b for b in bands if b[1] - b[0] >= hmax * 0.35]  # 띠 테두리 같은 가는 줄
+    hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
+    return [(a, b) for a, b in bands if b - a >= hmed * 0.5]
+
+
+def _bands(ink: np.ndarray) -> list[tuple[int, int]]:
+    """잉크가 있는 가로 줄 띠 (y0, y1)."""
+    comps, rules = _text_components(ink)
+    return _bands_from(comps, rules)
+
+
+def _line_units(line: str) -> float:
+    return sum(_units(ch) for ch in TOKEN_RE.sub("\u25a0", line)) + 0.1 * len(TOKEN_RE.findall(line))
+
+
+def _match_line(lines: list[str], line_no: int, bands, comps, max_diff: int = 2) -> int | None:
+    """원문 줄과 이미지 줄의 수가 다를 때, 남는 쪽을 빼 보며 줄 길이 비율이 가장 비슷한 짝을 찾는다.
+    원문 line_no 줄에 짝지어진 이미지 줄 번호 (못 정하면 None)."""
+    from itertools import combinations
+
+    nb, nl = len(bands), len(lines)
+    if abs(nb - nl) > max_diff or not nb or not nl:
+        return None
+    widths = []
+    for y0, y1 in bands:
+        xs = [(x, x + w) for x, y, w, h, _a in comps if y0 <= y + h / 2 <= y1]
+        widths.append(max(b for _a, b in xs) - min(a for a, _b in xs) if xs else 0)
+    units = [_line_units(ln) for ln in lines]
+    best, best_cost = None, float("inf")
+    if nb > nl:
+        for drop in combinations(range(nb), nb - nl):
+            keep = [i for i in range(nb) if i not in drop]
+            ws = [widths[i] for i in keep]
+            r = sum(ws) / max(sum(units), 1e-6)
+            cost = sum(abs(w - u * r) for w, u in zip(ws, units)) / max(sum(ws), 1)
+            if cost < best_cost:
+                best, best_cost = keep[line_no], cost
+    else:
+        for drop in combinations(range(nl), nl - nb):
+            if line_no in drop:
+                continue
+            keep = [i for i in range(nl) if i not in drop]
+            us = [units[i] for i in keep]
+            r = sum(widths) / max(sum(us), 1e-6)
+            cost = sum(abs(w - u * r) for w, u in zip(widths, us)) / max(sum(widths), 1)
+            if cost < best_cost:
+                best, best_cost = keep.index(line_no), cost
+    return best if best_cost < 0.35 else None
 
 
 def _units(ch: str) -> float:
@@ -124,8 +194,6 @@ def _units(ch: str) -> float:
 
 def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int, int] | None, str]:
     """text 안 index번째 아이콘 토큰([[..]])의 위치 (x0, y0, x1, y1, 이미지 px)와 실패 이유."""
-    import cv2
-
     lines = [ln for ln in text.split("\n") if ln.strip()]
     # 토큰이 들어 있는 줄과 그 줄 안에서의 순서
     k = -1
@@ -140,75 +208,119 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         return None, "원문에서 아이콘 자리를 못 찾음"
     em_guess = img.shape[0] / max(1, len(lines)) * 0.6
     ink = _ink(img, em_guess)
-    bands = _bands(ink)
-    if len(bands) != len(lines):
-        return None, f"줄 수가 다름 (원문 {len(lines)}줄, 이미지 {len(bands)}줄)"
-    y0, y1 = bands[line_no]
+    all_comps, rules = _text_components(ink)
+    bands = _bands_from(all_comps, rules)
+    if not bands:
+        return None, "영역에서 글자를 찾지 못함"
+    if len(bands) == len(lines):
+        band_i = line_no
+    else:  # 줄 수가 다르면(추출이 줄을 빠뜨림·장식 줄) 줄 길이가 가장 잘 맞는 짝을 고른다
+        band_i = _match_line(lines, line_no, bands, all_comps)
+        if band_i is None:
+            return None, f"줄 수가 다름 (원문 {len(lines)}줄, 이미지 {len(bands)}줄)"
+    y0, y1 = bands[band_i]
     band_h = y1 - y0
-    n, lab, st, _c = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
-    comps = []
-    for c in range(1, n):
-        x, y, w, h, a = st[c]
-        cy = y + h / 2
-        if y0 - band_h * 0.2 <= cy <= y1 + band_h * 0.2 and a >= 4:
-            comps.append((c, x, y, w, h, a))
-    big = [c for c in comps if c[4] >= band_h * 0.2]
-    if not big:
+    em = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]  # 보통 글자 줄 높이
+    comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
+    if not comps:
         return None, "그 줄에 잉크가 없음"
-    lx0 = min(c[1] for c in big)
-    lx1 = max(c[1] + c[3] for c in big)
-
-    def strip(s):
-        return TOKEN_RE.sub("■", s)  # 다른 아이콘도 한 칸
-
-    u_before = sum(_units(ch) for ch in strip(before))
-    u_total = u_before + 1.1 + sum(_units(ch) for ch in strip(after))
-    unit = (lx1 - lx0) / max(u_total, 1e-6)
-    expect = lx0 + (u_before + 0.55) * unit
-    best, best_s = None, 0.0
-    for c in big:
-        _ci, x, y, w, h, a = c
-        if h < band_h * 0.45:
-            continue
-        d = abs(x + w / 2 - expect)
-        if d > unit * 1.6:
-            continue
-        s = a * float(np.exp(-d / unit))  # 가깝고 속이 찬(넓은) 덩어리일수록
-        if s > best_s:
-            best, best_s = c, s
-    if best is None:
-        return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
-    _ci, x, y, w, h, _a = best
-    gx, gy = w * 0.15, h * 0.15
-    bx0, by0, bx1, by1 = x, y, x + w, y + h
-    for c in comps:  # 아이콘 안쪽 무늬(동전 안 숫자 등)는 함께
-        _cj, cx, cy, cw, ch_, _ca = c
-        if cx >= x - gx and cy >= y - gy and cx + cw <= x + w + gx and cy + ch_ <= y + h + gy:
-            bx0, by0, bx1, by1 = min(bx0, cx), min(by0, cy), max(bx1, cx + cw), max(by1, cy + ch_)
-    if not (unit * 0.35 <= bx1 - bx0 <= unit * 2.2):
+    cells = _glyph_cells(comps, em, (y0, y1))
+    seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
+    k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
+    tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
+    if len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
+        box = cells[tok_pos]
+    else:  # 다르면 위치 비율로 가장 가까운 칸 (아이콘 크기만)
+        lx0, lx1 = cells[0][0], cells[-1][2]
+        units = [1.1 if t == "\u25a0" else _units(t) for t in seq]
+        unit = (lx1 - lx0) / max(sum(units), 1e-6)
+        expect = lx0 + (sum(units[:tok_pos]) + units[tok_pos] / 2) * unit
+        reach = max(unit, em) * 1.6
+        cand = [c for c in cells if (c[3] - c[1]) >= em * 0.45 and abs((c[0] + c[2]) / 2 - expect) <= reach]
+        if not cand:
+            return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
+        # 가깝고 큰 칸(아이콘은 보통 글자보다 크다)을 고른다
+        box = max(cand, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]) * float(np.exp(-abs((c[0] + c[2]) / 2 - expect) / reach)))
+    bx0, by0, bx1, by1 = box
+    if not (em * 0.35 <= bx1 - bx0 <= em * 3.0) or by1 - by0 > em * 2.5 or by1 - by0 < em * 0.3:
         return None, "찾은 덩어리 크기가 아이콘 같지 않음"
     return (int(bx0), int(by0), int(bx1), int(by1)), ""
 
 
+def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[tuple[int, int, int, int]]:
+    """한 줄의 덩어리를 글자 칸으로 묶는다.
+    - 가로로 겹치면 늘 하나로 (겹친 카드 아이콘, 아이콘 안 무늬)
+    - 틈이 좁으면 합친 폭이 글자 하나(줄의 글자 높이 정도) 이하일 때만 하나로 (以·ハ처럼 갈라진 글자)
+      -> 글자 사이가 좁은 글꼴에서도 서로 다른 글자는 붙지 않는다."""
+    # 글자·아이콘보다 훨씬 큰 덩어리(띠 테두리·그림 가장자리)는 칸이 아니다
+    boxes = sorted([x, y, x + w, y + h] for x, y, w, h, a in comps if a >= 4 and w <= em * 3.2 and h <= em * 2.6)
+    if band is not None and boxes:  # 줄 위·아래 가장자리에 걸친 가는 조각(띠 테두리)은 뺀다. 가운데의 ‘ー’는 남김
+        b0, b1 = band
+        hb = max(1, b1 - b0)
+        boxes = [b for b in boxes if not ((b[3] - b[1]) < hb * 0.25
+                                          and not (b0 + hb * 0.25 <= (b[1] + b[3]) / 2 <= b0 + hb * 0.75))]
+    if not boxes:
+        return []
+    hs = sorted(b[3] - b[1] for b in boxes)
+    tall = [h for h in hs if h >= hs[-1] * 0.5]
+    gh = tall[len(tall) // 2]  # 이 줄 글자의 높이
+    cells: list[list[int]] = []
+    for b in boxes:
+        if cells:
+            c = cells[-1]
+            overlap = b[0] < c[2] - 1
+            close = b[0] <= c[2] + gh * 0.15 and max(c[2], b[2]) - min(c[0], b[0]) <= gh * 1.12
+            if overlap or close:
+                c[0], c[1], c[2], c[3] = min(c[0], b[0]), min(c[1], b[1]), max(c[2], b[2]), max(c[3], b[3])
+                continue
+        cells.append(list(b))
+    # 점·잡티와 작은 문장부호(、。…)는 칸으로 세지 않는다 (원문 쪽도 SMALL_MARKS를 뺀다)
+    return [tuple(c) for c in cells if (c[3] - c[1]) >= gh * 0.4 or (c[2] - c[0]) >= gh * 0.4]
+
+
+SMALL_MARKS = set("、。，．・,.'`:;…‥")  # 이미지에서 칸으로 세지 않을 만큼 작은 글자
+
+
+def _line_cells(line: str) -> list[str]:
+    """원문 한 줄 -> 글자 칸 목록. 아이콘 토큰은 \u25a0 하나, 공백·작은 문장부호는 칸이 아니다."""
+    return [ch for ch in TOKEN_RE.sub("\u25a0", line) if not ch.isspace() and ch not in SMALL_MARKS]
+
+
+def _token_cell_index(line: str, before: str) -> int:
+    """before(토큰 앞 문자열)까지의 칸 수."""
+    return len(_line_cells(before))
+
+
 def cut_out(img: np.ndarray, box: tuple[int, int, int, int], pad: int = 4) -> np.ndarray:
-    """box를 잘라 배경을 투명하게 한 RGBA."""
+    """box를 잘라 아이콘 바깥 배경만 투명하게 한 RGBA (아이콘 안쪽의 흰 부분·무늬는 살린다)."""
     import cv2
 
     h, w = img.shape[:2]
     x0, y0, x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad), min(w, box[2] + pad), min(h, box[3] + pad)
+    crop = img[y0:y1, x0:x1]
     em = max(box[2] - box[0], box[3] - box[1])
+    from app.erase import dark_ink
+
+    # 잘라 낼 때는 배경색과 뚜렷이 다른 것만 잉크로 본다 (분홍·노랑 카드 바탕이 남지 않게)
+    border = np.concatenate([crop[0], crop[-1], crop[:, 0], crop[:, -1]]).astype(np.float32)
+    bgc = np.median(border, axis=0)
+    dist = np.abs(crop.astype(np.float32) - bgc).max(axis=2)
     bg_px = int(max(31, em * 2.2)) | 1
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (bg_px, bg_px))
-    bg = np.stack([cv2.GaussianBlur(cv2.dilate(img[:, :, i].astype(np.float32), k), (0, 0), bg_px / 6)
-                   for i in range(3)], axis=2)
-    dist = np.abs(img.astype(np.float32) - bg).max(axis=2)
-    alpha = np.clip((dist - 25.0) / 45.0, 0, 1)
-    # 옆 글자가 끼지 않도록 아이콘 덩어리 둘레만 남긴다
-    keep = np.zeros(alpha.shape, np.uint8)
-    keep[box[1]:box[3], box[0]:box[2]] = 1
-    alpha *= keep
-    rgba = np.dstack([img, (alpha * 255).astype(np.uint8)])[y0:y1, x0:x1]
-    return rgba
+    ink = ((dist > 120) | dark_ink(img, 50.0, bg_px)[y0:y1, x0:x1]).astype(np.uint8)
+    inside = np.zeros_like(ink)
+    inside[box[1] - y0:box[3] - y0, box[0] - x0:box[2] - x0] = 1
+    ink &= inside
+    k = max(1, em // 25)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
+    # 바깥에서 채워 들어가 닿지 않는 곳 = 모양 안쪽 (구멍 채우기)
+    flood = np.pad((1 - ink).astype(np.uint8) * 255, 1, constant_values=255)  # 바깥을 한 겹 둘러 네 모서리가 이어지게
+    mask = np.zeros((flood.shape[0] + 2, flood.shape[1] + 2), np.uint8)
+    cv2.floodFill(flood, mask, (0, 0), 0)
+    flood = flood[1:-1, 1:-1]
+    shape = ((ink > 0) | (flood > 0)).astype(np.float32)
+    alpha = cv2.GaussianBlur(shape, (0, 0), max(0.6, k * 0.6))  # 가장자리를 부드럽게
+    alpha = np.clip(alpha * 1.6, 0, 1)
+    return np.dstack([crop, (alpha * 255).astype(np.uint8)])
 
 
 def save_png(rgba: np.ndarray, path: Path) -> None:
@@ -251,11 +363,16 @@ def shape_of(rgba: np.ndarray, n: int = 32) -> Shape:
     else:
         rgb = rgba[:, :, :3]
     h, w = a.shape
+    # 비교할 무늬: 모양 안의 ‘진한 선’ (바깥을 투명하게 한 실루엣만 보면 동전·카드·왕관이 다 비슷해진다)
+    lum = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]).astype(np.float32) / 255.0
+    feat = ((a > 0.5) & (lum < 0.5)).astype(np.float32)  # 진한 선(그림의 테두리·무늬)만
+    if feat.sum() < a.size * 0.03:  # 진한 선이 거의 없는 밝은 색 아이콘은 실루엣으로
+        feat = a
     s = max(h, w)
     m0 = max(1, s // 8)  # 둘레에 빈칸을 둬서 꽉 찬 네모 아이콘도 모양 차이가 생기게
     sq = np.zeros((s + 2 * m0, s + 2 * m0), np.float32)
-    sq[m0 + (s - h) // 2:m0 + (s - h) // 2 + h, m0 + (s - w) // 2:m0 + (s - w) // 2 + w] = a
-    small = cv2.resize(sq, (n, n), interpolation=cv2.INTER_AREA)
+    sq[m0 + (s - h) // 2:m0 + (s - h) // 2 + h, m0 + (s - w) // 2:m0 + (s - w) // 2 + w] = feat
+    small = cv2.GaussianBlur(cv2.resize(sq, (n, n), interpolation=cv2.INTER_AREA), (0, 0), 0.8)
     m = a > 0.5
     color = rgb[m].mean(axis=0) if m.any() else np.zeros(3)
     return Shape(small, w / max(h, 1), color.astype(np.float32))
@@ -401,12 +518,11 @@ def scan(info, work: Path) -> ScanResult:
         if not todo:
             continue
         proj = load_project(fd)
-        regions = {r.name: r for r in proj.template.regions}
         src = next((fd / "source").glob("*.pdf"))
         doc = pymupdf.open(src)
         try:
             for pno, rname, text in todo:
-                img = region_image(doc[pno - 1], regions[rname])
+                img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
                 auto_map, left = {}, []
@@ -675,7 +791,10 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
                     e[k] = m[k]
             out.reused.append(name)
         else:
-            best = max(reps, key=_area)
+            # 대표 그림: 가장 많이 나온 묶음의 그림 (합친 작은 묶음은 잘못 잘린 조각일 수 있음)
+            with_rep = [g for g in groups if res.groups[g].get("rep")]
+            top = max(with_rep, key=lambda g: (res.groups[g].get("count", 0), _area(by_id[res.groups[g]["rep"]].png)))
+            best = by_id[res.groups[top]["rep"]].png
             save_png(load_png(Path(best)), dst / f"{name}.png")
             d["icons"][name] = {"file": f"{name}.png", "meaning": m.get("meaning", ""), "ko": m.get("ko", ""),
                                 "scale": m.get("scale", DEFAULT_SCALE), "valign": "center",

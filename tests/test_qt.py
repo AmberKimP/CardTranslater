@@ -344,7 +344,7 @@ def test_icon_review_dialog_confirms_names(qapp, tmp_path):
     review = service.icon_review(info.dir)
     assert review["groups"][0]["count"] == 2 and review["groups"][0]["image"]
     dlg = IconReviewDialog(info.dir, review)
-    _g, name, meaning, ko, _ni, _sc = dlg.widgets[0]
+    _g, name, meaning, ko, _ni, _sc, _same = dlg.widgets[0]
     name.setText("Bad Name")
     dlg.accept()
     assert dlg.result is None  # 규칙을 어기면 확정하지 않는다
@@ -495,3 +495,321 @@ def test_result_viewer_and_output_buttons(qapp, tmp_path):
     win2 = MainWindow(root=tmp_path)
     assert win2.resume_last() and win2.stack.currentWidget() is win2.project
     assert win2.project.project_dir.resolve() == info.dir.resolve()
+
+
+def test_delete_project_group_file_go_to_trash(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    service.add_files(info.dir, [_pdf(tmp_path / "in" / "b.pdf", 2)], "카드")
+    ov = service.project_overview(info.dir)
+    f0 = ov["groups"][0]["files"][0]
+    dest = service.delete_file(f0["dir"])
+    assert dest.parent == tmp_path / ".trash" and (dest / "source").exists() and not Path(f0["dir"]).exists()
+    assert len(service.project_overview(info.dir)["groups"][0]["files"]) == 1
+    # 화면: 그룹 삭제 (예)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    win.project.tree.setCurrentItem(win.project.tree.topLevelItem(0))
+    assert win.project.b_delete.isEnabled()
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    win.project.delete_selected()
+    assert service.project_overview(info.dir)["groups"] == []
+    # 홈: 프로젝트 삭제. 게임(용어집 폴더)은 남는다
+    win.show_home()
+    win.home.table.selectRow(0)
+    win.home.delete_selected()
+    assert service.list_projects(tmp_path) == [] and (tmp_path / "games" / "G" / "game.json").exists()
+    assert len(list((tmp_path / ".trash").iterdir())) == 3
+
+
+def test_region_editor_page_navigation(qapp, tmp_path):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+
+    def key(k):
+        ed.view.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, k, Qt.KeyboardModifier.NoModifier))
+
+    assert ed.page_spin.value() == 1 and not ed.prev_btn.isEnabled()
+    key(Qt.Key.Key_Right)  # 영역을 고르지 않았으면 다음 쪽
+    assert ed.page_spin.value() == 2
+    ed.next_btn.click()
+    assert ed.page_spin.value() == 3 and not ed.next_btn.isEnabled()
+    key(Qt.Key.Key_Right)  # 끝에서는 멈춤
+    assert ed.page_spin.value() == 3
+    it = ed.items()[0]
+    it.setSelected(True)
+    x0 = it.rect().left()
+    key(Qt.Key.Key_Left)  # 영역을 고르면 화살표는 그 영역을 옮긴다
+    assert ed.page_spin.value() == 3 and it.rect().left() == pytest.approx(x0 - 1)
+    key(Qt.Key.Key_PageUp)  # PageUp은 언제나 쪽 넘기기
+    assert ed.page_spin.value() == 2
+    key(Qt.Key.Key_Escape)
+    key(Qt.Key.Key_Left)
+    assert ed.page_spin.value() == 1 and ed.prev_btn.isEnabled() is False
+    ed.dirty = False
+
+
+# ================================================================ 카드마다 영역, 휠, 처음 열 때 화면 맞춤
+def test_per_card_template_engine(tmp_path):
+    from app.project import load_project
+    from app.regions import load_template
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    fd = Path(g["files"][0]["dir"])
+    data = {"layout": "per_card", "regions": [], "protect_rects": [], "page_regions": {
+        f"{fd.name}/1": {"regions": [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]},
+        f"{fd.name}/3": {"regions": [{"name": "설명", "rect": {"x": 0.2, "y": 0.5, "w": 0.5, "h": 0.2}}],
+                         "protect_rects": [{"name": "그림", "rect": {"x": 0, "y": 0, "w": 0.2, "h": 0.2}}]},
+        "다른파일/2": {"regions": [{"name": "x", "rect": {"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}}]}}}
+    assert service.save_region_template(g["dir"], data) == []
+    t = load_project(fd).template
+    assert [r.name for r in t.regions_for(1)] == ["이름"] and t.regions_for(2) == []
+    assert [r.name for r in t.regions_for(3)] == ["설명"] and [p.name for p in t.protect_for(3)] == ["그림"]
+    assert sorted(r.name for r in t.regions) == ["설명", "이름"]  # 다른 파일의 카드 영역은 섞이지 않는다
+    assert [r.name for r in t.for_page(3).regions] == ["설명"]
+    assert load_template(Path(g["dir"]) / "regions.json").layout == "per_card"
+    grp = service.project_overview(info.dir)["groups"][0]
+    assert grp["per_card"] and grp["files"][0]["no_regions"] == [2]
+    assert "카드마다 영역을 지정하세요" in service.project_overview(info.dir)["next_step"]
+    assert service.validate_region_template({"layout": "per_card", "page_regions": {}}) == [
+        "영역을 정한 카드가 하나도 없습니다"]
+
+
+def test_extract_skips_cards_without_regions(tmp_path):
+    from app.extract import NO_REGIONS
+    from app.extract_cc import ClaudeCodeClient
+    from tests.test_extract import FakeRunner, _cc_ok
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    fd = Path(g["files"][0]["dir"])
+    reg = [{"name": "이름", "rect": {"x": 0.1, "y": 0.6, "w": 0.6, "h": 0.15}}]
+    service.save_region_template(g["dir"], {"layout": "per_card", "page_regions": {f"{fd.name}/2": {"regions": reg}}})
+    run = FakeRunner([(0, _cc_ok(), "")])
+    r = service.extract(fd, mode="opus", client=ClaudeCodeClient(exe="claude", runner=run))
+    assert r.done_pages == [2] and r.failed == {1: NO_REGIONS, 3: NO_REGIONS} and len(run.calls) == 1
+    # 1쪽 영역을 정하면 다음 실행에서 그 카드만 읽는다
+    service.save_region_template(g["dir"], {"layout": "per_card", "page_regions": {
+        f"{fd.name}/1": {"regions": reg}, f"{fd.name}/2": {"regions": reg}}})
+    run2 = FakeRunner([(0, _cc_ok(), "")])
+    r2 = service.extract(fd, mode="opus", client=ClaudeCodeClient(exe="claude", runner=run2))
+    assert 1 in r2.done_pages and r2.failed == {3: NO_REGIONS} and len(run2.calls) == 1
+
+
+def test_region_editor_per_card_mode(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt.region_editor import RegionEditor, RegionItem
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    ed.per_card.setChecked(True)  # 지금 영역이 1쪽 카드의 영역이 된다
+    assert "이 카드: 영역 1개" in ed.card_info.text() and "지정한 카드 1/3" in ed.card_info.text()
+    ed.step_page(1)  # 2쪽: 아직 영역 없음
+    assert ed.items() == [] and "영역 없음" in ed.card_info.text()
+    pr = ed.scene.page_rect
+    it = RegionItem(QRectF(pr.width() * 0.2, pr.height() * 0.5, pr.width() * 0.4, pr.height() * 0.2),
+                    {"name": "", "kind": "text"})
+    ed.scene.addItem(it)
+    ed.scene.created_item.emit(it)
+    ed.step_page(1)  # 3쪽: 앞 카드 영역 복사
+    ed.copy_previous_card()
+    assert [i.name for i in ed.items()] == ["본문"]
+    ed.step_page(-1)
+    ed.step_page(-1)  # 1쪽으로 돌아오면 1쪽 영역
+    assert [i.name for i in ed.items()] == ["이름"]
+    assert ed.save()
+    data = json.loads((Path(g["dir"]) / "regions.json").read_text(encoding="utf-8"))
+    fname = Path(g["files"][0]["dir"]).name
+    assert data["layout"] == "per_card" and data["regions"] == []
+    assert sorted(data["page_regions"]) == [f"{fname}/1", f"{fname}/2", f"{fname}/3"]
+    assert data["page_regions"][f"{fname}/3"]["regions"][0]["name"] == "본문"
+    # 다시 열면 카드마다 모드, 1쪽 영역
+    ed2 = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    assert ed2.per_card.isChecked() and [i.name for i in ed2.items()] == ["이름"]
+    ed2.step_page(1)
+    assert [i.name for i in ed2.items()] == ["본문"]
+    ed.dirty = ed2.dirty = False
+
+
+def test_region_editor_wheel_pages_and_auto_fit(qapp, tmp_path):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QWheelEvent
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+
+    def wheel(dy, mods=Qt.KeyboardModifier.NoModifier):
+        ev = QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, dy), Qt.MouseButton.NoButton,
+                         mods, Qt.ScrollPhase.NoScrollPhase, False)
+        ed.view.wheelEvent(ev)
+
+    wheel(-120)  # 아래로: 다음 쪽
+    assert ed.page_spin.value() == 2
+    wheel(-60)
+    assert ed.page_spin.value() == 2  # 터치패드의 작은 움직임은 모아서
+    wheel(-60)
+    assert ed.page_spin.value() == 3
+    wheel(120)
+    assert ed.page_spin.value() == 2
+    # 처음 열 때: 창이 커지면 카드도 따라 커진다 (사용자가 확대하기 전까지)
+    ed.resize(900, 650)
+    ed.show()
+    qapp.processEvents()
+    s1 = ed.view.transform().m11()
+    ed.resize(1700, 1200)
+    qapp.processEvents()
+    assert ed.view.transform().m11() > s1 * 1.3
+    wheel(120, Qt.KeyboardModifier.ControlModifier)  # Ctrl+휠 확대 뒤에는 창 크기를 따라가지 않는다
+    s2 = ed.view.transform().m11()
+    ed.resize(1000, 700)
+    qapp.processEvents()
+    assert ed.view.transform().m11() == pytest.approx(s2)
+    ed.dirty = False
+    ed.close()
+
+
+# ================================================================ 로그인: Claude 구독 / API 키
+def test_api_key_is_encrypted_and_sources_in_order(tmp_path, monkeypatch):
+    from app import credentials
+    from app.extract import api_key_source
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("app.settings.REPO_ROOT", tmp_path / "repo")  # 저장소의 .env는 보지 않게
+    assert api_key_source() == (None, "")
+    p = credentials.save_api_key("sk-ant-api03-TESTKEY-abcdefgh")
+    assert b"sk-ant" not in p.read_bytes()  # 평문으로 남지 않는다
+    assert api_key_source() == ("sk-ant-api03-TESTKEY-abcdefgh", "저장한 키")
+    info = service.api_key_info()
+    assert info == {"has_key": True, "source": "저장한 키", "masked": "sk-ant-…efgh"}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env-0000000000")
+    assert api_key_source()[1] == "환경 변수"
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    service.clear_api_key()
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-dotenv-1111111111\n", encoding="utf-8")
+    service.save_settings(tmp_path, "api")
+    assert api_key_source() == ("sk-ant-dotenv-1111111111", ".env")
+
+
+def test_set_api_key_validates_without_real_calls(tmp_path, monkeypatch):
+    from app import credentials
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    class Models:
+        def __init__(self, ok):
+            self.ok = ok
+
+        def list(self, limit=1):
+            if not self.ok:
+                raise RuntimeError("Error code: 401 - authentication_error")
+            return []
+
+    class Fake:
+        def __init__(self, ok):
+            self.models = Models(ok)
+
+    ok, msg = service.set_api_key("not-a-key")
+    assert not ok and "형식" in msg
+    ok, msg = service.set_api_key("sk-ant-bad-0000000000", client_factory=lambda k: Fake(False))
+    assert not ok and "인증 실패" in msg and credentials.load_api_key() is None
+    ok, msg = service.set_api_key("sk-ant-good-0000000000", client_factory=lambda k: Fake(True))
+    assert ok and credentials.load_api_key() == "sk-ant-good-0000000000"
+
+
+def test_claude_login_status(tmp_path, monkeypatch):
+    from tests.test_extract import FakeRunner
+
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    assert service.claude_login_status()["installed"] is False
+    ok = (0, json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.0,
+                         "modelUsage": {}, "structured_output": {"ok": True}}), "")
+    st = service.claude_login_status(check=True, runner=FakeRunner([ok]))
+    assert st["logged_in"] is True
+    bad = (1, json.dumps({"type": "result", "subtype": "error", "is_error": True,
+                          "result": "Not logged in · Please run /login"}), "")
+    st = service.claude_login_status(check=True, runner=FakeRunner([bad]))
+    assert st["logged_in"] is False and "로그인" in st["message"]
+
+
+def test_login_dialog_sets_engine(qapp, tmp_path, monkeypatch):
+    from app.qt.login import LoginDialog
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("app.settings.REPO_ROOT", tmp_path / "repo")
+    dlg = LoginDialog()
+    assert dlg.r_claude.isChecked()  # 기본: Claude 구독
+    dlg.r_api.setChecked(True)
+    assert dlg.key.isEnabled() and not dlg.b_check.isEnabled()
+    dlg.accept()  # 키가 없으면 시작하지 않는다
+    assert dlg.result() != 1 and service.get_settings().engine == "claude-code"
+    service.set_api_key("sk-ant-good-0000000000", validate=False)
+    dlg._refresh_api()
+    dlg.accept()
+    assert service.get_settings().engine == "api" and "sk-ant-…0000" in dlg.api_status.text()
+    assert service.engine_status()["message"].startswith("API 키로 실행")
+    dlg2 = LoginDialog(first_run=False)
+    assert dlg2.r_api.isChecked()  # 다음에 열면 고른 방식
+
+
+def test_icon_review_merge_rows_and_card_view(qapp, tmp_path, monkeypatch):
+    from app import icons
+    from app.qt.steps import IconReviewDialog
+    from tests.test_icons import _project as icon_project, _source
+
+    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)  # 같은 모양도 따로 묶이게 (잘못 나뉜 묶음 흉내)
+    info, fd = icon_project(tmp_path, "1차", pages=2)
+    service.find_icons(info.dir, suggest=False)
+    review = service.icon_review(info.dir)
+    assert len(review["groups"]) == 2 and review["groups"][1]["where"][0]["page"] == 2
+    dlg = IconReviewDialog(info.dir, review)
+    _g, name, meaning, ko, _ni, _sc, _same = dlg.widgets[0]
+    name.setText("coin")
+    ko.setText("금화")
+    same2 = dlg.widgets[1][6]
+    same2.setCurrentIndex(same2.findText("1번과 같음"))
+    assert not dlg.widgets[1][1].isEnabled()  # 합치면 이름 칸은 꺼진다
+    rows = dlg.rows()
+    assert [r["name"] for r in rows] == ["coin", "coin"] and rows[1]["ko"] == "금화"
+    dlg.accept()
+    assert dlg.result.added == ["coin"] and dlg.result.replaced == 2
+    assert _source(fd, 1) == _source(fd, 2) == "AB[[coin]]CD"
+    assert list(icons.load_dictionary(info)["icons"]) == ["coin"]
+
+
+def test_icon_review_merge_cycle_is_blocked(qapp, tmp_path, monkeypatch):
+    from app import icons
+    from app.qt.steps import IconReviewDialog
+    from tests.test_icons import _project as icon_project
+
+    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)
+    info, _fd = icon_project(tmp_path, "1차", pages=2)
+    service.find_icons(info.dir, suggest=False)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    dlg.widgets[0][6].setCurrentIndex(dlg.widgets[0][6].findText("2번과 같음"))
+    dlg.widgets[1][6].setCurrentIndex(dlg.widgets[1][6].findText("1번과 같음"))
+    with pytest.raises(ValueError):
+        dlg.rows()
+    dlg.accept()
+    assert dlg.result is None

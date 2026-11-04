@@ -29,7 +29,7 @@ def load_project(root: Path) -> Project:
         regions = root.parent.parent / "regions.json"  # 그룹 안의 파일 폴더: 그룹의 영역 템플릿을 쓴다
     if not regions.exists():
         raise FileNotFoundError(f"영역 템플릿이 없습니다: {regions} (영역 지정이 필요합니다)")
-    template = load_template(regions)
+    template = load_template(regions, file_name=root.name)
     samples: dict = {}
     sp = root / "samples.json"
     if sp.exists():

@@ -38,7 +38,7 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
 # 화면 (PySide6): 프로젝트·파일·그룹·뺄 쪽·영역 지정 + 추출·원문 확인·아이콘 이름·용어집·번역·검수 엑셀 + 지우기·한글 넣기·결과 보기·시험 실행
-.venv/Scripts/python -m app.qt
+.venv/Scripts/python -m app.qt          # 시작할 때 로그인 방식(Claude 구독 / API 키) 고르기. --no-login 으로 건너뜀
 # exe 빌드 -> dist/CardTranslater/CardTranslater.exe (폴더째 배포. 빌드 뒤 자가 점검 --selftest)
 .venv/Scripts/python packaging/build.py
 # 0~8단계 전체: 게임·프로젝트·그룹 -> 추출 -> ‘추출 완료’ -> 용어집 검증·확정 -> 번역 -> 검수 -> 지우기 -> 한글 넣기 (projects/, games/ 는 git에 올리지 않음)
@@ -76,6 +76,8 @@ python -m venv .venv
 1단계(PDF 핵심 실험) 완료, 인쇄 확인 통과(2026-11-04): ClearScan PDF 30쪽 전체(BATTLE 1~15, DUNGEON 16~30)의 지우기·한글 합성 완료. 회전된 배경 이미지(8·21쪽), 라벨 3개(9쪽), 회색 라벨, 글꼴에 없는 글자(♥·…) 대체 글꼴 처리 포함.
 
 Items.pdf(텍스트 레이어 없는 스캔, 위아래 반쪽 카드) 2~16쪽도 지우기·한글 넣기 완료.
+
+영역 지정 창(2026-11-04 추가): 카드마다 영역 지정(형식이 카드마다 다른 그룹), 이전 카드 영역 복사, ◀▶·←/→·마우스 휠로 쪽 넘기기, 처음 열 때 화면에 맞춤. 프로젝트·그룹·파일 삭제(.trash로 옮김).
 
 화면(PySide6) 3차: ⑧ 글자 지우기(이미 지운 파일 건너뛰기/다시) ⑨ 한글 넣기(검수 엑셀 확인 항목은 묻고 계속) · 결과 보기(쪽마다 원본·결과 비교, 영역 600dpi 확대, 문제 있는 쪽만) · 시험 실행(몇 쪽만 시험 폴더에서, 프로젝트 결과는 그대로) · 마지막 프로젝트 이어 열기 · 영역 편집기에서 다른 그룹으로 이동·쓰는 글꼴을 목록 맨 위에 굵게 · exe 빌드(PyInstaller onedir).
 

@@ -68,7 +68,7 @@ class ClaudeCodeClient:
                   regions=None) -> CCReply:
         from app.extract import region_hint
 
-        regions = project.template.regions if regions is None else regions
+        regions = project.template.regions_for(page_no) if regions is None else regions
         crop_dir = Path(work_dir) / "crops" / f"page-{page_no:03d}"
         crop_dir.mkdir(parents=True, exist_ok=True)
         lines = []

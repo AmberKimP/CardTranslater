@@ -213,30 +213,62 @@ class PageScene(QGraphicsScene):
 class PageView(QGraphicsView):
     nudged = Signal(object)
     delete_pressed = Signal()
+    page_step = Signal(int)  # -1 이전 쪽, +1 다음 쪽
 
     def __init__(self, scene: PageScene):
         super().__init__(scene)
+        self.auto_fit = True  # 사용자가 확대하기 전까지는 창 크기에 맞춰 늘 화면에 맞춘다
+        self._wheel = 0
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def wheelEvent(self, ev):
-        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:  # Ctrl+휠: 확대·축소
             f = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
             self.scale(f, f)
+            self.auto_fit = False
             ev.accept()
             return
-        super().wheelEvent(ev)
+        if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier:  # Shift+휠: 확대한 화면 스크롤
+            super().wheelEvent(ev)
+            return
+        # 휠: 이전·다음 쪽 (터치패드의 작은 움직임은 모아서 한 칸)
+        self._wheel += ev.angleDelta().y()
+        if abs(self._wheel) >= 120:
+            self.page_step.emit(-1 if self._wheel > 0 else 1)
+            self._wheel = 0
+        ev.accept()
 
     def fit(self):
         sc = self.scene()
         if isinstance(sc, PageScene) and not sc.page_rect.isEmpty():
             self.fitInView(sc.page_rect, Qt.AspectRatioMode.KeepAspectRatio)
 
+    def fit_again(self):
+        """‘화면에 맞춤’: 다시 창 크기를 따라가게 한다."""
+        self.auto_fit = True
+        self.fit()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.auto_fit:  # 처음 열 때 창이 커지는 동안에도 카드가 작게 남지 않게
+            self.fit()
+
     def keyPressEvent(self, ev):
         items = [i for i in self.scene().selectedItems() if isinstance(i, RegionItem)]
         k = ev.key()
+        # 쪽 넘기기: PageUp/PageDown은 언제나, 좌우 방향키는 고른 영역이 없을 때 (영역을 고르면 그 영역을 옮긴다)
+        if k in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown) or (
+                not items and k in (Qt.Key.Key_Left, Qt.Key.Key_Right)):
+            self.page_step.emit(-1 if k in (Qt.Key.Key_PageUp, Qt.Key.Key_Left) else 1)
+            ev.accept()
+            return
+        if k == Qt.Key.Key_Escape and items:
+            self.scene().clearSelection()
+            ev.accept()
+            return
         if items and k in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
             step = 10.0 if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0
             dx = {Qt.Key.Key_Left: -step, Qt.Key.Key_Right: step}.get(k, 0.0)
@@ -292,6 +324,7 @@ class RegionEditor(QDialog):
         self.scene.created_item.connect(self._on_created)
         self.view.nudged.connect(self._on_geometry)
         self.view.delete_pressed.connect(self.delete_selected)
+        self.view.page_step.connect(self.step_page)
         QShortcut(QKeySequence.StandardKey.Save, self, activated=self.save)
 
     # ------------------------------------------------------------ 화면 구성
@@ -299,7 +332,9 @@ class RegionEditor(QDialog):
         top = QHBoxLayout()
         top.addWidget(QLabel("그룹 / 파일"))
         self.file_combo = QComboBox()
-        self.file_combo.setMinimumWidth(260)
+        self.file_combo.setMinimumWidth(200)
+        self.file_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.file_combo.setMinimumContentsLength(16)
         for g in self.groups:  # 모든 그룹의 파일. 다른 그룹 파일을 고르면 그 그룹 영역으로 옮겨 간다
             for fd in g["files"]:
                 self.file_combo.addItem(f"{g['name']} / {fd.name}", (str(g["dir"]), str(fd)))
@@ -314,7 +349,7 @@ class RegionEditor(QDialog):
         top.addWidget(self.page_spin)
         self.page_total = QLabel()
         top.addWidget(self.page_total)
-        top.addSpacing(16)
+        tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
         self.add_buttons = {}
         for kind, text in (("text", "+ 글자 영역"), ("tag_pills", "+ 태그 라벨 영역"), ("protect", "+ 보호 영역")):
             b = QToolButton()
@@ -322,10 +357,20 @@ class RegionEditor(QDialog):
             b.setCheckable(True)
             b.clicked.connect(lambda checked, k=kind: self._set_add_kind(k if checked else None))
             self.add_buttons[kind] = b
-            top.addWidget(b)
+            tools.addWidget(b)
+        tools.addSpacing(16)
+        self.per_card = QCheckBox("카드마다 영역 지정")
+        self.per_card.setToolTip("카드마다 형식이 달라 공통 영역을 쓸 수 없는 그룹: 카드 한 장씩 영역을 정합니다")
+        self.per_card.setChecked(self.template.get("layout") == "per_card")
+        self.per_card.toggled.connect(self._toggle_per_card)
+        tools.addWidget(self.per_card)
+        self.copy_prev = QPushButton("이전 카드 영역 복사")
+        self.copy_prev.clicked.connect(self.copy_previous_card)
+        tools.addWidget(self.copy_prev)
+        tools.addStretch(1)
         top.addStretch(1)
         fit = QPushButton("화면에 맞춤")
-        fit.clicked.connect(self.view.fit)
+        fit.clicked.connect(self.view.fit_again)
         top.addWidget(fit)
         self.save_btn = QPushButton("저장 (Ctrl+S)")
         self.save_btn.clicked.connect(self.save)
@@ -356,10 +401,13 @@ class RegionEditor(QDialog):
         for k, t in KIND_LABELS:
             self.f_kind.addItem(t, k)
         self.f_x, self.f_y, self.f_w, self.f_h = (self._ratio_spin() for _ in range(4))
-        xy = QHBoxLayout()
-        for lab, sp in (("x", self.f_x), ("y", self.f_y), ("너비", self.f_w), ("높이", self.f_h)):
-            xy.addWidget(QLabel(lab))
-            xy.addWidget(sp)
+        from PySide6.QtWidgets import QGridLayout
+
+        xy = QGridLayout()  # 두 줄: x·y / 너비·높이 (좁은 칸에서도 숫자가 보이게)
+        for i, (lab, sp) in enumerate((("x", self.f_x), ("y", self.f_y), ("너비", self.f_w), ("높이", self.f_h))):
+            sp.setMinimumWidth(90)
+            xy.addWidget(QLabel(lab), i // 2, (i % 2) * 2)
+            xy.addWidget(sp, i // 2, (i % 2) * 2 + 1)
         self.f_rotate = QCheckBox("180도 돌려 인쇄된 영역 (카드 위쪽 반 등)")
         self.f_align = QComboBox()
         for k, t in ALIGN_LABELS:
@@ -373,6 +421,9 @@ class RegionEditor(QDialog):
         crow.addWidget(color_btn)
         self.f_font = QComboBox()
         self._fill_fonts()
+        for cb in (self.f_font, self.f_kind, self.f_align):  # 긴 항목이 오른쪽 칸 폭을 늘리지 않게
+            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cb.setMinimumContentsLength(12)
         self.f_keep_tall = QDoubleSpinBox()
         self.f_keep_tall.setRange(0, 200)
         self.f_keep_tall.setDecimals(1)
@@ -395,7 +446,9 @@ class RegionEditor(QDialog):
         self.form_box.setLayout(form)
         sl.addWidget(self.form_box)
         help_ = QLabel("빈 곳 끌기: 새 영역(위 + 버튼을 누른 뒤) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
-                       "화살표: 1px(Shift 10px) · Alt+화살표: 크기 · Delete: 지우기 · Ctrl+휠: 확대")
+                       "영역을 고른 상태: 화살표 1px(Shift 10px) · Alt+화살표 크기 · Delete 지우기 · Esc 고르기 해제\n"
+                       "영역을 고르지 않은 상태: ←/→ 이전·다음 쪽 (PageUp/PageDown은 언제나)\n"
+                       "마우스 휠: 이전·다음 쪽 · Ctrl+휠: 확대 · Shift+휠: 확대한 화면 스크롤")
         help_.setStyleSheet("color: #666")
         sl.addWidget(help_)
         for w in (self.f_name,):
@@ -409,16 +462,44 @@ class RegionEditor(QDialog):
         self.f_color.editingFinished.connect(self._from_form)
         self.f_notes.textChanged.connect(self._from_form)
 
+        # 이미지 좌우의 이전·다음 쪽 버튼
+        self.prev_btn, self.next_btn = QToolButton(), QToolButton()
+        for b, text, tip, d in ((self.prev_btn, "◀", "이전 쪽 (←, PageUp)", -1),
+                                (self.next_btn, "▶", "다음 쪽 (→, PageDown)", 1)):
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setFixedWidth(34)
+            b.setSizePolicy(b.sizePolicy().horizontalPolicy(), b.sizePolicy().Policy.Expanding)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(lambda _c=False, dd=d: self.step_page(dd))
+        center = QWidget()
+        cl = QHBoxLayout(center)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        cl.addWidget(self.prev_btn)
+        cl.addWidget(self.view, 1)
+        cl.addWidget(self.next_btn)
+        side.setMinimumWidth(360)
+        help_.setWordWrap(True)
         split = QSplitter()
-        split.addWidget(self.view)
+        split.addWidget(center)
         split.addWidget(side)
+        split.setSizes([1000, 420])  # 처음에는 카드 칸을 넓게
+        self.split = split
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
+        lay.addLayout(tools)
         lay.addWidget(split, 1)
         self.status = QLabel()
-        lay.addWidget(self.status)
+        self.card_info = QLabel()
+        self.card_info.setStyleSheet("color: #0b5cad; font-weight: bold")
+        srow = QHBoxLayout()
+        srow.addWidget(self.card_info)
+        srow.addStretch(1)
+        srow.addWidget(self.status)
+        lay.addLayout(srow)
 
         self.page_spin.setValue(int(self.template.get("reference_page", 1) or 1))
         self.page_spin.valueChanged.connect(lambda _v: self._change_page())
@@ -500,6 +581,11 @@ class RegionEditor(QDialog):
         g = next(g for g in self.groups if g["dir"] == self.group_dir)
         self.file_dirs = g["files"]
         self.template = service.load_region_template(self.group_dir)
+        if hasattr(self, "_card_store"):
+            del self._card_store
+        self.per_card.blockSignals(True)
+        self.per_card.setChecked(self.template.get("layout") == "per_card")
+        self.per_card.blockSignals(False)
         self.page_spin.blockSignals(True)
         self.page_spin.setMaximum(9999)
         self.page_spin.setValue(int(self.template.get("reference_page", 1) or 1))
@@ -533,6 +619,7 @@ class RegionEditor(QDialog):
         self.page_spin.setMaximum(max(1, n))
         self.page_spin.blockSignals(False)
         self.page_total.setText(f"/ {n}")
+        self._sync_nav()
         png, _size = service.page_image(fd, self.page_spin.value(), dpi=150)
         pm = QPixmap()
         pm.loadFromData(png, "PNG")
@@ -544,15 +631,143 @@ class RegionEditor(QDialog):
         self.scene.page_rect = QRectF(0, 0, pm.width(), pm.height())
         self.scene.setSceneRect(self.scene.page_rect.adjusted(-20, -20, 20, 20))
 
+    def step_page(self, d: int):
+        """이전·다음 쪽 (파일 끝에서는 멈춘다). 영역은 같은 비율로 다음 카드에 겹쳐 보인다."""
+        p = self.page_spin.value() + d
+        if 1 <= p <= self.page_spin.maximum():
+            self.page_spin.setValue(p)  # valueChanged -> _change_page
+        self._sync_nav()
+
+    def _sync_nav(self):
+        if hasattr(self, "prev_btn"):
+            self.prev_btn.setEnabled(self.page_spin.value() > 1)
+            self.next_btn.setEnabled(self.page_spin.value() < self.page_spin.maximum())
+
     def _change_page(self):
+        if self.is_per_card():  # 카드마다 영역: 보던 카드의 영역을 넣어 두고 새 카드의 영역을 꺼낸다
+            self._stash_card()
+            self._clear_items()
+            self._load_page()
+            self._current_key = self.card_key()
+            self._load_card(self._current_key)
+            self.view.fit()
+            return
         ratios = [(it, self.ratio_of(it)) for it in self.items()]
         self._load_page()
         for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다
             it.set_scene_rect(self.rect_from_ratio(r))
         self.view.fit()
 
+    # ------------------------------------------------------------ 카드마다 영역
+    def is_per_card(self) -> bool:
+        return hasattr(self, "per_card") and self.per_card.isChecked()
+
+    def card_key(self) -> str:
+        return f"{self.current_file().name}/{self.page_spin.value()}"
+
+    def _cards(self) -> dict:
+        """카드 키 -> {"regions": [...], "protect_rects": [...]} (편집 중인 값)."""
+        if not hasattr(self, "_card_store"):
+            self._card_store = {k: copy.deepcopy(v) for k, v in (self.template.get("page_regions") or {}).items()}
+        return self._card_store
+
+    def _items_to_dicts(self) -> tuple[list[dict], list[dict]]:
+        regions, protect = [], []
+        for it in self.items():
+            d = copy.deepcopy(it.data)
+            d["rect"] = self.ratio_of(it)
+            if it.kind == "protect":
+                d.pop("kind", None)
+                for k in ("style", "erase", "extract"):
+                    d.pop(k, None)
+                protect.append(d)
+            else:
+                d["kind"] = it.kind
+                regions.append(d)
+        return regions, protect
+
+    def _stash_card(self):
+        key = getattr(self, "_current_key", None)
+        if key is None:
+            return
+        regions, protect = self._items_to_dicts()
+        if regions or protect:
+            self._cards()[key] = {"regions": regions, "protect_rects": protect}
+        else:
+            self._cards().pop(key, None)
+
+    def _clear_items(self):
+        for it in self.items():
+            self.scene.removeItem(it)
+        self._order = []
+
+    def _load_card(self, key: str):
+        ps = self._cards().get(key) or {}
+        self._order = []
+        for r in ps.get("regions", []):
+            self._add_item(copy.deepcopy(r), protect=False)
+        for r in ps.get("protect_rects", []):
+            self._add_item(copy.deepcopy(r), protect=True)
+        self._rebuild_list()
+        self._update_card_info()
+
+    def _update_card_info(self):
+        if not self.is_per_card():
+            self.card_info.setText("")
+            self.copy_prev.setEnabled(False)
+            return
+        n = len([i for i in self.items() if i.kind != "protect"])
+        done = sum(1 for v in self._cards().values() if v.get("regions"))
+        total = sum(service.page_count(f) for f in self.file_dirs)
+        self.card_info.setText(f"이 카드: {'영역 ' + str(n) + '개' if n else '영역 없음'} · 지정한 카드 {done}/{total}장")
+        self.copy_prev.setEnabled(True)
+
+    def copy_previous_card(self):
+        """바로 앞(없으면 가장 가까운 앞) 카드의 영역을 이 카드로 복사한다 (비슷한 카드를 빨리 정하기)."""
+        if not self.is_per_card():
+            return
+        self._stash_card()
+        name, p = self.current_file().name, self.page_spin.value()
+        src = next((self._cards()[f"{name}/{q}"] for q in range(p - 1, 0, -1)
+                    if self._cards().get(f"{name}/{q}", {}).get("regions")), None)
+        if src is None:
+            QMessageBox.information(self, "이전 카드", "앞쪽에 영역을 정한 카드가 없습니다")
+            return
+        self._clear_items()
+        self._cards()[self.card_key()] = copy.deepcopy(src)
+        self._load_card(self.card_key())
+        self._mark_dirty()
+
+    def _toggle_per_card(self, on: bool):
+        if on:
+            msg = ("카드마다 영역을 정합니다. 지금 보이는 영역은 이 카드(현재 쪽)의 영역이 되고,\n"
+                   "다른 카드는 쪽을 넘기며 하나씩 정합니다 (‘이전 카드 영역 복사’로 시작할 수 있음).")
+        else:
+            msg = ("모든 카드가 같은 영역을 쓰도록 바꿉니다. 지금 카드의 영역이 공통 영역이 되고,\n"
+                   "다른 카드에 정한 영역은 저장할 때 지워집니다.")
+        if QMessageBox.question(self, "영역 방식 바꾸기", msg) != QMessageBox.StandardButton.Yes:
+            self.per_card.blockSignals(True)
+            self.per_card.setChecked(not on)
+            self.per_card.blockSignals(False)
+            return
+        if on:
+            self._card_store = {}
+            self._current_key = self.card_key()
+            self._stash_card()
+        else:
+            self._card_store = {}
+            self._current_key = None
+        self._update_card_info()
+        self._mark_dirty()
+
     def _load_regions(self):
         self._order = []
+        if self.template.get("layout") == "per_card":
+            self._card_store = {k: copy.deepcopy(v) for k, v in (self.template.get("page_regions") or {}).items()}
+            self._current_key = self.card_key()
+            self._load_card(self._current_key)
+            return
+        self._current_key = None
         for r in self.template.get("regions", []):
             self._add_item(copy.deepcopy(r), protect=False)
         for r in self.template.get("protect_rects", []):
@@ -640,6 +855,7 @@ class RegionEditor(QDialog):
         self._rebuild_list(it)
         self._to_form(it)
         self._mark_dirty()
+        self._update_card_info()
         self.f_name.setFocus()
         self.f_name.selectAll()
 
@@ -776,18 +992,18 @@ class RegionEditor(QDialog):
     # ------------------------------------------------------------ 저장
     def to_template(self) -> dict:
         data = copy.deepcopy(self.template)
-        regions, protect = [], []
-        for it in self.items():
-            d = copy.deepcopy(it.data)
-            d["rect"] = self.ratio_of(it)
-            if it.kind == "protect":
-                d.pop("kind", None)
-                for k in ("style", "erase", "extract"):
-                    d.pop(k, None)
-                protect.append(d)
-            else:
-                d["kind"] = it.kind
-                regions.append(d)
+        if self.is_per_card():
+            self._stash_card()
+            data["layout"] = "per_card"
+            data["regions"], data["protect_rects"] = [], []
+            data["page_regions"] = {k: v for k, v in self._cards().items() if v.get("regions") or v.get("protect_rects")}
+            data.setdefault("reference_page", self.page_spin.value())
+            data.setdefault("source_language", "ja")
+            return data
+        data.pop("layout", None)
+        if self.template.get("layout") == "per_card":
+            data.pop("page_regions", None)  # 공통 영역으로 바꿨다
+        regions, protect = self._items_to_dicts()
         data["regions"] = regions
         data["protect_rects"] = protect
         data.setdefault("reference_page", self.page_spin.value())
@@ -800,8 +1016,11 @@ class RegionEditor(QDialog):
             QMessageBox.warning(self, "저장할 수 없음", "\n".join(problems))
             return False
         self.template = service.load_region_template(self.group_dir)
+        if self.is_per_card():
+            self._card_store = {k: copy.deepcopy(v) for k, v in (self.template.get("page_regions") or {}).items()}
         self.dirty = False
         self._update_title()
+        self._update_card_info()
         self.status.setText(f"저장함: {self.group_dir / 'regions.json'}")
         self.saved.emit()
         return True
@@ -809,6 +1028,8 @@ class RegionEditor(QDialog):
     def _mark_dirty(self):
         self.dirty = True
         self._update_title()
+        if hasattr(self, "card_info"):
+            self._update_card_info()
 
     def _update_title(self):
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}{' *' if self.dirty else ''}")

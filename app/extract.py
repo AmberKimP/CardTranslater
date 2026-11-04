@@ -139,10 +139,13 @@ def region_hint(reg) -> str:
     return hint
 
 
+NO_REGIONS = "영역 없음 (카드마다 영역을 정하는 그룹: 이 카드의 영역을 지정하세요)"
+
+
 def build_params(project, page_no: int, src_doc, model: str = MODEL, regions=None) -> dict:
     """카드 한 장의 Messages API 요청 본문 (fallbacks·betas 제외). regions: 읽을 영역 (기본: 전부)."""
     page = src_doc[page_no - 1]
-    regions = project.template.regions if regions is None else regions
+    regions = project.template.regions_for(page_no) if regions is None else regions
     lang = {"ja": "Japanese", "en": "English"}.get(project.template.source_language, project.template.source_language)
     content: list = [{"type": "text", "text": f"Source language: {lang}. Card page {page_no}. Regions follow."}]
     for reg in regions:
@@ -191,11 +194,11 @@ def tags_from_colors(project, page_no: int, src_doc) -> dict:
 
     out = {}
     page = src_doc[page_no - 1]
-    for reg in project.template.regions:
+    for reg in project.template.regions_for(page_no):
         vocab = (reg.extract or {}).get("tag_colors")
         if reg.kind != "tag_pills" or not vocab:
             continue
-        labels = detect_tag_labels(page, project.template, reg)
+        labels = detect_tag_labels(page, project.template.for_page(page_no), reg)
         words = [match_tag_color(l["color"], vocab) for l in labels]
         if labels and all(words):
             out[reg.name] = {"source": words, "uncertain": False,
@@ -371,6 +374,8 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
     st = ExtractState.load(spath)
     if retry_failed:
         st.failed = {}
+    # 영역이 없어 건너뛴 카드는 그 사이 영역을 정했으면 다시 읽는다
+    st.failed = {p: r for p, r in st.failed.items() if not (r == NO_REGIONS and project.template.has_regions(p))}
     kinds = {r.name: r.kind for r in project.template.regions}
     done = set(load_extracted(project.root, base))
     src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
@@ -403,8 +408,12 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 raise Paused(f"정한 예산(${budget_usd:.2f})에 도달")
             if progress:
                 progress(ProgressEvent("extract", i, len(todo), f"{pno}쪽 글자 읽는 중", pno))
+            if not project.template.has_regions(pno):  # 카드별 그룹에서 아직 영역을 정하지 않은 카드
+                st.failed[pno] = NO_REGIONS
+                st.save(spath)
+                continue
             color_tags = tags_from_colors(project, pno, src_doc)
-            to_read = [r for r in project.template.regions if r.name not in color_tags]
+            to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
             if not to_read:
                 _write_plain(base, pno, color_tags, model, "colors")
                 done.add(pno)
@@ -500,12 +509,15 @@ def _run_batch(project, pages, client, st, spath, done, kinds, src_doc, budget_u
             cancel.check()
         if progress:
             progress(ProgressEvent("extract", i, len(todo), f"{pno}쪽 일괄 요청 준비", pno))
+        if not project.template.has_regions(pno):
+            st.failed[pno] = NO_REGIONS
+            continue
         color_tags = tags_from_colors(project, pno, src_doc)
         if color_tags:
             (base / "color_tags").mkdir(parents=True, exist_ok=True)
             (base / "color_tags" / f"page-{pno:03d}.json").write_text(
                 json.dumps(color_tags, ensure_ascii=False), encoding="utf-8")
-        to_read = [r for r in project.template.regions if r.name not in color_tags]
+        to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
         reqs.append({"custom_id": f"page-{pno}", "params": build_params(project, pno, src_doc, model, to_read)})
     try:
         b = client.messages.batches.create(requests=reqs)
@@ -529,8 +541,12 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
             cancel.check()
         if progress:
             progress(ProgressEvent("extract", i, len(todo), f"{pno}쪽 글자 읽는 중 (Claude Code)", pno))
+        if not project.template.has_regions(pno):
+            st.failed[pno] = NO_REGIONS
+            st.save(spath)
+            continue
         color_tags = tags_from_colors(project, pno, src_doc)
-        to_read = [r for r in project.template.regions if r.name not in color_tags]
+        to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
         if not to_read:
             _write_plain(base, pno, color_tags, model, "colors")
             done.add(pno)
@@ -589,7 +605,7 @@ def learn_tag_colors(project, src_doc, known: dict, tol: float = TAG_COLOR_TOL) 
             words = regs.get(reg.name)
             if not isinstance(words, list) or not words:
                 continue
-            labels = detect_tag_labels(src_doc[pno - 1], project.template, reg)
+            labels = detect_tag_labels(src_doc[pno - 1], project.template.for_page(pno), reg)
             if len(labels) != len(words):
                 warns.append(f"p{pno} {reg.name}: 라벨 {len(labels)}개 / 글자 {len(words)}개 -> 건너뜀")
                 continue
@@ -630,18 +646,30 @@ def _avg_cost(base: Path, model: str) -> float | None:
     return sum(costs) / len(costs) if costs else None
 
 
-def make_client():
-    """기본 Anthropic client. 키는 환경 변수·.env·`ant auth login` 프로필에서 찾는다 (코드에 적지 않는다)."""
-    import anthropic
-
+def api_key_source() -> tuple[str | None, str]:
+    """(API 키, 어디서 찾았나). 순서: 환경 변수 -> 화면에서 저장한 키(암호화) -> .env. 키는 코드에 적지 않는다."""
+    from app.credentials import load_api_key
     from app.settings import env_files
 
-    env = next((e for e in env_files() if e.exists()), Path(__file__).resolve().parent.parent / ".env")
-    if env.exists() and not os.environ.get("ANTHROPIC_API_KEY"):
-        for line in env.read_text(encoding="utf-8").splitlines():
-            if line.startswith("ANTHROPIC_API_KEY="):
-                os.environ["ANTHROPIC_API_KEY"] = line.split("=", 1)[1].strip().strip('"')
-    return anthropic.Anthropic()
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return os.environ["ANTHROPIC_API_KEY"], "환경 변수"
+    k = load_api_key()
+    if k:
+        return k, "저장한 키"
+    for env in env_files():
+        if env.exists():
+            for line in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"'), ".env"
+    return None, ""
+
+
+def make_client(api_key: str | None = None):
+    """Anthropic client. api_key가 없으면 api_key_source()에서, 그래도 없으면 `ant auth login` 프로필을 쓴다."""
+    import anthropic
+
+    key = api_key or api_key_source()[0]
+    return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
 
 
 # ---------------------------------------------------------------- 정확도 (손으로 옮긴 정답과 비교)
@@ -746,10 +774,11 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
             todo.append((pno, f, rec, names))
     if not todo:
         return out
-    by_name = {r.name: r for r in project.template.regions}
+    by_name_all = {r.name: r for r in project.template.regions}
     src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
     try:
         for i, (pno, f, rec, names) in enumerate(todo):
+            by_name = {**by_name_all, **{r.name: r for r in project.template.regions_for(pno)}}
             if cancel:
                 cancel.check()
             if progress:

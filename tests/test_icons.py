@@ -208,3 +208,27 @@ def test_exports_list_icon_positions_groups_and_fonts(tmp_path):
     service.find_icons(info2.dir, suggest=False)
     ic2 = _rows(load_workbook(service.export_excel(fd2))["아이콘"])
     assert ic2[0]["아이콘"] == "[[coin]]" and "자동으로 맞춤" in ic2[0]["상태"]
+
+
+def test_locate_ignores_card_frame_and_divider():
+    """영역 안에 카드 테두리(가장자리 큰 덩어리)와 가로 구분선·◆ 장식이 있어도 줄을 바르게 센다."""
+    import cv2
+
+    img = np.full((300, 600, 3), (245, 225, 200), np.uint8)
+    cv2.rectangle(img, (0, 0), (599, 299), (30, 30, 30), 12)  # 카드 테두리
+    for y in (40, 100):  # 글자 줄 2개 (네모 글자)
+        for k in range(8):
+            cv2.rectangle(img, (60 + k * 50, y), (95 + k * 50, y + 35), (40, 40, 40), 4)
+    cv2.circle(img, (300, 177), 20, (40, 40, 40), -1)  # 셋째 줄: 아이콘 + 글자
+    cv2.rectangle(img, (335, 162), (365, 192), (40, 40, 40), 4)
+    cv2.line(img, (60, 225), (280, 225), (40, 40, 40), 4)  # 구분선과 가운데 장식
+    cv2.line(img, (320, 225), (540, 225), (40, 40, 40), 4)
+    cv2.rectangle(img, (295, 218), (305, 232), (40, 40, 40), -1)
+    for k in range(6):  # 넷째 줄 (대사)
+        cv2.rectangle(img, (100 + k * 40, 250), (128 + k * 40, 276), (40, 40, 40), 3)
+    text = "가나다라마바사아\n가나다라마바사아\n[[?]]＋\n가나다라마바"
+    box, why = icons.locate(img, text, 0)
+    assert box is not None, why
+    assert 275 <= box[0] <= 285 and 315 <= box[2] <= 325 and 150 <= box[1] <= 160
+    rgba = icons.cut_out(img, box)
+    assert rgba[0, 0, 3] == 0 and rgba[rgba.shape[0] // 2, rgba.shape[1] // 2, 3] == 255  # 바깥은 투명, 안은 그대로

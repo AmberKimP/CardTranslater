@@ -172,7 +172,7 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> E
         if cancel:
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
-        r = erase_page(out_doc[i], project.template, project.samples.get(pno), seed=pno)
+        r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno)
         page_metas.append({
             "schema": SCHEMA,
             "source_pdf": str(src_path),
@@ -835,7 +835,7 @@ def cards_from_translation(file_dir: Path) -> dict:
     extracted = load_extracted(file_dir)
     cards: dict = {}
     for pno in included_pages(file_dir):
-        for reg in proj.template.regions:
+        for reg in proj.template.regions_for(pno):
             src, _ = source_of(proj, extracted, pno, reg.name)
             tr = lookup(cache, src) if src else None
             if tr:
@@ -958,15 +958,25 @@ def project_overview(project_dir: Path | str) -> dict:
     from app import workspace
     from app.extract import load_extracted
 
+    from app.regions import load_template
+
     info = workspace.load_project_info(project_dir)
     groups = []
     for g in workspace.list_groups(info):
         files = []
+        rpath = g["dir"] / "regions.json"
+        tdata = json.loads(rpath.read_text(encoding="utf-8")) if rpath.exists() else {}
+        per_card = tdata.get("layout") == "per_card"
         for name in g["files"]:
             fd = g["dir"] / "files" / name
             n = workspace.page_count(fd)
             inc = workspace.included_pages(fd)
             done = set(load_extracted(fd)) & set(inc)
+            if per_card:
+                tpl = load_template(rpath, file_name=name)
+                no_regions = [p for p in inc if not tpl.has_regions(p)]
+            else:
+                no_regions = [] if rpath.exists() else list(inc)
             files.append({
                 "name": name, "key": workspace.file_key(fd), "dir": fd, "pages": n,
                 "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(inc)),
@@ -974,9 +984,14 @@ def project_overview(project_dir: Path | str) -> dict:
                 "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
                 "composed": (fd / "translated" / "translated.pdf").exists(),
                 "review_xlsx": (fd / "번역_검수.xlsx") if (fd / "번역_검수.xlsx").exists() else None,
+                "no_regions": no_regions,
             })
-        groups.append({"name": g["name"], "dir": g["dir"], "regions": g["regions"],
-                       "has_regions": (g["dir"] / "regions.json").exists(), "files": files})
+        n_regions = (len({r.get("name") for ps in (tdata.get("page_regions") or {}).values()
+                          for r in ps.get("regions", [])}) if per_card else g["regions"])
+        groups.append({"name": g["name"], "dir": g["dir"], "regions": n_regions, "per_card": per_card,
+                       "has_regions": rpath.exists() and (not per_card or any(
+                           len(f["no_regions"]) < f["included"] for f in files)),
+                       "files": files})
     return {"name": info.name, "game": info.game, "dir": info.dir, "status": info.status,
             "status_label": STATUS_LABEL.get(info.status, info.status),
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
@@ -989,6 +1004,10 @@ def _next_step(info, groups: list[dict]) -> str:
     no_regions = [g["name"] for g in groups if not g["has_regions"]]
     if no_regions:
         return f"영역을 지정하세요: {', '.join(no_regions)}"
+    missing = [f"{f['key']} {len(f['no_regions'])}장" for g in groups if g.get("per_card") for f in g["files"]
+               if f["no_regions"]]
+    if missing and info.status == "extracting":
+        return f"카드마다 영역을 지정하세요 (남은 카드: {', '.join(missing)})"
     left = [f["key"] for g in groups for f in g["files"] if f["extracted"] < f["included"]]
     if info.status == "extracting":
         return f"글자를 추출하세요 ({len(left)}개 파일 남음)" if left else "‘추출 완료’를 보내 용어집을 만드세요"
@@ -1067,6 +1086,21 @@ def load_region_template(group_dir: Path | str) -> dict:
 
 
 def validate_region_template(data: dict) -> list[str]:
+    """영역 템플릿 검사. 카드별 그룹(layout=per_card)은 카드마다 따로 검사한다."""
+    if data.get("layout") == "per_card":
+        sets = data.get("page_regions") or {}
+        if not any(ps.get("regions") for ps in sets.values()):
+            return ["영역을 정한 카드가 하나도 없습니다"]
+        out = []
+        for key, ps in sets.items():
+            if ps.get("regions"):
+                out += [f"{key}: {m}" for m in validate_region_template(
+                    {"regions": ps.get("regions", []), "protect_rects": ps.get("protect_rects", [])})]
+        return out
+    return _validate_region_set(data)
+
+
+def _validate_region_set(data: dict) -> list[str]:
     from app.typeset import ROOT
 
     problems = []
@@ -1118,15 +1152,16 @@ def save_region_template(group_dir: Path | str, data: dict) -> list[str]:
 
 def engine_status() -> dict:
     """쓸 수 있는 엔진: {"claude-code": bool, "api": bool, "message"}. 키 값은 돌려주지 않는다."""
-    import os
+    from app.extract import api_key_source
 
     cc = bool(shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd"))
-    from app.settings import env_files
-
-    api = bool(os.environ.get("ANTHROPIC_API_KEY")) or any(
-        e.exists() and "ANTHROPIC_API_KEY" in e.read_text(encoding="utf-8", errors="ignore") for e in env_files())
-    msg = ("Claude Code를 찾았습니다 (요금제로 실행)" if cc else
-           "Claude Code가 없습니다. 설치·로그인하거나 API 키 방식을 쓰세요")
+    api = bool(api_key_source()[0])
+    eng = get_settings().engine
+    if eng == "api":
+        msg = "API 키로 실행 (사용료)" if api else "API 키가 없습니다 — 파일 > 로그인 방식에서 키를 넣으세요"
+    else:
+        msg = ("Claude 구독으로 실행 (Claude Code)" if cc else
+               "Claude Code가 없습니다 — 설치·로그인하거나 API 키 방식을 쓰세요")
     return {"claude-code": cc, "api": api, "message": msg}
 
 
@@ -1164,7 +1199,7 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
     ext = load_extracted(fd)
     out = []
     for pno in workspace.included_pages(fd):
-        for reg in proj.template.regions:
+        for reg in proj.template.regions_for(pno):
             r = (ext.get(pno) or {}).get(reg.name)
             out.append({
                 "page": pno, "region": reg.name, "kind": reg.kind,
@@ -1187,7 +1222,7 @@ def region_crop(file_dir: Path | str, page: int, region: str) -> bytes:
 
     fd = Path(file_dir)
     proj = load_project(fd)
-    reg = next(r for r in proj.template.regions if r.name == region)
+    reg = next(r for r in proj.template.regions_for(page) if r.name == region)
     with pymupdf.open(proj.source_pdf) as d:
         return region_crop_png(d[page - 1], reg, 1600)
 
@@ -1239,6 +1274,9 @@ def icon_review(project_dir: Path | str) -> dict | None:
                        "suggest": gi.get("suggest", ""), "meaning": gi.get("meaning", ""), "ko": gi.get("ko", ""),
                        "count": len(members),
                        "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
+                       "where": [{"file_dir": info.dir / o.file, "page": o.page, "region": o.region, "line": o.line,
+                                  "png": o.png or None, "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
+                                 for o in members],
                        "reason": members[0].reason if members and not gi.get("rep") else ""})
     return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
 
@@ -1382,3 +1420,133 @@ def self_check() -> dict:
     out["ok"] = bool(out["fonts"]) and out["typeset"] is True and not any(
         str(v).startswith("없음") for v in libs.values())
     return out
+
+
+# ---------------------------------------------------------------- 화면용: 지우기(휴지통) — 프로젝트·그룹·파일
+def _to_trash(path: Path, root: Path, label: str) -> Path:
+    """완전히 지우지 않고 데이터 폴더의 .trash/<시각>-<이름>으로 옮긴다 (되살릴 수 있게)."""
+    path = Path(path).resolve()
+    trash = Path(root).resolve() / ".trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    dest = trash / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}"
+    n = 1
+    while dest.exists():
+        n += 1
+        dest = trash / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}-{n}"
+    shutil.move(str(path), str(dest))
+    return dest
+
+
+def delete_project(project_dir: Path | str) -> Path:
+    """프로젝트 폴더를 휴지통(.trash)으로. 게임 용어집·아이콘 사전(games/)은 그대로 둔다."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    return _to_trash(info.dir, info.dir.parent.parent, f"project-{info.dir.name}")
+
+
+def delete_group(project_dir: Path | str, group: str) -> Path:
+    """그룹(영역 템플릿과 그 안의 파일 결과)을 휴지통으로."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    gdir = workspace.group_dir(info, group)
+    if not (gdir / "group.json").exists():
+        raise KeyError(f"그룹이 없습니다: {group}")
+    return _to_trash(gdir, info.dir.parent.parent, f"group-{info.dir.name}-{gdir.name}")
+
+
+def delete_file(file_dir: Path | str) -> Path:
+    """그룹에서 파일 하나(원본 사본·추출·지운 카드·한글 카드)를 휴지통으로. 원래 PDF는 건드리지 않는다."""
+    from app import workspace
+
+    fd = Path(file_dir).resolve()
+    info = workspace.project_of(fd)
+    if info is None or fd.parent.name != "files":
+        raise ValueError(f"그룹 안의 파일 폴더가 아닙니다: {fd}")
+    return _to_trash(fd, info.dir.parent.parent, f"file-{info.dir.name}-{fd.parent.parent.name}-{fd.name}")
+
+
+# ---------------------------------------------------------------- 화면용: 로그인 (Claude 구독 / API 키)
+def api_key_info() -> dict:
+    """{"has_key", "source", "masked"}: 키 값 자체는 돌려주지 않는다."""
+    from app.credentials import masked
+    from app.extract import api_key_source
+
+    k, src = api_key_source()
+    return {"has_key": bool(k), "source": src, "masked": masked(k)}
+
+
+def set_api_key(key: str, *, validate: bool = True, client_factory=None) -> tuple[bool, str]:
+    """API 키를 확인한 뒤 암호화해 저장한다. (성공, 메시지). validate=False면 확인 없이 저장."""
+    from app.credentials import save_api_key
+    from app.extract import make_client
+
+    key = (key or "").strip()
+    if not key.startswith("sk-"):
+        return False, "API 키 형식이 아닙니다 (sk-ant-… 로 시작)"
+    if validate:
+        try:
+            client = (client_factory or make_client)(key)
+            client.models.list(limit=1)  # 토큰을 쓰지 않는 확인
+        except Exception as e:  # noqa: BLE001
+            msg = str(getattr(e, "message", e))
+            if "401" in msg or "authentication" in msg.lower() or "invalid" in msg.lower():
+                return False, "키가 맞지 않습니다 (인증 실패)"
+            return False, f"키를 확인하지 못했습니다: {msg[:200]}"
+    save_api_key(key)
+    return True, "API 키를 확인하고 이 컴퓨터에 암호화해 저장했습니다"
+
+
+def clear_api_key() -> None:
+    from app.credentials import delete_api_key
+
+    delete_api_key()
+
+
+def claude_login_status(check: bool = False, runner=None) -> dict:
+    """Claude Code(구독) 상태: {"installed", "logged_in": True/False/None, "message"}.
+    check=True면 아주 짧은 요청(Haiku)을 한 번 보내 로그인을 확인한다 (사용량이 조금 든다)."""
+    from app.extract import Paused
+    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+
+    exe = shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd")
+    if not exe and runner is None:
+        return {"installed": False, "logged_in": False,
+                "message": "Claude Code가 설치되어 있지 않습니다 (claude 명령 없음)"}
+    if not check:
+        return {"installed": True, "logged_in": None, "message": "Claude Code를 찾았습니다 (로그인 확인 전)"}
+    try:
+        client = ClaudeCodeClient(exe=exe or "claude", runner=runner)
+        client.ask_json("Reply with ok=true.", {"type": "object", "properties": {"ok": {"type": "boolean"}},
+                                                "required": ["ok"], "additionalProperties": False},
+                        "claude-haiku-5-5", "You are a health check.", data_dir() / "work" / "login-check")
+    except NotAvailable as e:
+        return {"installed": True, "logged_in": False,
+                "message": f"로그인되어 있지 않습니다 — ‘로그인 창 열기’에서 /login 으로 로그인하세요 ({str(e)[:160]})"}
+    except Paused as e:
+        return {"installed": True, "logged_in": True, "message": f"로그인됨 (지금은 사용 한도: {e.reason[:120]})"}
+    except CardError as e:
+        return {"installed": True, "logged_in": None, "message": f"확인하지 못했습니다: {str(e)[:200]}"}
+    return {"installed": True, "logged_in": True, "message": "Claude에 로그인되어 있습니다"}
+
+
+def launch_claude_login() -> None:
+    """새 터미널 창에서 claude를 띄운다 (사용자가 /login 으로 로그인)."""
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        subprocess.Popen(["cmd", "/c", "start", "Claude 로그인", "cmd", "/k",
+                          "echo 로그인하려면 /login 을 입력하세요 & claude"])
+    else:
+        subprocess.Popen(["x-terminal-emulator", "-e", "claude"])
+
+
+def set_engine(engine: str) -> None:
+    """로그인 방식(엔진)만 바꾼다: claude-code(Claude 구독) | api(API 키)."""
+    from app import settings
+
+    s = settings.load()
+    s.engine = engine
+    settings.save(s)

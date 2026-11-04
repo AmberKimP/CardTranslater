@@ -47,37 +47,87 @@ class Region:
     extract: dict = field(default_factory=dict)  # 추출 옵션 (예: tag_colors 라벨 색 -> 글자 사전)
 
 
+LAYOUT_SHARED = "shared"  # 그룹의 모든 카드가 같은 영역 (기본)
+LAYOUT_PER_CARD = "per_card"  # 카드마다 형식이 달라 카드 한 장씩 영역을 정한다
+
+
 @dataclass
 class RegionTemplate:
-    regions: list[Region]
+    regions: list[Region]  # 공통 영역. 카드별 그룹이면 모든 카드 영역을 이름으로 모은 것(이름 -> 종류·서식 참고용)
     protect: list[Region]  # 절대 건드리지 않는 영역
     source_language: str = ""
     reference_page: int = 1
+    layout: str = LAYOUT_SHARED
+    page_sets: dict = field(default_factory=dict)  # 쪽 -> (영역 목록, 보호 영역 목록): 그 카드만의 영역
+
+    def regions_for(self, page: int) -> list[Region]:
+        """그 쪽(카드)에서 쓸 영역. 카드별 그룹에서 아직 정하지 않은 카드는 빈 목록."""
+        if page in self.page_sets:
+            return self.page_sets[page][0]
+        return [] if self.layout == LAYOUT_PER_CARD else self.regions
+
+    def protect_for(self, page: int) -> list[Region]:
+        if page in self.page_sets:
+            return self.page_sets[page][1]
+        return [] if self.layout == LAYOUT_PER_CARD else self.protect
+
+    def has_regions(self, page: int) -> bool:
+        return bool(self.regions_for(page))
+
+    def for_page(self, page: int) -> "RegionTemplate":
+        """그 쪽만의 템플릿 (지우기·라벨 찾기처럼 템플릿을 통째로 받는 함수에 넘긴다)."""
+        return RegionTemplate(self.regions_for(page), self.protect_for(page), self.source_language,
+                              self.reference_page)
 
 
-def load_template(path: Path) -> RegionTemplate:
+def _region(r: dict) -> Region:
+    return Region(
+        name=r["name"],
+        rect=RatioRect.from_dict(r["rect"]),
+        kind=r.get("kind", "text"),
+        style=r.get("style", {}),
+        notes=r.get("notes", ""),
+        erase=r.get("erase", {}),
+        extract=r.get("extract", {}),
+    )
+
+
+def _protect(p: dict) -> Region:
+    return Region(name=p["name"], rect=RatioRect.from_dict(p["rect"]), kind="protect")
+
+
+def page_key(file_name: str, page: int) -> str:
+    """regions.json의 page_regions 키: '<파일 폴더 이름>/<쪽>' (그룹에 파일이 여럿이어도 겹치지 않게)."""
+    return f"{file_name}/{int(page)}"
+
+
+def load_template(path: Path, file_name: str | None = None) -> RegionTemplate:
+    """file_name: 그룹 안 파일 폴더 이름. 주면 그 파일의 카드별 영역(page_regions)을 읽는다."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    regions = [
-        Region(
-            name=r["name"],
-            rect=RatioRect.from_dict(r["rect"]),
-            kind=r.get("kind", "text"),
-            style=r.get("style", {}),
-            notes=r.get("notes", ""),
-            erase=r.get("erase", {}),
-            extract=r.get("extract", {}),
-        )
-        for r in data["regions"]
-    ]
-    protect = [
-        Region(name=p["name"], rect=RatioRect.from_dict(p["rect"]), kind="protect")
-        for p in data.get("protect_rects", [])
-    ]
+    regions = [_region(r) for r in data.get("regions", [])]
+    protect = [_protect(p) for p in data.get("protect_rects", [])]
+    page_sets: dict = {}
+    for key, ps in (data.get("page_regions") or {}).items():
+        f, _, pg = str(key).rpartition("/")
+        if (f and file_name is not None and f != file_name) or not pg.isdigit():
+            continue
+        page_sets[int(pg)] = ([_region(r) for r in ps.get("regions", [])],
+                              [_protect(p) for p in ps.get("protect_rects", [])])
+    layout = data.get("layout", LAYOUT_SHARED)
+    if layout == LAYOUT_PER_CARD:  # 이름 -> 종류·서식 참고용으로 모든 카드 영역을 모은다
+        seen = {r.name for r in regions}
+        for _p, (rs, _pr) in sorted(page_sets.items()):
+            for r in rs:
+                if r.name not in seen:
+                    seen.add(r.name)
+                    regions.append(r)
     return RegionTemplate(
         regions=regions,
         protect=protect,
         source_language=data.get("source_language", ""),
         reference_page=int(data.get("reference_page", 1)),
+        layout=layout,
+        page_sets=page_sets,
     )
 
 

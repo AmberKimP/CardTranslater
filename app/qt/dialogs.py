@@ -215,17 +215,12 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.dir)
         row.addWidget(browse)
-        self.engine = QComboBox()
-        self.engine.addItem("Claude Code (요금제)", "claude-code")
-        self.engine.addItem("API 키", "api")
-        self.engine.setCurrentIndex(max(0, self.engine.findData(s.engine)))
-        st = service.engine_status()
-        info = QLabel(st["message"] + ("" if st["api"] else "\nAPI 키: 없음 (.env의 ANTHROPIC_API_KEY)"))
+        self.engine = s.engine
+        info = QLabel(service.engine_status()["message"] + "\n(Claude 구독 / API 키는 파일 > 로그인 방식에서 바꿉니다)")
         info.setStyleSheet("color: #666")
         form = QFormLayout()
         form.addRow("데이터 폴더 (games·projects)", row)
-        form.addRow("기본 엔진", self.engine)
-        form.addRow("", info)
+        form.addRow("로그인 방식", info)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
@@ -246,5 +241,5 @@ class SettingsDialog(QDialog):
         except OSError as e:
             QMessageBox.warning(self, "폴더를 만들 수 없음", str(e))
             return
-        service.save_settings(d, self.engine.currentData())
+        service.save_settings(d, self.engine)
         super().accept()

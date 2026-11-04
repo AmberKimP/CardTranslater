@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -43,8 +42,10 @@ class HomePage(QWidget):
         opn.clicked.connect(self.open_selected)
         ref = QPushButton("새로 고침")
         ref.clicked.connect(self.refresh)
+        dele = QPushButton("삭제")
+        dele.clicked.connect(self.delete_selected)
         btns = QHBoxLayout()
-        for b in (new, opn, ref):
+        for b in (new, opn, ref, dele):
             btns.addWidget(b)
         btns.addStretch(1)
         title = QLabel("프로젝트")
@@ -69,6 +70,26 @@ class HomePage(QWidget):
         row = self.table.currentRow()
         if 0 <= row < len(self.projects):
             self.win.open_project(Path(self.projects[row]["dir"]))
+
+    def delete_selected(self):
+        row = self.table.currentRow()
+        if not 0 <= row < len(self.projects):
+            QMessageBox.information(self, "프로젝트 고르기", "삭제할 프로젝트를 고르세요")
+            return
+        p = self.projects[row]
+        if QMessageBox.question(
+                self, "프로젝트 삭제",
+                f"‘{p['name']}’ 프로젝트를 삭제할까요?\n\n그룹·파일·추출·번역·결과가 모두 데이터 폴더의 .trash로 옮겨집니다 "
+                f"(되살리려면 그 폴더에서 projects/로 다시 옮기세요).\n게임 ‘{p['game']}’의 용어집·아이콘 사전은 남습니다.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            dest = service.delete_project(p["dir"])
+        except OSError as e:
+            QMessageBox.warning(self, "삭제할 수 없음", f"{e}\n(엑셀 등 이 프로젝트의 파일이 열려 있으면 닫고 다시 하세요)")
+            return
+        self.win.statusBar().showMessage(f"휴지통으로 옮김: {dest}")
+        self.refresh()
 
     def new_project(self):
         dlg = NewProjectDialog(self.win.root, self)
@@ -105,8 +126,11 @@ class ProjectPage(QWidget):
         self.b_folder.clicked.connect(self.open_folder)
         ref = QPushButton("새로 고침")
         ref.clicked.connect(self.refresh)
+        self.b_delete = QPushButton("삭제")
+        self.b_delete.setToolTip("고른 그룹 또는 파일을 휴지통(.trash)으로")
+        self.b_delete.clicked.connect(self.delete_selected)
         btns = QHBoxLayout()
-        for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, ref):
+        for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, ref, self.b_delete):
             btns.addWidget(b)
         btns.addStretch(1)
         # 2단계 작업: 추출 -> 원문 확인 -> 아이콘 -> 추출 완료(용어집) -> 용어집 가져오기 -> 번역 -> 검수 엑셀
@@ -165,8 +189,15 @@ class ProjectPage(QWidget):
         self.next.setText(f"다음 할 일: {o['next_step']}")
         self.tree.clear()
         for g in o["groups"]:
-            gi = QTreeWidgetItem([f"{g['name']}  (영역 {g['regions']}개)" if g["has_regions"]
-                                  else f"{g['name']}  (영역 없음 — 영역 지정 필요)"])
+            if g.get("per_card"):
+                left = sum(len(f["no_regions"]) for f in g["files"])
+                total = sum(f["included"] for f in g["files"])
+                label = f"{g['name']}  (카드마다 영역 — 지정 {total - left}/{total}장)"
+            elif g["has_regions"]:
+                label = f"{g['name']}  (영역 {g['regions']}개)"
+            else:
+                label = f"{g['name']}  (영역 없음 — 영역 지정 필요)"
+            gi = QTreeWidgetItem([label])
             gi.setData(0, Qt.ItemDataRole.UserRole, ("group", g))
             self.tree.addTopLevelItem(gi)
             for f in g["files"]:
@@ -216,6 +247,7 @@ class ProjectPage(QWidget):
 
     def _sync_buttons(self):
         sel = self._selected()
+        self.b_delete.setEnabled(bool(sel))
         self.b_pages.setEnabled(bool(sel and sel[0] == "file"))
         self.b_regions.setEnabled(self._group_of_selection() is not None)
 
@@ -250,6 +282,27 @@ class ProjectPage(QWidget):
         ed.exec()
         self.refresh()
 
+    def delete_selected(self):
+        sel = self._selected()
+        if not sel:
+            return
+        kind, d = sel
+        if kind == "group":
+            what = (f"‘{d['name']}’ 그룹을 삭제할까요?\n\n영역 템플릿과 그룹 안 파일 {len(d['files'])}개의 "
+                    "추출·지운 카드·한글 카드가 모두 데이터 폴더의 .trash로 옮겨집니다.")
+        else:
+            what = (f"‘{d['key']}’ 파일을 그룹에서 삭제할까요?\n\n이 파일의 원본 사본·추출·지운 카드·한글 카드가 "
+                    "데이터 폴더의 .trash로 옮겨집니다. 처음에 고른 원래 PDF는 그대로입니다.")
+        if QMessageBox.question(self, "삭제", what) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            dest = service.delete_group(self.project_dir, d["name"]) if kind == "group" else service.delete_file(d["dir"])
+        except (OSError, KeyError, ValueError) as e:
+            QMessageBox.warning(self, "삭제할 수 없음", f"{e}\n(이 파일의 엑셀·PDF가 열려 있으면 닫고 다시 하세요)")
+            return
+        self.win.statusBar().showMessage(f"휴지통으로 옮김: {dest}")
+        self.refresh()
+
     def exclude_pages(self):
         sel = self._selected()
         if not sel or sel[0] != "file":
@@ -279,6 +332,9 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.project)
         self.setCentralWidget(self.stack)
         menu = self.menuBar().addMenu("파일")
+        login = QAction("로그인 방식…", self)
+        login.triggered.connect(self.change_login)
+        menu.addAction(login)
         act = QAction("설정…", self)
         act.triggered.connect(self.open_settings)
         menu.addAction(act)
@@ -306,6 +362,12 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.project)
         service.remember_project(project_dir)
 
+    def change_login(self):
+        from app.qt.login import ask_login
+
+        if ask_login(self, first_run=False):
+            self.statusBar().showMessage(service.engine_status()["message"])
+
     def open_settings(self):
         if SettingsDialog(self).exec():
             self.root = service.data_dir()
@@ -315,7 +377,7 @@ class MainWindow(QMainWindow):
 def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
-    if sys.platform == "win32" and not os.environ.get("QT_QPA_PLATFORM"):
+    if sys.platform == "win32":  # 한글 화면 글꼴 (화면 없이 띄우는 점검 모드 포함)
         app.setFont(QFont("Malgun Gothic", 10))
     args = list(argv if argv is not None else sys.argv)
     if "--selftest" in args:  # exe 점검: 창을 띄우지 않고 결과를 JSON으로 쓴다
@@ -333,7 +395,61 @@ def main(argv: list[str] | None = None) -> int:
         if out:
             out.write_text(text, encoding="utf-8")
         return 0 if res["ok"] else 1
+    if "--smoke" in args:  # exe 점검: 프로젝트를 열고 몇 쪽 시험 실행, 화면 캡처 (프로젝트 결과는 바뀌지 않음)
+        return _smoke(Path(args[args.index("--smoke") + 1]), Path(args[args.index("--smoke") + 2]),
+                      args[args.index("--smoke") + 3] if len(args) > args.index("--smoke") + 3 else "1")
+    if "--no-login" not in args:  # 시작할 때 로그인 방식 고르기 (Claude 구독 / API 키)
+        from app.qt.login import ask_login
+
+        if not ask_login(None, first_run=True):
+            return 0
     win = MainWindow()
     win.resume_last()
     win.show()
     return app.exec()
+
+
+def _smoke(project_dir: Path, out: Path, pages: str) -> int:
+    import json
+
+    from app.qt.region_editor import RegionEditor
+    from app.qt.results import ResultViewer
+
+    out.mkdir(parents=True, exist_ok=True)
+    res: dict = {}
+    win = MainWindow(root=project_dir.parent.parent)
+    win.resize(1200, 600)
+    win.show()
+    win.home.grab().save(str(out / "1_home.png"))
+    res["projects"] = win.home.table.rowCount()
+    win.open_project(project_dir)
+    QApplication.processEvents()
+    win.grab().save(str(out / "2_project.png"))
+    ov = win.project.ov
+    g = ov["groups"][-1]
+    groups = [{"name": x["name"], "dir": x["dir"], "files": [f["dir"] for f in x["files"]]} for x in ov["groups"]]
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]], groups=groups)
+    ed.resize(1400, 850)
+    ed.show()
+    QApplication.processEvents()
+    ed.view.fit()
+    QApplication.processEvents()
+    ed.grab().save(str(out / "3_regions.png"))
+    res["regions"] = len(ed.items())
+    ed.dirty = False
+    ed.close()
+    fd = Path(g["files"][0]["dir"])
+    r = service.test_run(fd, pages, out_root=out / "runs")
+    res["test_run"] = {"state": r.state, "pages": r.pages, "summary": {k: len(v) for k, v in r.status_summary.items()},
+                       "run_dir": str(r.run_dir), "reason": r.reason}
+    if r.state == "done":
+        v = ResultViewer([("시험", r.run_dir)])
+        v.resize(1400, 850)
+        v.show()
+        QApplication.processEvents()
+        v._show_page()
+        QApplication.processEvents()
+        v.grab().save(str(out / "4_result.png"))
+    res["ok"] = r.state == "done" and res["regions"] > 0
+    (out / "smoke.json").write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if res["ok"] else 1

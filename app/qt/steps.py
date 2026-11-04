@@ -228,9 +228,13 @@ class SourceReviewDialog(QDialog):
 
 # ================================================================ 아이콘 이름
 class IconReviewDialog(QDialog):
-    """새로 찾은 아이콘 묶음의 이름·뜻·한국어 이름을 정한다 (엑셀 대신)."""
+    """새로 찾은 아이콘 묶음의 이름·뜻·한국어 이름을 정한다 (엑셀 대신).
 
-    COLS = ["그림", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "등장", "예문"]
+    ‘같은 아이콘’ 칸에서 다른 줄(번호)이나 사전에 있는 아이콘을 고르면 그 아이콘과 하나로 합친다
+    (잘못 잘렸거나 작게 찍혀 따로 묶인 것). ‘카드 보기’로 그 아이콘이 나온 카드 자리를 확인한다."""
+
+    COLS = ["그림", "같은 아이콘", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "등장", "카드", "예문"]
+    NEW = "(새 아이콘)"
 
     def __init__(self, project_dir: Path, review: dict, parent=None):
         super().__init__(parent)
@@ -238,19 +242,28 @@ class IconReviewDialog(QDialog):
         self.review = review
         self.result = None
         self.setWindowTitle("아이콘 이름 정하기")
-        self.resize(1100, 520)
-        self.table = QTableWidget(len(review["groups"]), len(self.COLS))
+        self.resize(1400, 640)
+        groups = review["groups"]
+        self.table = QTableWidget(len(groups), len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.setIconSize(QSize(40, 40))
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self.widgets = []
-        for i, g in enumerate(review["groups"]):
+        for i, g in enumerate(groups):
             img = QTableWidgetItem("" if g["image"] else "위치 못 찾음")
             if g["image"]:
                 img.setIcon(QIcon(QPixmap(g["image"])))
             elif g.get("reason"):
                 img.setToolTip(g["reason"])
             self.table.setItem(i, 0, img)
+            same = QComboBox()
+            same.addItem(self.NEW, None)
+            for j, other in enumerate(groups):
+                if j != i and other["image"]:
+                    same.addItem(QIcon(QPixmap(other["image"])), f"{j + 1}번과 같음", ("row", j))
+            for nm in review["known"]:
+                same.addItem(f"사전: {nm}", ("known", nm))
+            same.setIconSize(QSize(24, 24))
             name, meaning, ko = QLineEdit(g["suggest"]), QLineEdit(g["meaning"]), QLineEdit(g["ko"])
             name.setPlaceholderText("영문 소문자·숫자·_")
             not_icon = QCheckBox()
@@ -258,16 +271,23 @@ class IconReviewDialog(QDialog):
             scale.setRange(0.3, 3.0)
             scale.setSingleStep(0.05)
             scale.setValue(1.1)
-            for j, w in ((1, name), (2, meaning), (3, ko), (4, not_icon), (5, scale)):
+            view = QPushButton("카드 보기")
+            view.clicked.connect(lambda _c=False, gg=g: self.show_cards(gg))
+            for j, w in ((1, same), (2, name), (3, meaning), (4, ko), (5, not_icon), (6, scale), (8, view)):
                 self.table.setCellWidget(i, j, w)
-            self.table.setItem(i, 6, QTableWidgetItem(str(g["count"])))
+            self.table.setItem(i, 7, QTableWidgetItem(str(g["count"])))
             ex = QTableWidgetItem(g["examples"][0] if g["examples"] else "")
             ex.setToolTip("\n".join(g["examples"]))
-            self.table.setItem(i, 7, ex)
+            self.table.setItem(i, 9, ex)
             self.table.setRowHeight(i, 46)
-            self.widgets.append((g["group"], name, meaning, ko, not_icon, scale))
-        known = QLabel("사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)")
-                       + "\n같은 이름을 쓴 묶음은 하나로 합칩니다. 사전에 있는 이름을 쓰면 사전 그림을 씁니다.")
+            same.currentIndexChanged.connect(lambda _x, r=i: self._sync_row(r))
+            not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
+            self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
+        self.table.resizeColumnToContents(1)
+        known = QLabel("왼쪽 번호가 줄 번호입니다. ‘같은 아이콘’에서 다른 줄이나 사전 아이콘을 고르면 하나로 합칩니다 "
+                       "(따로 묶인 같은 아이콘·잘못 잘린 조각). 정말 아이콘이 아니면 ‘아이콘 아님’(원문에서 뺌).\n"
+                       "사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
+        known.setWordWrap(True)
         known.setStyleSheet("color: #666")
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("확정")
@@ -278,12 +298,95 @@ class IconReviewDialog(QDialog):
         lay.addWidget(known)
         lay.addWidget(bb)
 
+    def _sync_row(self, r: int):
+        _g, name, meaning, ko, not_icon, scale, same = self.widgets[r]
+        merged = same.currentData() is not None
+        for w in (name, meaning, ko, scale):
+            w.setEnabled(not merged and not not_icon.isChecked())
+        same.setEnabled(not not_icon.isChecked())
+        not_icon.setEnabled(not merged)
+
+    def show_cards(self, g: dict):
+        """그 묶음이 나온 카드 자리(영역 이미지)를 차례로 보여 준다."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("카드 보기")
+        dlg.resize(1000, 640)
+        combo = QComboBox()
+        for w in g.get("where", []):
+            combo.addItem(w["label"], w)
+        pic = QLabel()
+        pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        crop = QLabel()
+        crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        scroll = QScrollArea()
+        scroll.setWidget(pic)
+        scroll.setWidgetResizable(True)
+
+        def show(_i=0):
+            w = combo.currentData()
+            if not w:
+                return
+            pm = QPixmap()
+            pm.loadFromData(service.region_crop(w["file_dir"], w["page"], w["region"]), "PNG")
+            if pm.width() > 940:
+                pm = pm.scaledToWidth(940, Qt.TransformationMode.SmoothTransformation)
+            pic.setPixmap(pm)
+            if w.get("png"):
+                crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+                crop.setToolTip("이 자리에서 잘라 낸 그림")
+            else:
+                crop.setText("이 자리에서는 아이콘 위치를 찾지 못했습니다")
+
+        combo.currentIndexChanged.connect(show)
+        close = QPushButton("닫기")
+        close.clicked.connect(dlg.accept)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(combo)
+        lay.addWidget(scroll, 1)
+        lay.addWidget(QLabel("잘라 낸 그림:"))
+        lay.addWidget(crop)
+        lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
+        show()
+        dlg.exec()
+
     def rows(self) -> list[dict]:
-        return [{"group": g, "name": n.text().strip(), "meaning": m.text().strip(), "ko": k.text().strip(),
-                 "not_icon": ni.isChecked(), "scale": sc.value()} for g, n, m, k, ni, sc in self.widgets]
+        """합치기를 풀어 각 줄의 최종 이름으로. 합치기가 돌고 돌면 ValueError."""
+        final: dict[int, str] = {}
+
+        def resolve(i: int, seen: tuple = ()) -> str:
+            if i in final:
+                return final[i]
+            if i in seen:
+                raise ValueError(f"{i + 1}번 줄의 ‘같은 아이콘’이 서로를 가리킵니다")
+            _g, name, _m, _k, _ni, _sc, same = self.widgets[i]
+            d = same.currentData()
+            if d is None:
+                v = name.text().strip()
+            elif d[0] == "known":
+                v = d[1]
+            else:
+                if self.widgets[d[1]][4].isChecked():
+                    raise ValueError(f"{i + 1}번 줄이 ‘아이콘 아님’인 {d[1] + 1}번과 같다고 되어 있습니다")
+                v = resolve(d[1], seen + (i,))
+            final[i] = v
+            return v
+
+        out = []
+        for i, (g, n, m, k, ni, sc, same) in enumerate(self.widgets):
+            target = same.currentData()
+            src = self.widgets[target[1]] if target and target[0] == "row" else None
+            out.append({"group": g, "name": "" if ni.isChecked() else resolve(i),
+                        "meaning": (src[2] if src else m).text().strip(), "ko": (src[3] if src else k).text().strip(),
+                        "not_icon": ni.isChecked(), "scale": (src[5] if src else sc).value()})
+        return out
 
     def accept(self):
-        r = service.confirm_icons(self.project_dir, self.rows())
+        try:
+            rows = self.rows()
+        except ValueError as e:
+            QMessageBox.warning(self, "확정할 수 없음", str(e))
+            return
+        r = service.confirm_icons(self.project_dir, rows)
         if r.state != "confirmed":
             QMessageBox.warning(self, "확정할 수 없음", "\n".join(r.blocking))
             return
@@ -362,16 +465,13 @@ class StepActions:
 
     # ---- 아이콘
     def icons(self):
-        review = service.icon_review(self.pdir)
-        if review is None or not review["groups"]:
-            eng = self._engine()
-            if eng is None:
-                return
-            job = worker.Job(service.find_icons, self.pdir, engine=eng, with_progress=False)
-            worker.run_with_dialog(self.page, "아이콘 찾는 중", job, self._icons_found,
-                                   lambda m: _fail(self.page, m), cancellable=False)
+        """누를 때마다 다시 찾는다 (원문을 고쳤거나 찾기 방식이 나아졌을 수 있으므로 예전 결과를 쓰지 않음)."""
+        eng = self._engine()
+        if eng is None:
             return
-        self._open_icon_review(review)
+        job = worker.Job(service.find_icons, self.pdir, engine=eng, with_progress=False)
+        worker.run_with_dialog(self.page, "아이콘 찾는 중 (이름 제안 포함)", job, self._icons_found,
+                               lambda m: _fail(self.page, m), cancellable=False)
 
     def _icons_found(self, r):
         msg = ("사전과 같아 바로 바꿈: " + ", ".join(f"[[{n}]] {c}곳" for n, c in r.auto.items())) if r.auto else ""

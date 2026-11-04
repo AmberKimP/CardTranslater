@@ -110,7 +110,7 @@ def _icon_sheet(wb, project: Project, extracted: dict, pages: list[int], drafts:
     pdf = project.source_pdf.name
     row, n_check = 2, 0
     for pno in pages:
-        for reg in project.template.regions:
+        for reg in project.template.regions_for(pno):
             ext = (extracted.get(pno) or {}).get(reg.name) or {}
             src = ext.get("source")
             if not isinstance(src, str):
@@ -240,7 +240,7 @@ def export_translation(project: Project, out_path: Path, pages: list[int], keep:
     row = 2
     for pno in pages:
         card = project.samples.get(pno) or {}
-        for reg in project.template.regions:
+        for reg in project.template.regions_for(pno):
             entry = card.get(reg.name) or {}
             src, unsure = source_of(project, extracted, pno, reg.name)
             tr = lookup(tr_cache, src) if (tr_cache and src) else None
