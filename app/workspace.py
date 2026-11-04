@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
-STATUSES = ("extracting", "glossary_review", "glossary_confirmed", "translating")
+STATUSES = ("extracting", "glossary_review", "glossary_confirmed", "translating", "translated")
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -197,6 +197,15 @@ def file_dirs(info: ProjectInfo, group: str | None = None) -> list[Path]:
         if group is None or g["name"] == group:
             out += [g["dir"] / "files" / f for f in g["files"]]
     return out
+
+
+def project_of(file_dir: Path) -> ProjectInfo | None:
+    """그룹 안 파일 폴더 -> 그 프로젝트 (게임 프로젝트가 아니면 None)."""
+    p = Path(file_dir).resolve()
+    proj = p.parent.parent.parent.parent  # files/<파일> -> <그룹> -> groups -> <프로젝트>
+    if (p.parent.parent / "group.json").exists() and (proj / "project.json").exists():
+        return load_project_info(proj)
+    return None
 
 
 def file_key(file_dir: Path) -> str:

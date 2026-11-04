@@ -31,6 +31,13 @@ def _terms_reply(terms):
                            "modelUsage": {"claude-opus-5-5": {}}, "structured_output": {"terms": terms}}), "")
 
 
+def _assess_reply(flags=None):
+    """번역 확인 판단 응답. flags: {용어: [다른 후보...]} (그 용어만 확인 필요)."""
+    items = [{"term": k, "needs_check": True, "alternatives": v, "reason": "갈림"} for k, v in (flags or {}).items()]
+    return (0, json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.01,
+                           "modelUsage": {}, "structured_output": {"items": items}}), "")
+
+
 def test_new_project_creates_or_reuses_game(tmp_path):
     a, new_a = workspace.create_project("1차", "Dungeon", root=tmp_path)
     b, new_b = workspace.create_project("2차", "Dungeon", root=tmp_path)
@@ -77,7 +84,7 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
         {"term": "判定", "category": "키워드·능력", "suggested_ko": "판정", "reason": ""},
         {"term": "炎", "category": "분류어·태그", "suggested_ko": "불꽃", "reason": ""},
         {"term": "存在しない語", "category": "기타", "suggested_ko": "x", "reason": ""},  # 원문에 없음 -> 버림
-    ])])
+    ]), _assess_reply({"炎": ["화염"]})])
     r = service.finish_extraction(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
     assert r.state == "review_ready" and r.review_xlsx.exists()
     assert "[炎]と[毒]の判定" in run.inputs[0]  # 모든 원문을 모아 보냄
@@ -89,7 +96,11 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
     ws = wb["용어집"]
     rows = {ws.cell(i, 1).value: [c.value for c in ws[i]] for i in range(2, ws.max_row + 1) if ws.cell(i, 1).value}
     assert set(rows) == {"炎", "毒", "判定"}  # 코드 후보(대괄호) + 모델 후보, 지어낸 말은 없음
-    assert rows["炎"][4] == 2 and rows["判定"][2] == "판정"
+    h = [c.value for c in ws[1]]
+    assert h[3:6] == ["원문 상태", "번역 확인", "다른 후보"]  # 확인할 정보는 추천 번역 바로 뒤
+    assert rows["炎"][h.index("등장 횟수")] == 2 and rows["判定"][h.index("추천 번역")] == "판정"
+    assert rows["炎"][h.index("번역 확인")] == "확인 필요" and "화염" in rows["炎"][h.index("다른 후보")]
+    assert rows["判定"][h.index("번역 확인")] is None
     # 사람이 검증: 毒 번역 입력, 判定은 비워 용어로 쓰지 않음
     for i in range(2, ws.max_row + 1):
         if ws.cell(i, 1).value == "毒":
@@ -99,6 +110,7 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
     wb.save(r.review_xlsx)
     c = service.import_glossary(info.dir, r.review_xlsx)
     assert c.state == "needs_confirmation" and any("判定" in i for i in c.issues)
+    assert any("번역 확인" in i and "炎 = 불꽃" in i for i in c.issues)  # 확인 필요 용어를 추천 그대로
     c = service.import_glossary(info.dir, r.review_xlsx, accept_issues=True)
     assert c.state == "confirmed" and c.version == 1 and c.terms == 2
     saved = json.loads((tmp_path / "games" / "G" / "glossary.json").read_text(encoding="utf-8"))
@@ -112,9 +124,14 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
     fd2 = workspace.file_dirs(info2)[0]
     _extracted(fd2, 1, "[炎]と[闇]")
     _extracted(fd2, 2, "[闇]")
-    run2 = FakeRunner([_terms_reply([])])
+    run2 = FakeRunner([_terms_reply([]), _assess_reply()])
     r2 = service.finish_extraction(info2.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
     assert r2.confirmed_terms == 2 and r2.new_terms == 1  # 闇만 새 후보
+    # 이미 확정된 용어도 '번역 확인'이면, 확정 번역 그대로 다시 가져올 때 확인 목록에 나온다
+    run3 = FakeRunner([_terms_reply([]), _assess_reply({"毒": ["독성"]})])
+    r3 = service.finish_extraction(info2.dir, accept_issues=True, client=ClaudeCodeClient(exe="claude", runner=run3))
+    c3 = service.import_glossary(info2.dir, r3.review_xlsx)
+    assert c3.state == "needs_confirmation" and any("毒 = 독" in i for i in c3.issues)
     assert "炎" in run2.inputs[0].split("Already confirmed terms")[1].split("\n")[0]
 
 

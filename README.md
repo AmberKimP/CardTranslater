@@ -35,12 +35,14 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
-# 0~4단계: 게임·프로젝트·그룹 -> 추출 -> ‘추출 완료’ -> 용어집 검증·확정 (projects/, games/ 는 git에 올리지 않음)
+# 0~5단계: 게임·프로젝트·그룹 -> 추출 -> ‘추출 완료’ -> 용어집 검증·확정 -> 번역 (projects/, games/ 는 git에 올리지 않음)
 .venv/Scripts/python -m app.cli new-project --name "Dungeon 1차" --game Dungeon
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차"
 .venv/Scripts/python -m app.cli finish-extraction --project "projects/Dungeon 1차"           # -> 용어집_검증.xlsx
 .venv/Scripts/python -m app.cli import-glossary --project "projects/Dungeon 1차" --excel "projects/Dungeon 1차/용어집_검증.xlsx"
+.venv/Scripts/python -m app.cli translate --project "projects/Dungeon 1차"              # 5단계: 확정 용어집 기준 초벌 번역
+.venv/Scripts/python -m app.cli export-excel --project "projects/Dungeon 1차"           # 파일마다 번역_검수.xlsx
 # 3단계 글자 추출 (기본: 로그인된 Claude Code 요금제로 읽음, 키 불필요. --engine api: API 키·사용료). 멈추면 같은 명령으로 이어 감
 .venv/Scripts/python -m app.cli extract --project projects/sample            # --mode double-check(기본: Sonnet + 불확실한 칸만 Opus) | opus, --engine api일 때 --batch(50% 할인)·--budget 2.0
 .venv/Scripts/python -m app.cli extract --project projects/sample --test   # 시험 폴더(test_runs/extract-sample-double-check)

@@ -679,3 +679,53 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
     c = glossary.confirm(info, res.terms)
     workspace.set_status(info, "glossary_confirmed", glossary_version=c["version"])
     return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues)
+
+
+# ---------------------------------------------------------------- 5단계: 초벌 번역 (확정 용어집 기준)
+TRANSLATE_MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+
+
+def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine: str = "claude-code",
+                      client=None, progress: ProgressFn | None = None, cancel: CancelToken | None = None):
+    """확정 게임 용어집을 기준으로 프로젝트의 모든 그룹·파일 원문을 번역한다 (같은 원문은 한 번).
+    용어집이 확정되기 전에는 막는다. 끊겨도 다시 부르면 남은 칸부터 이어 간다."""
+    from app import glossary, workspace
+    from app.extract import make_client
+    from app.extract_cc import ClaudeCodeClient
+    from app.translate import TranslateResult, run_translate
+
+    info = workspace.load_project_info(project_dir)
+    if info.status not in ("glossary_confirmed", "translating", "translated"):
+        return TranslateResult("blocked", reason=f"용어집이 확정되지 않았습니다 (지금 상태: {info.status}). "
+                                                 "finish-extraction -> import-glossary 를 먼저 하세요")
+    terms = glossary.load_glossary(info).get("terms", [])
+    sources = glossary.collect_sources(info)
+    if not sources:
+        return TranslateResult("blocked", reason="번역할 원문이 없습니다")
+    if model not in TRANSLATE_MODELS:
+        return TranslateResult("blocked", reason=f"모르는 모델: {model} (sonnet, opus)")
+    if client is None:
+        try:
+            client = ClaudeCodeClient() if engine == "claude-code" else make_client()
+        except Exception as e:  # noqa: BLE001
+            return TranslateResult("blocked", reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
+    workspace.set_status(info, "translating")
+    r = run_translate(info.dir, sources, terms, client, TRANSLATE_MODELS[model], game=info.game,
+                      work_dir=info.dir / "work" / "translate", progress=progress or _noop, cancel=cancel)
+    if r.state == "done":
+        workspace.set_status(info, "translated")
+    return r
+
+
+def export_project_excel(project_dir: Path | str, force: bool = False) -> list[Path]:
+    """게임 프로젝트의 파일마다 번역 검수 엑셀을 만든다 (초벌 번역·용어 검사 포함)."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    out = []
+    for fd in workspace.file_dirs(info):
+        try:
+            out.append(export_excel(fd, force=force))
+        except FileExistsError:
+            raise
+    return out

@@ -22,7 +22,10 @@ from app.workspace import ProjectInfo, _read, _write, file_dirs, file_key
 CATEGORIES = ["카드 이름", "분류어·태그", "키워드·능력", "자원·토큰", "행동", "기타"]
 REVIEW_SHEET = "용어집"
 INFO_SHEET = "정보"
-HEADERS = ["원문 용어", "번역", "추천 번역", "분류", "등장 횟수", "예문", "변형", "메모"]
+HEADERS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형",
+           "메모"]  # 확인할 정보(원문 상태·번역 확인·다른 후보)를 번역 바로 옆에 둔다 (2026-11-04 사용자 요청)
+# '번역 확인': 모델이 번역이 갈릴 수 있다고 본 용어 ("확인 필요", 보라색). '다른 후보': 대안 번역과 이유
+# '원문 상태': 이 용어가 나온 원문 칸의 추출 확인 결과 중 가장 나쁜 것 (결론 못 냄 > 확인 필요 > 빈 칸=확실)
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 _BRACKET = re.compile(r"(?<!\[)\[([^\[\]\n]{1,24})\](?!\])")  # 카드에 인쇄된 [炎]·[人族] (아이콘 [[x]]는 제외)
 _ICON = re.compile(r"\[\[[a-z0-9_]+\]\]")
@@ -36,11 +39,12 @@ class Source:
     kind: str  # text | tag_pills
     text: str | list
     card_name: str | None = None  # 같은 카드의 이름 영역 (예문 표시용)
+    verdict: str = ""  # 추출 확인: "" (확실) | "확인 필요" | "결론 못 냄"
 
 
 def collect_sources(info: ProjectInfo) -> list[Source]:
     """프로젝트 모든 그룹·파일의 추출 결과(extract/)를 모은다."""
-    from app.extract import load_extracted
+    from app.extract import load_extracted, verification_label
     from app.project import load_project
 
     out: list[Source] = []
@@ -57,7 +61,10 @@ def collect_sources(info: ProjectInfo) -> list[Source]:
                 src = r.get("source")
                 if not src:
                     continue
-                out.append(Source(f"{file_key(fd)}#p{pno}#{rname}", rname, kinds.get(rname, "text"), src, card_name))
+                v = verification_label(r)
+                verdict = "결론 못 냄" if v == "결론 못 냄" else ("확인 필요" if r.get("uncertain") else "")
+                out.append(Source(f"{file_key(fd)}#p{pno}#{rname}", rname, kinds.get(rname, "text"), src, card_name,
+                                  verdict))
     return out
 
 
@@ -99,6 +106,12 @@ class Term:
     variants: list[str] = field(default_factory=list)
     note: str = ""
     confirmed: bool = False  # 이미 게임 용어집에 확정된 용어
+    verdict: str = ""  # 나온 원문 칸 중 가장 불확실한 것 ("결론 못 냄" | "확인 필요" | "")
+    verdict_keys: list[str] = field(default_factory=list)  # 그 원문 칸들
+    check: bool = False  # 번역이 갈릴 수 있어 사람이 골라야 하는 용어 (모델 판단)
+    alternatives: list[str] = field(default_factory=list)
+    check_reason: str = ""
+    chosen: str | None = None  # 사람이 이미 고른 번역 (다시 내보낼 때 B열에 그대로)
 
     def to_dict(self) -> dict:
         return {"source": self.source, "ko": self.ko, "category": self.category, "variants": self.variants,
@@ -107,6 +120,39 @@ class Term:
 
 def _texts(s: Source) -> list[str]:
     return s.text if isinstance(s.text, list) else [s.text]
+
+
+_RANK = {"": 0, "확인 필요": 1, "결론 못 냄": 2}
+
+
+def occurrences(form: str, text: str) -> int:
+    """text 안에 용어가 나온 횟수. 한 글자 용어(예: 魔)는 다른 단어(悪魔) 안에서 세지 않도록
+    칸 전체가 그 글자이거나 카드 대괄호 [魔] 안에 있을 때만 센다."""
+    if not form or not text:
+        return 0
+    if len(form) == 1:
+        return 1 if text == form else text.count(f"[{form}]")
+    return text.count(form)
+
+
+def term_verdict(term: str, sources: list[Source], variants: list[str] = ()) -> tuple[str, list[str]]:
+    """용어가 나온 원문 칸 중 가장 불확실한 추출 결과와 그 칸들. 확실한 칸에도 나오면 그쪽이 근거가 된다."""
+    forms = [term, *[v for v in variants if v]]
+    worst, keys, any_sure = "", [], False
+    for s in sources:
+        hit = any((t == f) if s.kind == "tag_pills" else occurrences(f, t) > 0 for t in _texts(s) for f in forms)
+        if not hit:
+            continue
+        if not s.verdict:
+            any_sure = True
+        elif _RANK[s.verdict] >= _RANK[worst]:
+            if _RANK[s.verdict] > _RANK[worst]:
+                keys = []
+            worst = s.verdict
+            keys.append(s.key)
+    if any_sure:  # 확실하게 읽은 칸에도 같은 용어가 있으면 용어 자체는 믿을 만하다
+        return "", []
+    return worst, keys
 
 
 def count_and_examples(term: str, sources: list[Source], variants: list[str] = (), n_examples: int = 2):
@@ -118,7 +164,7 @@ def count_and_examples(term: str, sources: list[Source], variants: list[str] = (
             if s.kind == "tag_pills":
                 hits += sum(t == f for f in forms)
             else:
-                hits += sum(t.count(f) for f in forms)
+                hits += sum(occurrences(f, t) for f in forms)
         if hits:
             count += hits
             if len(ex) < n_examples:
@@ -145,6 +191,59 @@ def local_candidates(sources: list[Source]) -> dict[str, str]:
                         if rest:
                             out.setdefault(rest, "키워드·능력")
     return out
+
+
+ASSESS_SYSTEM = """You review a Korean glossary for a board game localization before a human confirms it.
+For each term and its proposed Korean, decide whether a human should choose the translation:
+needs_check=true when several Korean renderings are common and the choice changes how the game reads
+(e.g. 炎 -> 화염 / 불꽃, 人族 -> 인간족 / 인간 / 인족), when it is a category or keyword players will see on many
+cards, when a name could be transliterated or translated, or when an action term is in a form that will read
+awkwardly inside sentences (e.g. a noun form like 버리기 where sentences need 버린다).
+Give 1-3 alternatives (different from the proposal) and a short reason in Korean.
+Otherwise needs_check=false with no alternatives."""
+
+
+def _assess_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {"items": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "term": {"type": "string"},
+                "needs_check": {"type": "boolean"},
+                "alternatives": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": "string"},
+            },
+            "required": ["term", "needs_check", "alternatives", "reason"],
+            "additionalProperties": False,
+        }}},
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+
+
+def assess_terms(info: ProjectInfo, terms: list["Term"], client, model: str, work_dir: Path) -> tuple[float, float]:
+    """확정 용어와 새 후보 모두에 대해 '번역 확인 필요'를 모델이 판단한다 (t.check·alternatives를 채움)."""
+    from app.llm import complete_json
+
+    if not terms:
+        return 0.0, 0.0
+    lines = []
+    for t in terms:
+        ko = t.ko if t.confirmed else t.suggested
+        ex = t.examples[0].split(": ", 1)[-1] if t.examples else ""
+        lines.append(json.dumps({"term": t.source, "proposed_ko": ko, "category": t.category,
+                                 "example": ex[:80]}, ensure_ascii=False))
+    prompt = f"Game: {info.game}. Terms (JSON lines):\n" + "\n".join(lines)
+    data, api, eq = complete_json(client, model, ASSESS_SYSTEM, prompt, _assess_schema(), work_dir)
+    by = {t.source: t for t in terms}
+    for it in data.get("items", []):
+        t = by.get(it["term"])
+        if t and it["needs_check"]:
+            t.check = True
+            t.alternatives = [a for a in it["alternatives"] if a and a != (t.ko if t.confirmed else t.suggested)][:3]
+            t.check_reason = it["reason"]
+    return api, eq
 
 
 CANDIDATE_SYSTEM = """You build a translation glossary for a board game being localized into Korean.
@@ -215,6 +314,11 @@ def find_candidates(info: ProjectInfo, sources: list[Source], client, model: str
             continue  # 원문에 없는 용어(모델이 지어낸 것)는 버린다
         terms[w] = Term(w, suggested=item["suggested_ko"], category=item["category"], count=c, examples=ex,
                         note="")
+    for t in terms.values():
+        t.verdict, t.verdict_keys = term_verdict(t.source, sources, t.variants)
+    a2, e2 = assess_terms(info, list(terms.values()), client, model, work_dir)
+    api_usd += a2
+    equiv += e2
     order = sorted(terms.values(), key=lambda t: (not t.confirmed, CATEGORIES.index(t.category)
                                                   if t.category in CATEGORIES else 99, -t.count, t.source))
     return order, api_usd, equiv
@@ -245,6 +349,7 @@ def confirm(info: ProjectInfo, terms: list[dict]) -> dict:
 # ---------------------------------------------------------------- 검증 엑셀
 def export_review(info: ProjectInfo, terms: list[Term], out: Path) -> Path:
     from openpyxl import Workbook
+    from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Font, PatternFill, Protection
 
     wb = Workbook()
@@ -254,21 +359,38 @@ def export_review(info: ProjectInfo, terms: list[Term], out: Path) -> Path:
     for c in ws[1]:
         c.font = Font(bold=True)
     for h, w in {"원문 용어": 22, "번역": 22, "추천 번역": 22, "분류": 12, "등장 횟수": 9, "예문": 70, "변형": 16,
-                 "메모": 24}.items():
+                 "메모": 24, "원문 상태": 14, "번역 확인": 12, "다른 후보": 40}.items():
         ws.column_dimensions[ws.cell(1, COL[h]).column_letter].width = w
     ws.freeze_panes = "B2"
     edit = PatternFill("solid", fgColor="FFF8DC")
     done = PatternFill("solid", fgColor="D9EAD3")
+    no_verdict = PatternFill("solid", fgColor="F4B183")  # 주황: 결론 못 낸 원문에서만 나온 용어
+    unsure = PatternFill("solid", fgColor="FFE066")  # 노랑: 확인 필요 원문에서만 나온 용어
+    to_check = PatternFill("solid", fgColor="D9D2E9")  # 보라: 번역이 갈릴 수 있어 사람이 골라야 하는 용어
     for i, t in enumerate(terms, start=2):
-        vals = {"원문 용어": t.source, "번역": t.ko if t.confirmed else t.suggested, "추천 번역": t.suggested,
+        b = t.chosen if t.chosen is not None else (t.ko if t.confirmed else t.suggested)
+        vals = {"원문 용어": t.source, "번역": b, "추천 번역": t.suggested,
                 "분류": t.category, "등장 횟수": t.count, "예문": "\n".join(t.examples),
-                "변형": ", ".join(t.variants), "메모": ("이미 확정된 용어. " if t.confirmed else "") + t.note}
+                "변형": ", ".join(t.variants), "메모": ("이미 확정된 용어. " if t.confirmed else "") + t.note,
+                "원문 상태": t.verdict or None, "번역 확인": "확인 필요" if t.check else None,
+                "다른 후보": (", ".join(t.alternatives) + (f" — {t.check_reason}" if t.check_reason else ""))
+                if t.check else None}
         for h, v in vals.items():
             c = ws.cell(i, COL[h], v)
             c.alignment = Alignment(wrap_text=True, vertical="top")
         for h in ("원문 용어", "번역", "분류", "변형", "메모"):
             ws.cell(i, COL[h]).protection = Protection(locked=False)
         ws.cell(i, COL["번역"]).fill = done if t.confirmed else edit
+        if t.check:  # 번역이 갈릴 수 있는 용어: 보라색
+            ws.cell(i, COL["번역"]).fill = to_check
+            ws.cell(i, COL["번역 확인"]).fill = to_check
+        if t.verdict:
+            fill = no_verdict if t.verdict == "결론 못 냄" else unsure
+            ws.cell(i, COL["원문 용어"]).fill = fill
+            ws.cell(i, COL["원문 상태"]).fill = fill
+            ws.cell(i, COL["원문 용어"]).comment = Comment(
+                f"이 용어는 추출이 불확실한 칸({t.verdict})에서만 나왔습니다. 원문 글자가 틀렸을 수 있습니다.\n"
+                + "\n".join(t.verdict_keys[:5]), "CardTranslater")
     # 사람이 아래에 용어를 직접 더할 수 있게 빈 행 몇 줄을 열어 둔다
     for i in range(len(terms) + 2, len(terms) + 52):
         for h in ("원문 용어", "번역", "분류", "변형", "메모"):
@@ -324,6 +446,8 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
 
     seen: dict[str, int] = {}
     by_ko: dict[str, list[str]] = {}
+    unchanged_checks: list[str] = []
+    current = {t["source"]: t.get("ko") for t in load_glossary(info).get("terms", [])}  # 이미 확정된 번역
     for n, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         src = cell(row, "원문 용어")
         if not src:
@@ -345,10 +469,47 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
                           "note": cell(row, "메모").replace("이미 확정된 용어. ", ""),
                           "count": int(cnt) if isinstance(cnt, (int, float)) else 0})
         by_ko.setdefault(ko, []).append(src)
+        if cell(row, "번역 확인") and (ko == cell(row, "추천 번역") or ko == current.get(src)):
+            unchanged_checks.append(f"{src} = {ko}")
     for ko, srcs in by_ko.items():
         if len(srcs) > 1:
             res.issues.append(f"번역 '{ko}'을(를) 여러 원문이 함께 씀: {', '.join(srcs)}")
+    if unchanged_checks:
+        res.issues.append(f"‘번역 확인’ 용어를 추천 번역 그대로 확정 {len(unchanged_checks)}개 (다른 후보를 봤는지 확인): "
+                          + ", ".join(unchanged_checks[:20]) + (" …" if len(unchanged_checks) > 20 else ""))
     if res.unused:
         res.issues.append(f"번역이 비어 용어로 쓰지 않음 {len(res.unused)}개: {', '.join(res.unused[:20])}"
                           + (" …" if len(res.unused) > 20 else ""))
     return res
+
+
+def terms_from_review(xlsx: Path) -> list[Term]:
+    """검증 엑셀(옛 열 순서도 됨)을 다시 Term 목록으로 읽는다. 사람이 고른 B열은 chosen으로 보존한다."""
+    from openpyxl import load_workbook
+
+    ws = load_workbook(xlsx, data_only=True)[REVIEW_SHEET]
+    head = [c.value for c in ws[1]]
+    ix = {h: head.index(h) for h in head if h}
+
+    def get(row, h):
+        v = row[ix[h]] if h in ix else None
+        return "" if v is None else str(v).strip()
+
+    out = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        src = get(row, "원문 용어")
+        if not src:
+            continue
+        note = get(row, "메모")
+        alt = get(row, "다른 후보")
+        alts, reason = (alt.split(" — ", 1) + [""])[:2] if alt else ("", "")
+        cnt = row[ix["등장 횟수"]] if "등장 횟수" in ix else 0
+        out.append(Term(src, ko=get(row, "번역"), suggested=get(row, "추천 번역"), category=get(row, "분류") or "기타",
+                        count=int(cnt) if isinstance(cnt, (int, float)) else 0,
+                        examples=[e for e in get(row, "예문").split("\n") if e],
+                        variants=[v.strip() for v in get(row, "변형").split(",") if v.strip()],
+                        note=note.replace("이미 확정된 용어. ", ""), confirmed=note.startswith("이미 확정된 용어"),
+                        verdict=get(row, "원문 상태"), check=bool(get(row, "번역 확인")),
+                        alternatives=[a.strip() for a in alts.split(",") if a.strip()], check_reason=reason,
+                        chosen=get(row, "번역")))
+    return out

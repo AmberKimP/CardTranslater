@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.extract import MODEL_LABEL, load_extracted, verification_label
+from app.translate import check, lookup, terms_in
 from app.project import Project, sha256_file
 
 SHEET = "번역"
@@ -36,6 +37,18 @@ def source_of(project: Project, extracted: dict, page: int, region: str):
     if r is not None:
         return r.get("source"), bool(r.get("uncertain"))
     return ((project.samples.get(page) or {}).get(region) or {}).get("source"), False
+
+
+def _project_translation(file_dir: Path) -> tuple[dict, list[dict]]:
+    """(프로젝트 번역 캐시, 확정 용어집). 게임 프로젝트의 그룹 파일이 아니면 ({}, [])."""
+    from app.glossary import load_glossary
+    from app.translate import load_cache
+    from app.workspace import project_of
+
+    info = project_of(file_dir)
+    if info is None:
+        return {}, []
+    return load_cache(info.dir), load_glossary(info).get("terms", [])
 
 
 def make_key(pdf_name: str, page: int, region: str) -> str:
@@ -100,20 +113,25 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     src_doc = pymupdf.open(project.source_pdf)
     pdf = project.source_pdf.name
     extracted = load_extracted(project.root)
+    tr_cache, gl_terms = _project_translation(project.root)
     row = 2
     for pno in pages:
         card = project.samples.get(pno) or {}
         for reg in project.template.regions:
             entry = card.get(reg.name) or {}
-            draft = _to_cell(entry.get("ko"))
             src, unsure = source_of(project, extracted, pno, reg.name)
+            tr = lookup(tr_cache, src) if (tr_cache and src) else None
+            draft = _to_cell(tr["ko"]) if tr else _to_cell(entry.get("ko"))  # 초벌 번역(5단계) 우선, 없으면 초안
+            used = terms_in(_to_cell(src) or "", gl_terms) if gl_terms else []
             status = [s for s in ("확인 필요" if unsure else None, None if draft else "빈 영역") if s]
+            status += (tr or {}).get("status", [])
             ext = (extracted.get(pno) or {}).get(reg.name)
             verdict = verification_label(ext)
             vals = {
                 "key": make_key(pdf, pno, reg.name), "카드": f"{pdf} p{pno}", "영역": reg.name,
                 "원문": _to_cell(src), "원문 확인": verdict, "초벌 번역": draft, "번역": draft,
                 "상태": ", ".join(status) or None,
+                "사용한 용어": ", ".join(f"{t['source']} → {t['ko']}" for t in used) or None,
             }
             for h, v in vals.items():
                 ws.cell(row, COL[h], v)
@@ -206,6 +224,7 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
 
     pdf = project.source_pdf.name
     extracted = load_extracted(project.root)
+    _cache, gl_terms = _project_translation(project.root)
     kinds = {r.name: r.kind for r in project.template.regions}
     exported_pages = [int(p) for p in str(info.get("쪽") or "").split(",") if p.strip()]
     expected = {make_key(pdf, p, r) for p in exported_pages for r in kinds}
@@ -241,6 +260,12 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
                 res.issues.append(f"글자 크기가 숫자가 아님(무시): {key} = {size!r}")
         if ko is None:
             res.issues.append(f"번역이 비어 있음(한글을 넣지 않음): {key}")
+        elif gl_terms and src and ko != "-":  # 사람이 고친 번역도 용어집을 지켰는지 (PRD 5.3 다)
+            st, missing = check(_to_cell(src), _to_cell(ko), gl_terms)
+            if missing:
+                res.issues.append(f"용어 불일치(기록만): {key}: {', '.join(missing)}")
+            if "아이콘 불일치" in st:
+                res.issues.append(f"아이콘 불일치(기록만): {key}")
         orig, _ = source_of(project, extracted, page, region)
         if orig is not None and src is not None and src != orig:
             res.issues.append(f"원문을 고친 행(기록만 함): {key}")

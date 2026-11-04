@@ -6,6 +6,8 @@
     python -m app.cli extract-project --project projects/던전1차 [--group 아이템]
     python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> 용어집_검증.xlsx)
     python -m app.cli import-glossary --project projects/던전1차 --excel projects/던전1차/용어집_검증.xlsx
+    python -m app.cli translate --project projects/던전1차                (확정 용어집 기준 초벌 번역)
+    python -m app.cli export-excel --project projects/던전1차             (파일마다 번역_검수.xlsx)
 
 3단계 글자 추출 (파일 하나) -> <파일 폴더>/extract/  (끊겨도 같은 명령으로 이어 감)
     python -m app.cli extract --project projects/sample [--mode double-check|opus] [--engine claude-code|api]
@@ -34,7 +36,7 @@ from app.service import ProgressEvent
 
 def _print_progress(prefix: str):
     def cb(ev: ProgressEvent) -> None:
-        if ev.stage in ("erase", "compose", "extract", "recheck"):
+        if ev.stage in ("erase", "compose", "extract", "recheck", "translate"):
             print(f"[{prefix}] {ev.done + 1}/{ev.total} {ev.message}", flush=True)
     return cb
 
@@ -146,6 +148,15 @@ def cmd_learn_tag_colors(args: argparse.Namespace) -> int:
 
 
 def cmd_export_excel(args: argparse.Namespace) -> int:
+    if (Path(args.project) / "project.json").exists():  # 게임 프로젝트: 파일마다 하나씩
+        try:
+            outs = service.export_project_excel(args.project, force=args.force)
+        except FileExistsError as e:
+            print(f"[export-excel] 이미 있습니다: {e}\n  덮어쓰려면 --force.", file=sys.stderr)
+            return 1
+        for o in outs:
+            print(f"[export-excel] {o}")
+        return 0
     try:
         out = service.export_excel(args.project, args.out, args.pages, force=args.force)
     except FileExistsError as e:
@@ -283,6 +294,30 @@ def cmd_import_glossary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_translate(args: argparse.Namespace) -> int:
+    try:
+        r = service.translate_project(args.project, model=args.model, engine=args.engine,
+                                      progress=_print_progress("translate"))
+    except KeyboardInterrupt:
+        print("[translate] 멈춤. 번역한 칸은 저장되어 있고, 다시 실행하면 이어 갑니다.", file=sys.stderr)
+        return 130
+    if r.state == "blocked":
+        print(f"[translate] {r.reason}", file=sys.stderr)
+        return 1
+    print(f"[translate] 서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
+          f"이미 번역됨 {r.cached}")
+    if r.term_mismatch:
+        print(f"  [확인] 용어 불일치 {len(r.term_mismatch)}칸 (엑셀 상태에 표시): " + ", ".join(r.term_mismatch[:5]))
+    if r.icon_mismatch:
+        print(f"  [확인] 아이콘 불일치 {len(r.icon_mismatch)}칸")
+    if r.state == "paused":
+        when = f" {r.retry_after} 이후" if r.retry_after else ""
+        print(f"[translate] 일시 정지: {r.reason}.{when} 다시 실행하면 이어 갑니다.", file=sys.stderr)
+        return 3
+    print("[translate] 완료. export-excel --project <프로젝트> 로 번역 검수 엑셀을 만드세요.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -356,6 +391,11 @@ def main(argv: list[str] | None = None) -> int:
     fx.add_argument("--yes", action="store_true", help="남은 카드·결론 못 낸 칸이 있어도 계속")
     fx.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
     fx.set_defaults(func=cmd_finish_extraction)
+    tr = sub.add_parser("translate", help="5단계: 확정 용어집 기준으로 프로젝트 전체 원문 초벌 번역")
+    tr.add_argument("--project", required=True)
+    tr.add_argument("--model", default="sonnet", choices=["sonnet", "opus"])
+    tr.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
+    tr.set_defaults(func=cmd_translate)
     ig = sub.add_parser("import-glossary", help="4단계: 검증한 용어집 엑셀을 가져와 게임 용어집 확정")
     ig.add_argument("--project", required=True)
     ig.add_argument("--excel", required=True)

@@ -1,0 +1,261 @@
+"""5단계 초벌 번역 (PRD 5.3 나·다). 확정 게임 용어집을 반드시 지키며 프로젝트 전체 원문을 번역한다.
+
+- 용어집이 확정된 프로젝트만 번역한다 (상태 glossary_confirmed 이상).
+- 같은 원문은 한 번만 번역한다 (프로젝트 번역 캐시 translate/cache.json, 원문 문자열이 key).
+- 칸 전체가 확정 용어와 같으면(카드 이름·태그 라벨) 모델을 부르지 않고 용어집 번역을 쓴다.
+- 나머지는 여러 칸을 묶어 한 번에 보낸다. 그 묶음에 나오는 용어와 확정 번역을 함께 주고 반드시 쓰게 한다.
+- 번역 뒤 검사(코드): 용어 불일치(원문에 용어가 있는데 번역에 확정 번역이 없음), 아이콘 불일치([[x]]).
+  어긋난 칸은 한 번 더 고쳐 달라고 요청하고, 그래도 안 되면 상태로 표시한다.
+- 끊겨도(한도·과부하) 묶음마다 저장하므로 다시 부르면 남은 칸부터 이어 간다.
+- 용어집이 바뀌면 바뀐 용어가 든 칸만 다시 번역한다.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+STATUS_TERM = "용어 불일치"
+STATUS_ICON = "아이콘 불일치"
+BATCH_CELLS = 30
+_ICON = re.compile(r"\[\[([a-z0-9_]+)\]\]")
+
+SYSTEM_PROMPT = """You translate board-game card text into natural Korean for a published Korean edition.
+
+Rules:
+- Use the glossary translation every time the source term appears. You may conjugate or inflect it to fit
+  the sentence (e.g. 버리다 -> 버린다 / 버려진다 / 버린 뒤), but keep its stem, meaning and nuance; never swap it
+  for a synonym.
+- Rule/effect text: concise rulebook style ending in the plain "~한다/~할 수 있다" form.
+  Flavor text and quotes: keep the tone; Japanese 「」 become Korean “ ”.
+- Keep the same number of lines: the source line breaks (\\n) mark where the card breaks lines.
+- Keep [[icon]] placeholders unchanged (move them only to fit Korean word order).
+  Keep card brackets such as [炎] as [ ] around the translated glossary word, e.g. [불꽃].
+  Keep formatting tags <b> </b> <i> </i> <c1> </c1> around the corresponding Korean words.
+- Card names: short and natural. Do not add explanations.
+- Keep numbers, + signs, and HP/POW style abbreviations as they are."""
+
+
+def _schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {"items": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "ko": {"type": "string"}},
+            "required": ["id", "ko"],
+            "additionalProperties": False,
+        }}},
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+
+
+# ---------------------------------------------------------------- 용어 검사
+def terms_in(text: str, glossary: list[dict]) -> list[dict]:
+    """원문에 들어 있는 확정 용어 (긴 용어 우선, 짧은 용어가 긴 용어 안에만 있으면 빼지 않는다)."""
+    from app.glossary import occurrences
+
+    out = []
+    for t in glossary:
+        forms = [t["source"], *t.get("variants", [])]
+        if any(occurrences(f, text) for f in forms):
+            out.append(t)
+    return sorted(out, key=lambda t: -len(t["source"]))
+
+
+_KO_ENDINGS = ("하기", "하다", "한다", "기", "다")  # 용어집 번역이 동사·명사형일 때 떼고 어간만 본다
+
+
+def _jamo(s: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFD", s)
+
+
+def ko_term_used(term_ko: str, ko: str) -> bool:
+    """확정 번역이 번역문에 쓰였는가. 한국어는 활용하므로(버리기 -> 버린다·버려·버리고) 끝의 -기·-다를
+    떼어 어간으로 보고, 자모 단위로 비교한다(버리 ⊂ 버린: ㅂㅓㄹㅣ ⊂ ㅂㅓㄹㅣㄴ). 두 글자 이상 어간만 뗀다."""
+    if not term_ko:
+        return True
+    if term_ko in ko:
+        return True
+    stem = term_ko
+    for e in _KO_ENDINGS:
+        if stem.endswith(e) and len(stem) - len(e) >= 2:
+            stem = stem[: -len(e)]
+            break
+    js, jk = _jamo(stem), _jamo(ko)
+    if js in jk:
+        return True
+    # 어간 끝 모음이 어미와 줄어드는 경우 (버리+어 -> 버려, 되+어 -> 돼): 끝 모음만 빼고 비교.
+    # NFD는 초성 ㄹ(U+1105)과 받침 ㄹ(U+11AF)을 구분하므로 '버ㄹ(초성)'은 버려·버릴에는 맞고 벌에는 안 맞는다.
+    if len(stem) >= 2 and "ᅡ" <= js[-1] <= "ᅵ":
+        return js[:-1] in jk
+    return False
+
+
+def check(source: str, ko: str, glossary: list[dict]) -> tuple[list[str], list[str]]:
+    """(상태 목록, 어긴 용어 설명). 용어 불일치·아이콘 불일치."""
+    status, missing = [], []
+    for t in terms_in(source, glossary):
+        if not ko_term_used(t["ko"], ko):
+            missing.append(f"{t['source']} → {t['ko']}")
+    if missing:
+        status.append(STATUS_TERM)
+    if sorted(_ICON.findall(source)) != sorted(_ICON.findall(ko)):
+        status.append(STATUS_ICON)
+    return status, missing
+
+
+# ---------------------------------------------------------------- 캐시
+def cache_path(project_dir: Path) -> Path:
+    return Path(project_dir) / "translate" / "cache.json"
+
+
+def load_cache(project_dir: Path) -> dict:
+    p = cache_path(project_dir)
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def save_cache(project_dir: Path, cache: dict) -> None:
+    p = cache_path(project_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _stale(entry: dict, source: str, glossary: list[dict]) -> bool:
+    """캐시된 번역을 만든 뒤 이 원문에 든 용어의 확정 번역이 바뀌었으면 다시 번역한다."""
+    used = entry.get("terms_used", {})
+    return any(used.get(t["source"]) != t["ko"] for t in terms_in(source, glossary))
+
+
+def lookup(cache: dict, source) -> dict | None:
+    """원문(문자열 또는 태그 목록) -> 캐시 항목."""
+    if isinstance(source, list):
+        items = [cache.get(s) for s in source]
+        if any(i is None for i in items):
+            return None
+        status = sorted({x for i in items for x in i.get("status", [])})
+        return {"ko": [i["ko"] for i in items], "status": status,
+                "terms_used": {k: v for i in items for k, v in i.get("terms_used", {}).items()}}
+    return cache.get(source)
+
+
+# ---------------------------------------------------------------- 실행
+@dataclass
+class TranslateResult:
+    state: str  # done | paused | blocked
+    cells: int = 0  # 번역할 서로 다른 원문 수
+    from_glossary: int = 0  # 용어집으로 바로 정한 칸
+    translated: int = 0  # 이번에 모델로 번역한 칸
+    cached: int = 0  # 이미 번역되어 있던 칸
+    term_mismatch: list[str] = field(default_factory=list)  # 고쳐 달라고 해도 남은 용어 불일치 원문
+    icon_mismatch: list[str] = field(default_factory=list)
+    reason: str = ""
+    retry_after: str | None = None
+    equiv_usd: float = 0.0
+    spent_usd: float = 0.0
+
+
+def unique_sources(sources) -> list[tuple[str, str, str]]:
+    """[(원문, 영역 이름, 종류)] 서로 다른 원문만. 태그 목록은 라벨 하나하나를 원문으로."""
+    out, seen = [], set()
+    for s in sources:
+        texts = s.text if isinstance(s.text, list) else [s.text]
+        for t in texts:
+            if t and t not in seen:
+                seen.add(t)
+                out.append((t, s.region, s.kind))
+    return out
+
+
+def run_translate(project_dir: Path, sources, glossary: list[dict], client, model: str, *,
+                  game: str, work_dir: Path, progress=None, cancel=None) -> TranslateResult:
+    from app.extract import Paused, _iso_after
+    from app.extract_cc import CardError, NotAvailable
+    from app.llm import complete_json
+    from app.service import ProgressEvent
+
+    cache = load_cache(project_dir)
+    by_source = {t["source"]: t for t in glossary}
+    items = unique_sources(sources)
+    res = TranslateResult("done", cells=len(items))
+    todo = []
+    for text, region, kind in items:
+        if text in cache and not _stale(cache[text], text, glossary):
+            if cache[text].get("by") != "glossary":  # 검사 규칙이 바뀌었을 수 있으니 상태만 다시 매긴다 (모델 호출 없음)
+                st, missing = check(text, cache[text]["ko"], glossary)
+                cache[text].update(status=st, missing_terms=missing)
+            res.cached += 1
+            continue
+        t = by_source.get(text) or next((g for g in glossary if text in g.get("variants", [])), None)
+        if t and t["ko"]:  # 칸 전체가 확정 용어 (카드 이름·태그 라벨)
+            cache[text] = {"ko": t["ko"], "status": [], "terms_used": {t["source"]: t["ko"]},
+                           "by": "glossary", "region": region}
+            res.from_glossary += 1
+            continue
+        todo.append((text, region, kind))
+    save_cache(project_dir, cache)
+
+    def ask(batch, extra=""):
+        lines, gl = [], {}
+        for i, (text, region, _kind) in enumerate(batch):
+            lines.append(json.dumps({"id": str(i), "region": region, "source": text}, ensure_ascii=False))
+            for t in terms_in(text, glossary):
+                gl[t["source"]] = t["ko"]
+        prompt = (f"Game: {game}.\nGlossary (must use): "
+                  + json.dumps(gl, ensure_ascii=False) + f"\n{extra}\nItems (JSON lines):\n" + "\n".join(lines)
+                  + "\nReturn one item per id.")
+        return complete_json(client, model, SYSTEM_PROMPT, prompt, _schema(), work_dir)
+
+    try:
+        batches = [todo[i:i + BATCH_CELLS] for i in range(0, len(todo), BATCH_CELLS)]
+        for bi, batch in enumerate(batches):
+            if cancel:
+                cancel.check()
+            if progress:
+                progress(ProgressEvent("translate", bi, len(batches), f"{len(batch)}칸 번역 중"))
+            data, api, eq = ask(batch)
+            res.spent_usd += api
+            res.equiv_usd += eq
+            got = {it["id"]: it["ko"] for it in data.get("items", [])}
+            retry = []
+            for i, (text, region, _k) in enumerate(batch):
+                ko = got.get(str(i))
+                if ko is None:
+                    continue  # 빠진 칸은 다음 실행에서 다시
+                status, missing = check(text, ko, glossary)
+                entry = {"ko": ko, "status": status, "missing_terms": missing, "by": model, "region": region,
+                         "terms_used": {t["source"]: t["ko"] for t in terms_in(text, glossary)},
+                         "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+                cache[text] = entry
+                if status:
+                    retry.append((text, region, _k))
+            if retry:  # 한 번 더: 어긴 용어를 짚어 고쳐 달라고 한다
+                notes = "; ".join(f"{t}: {', '.join(cache[t]['missing_terms']) or 'keep [[icons]]'}" for t, _r, _k in retry)
+                data2, api2, eq2 = ask(retry, extra=f"Previous attempt broke these required terms/icons: {notes}")
+                res.spent_usd += api2
+                res.equiv_usd += eq2
+                for it in data2.get("items", []):
+                    text, region, _k = retry[int(it["id"])]
+                    status, missing = check(text, it["ko"], glossary)
+                    if len(status) <= len(cache[text]["status"]):
+                        cache[text].update(ko=it["ko"], status=status, missing_terms=missing, retried=True)
+            res.translated += sum(1 for t, _r, _k in batch if t in cache)
+            save_cache(project_dir, cache)
+    except Paused as p:
+        res.state, res.reason, res.retry_after = "paused", p.reason, _iso_after(p.retry_after_s)
+    except (CardError, NotAvailable) as e:
+        res.state, res.reason = "blocked", str(e)
+    for text, *_ in items:
+        e = cache.get(text)
+        if e and STATUS_TERM in e.get("status", []):
+            res.term_mismatch.append(text)
+        if e and STATUS_ICON in e.get("status", []):
+            res.icon_mismatch.append(text)
+    return res
