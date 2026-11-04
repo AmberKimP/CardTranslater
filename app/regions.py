@@ -44,6 +44,7 @@ class Region:
     style: dict = field(default_factory=dict)
     notes: str = ""
     erase: dict = field(default_factory=dict)  # 지우기 옵션 (예: keep_ink_taller_than_pt)
+    extract: dict = field(default_factory=dict)  # 추출 옵션 (예: tag_colors 라벨 색 -> 글자 사전)
 
 
 @dataclass
@@ -64,6 +65,7 @@ def load_template(path: Path) -> RegionTemplate:
             style=r.get("style", {}),
             notes=r.get("notes", ""),
             erase=r.get("erase", {}),
+            extract=r.get("extract", {}),
         )
         for r in data["regions"]
     ]

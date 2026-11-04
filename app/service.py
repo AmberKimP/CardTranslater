@@ -393,3 +393,137 @@ def compose(project_dir: Path | str, *, excel: Path | str | None = None, cleared
     _commit(run_dir, final_dir)
     progress(ProgressEvent("done", 1, 1, "한글 넣기 완료"))
     return ComposeResult("done", final_dir, issues=issues, status_summary=summary, rows=rows)
+
+
+# ---------------------------------------------------------------- 3단계: 글자 추출 (Claude 비전)
+@dataclass
+class ExtractResult:
+    state: str  # "done" | "paused" | "waiting_batch" | "blocked"
+    engine: str = "claude-code"
+    equiv_usd: float = 0.0  # Claude Code 요금제로 읽은 분량의 API 정가 환산 (청구되지 않음)
+    done_pages: list[int] = field(default_factory=list)
+    remaining_pages: list[int] = field(default_factory=list)
+    failed: dict = field(default_factory=dict)  # 쪽 -> 이유
+    spent_usd: float = 0.0
+    reason: str = ""  # 멈춘 이유
+    retry_after: str | None = None  # 이 시각 뒤에 다시 실행하면 된다
+    batch_id: str | None = None
+    model: str = ""  # 쓴 모델 ID (1차)
+    output_dir: Path | None = None  # 결과 폴더 (프로젝트 extract/ 또는 시험 폴더)
+    mode: str = "double-check"
+    recheck_cells: int = 0  # 두 번째 모델로 다시 읽은 칸
+    recheck_agreed: int = 0  # 같게 읽어 '확인 필요'를 지운 칸
+    recheck_disagreed: int = 0  # 다르게 읽어 '확인 필요'로 남긴 칸
+
+
+EXTRACT_MODES = {  # 모드 -> (1차 모델, 다시 확인 모델 또는 None)
+    "double-check": ("sonnet", "opus"),  # 기본: Sonnet으로 읽고 불확실한 칸만 Opus로 다시
+    "opus": ("opus", None),  # Opus만
+}
+
+
+def extract(project_dir: Path | str, pages: str | None = None, *, mode: str = "double-check",
+            model: str | None = None, engine: str = "claude-code", batch: bool = False,
+            budget_usd: float | None = None, retry_failed: bool = False, test: bool = False,
+            out_root: Path | str = "test_runs", client=None,
+            progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> ExtractResult:
+    """영역 원문을 Claude로 읽어 extract/에 쪽마다 저장한다. 끊겨도 다시 부르면 이어 간다.
+
+    mode: "double-check"(기본) - Sonnet으로 전부 읽고 '확인 필요' 칸만 Opus로 다시 읽어 비교한다.
+          "opus" - Opus만으로 읽는다.
+    model을 주면(시험·비교용) mode 대신 그 모델 하나로만 읽는다.
+
+    API 한도(속도·크레딧)나 예산에 닿으면 state="paused"로 돌아온다(예외 아님).
+    batch=True면 일괄 처리(50% 할인)로 보내고 state="waiting_batch"로 돌아온다. 나중에 다시 부르면
+    결과를 받아 오고 남은 카드를 보낸다.
+    engine: "claude-code"(기본, 로그인된 Claude Code 요금제로 `claude -p`, API 키 불필요)
+            | "api"(Anthropic API, .env의 ANTHROPIC_API_KEY 또는 `ant auth login`, 사용료 별도).
+            일괄 처리(batch)와 예산(budget_usd)은 api 엔진에서만 쓴다.
+    test=True면 프로젝트 extract/ 대신 test_runs/extract-<프로젝트>-<모드>/ 에 쓴다(비교용, 다시 부르면 이어 감).
+    """
+    import pymupdf
+
+    from app.extract import MODELS, make_client, resolve_model, run_extract, run_recheck
+
+    project = load_project(Path(project_dir))
+    if model is None and mode not in EXTRACT_MODES:
+        return ExtractResult("blocked", mode=mode, reason=f"모르는 모드: {mode} (double-check, opus 중 하나)")
+    first, check = (model, None) if model else EXTRACT_MODES[mode]
+    try:
+        model_id = resolve_model(first)
+        check_id = resolve_model(check) if check else None
+    except ValueError as e:
+        return ExtractResult("blocked", reason=str(e))
+    alias = next((k for k, v in MODELS.items() if v == model_id), model_id) if model else mode
+    out_dir = (Path(out_root).resolve() / f"extract-{project.root.name}-{alias}") if test else None
+    with pymupdf.open(project.source_pdf) as d:
+        page_list = parse_page_spec(pages or f"1-{d.page_count}", d.page_count)
+    if engine not in ("claude-code", "api"):
+        return ExtractResult("blocked", engine=engine, reason=f"모르는 엔진: {engine} (claude-code, api 중 하나)")
+    if engine == "claude-code" and batch:
+        return ExtractResult("blocked", engine=engine,
+                             reason="일괄 처리(--batch)는 API 전용입니다. --engine api와 함께 쓰세요")
+    if client is None:
+        try:
+            if engine == "claude-code":
+                from app.extract_cc import ClaudeCodeClient
+
+                client = ClaudeCodeClient()
+            else:
+                client = make_client()
+        except Exception as e:  # noqa: BLE001  (키·claude 명령이 없을 때 등)
+            return ExtractResult("blocked", engine=engine, reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
+    r = run_extract(project, page_list, client, batch=batch, budget_usd=budget_usd, retry_failed=retry_failed,
+                    model=model_id, out_dir=out_dir, progress=progress or _noop, cancel=cancel)
+    res = ExtractResult(r.state, r.engine, r.equiv_usd, r.done_pages, r.remaining_pages, r.failed, r.spent_usd,
+                        r.reason, r.retry_after, r.batch_id, r.model, r.out_dir, mode if not model else "single")
+    if check_id and r.state == "done":
+        # 두 번째 확인: 1차가 끝난 카드의 '확인 필요' 칸만. 끊기면 다시 불렀을 때 남은 칸부터.
+        rc = run_recheck(project, page_list, client, base=r.out_dir, check_model=check_id,
+                         progress=progress or _noop, cancel=cancel)
+        res.recheck_cells, res.recheck_agreed, res.recheck_disagreed = rc.checked_cells, rc.agreed, rc.disagreed
+        res.spent_usd = round(res.spent_usd + rc.spent_usd, 4)
+        res.equiv_usd = round(res.equiv_usd + rc.equiv_usd, 4)
+        if rc.state != "done":
+            res.state, res.reason, res.retry_after = rc.state, f"두 번째 확인 중: {rc.reason}", rc.retry_after
+    return res
+
+
+def learn_tag_colors(project_dir: Path | str, save: bool = False) -> tuple[dict, list[str]]:
+    """글자를 아는 카드(samples.json 원문, 그다음 확인 필요가 아닌 추출 결과)에서 태그 '라벨 색 -> 글자'
+    사전을 배운다. save=True면 regions.json의 태그 영역 extract.tag_colors에 쓴다."""
+    import pymupdf
+
+    from app.extract import learn_tag_colors as _learn
+    from app.extract import load_extracted
+
+    project = load_project(Path(project_dir))
+    known: dict = {}
+    for pno, regs in load_extracted(project.root).items():
+        for name, r in regs.items():
+            if not r.get("uncertain") and isinstance(r.get("source"), list):
+                known.setdefault(pno, {})[name] = r["source"]
+    for pno, card in project.samples.items():  # 사람이 옮긴 것이 우선
+        for name, r in card.items():
+            if isinstance(r, dict) and isinstance(r.get("source"), list):
+                known.setdefault(pno, {})[name] = r["source"]
+    with pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf") as d:
+        vocab, warns = _learn(project, d, known)
+    if save and vocab:
+        path = project.root / "regions.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for r in data["regions"]:
+            if r["name"] in vocab:
+                r.setdefault("extract", {})["tag_colors"] = vocab[r["name"]]
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    return vocab, warns
+
+
+def evaluate_extract(project_dir: Path | str, from_dir: Path | str | None = None) -> dict:
+    """자동 추출 결과(기본: 프로젝트 extract/, 또는 시험 폴더)를 samples.json(손으로 옮긴 정답)과 비교한다."""
+    from app.extract import evaluate, load_extracted
+
+    project = load_project(Path(project_dir))
+    return evaluate(load_extracted(project.root, Path(from_dir) if from_dir else None), project.samples)

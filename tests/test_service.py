@@ -86,7 +86,7 @@ def test_compose_asks_before_using_excel_with_issues(tmp_path):
         service.export_excel(proj)
     wb = load_workbook(x)
     ws = wb["번역"]
-    ws["G2"] = None  # 첫 행 번역 비우기
+    ws.cell(2, [c.value for c in ws[1]].index("번역") + 1).value = None  # 첫 행 번역 비우기
     wb.save(x)
     r = service.compose(proj, excel=x)
     assert r.state == "needs_confirmation" and any("번역이 비어 있음" in i for i in r.issues)

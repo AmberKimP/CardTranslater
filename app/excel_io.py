@@ -7,7 +7,7 @@
 (PDF 한 파일에 카드가 여러 장이라 PRD의 `파일명#영역명`에 쪽 번호를 넣었다).
 태그 영역은 라벨 하나에 한 줄(셀 안 줄바꿈)로 적는다.
 
-합성(8단계)에는 G열 ‘번역’과 H열 ‘글자 크기’만 쓴다. 1단계에는 기계 번역이 없으므로
+합성(8단계)에는 H열 ‘번역’과 I열 ‘글자 크기’만 쓴다 (열은 이름으로 찾으므로 순서가 바뀌어도 된다). 1단계에는 기계 번역이 없으므로
 초벌 번역(F)과 번역(G)의 처음 값은 samples.json의 한글 초안이다.
 """
 
@@ -18,13 +18,24 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.extract import MODEL_LABEL, load_extracted, verification_label
 from app.project import Project, sha256_file
 
 SHEET = "번역"
 INFO = "정보"
-HEADERS = ["key", "카드", "영역", "미리보기", "원문", "초벌 번역", "번역", "글자 크기", "상태", "사용한 용어", "메모"]
+HEADERS = ["key", "카드", "영역", "미리보기", "원문", "원문 확인", "초벌 번역", "번역", "글자 크기", "상태", "사용한 용어",
+           "메모"]
+# '원문 확인' 값: Sonnet 1회 | 두 번 확인 | 결론 못 냄 | Opus 1회 | 라벨 색 | 손 입력 (+ " (확인 필요)")
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 APP_VERSION = "phase1"
+
+
+def source_of(project: Project, extracted: dict, page: int, region: str):
+    """(원문, 불확실 여부). 자동 추출 결과가 있으면 그것, 없으면 samples.json(손으로 옮긴 것)."""
+    r = (extracted.get(page) or {}).get(region)
+    if r is not None:
+        return r.get("source"), bool(r.get("uncertain"))
+    return ((project.samples.get(page) or {}).get(region) or {}).get("source"), False
 
 
 def make_key(pdf_name: str, page: int, region: str) -> str:
@@ -67,6 +78,7 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     import pymupdf
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Font, PatternFill, Protection
 
     wb = Workbook()
@@ -75,25 +87,33 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
     ws.append(HEADERS)
     for c in ws[1]:
         c.font = Font(bold=True)
-    widths = {"key": 26, "카드": 14, "영역": 8, "미리보기": 48, "원문": 40, "초벌 번역": 40, "번역": 40,
+    widths = {"key": 26, "카드": 14, "영역": 8, "미리보기": 48, "원문": 40, "원문 확인": 12, "초벌 번역": 40, "번역": 40,
               "글자 크기": 9, "상태": 14, "사용한 용어": 16, "메모": 20}
     for h, wdt in widths.items():
         ws.column_dimensions[ws.cell(1, COL[h]).column_letter].width = wdt
     ws.freeze_panes = "B2"
     edit_fill = PatternFill("solid", fgColor="FFF8DC")
+    unsure_fill = PatternFill("solid", fgColor="FFE066")
+    no_verdict_fill = PatternFill("solid", fgColor="F4B183")  # 두 번 읽어도 결론 못 낸 칸 (주황)
+    checked_fill = PatternFill("solid", fgColor="D9EAD3")  # 두 번 확인해 맞은 칸 (연두)
 
     src_doc = pymupdf.open(project.source_pdf)
     pdf = project.source_pdf.name
+    extracted = load_extracted(project.root)
     row = 2
     for pno in pages:
         card = project.samples.get(pno) or {}
         for reg in project.template.regions:
             entry = card.get(reg.name) or {}
             draft = _to_cell(entry.get("ko"))
+            src, unsure = source_of(project, extracted, pno, reg.name)
+            status = [s for s in ("확인 필요" if unsure else None, None if draft else "빈 영역") if s]
+            ext = (extracted.get(pno) or {}).get(reg.name)
+            verdict = verification_label(ext)
             vals = {
                 "key": make_key(pdf, pno, reg.name), "카드": f"{pdf} p{pno}", "영역": reg.name,
-                "원문": _to_cell(entry.get("source")), "초벌 번역": draft, "번역": draft,
-                "상태": None if draft else "빈 영역",
+                "원문": _to_cell(src), "원문 확인": verdict, "초벌 번역": draft, "번역": draft,
+                "상태": ", ".join(status) or None,
             }
             for h, v in vals.items():
                 ws.cell(row, COL[h], v)
@@ -102,6 +122,17 @@ def export_translation(project: Project, out_path: Path, pages: list[int]) -> Pa
             for h in ("원문", "번역", "글자 크기", "메모"):
                 ws.cell(row, COL[h]).protection = Protection(locked=False)
             ws.cell(row, COL["번역"]).fill = edit_fill
+            if unsure:  # 추출이 불확실한 칸은 노란색 (PRD 2장)
+                ws.cell(row, COL["원문"]).fill = unsure_fill
+            if verdict == "결론 못 냄":
+                ws.cell(row, COL["원문 확인"]).fill = no_verdict_fill
+            elif verdict == "두 번 확인":
+                ws.cell(row, COL["원문 확인"]).fill = checked_fill
+            if ext and ext.get("uncertain") and (ext.get("note") or ext.get("readings")):
+                lines = [f"{MODEL_LABEL.get(x['model'], x['model'])}: {_to_cell(x['source'])}"
+                         for x in ext.get("readings") or []]
+                text = "\n".join(lines + ([ext["note"]] if ext.get("note") else []))
+                ws.cell(row, COL["원문"]).comment = Comment(text[:1000], "CardTranslater")
             img = _region_preview(src_doc, pno, reg.rect.to_dict())
             scale = min(1.0, 330 / img.width)
             if scale < 1.0:
@@ -174,6 +205,7 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
     ix = {h: head.index(h) for h in head if h}
 
     pdf = project.source_pdf.name
+    extracted = load_extracted(project.root)
     kinds = {r.name: r.kind for r in project.template.regions}
     exported_pages = [int(p) for p in str(info.get("쪽") or "").split(",") if p.strip()]
     expected = {make_key(pdf, p, r) for p in exported_pages for r in kinds}
@@ -209,8 +241,8 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
                 res.issues.append(f"글자 크기가 숫자가 아님(무시): {key} = {size!r}")
         if ko is None:
             res.issues.append(f"번역이 비어 있음(한글을 넣지 않음): {key}")
-        sample = (project.samples.get(page) or {}).get(region) or {}
-        if sample.get("source") is not None and src is not None and src != sample.get("source"):
+        orig, _ = source_of(project, extracted, page, region)
+        if orig is not None and src is not None and src != orig:
             res.issues.append(f"원문을 고친 행(기록만 함): {key}")
         res.cards.setdefault(page, {"page": page})[region] = entry
     for k in sorted(expected - seen):

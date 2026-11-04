@@ -330,7 +330,7 @@ class FitParams:
     box_w: float
     box_h: float
     start_size: float  # 원문 크기(또는 F28 잉크 보정 크기)
-    fixed_size: float | None = None  # 엑셀 H열
+    fixed_size: float | None = None  # 엑셀 I열(글자 크기)
     min_ratio: float = 0.8
     floor_pt: float | None = 6.0  # None이면 pt 하한 없이 원문 크기(잉크 높이 보정)의 min_ratio만 쓴다
     max_tracking: float = 0.05  # 최대 -5% (base_tracking에서 더 좁히는 양)

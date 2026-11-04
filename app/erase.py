@@ -974,6 +974,32 @@ def place_patch(page, pixels: np.ndarray, box_px: tuple[int, int, int, int], bg:
     return {"bbox_pt": _r(rect, 4), "bbox_px": list(box_px), "size_px": [w, h], "xref": xref}
 
 
+def _tag_labels_in(rect_pt: Box, protect_pt: list, bg: BackgroundImage, before: np.ndarray):
+    """태그 영역(위아래 여유 포함)에서 라벨을 찾아 (LabelPx, px 상자, pt 상자)를 왼쪽부터 돌려준다."""
+    size = (before.shape[1], before.shape[0])
+    h = rect_pt[3] - rect_pt[1]
+    search_pt = clip_horizontally(expand(rect_pt, 0, TAG_SEARCH_PAD * h), protect_pt)
+    sx0, sy0, sx1, sy1 = px_box_outer(bg.pt_to_px(search_pt), size)
+    h_px = h / bg.pt_per_px  # 회전된 배경에서도 감싸는 상자가 아니라 실제 높이
+    out = []
+    for lab in find_tag_labels(before[sy0:sy1, sx0:sx1], min_h=TAG_MIN_H * h_px, max_h=TAG_MAX_H * h_px):
+        bpx = (lab.bbox[0] + sx0, lab.bbox[1] + sy0, lab.bbox[2] + sx0, lab.bbox[3] + sy0)
+        out.append((lab, bpx, bg.px_to_pt(bpx)))
+    return out
+
+
+def detect_tag_labels(page, template: RegionTemplate, region: Region) -> list[dict]:
+    """원본 쪽에서 태그 라벨의 색·위치를 잰다 (지우지 않음). [{"color": "#rrggbb", "bbox_pt": [...]}, ...]"""
+    bg = find_background_image(page)
+    raw = load_image_rgb(page.parent, bg.xref)
+    before, _ = render_on_image_grid(page, bg, raw)
+    prect: Box = tuple(page.rect)
+    protect_pt = [ratio_to_pt(p.rect, prect) for p in template.protect]
+    rect_pt = ratio_to_pt(region.rect, prect)
+    return [{"color": rgb_to_hex(lab.color), "bbox_pt": _r(bpt)}
+            for lab, _bpx, bpt in _tag_labels_in(rect_pt, protect_pt, bg, before)]
+
+
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
                params: CleanParams | None = None) -> PageErase:
     """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다."""
@@ -1029,14 +1055,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
 
         labels_meta = []
         if reg.kind == "tag_pills":
-            h = rect_pt[3] - rect_pt[1]
-            search_pt = clip_horizontally(expand(rect_pt, 0, TAG_SEARCH_PAD * h), protect_pt)
-            sx0, sy0, sx1, sy1 = px_box_outer(to_px(search_pt), size)
-            h_px = h / bg.pt_per_px  # 회전된 배경에서도 감싸는 상자가 아니라 실제 높이
-            found = find_tag_labels(before[sy0:sy1, sx0:sx1], min_h=TAG_MIN_H * h_px, max_h=TAG_MAX_H * h_px)
-            for lab in found:
-                bpx = (lab.bbox[0] + sx0, lab.bbox[1] + sy0, lab.bbox[2] + sx0, lab.bbox[3] + sy0)
-                bpt = to_pt(bpx)
+            for lab, bpx, bpt in _tag_labels_in(rect_pt, protect_pt, bg, before):
                 scale_pt = bg.pt_per_px
                 tl = [s for s in assigned if overlap_ratio(s["bbox"], bpt) > 0.3 or overlap_ratio(bpt, s["bbox"]) > 0.3]
                 labels_meta.append(

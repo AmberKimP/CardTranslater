@@ -66,7 +66,7 @@ class TextStyle:
     size_pt: float | None = None  # 원문 크기 (텍스트 레이어)
     ink_height_pt: float | None = None  # 원문 대표 잉크 높이 (F28). 있으면 이것으로 시작 크기를 정함
     ink_sample: str = DEFAULT_KO_SAMPLE
-    fixed_size_pt: float | None = None  # 엑셀 H열
+    fixed_size_pt: float | None = None  # 엑셀 I열(글자 크기)
     line_pitch_pt: float | None = None  # 원문 줄 간격 (시작 크기 기준)
     min_ratio: float = 0.8
     floor_pt: float = 6.0  # floor_basis="pt"일 때만 쓴다

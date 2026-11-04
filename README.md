@@ -35,6 +35,11 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
+# 3단계 글자 추출 (기본: 로그인된 Claude Code 요금제로 읽음, 키 불필요. --engine api: API 키·사용료). 멈추면 같은 명령으로 이어 감
+.venv/Scripts/python -m app.cli extract --project projects/sample            # --mode double-check(기본: Sonnet + 불확실한 칸만 Opus) | opus, --engine api일 때 --batch(50% 할인)·--budget 2.0
+.venv/Scripts/python -m app.cli extract --project projects/sample --test   # 시험 폴더(test_runs/extract-sample-double-check)
+.venv/Scripts/python -m app.cli learn-tag-colors --project projects/sample --save       # 태그 라벨 색 -> 글자 사전
+.venv/Scripts/python -m app.cli extract-eval --project projects/sample       # 손으로 옮긴 원문과 비교 (--from <시험 폴더>)
 # 7단계 글자 지우기 -> projects/sample/cleared/ (한 번만)
 .venv/Scripts/python -m app.cli erase --project projects/sample --pages 1-30
 # 번역 검수 엑셀 -> projects/sample/번역_검수.xlsx ('번역' 열을 고친다)
@@ -48,4 +53,8 @@ python -m venv .venv
 
 ## Status
 
-1단계(PDF 핵심 실험): ClearScan PDF 30쪽 전체(BATTLE 1~15, DUNGEON 16~30)의 지우기·한글 합성 완료. 회전된 배경 이미지(8·21쪽), 라벨 3개(9쪽), 회색 라벨, 글꼴에 없는 글자(♥·…) 대체 글꼴 처리 포함.
+1단계(PDF 핵심 실험) 완료, 인쇄 확인 통과(2026-11-04): ClearScan PDF 30쪽 전체(BATTLE 1~15, DUNGEON 16~30)의 지우기·한글 합성 완료. 회전된 배경 이미지(8·21쪽), 라벨 3개(9쪽), 회색 라벨, 글꼴에 없는 글자(♥·…) 대체 글꼴 처리 포함.
+
+Items.pdf(텍스트 레이어 없는 스캔, 위아래 반쪽 카드) 2~16쪽도 지우기·한글 넣기 완료.
+
+2단계 진행 중: 비전 글자 추출 구현(엔진: Claude Code 요금제 기본 / API 옵션, 모델 opus·sonnet·haiku, 이어 하기, API 일괄 처리·예산).
