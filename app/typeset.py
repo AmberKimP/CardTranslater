@@ -74,6 +74,7 @@ class TextStyle:
     tracking: float = 0.0  # 영역 기본 자간 (글자 크기 대비, 예: -0.06). 맞추기는 여기서 -max_tracking까지 더 좁힌다
     max_tracking: float = 0.05
     italic: bool = False  # 영역 기본 서식이 기울임
+    fallback_file: str | None = None  # 주 글꼴에 없는 글자(♥, … 등)를 그릴 글꼴. 굵게는 이웃 굵기 파일을 찾는다
     bold_file: str | None = None  # <b>용 글꼴. 없으면 이웃 굵기 파일 -> 없으면 가짜 굵게(획 덧그리기)
     fake_bold_width: float = 0.05  # 가짜 굵게 획 두께 (글자 크기 대비, 외곽선 경로에서만 사용)
     italic_angle: float = 12.0
@@ -98,6 +99,10 @@ class TextStyle:
             align=style.get("align", "left"),
             italic=bool(style.get("italic", False)),
         )
+        fb = font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf")
+        if fb:
+            fp = Path(fb)
+            kw["fallback_file"] = str(fp if fp.is_absolute() else Path(base_dir) / fp)
         if font.get("bold_file"):
             bp = Path(font["bold_file"])
             kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
@@ -157,6 +162,19 @@ class FontMeasurer:
             return self.style.font_file, True
         return self.style.font_file, False
 
+    def file_for_char(self, ch: str, fmt: Fmt) -> tuple[str, bool]:
+        """글자 하나를 그릴 (글꼴 파일, 가짜 굵게). 주 글꼴에 없으면 대체 글꼴을 쓴다."""
+        ff, fake = self.file_for(fmt)
+        fb = self.style.fallback_file
+        if fb and not _font(ff).has_glyph(ord(ch)) and Path(fb).exists():
+            if fmt.bold:
+                bv = _bold_variant(fb)
+                if bv:
+                    return bv, False
+            if _font(fb).has_glyph(ord(ch)):
+                return fb, fake
+        return ff, fake
+
     def hangul_ink(self) -> tuple[float, float]:
         g = _glyph_ink(self.style.font_file, "한") or (0.8, 0.0)
         return g
@@ -182,14 +200,13 @@ class FontMeasurer:
     def advance(self, atom: Atom, size: float) -> float:
         if atom.kind == "icon":
             return self.icon_size(atom.text, size)[0]
-        ff, _ = self.file_for(atom.fmt)
-        f = _font(ff)
         ch = " " if atom.kind == "space" else atom.text
-        return f.glyph_advance(ord(ch)) * size
+        ff, _ = self.file_for_char(ch, atom.fmt)
+        return _font(ff).glyph_advance(ord(ch)) * size
 
     def ink_extent(self, atoms: list[Atom]) -> tuple[float, float]:
         top = bottom = 0.0
-        chars = {(self.file_for(a.fmt)[0], a.text) for a in atoms if a.kind == "char"}
+        chars = {(self.file_for_char(a.text, a.fmt)[0], a.text) for a in atoms if a.kind == "char"}
         if not chars:
             chars = {(self.style.font_file, "한")}
         for ff, ch in chars:
@@ -207,7 +224,7 @@ class FontMeasurer:
         out = []
         for a in atoms:
             if a.kind == "char":
-                ff, _ = self.file_for(a.fmt)
+                ff, _ = self.file_for_char(a.text, a.fmt)
                 if not _font(ff).has_glyph(ord(a.text)) and a.text not in out:
                     out.append(a.text)
         return out
@@ -284,7 +301,7 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
             if p and p.exists():
                 page.insert_image(pymupdf.Rect(x, cy - h / 2, x + w, cy + h / 2), filename=str(p))
         elif a.kind == "char":
-            ff, fake_bold = m.file_for(a.fmt)
+            ff, fake_bold = m.file_for_char(a.text, a.fmt)
             color = style.color
             if a.fmt.color_tag:
                 color = style.tag_colors.get(a.fmt.color_tag, style.color)

@@ -42,6 +42,10 @@ from app.regions import (
 SPAN_ASSIGN_MIN = 0.30  # span 넓이 중 이 비율 이상이 영역에 들어오면 그 영역의 글자로 보고 지운다
 SPAN_PARTIAL_WARN = 0.95  # 이보다 적게 들어오면 '영역에 일부만 걸침' 경고
 TAG_SEARCH_PAD = 0.25  # 라벨 찾을 때 태그 영역 높이 대비 위아래 여유
+LABEL_MAX_ASPECT = 5.5  # 라벨 폭 / 높이 상한 (실측 ≈4.3)
+TAG_MIN_H = 0.60  # 라벨 최소 높이 (태그 영역 높이 대비). 실측 라벨 ≈0.72, 17쪽 연기 조각 0.50
+TAG_MAX_H = 1.0  # 라벨 최대 높이. 14·28쪽 연기 덩어리 ≈1.1
+MAX_BG_ROTATION_DEG = 5.0  # 이보다 많이 돌아간 배경 이미지는 지원하지 않음
 PATCH_INSET_PT = 0.002  # 패치 사각형을 안쪽으로 넣는 양 (grid-fit 바깥 번짐 방지)
 
 
@@ -118,6 +122,29 @@ class LabelPx:
     mask: np.ndarray = field(repr=False)  # bbox 크기, 채워진 모양
 
 
+def label_color_candidates(rgb: np.ndarray, min_count: int, max_colors: int = 12,
+                           merge_dist: float = 24.0) -> list[np.ndarray]:
+    """종이·흰 글자를 뺀 픽셀에서 자주 나오는 색(16단계 양자화 칸의 평균색)을 많은 순으로."""
+    f = rgb.astype(np.float32) / 255.0
+    mx, mn = f.max(axis=2), f.min(axis=2)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    base = ~((mx > 0.80) & (sat < 0.20))
+    px = rgb[base].astype(np.int32)
+    if px.size == 0:
+        return []
+    q = (px // 16) @ np.array([256, 16, 1])
+    keys, inv, counts = np.unique(q, return_inverse=True, return_counts=True)
+    order = np.argsort(-counts)
+    out: list[np.ndarray] = []
+    for k in order:
+        if counts[k] < min_count or len(out) >= max_colors:
+            break
+        c = px[inv == k].mean(axis=0)
+        if all(np.linalg.norm(c - o) > merge_dist for o in out):
+            out.append(c)
+    return out
+
+
 def find_tag_labels(
     rgb: np.ndarray,
     min_h: float,
@@ -126,8 +153,75 @@ def find_tag_labels(
     min_fill: float = 0.80,
     min_coverage: float = 0.30,  # 3쪽 "モンスター" 라벨은 흰 글자가 많아 0.40
     max_color_dist: float = 40.0,
+    seg_color_dist: float = 22.0,  # 회색 라벨과 회색 연기의 색 거리 ≈31 (15쪽)
 ) -> list[LabelPx]:
     """잘라낸 이미지(rgb)에서 둥근 사각형 색 라벨을 찾는다. 왼쪽부터 정렬해 돌려준다.
+
+    라벨 바탕은 한 가지 색이므로, 자주 나오는 색마다 그 색에 가까운 픽셀만으로 마스크를 만들어
+    모양을 검사한다. 하나의 '색 있는 픽셀' 마스크를 쓰면 라벨에 닿은 푸른 연기가 라벨과 한 덩어리가
+    되어 모양 검사에서 떨어지고(19·24쪽), 회색 라벨(人間)은 채도가 낮아 아예 빠진다.
+    예전 방식(label_like_mask)도 함께 돌린다.
+
+    두 번째로, 가장 확실한 라벨(기준 라벨)로 라벨 줄의 세로 범위를 알아낸 뒤 그 줄 안에서만 다시 찾는다.
+    라벨 위에 닿은 연기가 잘려 나가 회색 연기 위의 회색 라벨(15쪽)도 떨어져 나온다.
+    끝으로 기준 라벨과 높이·위끝이 맞고 앞 라벨과 틈이 있는 것만 남긴다 (한 줄의 라벨은 같은 높이).
+    """
+    H, W = rgb.shape[:2]
+    min_count = int(0.15 * min_h * min_h * min_aspect)
+    masks = []
+    for c in label_color_candidates(rgb, min_count):
+        d = np.linalg.norm(rgb.astype(np.float32) - c.astype(np.float32), axis=2)
+        masks.append(d < seg_color_dist)
+    masks.append(label_like_mask(rgb))
+    args = (min_h, max_h, min_aspect, min_fill, min_coverage, max_color_dist)
+
+    cands: list[LabelPx] = []
+    for m in masks:
+        cands += _labels_from_mask(rgb, m, *args)
+    found = _keep_largest(cands)
+    if not found:
+        return []
+
+    anchor = max(found, key=lambda l: l.coverage * (l.bbox[2] - l.bbox[0]))
+    ay0, ay1 = anchor.bbox[1], anchor.bbox[3]
+    ah = ay1 - ay0
+    b0, b1 = max(0, int(ay0) - 3), min(H, int(math.ceil(ay1)) + 3)
+    for m in masks:
+        mm = np.zeros_like(m)
+        mm[b0:b1] = m[b0:b1]
+        # 줄 안에서는 위아래 끝에 닿아도 된다 (줄 밖은 이미 잘렸다). 연기만 있는 조각은 높이가 모자라 빠진다
+        cands += _labels_from_mask(rgb, mm, *args, bounds=(0, -1, W, H + 1))
+    aligned = [l for l in cands
+               if abs((l.bbox[3] - l.bbox[1]) - ah) <= 0.15 * ah and abs(l.bbox[1] - ay0) <= 0.25 * ah]
+    out: list[LabelPx] = []
+    for l in _keep_largest(aligned):  # 왼쪽부터. 앞 라벨에 틈 없이 붙은 것은 연기로 본다
+        if out and l.bbox[0] - out[-1].bbox[2] < 0.15 * ah:
+            continue
+        out.append(l)
+    return out
+
+
+def _keep_largest(cands: list[LabelPx]) -> list[LabelPx]:
+    """겹치는 후보는 넓은 것(조각이 아니라 라벨 전체)을 남긴다."""
+    found: list[LabelPx] = []
+    for lab in sorted(cands, key=lambda l: -(l.bbox[2] - l.bbox[0]) * (l.bbox[3] - l.bbox[1])):
+        if not any(_overlap_small(lab.bbox, o.bbox) > 0.3 for o in found):
+            found.append(lab)
+    found.sort(key=lambda l: l.bbox[0])
+    return found
+
+
+def _overlap_small(a, b) -> float:
+    """겹친 넓이 / 둘 중 작은 상자 넓이."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return ix * iy / small if small > 0 else 0.0
+
+
+def _labels_from_mask(rgb, mask, min_h, max_h, min_aspect, min_fill, min_coverage, max_color_dist,
+                      bounds: tuple[int, int, int, int] | None = None) -> list[LabelPx]:
+    """마스크 하나에서 둥근 사각형 라벨을 찾는다.
 
     흰 글자가 라벨 가장자리에 닿으면 라벨 픽셀이 여러 조각으로 갈라지므로,
     세로 범위가 겹치고 가로 틈이 좁으며 색이 같은 조각을 한 라벨로 묶은 뒤
@@ -135,7 +229,7 @@ def find_tag_labels(
       fill     = 껍질 넓이 / bbox 넓이 (둥근 사각형이면 0.85 이상)
       coverage = 라벨색 픽셀 / 껍질 넓이 (흰 글자가 많을수록 낮음)
     """
-    m = label_like_mask(rgb).astype(np.uint8)
+    m = np.asarray(mask).astype(np.uint8)
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     n, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
@@ -159,9 +253,12 @@ def find_tag_labels(
             gb, cb = g["box"], c["box"]
             gh = max(gb[3] - gb[1], cb[3] - cb[1])
             gap = max(cb[0] - gb[2], gb[0] - cb[2])
+            # 라벨 안 흰 글자(炎 한 글자 ≈ 0.6h, 人間 두 글자 ≈ 1.25h)로 갈라진 조각을 잇는다. 이웃 라벨과 합쳐지지 않게
+            # 합친 폭이 라벨 한 개 폭(≈4.3h)을 넘지 않을 때만.
             if (
-                gap <= 0.2 * gh
-                and v_overlap(gb, cb) >= 0.5
+                gap <= 1.5 * gh
+                and max(gb[2], cb[2]) - min(gb[0], cb[0]) <= LABEL_MAX_ASPECT * gh
+                and v_overlap(gb, cb) >= 0.7
                 and float(np.linalg.norm(g["color"] - c["color"])) <= max_color_dist
                 and max(gb[3], cb[3]) - min(gb[1], cb[1]) <= max_h
             ):
@@ -176,7 +273,11 @@ def find_tag_labels(
     for g in groups:
         x0, y0, x1, y1 = g["box"]
         w, h = x1 - x0, y1 - y0
-        if not (min_h <= h <= max_h) or w < min_aspect * h:
+        if not (min_h <= h <= max_h) or w < min_aspect * h or w > LABEL_MAX_ASPECT * h:
+            continue
+        # 라벨은 찾는 범위(영역 위아래 여유 포함) 안에 통째로 들어 있다. 가장자리에 닿으면 연기·그림이다.
+        bx0, by0, bx1, by1 = bounds or (0, 0, m.shape[1], m.shape[0])
+        if x0 <= bx0 or y0 <= by0 or x1 >= bx1 or y1 >= by1:
             continue
         pix = np.isin(lab, g["ids"])
         pts = cv2.findNonZero(pix.astype(np.uint8))
@@ -494,15 +595,60 @@ def fill_box(mask: np.ndarray, box: tuple[int, int, int, int], value: bool = Tru
 @dataclass
 class BackgroundImage:
     xref: int
-    bbox: Box  # pt (page.rect 좌표)
+    bbox: Box  # pt (page.rect 좌표). 회전된 이미지면 네 모서리를 감싸는 사각형
     size: tuple[int, int]  # px (w, h)
+    # 이미지 단위 사각형 -> 페이지 좌표(pt, 위가 0) 행렬 (a, b, c, d, e, f).
+    # 단위 (s, t)의 t는 위에서부터. 없으면 bbox에 축 정렬로 놓인 것으로 본다.
+    transform: tuple | None = None
+
+    @property
+    def rotated(self) -> bool:
+        t = self.transform
+        return t is not None and (abs(t[1]) > 1e-6 or abs(t[2]) > 1e-6)
+
+    @property
+    def angle_deg(self) -> float:
+        t = self.transform
+        return 0.0 if t is None else math.degrees(math.atan2(t[1], t[0]))
 
     @property
     def dpi(self) -> tuple[float, float]:
+        if self.rotated:
+            a, b, c, d = self.transform[:4]
+            return self.size[0] / math.hypot(a, b) * 72.0, self.size[1] / math.hypot(c, d) * 72.0
         return (
             self.size[0] / (self.bbox[2] - self.bbox[0]) * 72.0,
             self.size[1] / (self.bbox[3] - self.bbox[1]) * 72.0,
         )
+
+    @property
+    def pt_per_px(self) -> float:
+        return 72.0 / self.dpi[0]
+
+    def px_point_to_pt(self, u: float, v: float) -> tuple[float, float]:
+        a, b, c, d, e, f = self.transform
+        s, t = u / self.size[0], v / self.size[1]
+        return s * a + t * c + e, s * b + t * d + f
+
+    def pt_point_to_px(self, x: float, y: float) -> tuple[float, float]:
+        a, b, c, d, e, f = self.transform
+        det = a * d - b * c
+        x, y = x - e, y - f
+        s, t = (x * d - y * c) / det, (y * a - x * b) / det
+        return s * self.size[0], t * self.size[1]
+
+    def pt_to_px(self, b: Box) -> Box:
+        """pt 사각형 -> px. 회전된 이미지면 네 모서리를 옮겨 감싸는 사각형."""
+        if not self.rotated:
+            return pt_to_px(b, self.bbox, self.size)
+        pts = [self.pt_point_to_px(x, y) for x in (b[0], b[2]) for y in (b[1], b[3])]
+        return (min(q[0] for q in pts), min(q[1] for q in pts), max(q[0] for q in pts), max(q[1] for q in pts))
+
+    def px_to_pt(self, b: Box) -> Box:
+        if not self.rotated:
+            return px_to_pt(b, self.bbox, self.size)
+        pts = [self.px_point_to_pt(u, v) for u in (b[0], b[2]) for v in (b[1], b[3])]
+        return (min(q[0] for q in pts), min(q[1] for q in pts), max(q[0] for q in pts), max(q[1] for q in pts))
 
 
 def find_background_image(page) -> BackgroundImage:
@@ -518,10 +664,11 @@ def find_background_image(page) -> BackgroundImage:
         if cover < 0.9:
             continue
         a, b, c, d, _, _ = info["transform"]
-        if abs(b) > 1e-6 or abs(c) > 1e-6 or a <= 0 or d <= 0:
-            raise NotImplementedError(f"회전·반전된 배경 이미지는 아직 지원하지 않습니다: {info['transform']}")
+        # Acrobat이 기울어진 스캔을 바로 세우려고 이미지를 조금 돌려 놓은 경우(1~2도)는 지원한다.
+        if a <= 0 or d <= 0 or a * d - b * c <= 0 or abs(math.degrees(math.atan2(b, a))) > MAX_BG_ROTATION_DEG:
+            raise NotImplementedError(f"크게 회전·반전된 배경 이미지는 아직 지원하지 않습니다: {info['transform']}")
         if best is None or cover > best[0]:
-            best = (cover, BackgroundImage(xref, bbox, (info["width"], info["height"])))
+            best = (cover, BackgroundImage(xref, bbox, (info["width"], info["height"]), tuple(info["transform"])))
     if best is None:
         raise RuntimeError("배경 이미지를 찾지 못했습니다 (순수 벡터 페이지는 아직 지원하지 않음)")
     return best[1]
@@ -545,6 +692,8 @@ def render_on_image_grid(page, bg: BackgroundImage, base: np.ndarray) -> tuple[n
     """
     import pymupdf
 
+    if bg.rotated:
+        return _render_on_rotated_grid(page, bg, base)
     warnings = []
     sx = bg.size[0] / (bg.bbox[2] - bg.bbox[0])
     sy = bg.size[1] / (bg.bbox[3] - bg.bbox[1])
@@ -562,6 +711,36 @@ def render_on_image_grid(page, bg: BackgroundImage, base: np.ndarray) -> tuple[n
     u1, v1 = min(W, R.shape[1] - ox), min(H, R.shape[0] - oy)
     out[v0:v1, u0:u1] = R[v0 + oy : v1 + oy, u0 + ox : u1 + ox]
     return out, warnings
+
+
+def _render_on_rotated_grid(page, bg: BackgroundImage, base: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """회전된 배경 이미지: 페이지를 2배 해상도로 렌더링한 뒤 이미지 격자로 되돌려 샘플링한다.
+
+    정수 격자로 딱 맞출 수 없으므로 배경까지 한 번 다시 샘플링된다. 렌더 - 원본 차이로 글자를
+    찾을 때 경계에 생기는 작은 차이는 span 상자 안으로만 쓰이므로 괜찮다.
+    """
+    import pymupdf
+
+    k = 2.0 * bg.dpi[0] / 72.0
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(k, k), alpha=False)
+    R = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w, pix.n)[..., :3]
+    a, b, c, d, e, f = bg.transform
+    W, H = bg.size
+    x0, y0 = page.rect.x0, page.rect.y0
+    # 이미지 픽셀 중심 (u+.5, v+.5) -> 페이지 pt -> 렌더 픽셀 좌표
+    m = np.array([
+        [k * a / W, k * c / H, 0.0],
+        [k * b / W, k * d / H, 0.0],
+    ])
+    m[0, 2] = k * (0.5 * a / W + 0.5 * c / H + e - x0) - 0.5
+    m[1, 2] = k * (0.5 * b / W + 0.5 * d / H + f - y0) - 0.5
+    warped = cv2.warpAffine(np.ascontiguousarray(R), m, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+    inside = cv2.warpAffine(np.full(R.shape[:2], 255, np.uint8), m, (W, H),
+                            flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP, borderValue=0) > 0
+    out = base.copy()
+    out[inside] = warped[inside]
+    return out, [f"배경 이미지가 {bg.angle_deg:.2f}도 회전되어 있어 다시 샘플링해 비교함"]
 
 
 def page_spans(page) -> list[dict]:
@@ -648,8 +827,40 @@ class PageErase:
 
 
 def patch_rect_pt(box_px: tuple[int, int, int, int], bg: BackgroundImage) -> Box:
-    """정수 픽셀 범위 -> 배경 이미지 bbox에서 계산한 pt 사각형 (격자에 정확히 맞음)."""
-    return px_to_pt(tuple(float(v) for v in box_px), bg.bbox, bg.size)  # type: ignore[arg-type]
+    """정수 픽셀 범위 -> pt 사각형 (격자에 정확히 맞음; 회전된 배경이면 감싸는 사각형)."""
+    return bg.px_to_pt(tuple(float(v) for v in box_px))  # type: ignore[arg-type]
+
+
+def patch_matrix_pdf(page, box_px: tuple[int, int, int, int], bg: BackgroundImage):
+    """회전된 배경 위 패치의 PDF cm 행렬 (패치 단위 사각형 -> PDF 사용자 좌표).
+
+    배경 이미지와 같은 행렬에서 원점·크기만 픽셀 범위로 옮긴다 -> 배경 픽셀 격자와 정확히 겹친다.
+    """
+    import pymupdf
+
+    W, H = bg.size
+    u0, v0, u1, v1 = box_px
+    T = pymupdf.Matrix(*bg.transform)  # (s, t 위에서부터) -> 페이지(위가 0)
+    sub = pymupdf.Matrix((u1 - u0) / W, 0, 0, (v1 - v0) / H, u0 / W, v0 / H)
+    flip = pymupdf.Matrix(1, 0, 0, -1, 0, 1)  # PDF 이미지 공간은 t가 아래에서부터
+    return flip * sub * T * ~page.transformation_matrix
+
+
+def _set_image_cm(page, xref: int, mat) -> None:
+    """insert_image가 쓴 `q … cm /이름 Do Q`의 cm을 mat으로 바꾼다."""
+    doc = page.parent
+    name = next(img[7] for img in page.get_images(full=True) if img[0] == xref)
+    pat = re.compile(rb"((?:[-+\d.eE]+\s+){6})cm(\s*/" + re.escape(name.encode()) + rb"\s+Do)")
+    new_cm = " ".join(f"{v:.6f}" for v in (mat.a, mat.b, mat.c, mat.d, mat.e, mat.f)).encode() + b" "
+    for cx in page.get_contents():
+        data = doc.xref_stream(cx)
+        new, n = pat.subn(lambda m: new_cm + b"cm" + m.group(2), data)
+        if n:
+            if n != 1:
+                raise RuntimeError(f"패치 이미지 {name}이(가) 내용 스트림에 {n}번 나옴")
+            doc.update_stream(cx, new)
+            return
+    raise RuntimeError(f"패치 이미지 {name}의 cm을 찾지 못함")
 
 
 def place_patch(page, pixels: np.ndarray, box_px: tuple[int, int, int, int], bg: BackgroundImage) -> dict:
@@ -661,6 +872,13 @@ def place_patch(page, pixels: np.ndarray, box_px: tuple[int, int, int, int], bg:
         raise ValueError("패치 크기와 픽셀 범위가 다릅니다")
     pix = pymupdf.Pixmap(pymupdf.csRGB, w, h, np.ascontiguousarray(pixels).tobytes(), 0)
     rect = patch_rect_pt(box_px, bg)
+    if bg.rotated:
+        xref = page.insert_image(pymupdf.Rect(rect), pixmap=pix, overlay=True, keep_proportion=False)
+        _set_image_cm(page, xref, patch_matrix_pdf(page, box_px, bg))
+        kind, val = page.parent.xref_get_key(bg.xref, "ColorSpace")
+        page.parent.xref_set_key(xref, "ColorSpace", val if kind in ("name", "xref") else "/DeviceRGB")
+        return {"bbox_pt": _r(rect, 4), "bbox_px": list(box_px), "size_px": [w, h], "xref": xref,
+                "rotated_deg": round(bg.angle_deg, 3)}
     # MuPDF는 축 정렬 이미지를 픽셀 경계 바깥쪽으로 맞춰(grid-fit) 그린다. 소수점 오차로
     # 모서리가 경계를 아주 조금 넘으면 바깥 1px 줄까지 덮으므로, 아주 조금(0.002pt ≈ 0.008px) 안쪽으로 넣는다.
     eps = PATCH_INSET_PT
@@ -688,10 +906,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     warnings += w
 
     def to_px(b: Box) -> Box:
-        return pt_to_px(b, bg.bbox, size)
+        return bg.pt_to_px(b)
 
     def to_pt(b: Box) -> Box:
-        return px_to_pt(b, bg.bbox, size)
+        return bg.px_to_pt(b)
 
     protect_pt = [ratio_to_pt(p.rect, prect) for p in template.protect]
     spans = page_spans(page)
@@ -730,12 +948,12 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             h = rect_pt[3] - rect_pt[1]
             search_pt = clip_horizontally(expand(rect_pt, 0, TAG_SEARCH_PAD * h), protect_pt)
             sx0, sy0, sx1, sy1 = px_box_outer(to_px(search_pt), size)
-            h_px = to_px(rect_pt)[3] - to_px(rect_pt)[1]
-            found = find_tag_labels(before[sy0:sy1, sx0:sx1], min_h=0.45 * h_px, max_h=1.4 * h_px)
+            h_px = h / bg.pt_per_px  # 회전된 배경에서도 감싸는 상자가 아니라 실제 높이
+            found = find_tag_labels(before[sy0:sy1, sx0:sx1], min_h=TAG_MIN_H * h_px, max_h=TAG_MAX_H * h_px)
             for lab in found:
                 bpx = (lab.bbox[0] + sx0, lab.bbox[1] + sy0, lab.bbox[2] + sx0, lab.bbox[3] + sy0)
                 bpt = to_pt(bpx)
-                scale_pt = (bg.bbox[2] - bg.bbox[0]) / size[0]
+                scale_pt = bg.pt_per_px
                 tl = [s for s in assigned if overlap_ratio(s["bbox"], bpt) > 0.3 or overlap_ratio(bpt, s["bbox"]) > 0.3]
                 labels_meta.append(
                     {

@@ -305,3 +305,23 @@ def test_compose_label_widen_removes_old_label_streams():
     # 예전 두 번째 라벨 왼쪽 끝(33~)은 새 첫 라벨이나 간격으로 덮여야 하고, 예전 라벨 색이 남지 않아야 한다
     pix = page.get_pixmap(dpi=144, clip=(res[0].label_rect[2] + 0.5, 12, res[1].label_rect[0] - 0.5, 16))
     assert set(pix.samples) == {255}
+
+
+@needs_fonts
+def test_fallback_font_for_missing_glyphs(tmp_path):
+    """개구에 없는 ♥·… 는 대체 글꼴로 그리고 '글꼴에 없는 글자'로 막지 않는다."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=100)
+    st = TextStyle.from_region_style({"font": {"file": GAEGU}}, size_pt=8)
+    assert st.fallback_file and st.fallback_file.endswith("NotoSansKR-Bold.ttf")
+    r = typeset_region(page, (10, 10, 190, 60), "타락해 버려~♥ 어디에……", st)
+    assert r.status == [] and r.drawn, r
+    finalize(doc)
+    out = tmp_path / "t.pdf"
+    doc.save(out)
+    d = pymupdf.open(out)
+    assert "♥" in d[0].get_text()
+    assert len(d[0].get_fonts()) == 2
+    # 대체 글꼴이 없으면 예전처럼 막는다
+    st2 = TextStyle(font_file=GAEGU, size_pt=8)
+    assert "글리프 없음" in typeset_region(doc.new_page(), (0, 0, 190, 50), "♥", st2).status
