@@ -860,7 +860,7 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     for fd in workspace.file_dirs(info, group):
         key = workspace.file_key(fd)
         if (fd / "cleared" / "cleared.pdf").exists() and not redo:
-            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (--redo로 다시)"})
+            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ‘모두 다시 지우기’)"})
             continue
         pages = workspace.included_pages(fd)
         if not pages:
@@ -892,7 +892,7 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
     for fd in workspace.file_dirs(info, group):
         key = workspace.file_key(fd)
         if not (fd / "cleared").exists():
-            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (erase-project 먼저)"})
+            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑧ 글자 지우기)"})
             out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
             continue
         xlsx = fd / "번역_검수.xlsx"
@@ -1158,7 +1158,7 @@ def engine_status() -> dict:
     api = bool(api_key_source()[0])
     eng = get_settings().engine
     if eng == "api":
-        msg = "API 키로 실행 (사용료)" if api else "API 키가 없습니다 — 파일 > 로그인 방식에서 키를 넣으세요"
+        msg = "API 키로 실행 (사용한 만큼 요금)" if api else "API 키가 없습니다 — 파일 > 로그인 방식에서 키를 넣으세요"
     else:
         msg = ("Claude 구독으로 실행 (Claude Code)" if cc else
                "Claude Code가 없습니다 — 설치·로그인하거나 API 키 방식을 쓰세요")

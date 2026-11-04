@@ -10,7 +10,7 @@ import datetime as _dt
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -19,11 +19,22 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
+from app.qt.dialogs import ask_choice, fit_to_screen, set_ok_text
 
 MODE_LABELS = [("double-check", "두 번 확인 (Sonnet으로 읽고 불확실한 칸만 Opus로 다시) — 추천"),
                ("opus", "Opus만 사용")]
-ENGINE_LABELS = [("claude-code", "Claude Code 요금제 (키 필요 없음)"), ("api", "API 키 (사용료)")]
+ENGINE_LABELS = [("claude-code", "Claude 구독 (Claude Code)"), ("api", "API 키 (사용한 만큼 요금)")]  # 로그인 창과 같은 말
 LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3"}
+
+
+STATE_LABEL = {"done": "끝남", "skipped": "건너뜀", "blocked": "할 수 없음", "failed": "실패",
+               "paused": "사용 한도로 멈춤", "needs_confirmation": "확인 필요", "cancelled": "취소함",
+               "icons_review": "아이콘 이름 필요", "waiting_batch": "처리 기다리는 중"}
+
+
+def state_label(s: str) -> str:
+    """엔진의 상태 낱말(done·blocked…)을 화면용 한국어로."""
+    return STATE_LABEL.get(s, s)
 
 
 def _ask_list(parent, title: str, intro: str, items: list[str], question: str) -> bool:
@@ -87,26 +98,29 @@ class ExtractDialog(QDialog):
 
     def accept(self):
         if not service.engine_status()[self.engine.currentData()]:
-            QMessageBox.warning(self, "엔진을 쓸 수 없음", service.engine_status()["message"])
+            QMessageBox.warning(self, "로그인 방식을 쓸 수 없음", service.engine_status()["message"])
             return
         super().accept()
 
 
 # ================================================================ 원문 확인
 class SourceReviewDialog(QDialog):
-    """파일의 추출 결과를 칸마다 보고, 잘못 읽은 원문을 이미지와 비교해 고친다."""
+    """파일의 추출 결과를 칸마다 보고, 잘못 읽은 원문을 이미지와 비교해 고친다.
+
+    고친 글이 있는 채로 다른 칸·파일로 옮기거나 닫으면 저장할지 묻는다."""
 
     COLS = ["쪽", "영역", "원문 확인", "원문"]
+    UNREAD = "읽지 않음"
 
     def __init__(self, files: list[dict], parent=None, only_check: bool = True):
         super().__init__(parent)
         self.setWindowTitle("원문 확인")
-        self.resize(1300, 820)
+        fit_to_screen(self, 1300, 820)
         self.files = files
         self.file = QComboBox()
         for f in files:
             self.file.addItem(f["key"], str(f["dir"]))
-        self.only = QCheckBox("확인할 칸만 (결론 못 냄·확인 필요·읽지 않음)")
+        self.only = QCheckBox("확인할 칸만 보기 (결론 못 냄·확인 필요·아직 읽지 않음)")
         self.only.setChecked(only_check)
         self.count = QLabel()
         top = QHBoxLayout()
@@ -121,7 +135,7 @@ class SourceReviewDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.currentCellChanged.connect(lambda *_a: self._show())
+        self.table.currentCellChanged.connect(self._on_cell_changed)
         self.image = QLabel()
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image.setMinimumHeight(160)
@@ -134,62 +148,179 @@ class SourceReviewDialog(QDialog):
         self.edit = QPlainTextEdit()
         self.edit.setPlaceholderText("원문 (줄바꿈 그대로. 태그 칸은 한 줄에 하나. 아이콘은 [[이름]])")
         self.save_btn = QPushButton("고친 원문 저장")
+        self.save_btn.setToolTip("Ctrl+S")
         self.save_btn.clicked.connect(self.save_current)
+        self.next_btn = QPushButton("저장하고 다음 칸 (Ctrl+Enter)")
+        self.next_btn.clicked.connect(self.save_and_next)
+        hint = QLabel("Ctrl+S 저장 · Ctrl+Enter 저장하고 다음 칸 · Alt+↑/↓ 칸 이동")
+        hint.setStyleSheet("color: #888")
+        btns = QHBoxLayout()
+        btns.addWidget(self.save_btn)
+        btns.addWidget(self.next_btn)
+        btns.addStretch(1)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(scroll, 2)
         rl.addWidget(self.info)
         rl.addWidget(self.edit, 1)
-        rl.addWidget(self.save_btn)
+        rl.addLayout(btns)
+        rl.addWidget(hint)
         split = QSplitter()
         split.addWidget(self.table)
         split.addWidget(right)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 1)
         close = QPushButton("닫기")
+        close.setAutoDefault(False)
         close.clicked.connect(self.accept)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(split, 1)
         lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        self.file.currentIndexChanged.connect(lambda _i: self.reload())
-        self.only.toggled.connect(lambda _c: self.reload())
+        for b in (self.save_btn, self.next_btn):
+            b.setAutoDefault(False)
+        for keys, fn in (("Ctrl+S", self.save_current), ("Ctrl+Return", self.save_and_next),
+                         ("Ctrl+Enter", self.save_and_next), ("Alt+Down", lambda: self.move_row(1)),
+                         ("Alt+Up", lambda: self.move_row(-1))):
+            QShortcut(QKeySequence(keys), self, activated=fn)
         self.cells: list[dict] = []
         self.saved = 0
+        self._busy = False  # 표를 다시 채우는 동안에는 칸 바뀜을 무시
+        self._shown: tuple | None = None  # 편집기에 띄운 칸 (쪽, 영역)
+        self._shown_cell: dict | None = None
+        self._shown_file: str | None = None
+        self._orig_text = ""
+        self._file_idx = self.file.currentIndex()
+        self.file.currentIndexChanged.connect(self._on_file_changed)
+        self.only.toggled.connect(self._on_only_toggled)
         self.reload()
 
     @staticmethod
     def needs_check(c: dict) -> bool:
-        return c["uncertain"] or c["label"] in ("결론 못 냄", "읽지 않음")
+        return c["uncertain"] or c["label"] in ("결론 못 냄", SourceReviewDialog.UNREAD)
 
-    def reload(self, keep: tuple | None = None):
+    @staticmethod
+    def needs_attention(c: dict) -> bool:
+        """사람이 보고 판단할 칸 (아직 읽지 않은 칸은 뺀다)."""
+        return c["label"] != SourceReviewDialog.UNREAD and (c["uncertain"] or c["label"] == "결론 못 냄")
+
+    # ---- 고친 글 지키기
+    def _dirty(self) -> bool:
+        return self._shown is not None and self.edit.toPlainText() != self._orig_text
+
+    def _value_of(self, c: dict):
+        text = self.edit.toPlainText().strip("\n")
+        return [t.strip() for t in text.split("\n") if t.strip()] if c["kind"] == "tag_pills" else text
+
+    def _save_shown(self):
+        c = self._shown_cell
+        service.save_source(self._shown_file, c["page"], c["region"], self._value_of(c))
+        self.saved += 1
+        self._orig_text = self.edit.toPlainText()  # 더 묻지 않게
+
+    def _ask_save(self) -> str:
+        """고친 글이 있으면 묻는다. 'save' | 'discard' | 'cancel' (고친 글이 없으면 'discard')."""
+        if not self._dirty():
+            return "discard"
+        c = self._shown_cell
+        r = ask_choice(self, "고친 원문", f"{c['page']}쪽 {c['region']}의 고친 원문을 저장할까요?",
+                       [("저장", "accept"), ("저장 안 함", "destructive"), ("취소", "reject")], default=0)
+        return {0: "save", 1: "discard"}.get(r, "cancel")
+
+    def _confirm_leave(self) -> bool:
+        a = self._ask_save()
+        if a == "save":
+            self._save_shown()
+        return a != "cancel"
+
+    def _on_cell_changed(self, _row, _col, prow, _pcol):
+        if self._busy:
+            return
+        c = self.current()
+        if c is not None and self._shown == (c["page"], c["region"]):
+            return  # 같은 칸의 다른 열을 눌렀을 뿐: 편집 중인 글을 건드리지 않는다
+        a = self._ask_save()
+        if a == "cancel":
+            self._busy = True
+            try:
+                self.table.setCurrentCell(prow, 0)  # 원래 줄로
+            finally:
+                self._busy = False
+            return
+        if a == "save":
+            self._save_shown()
+            self.reload(keep=(c["page"], c["region"]) if c else None)
+            return
+        self._show()
+
+    def _on_file_changed(self, idx):
+        if not self._confirm_leave():
+            self.file.blockSignals(True)
+            self.file.setCurrentIndex(self._file_idx)
+            self.file.blockSignals(False)
+            return
+        self._file_idx = idx
+        self._shown = None
+        self.reload()
+
+    def _on_only_toggled(self, checked):
+        if not self._confirm_leave():
+            self.only.blockSignals(True)
+            self.only.setChecked(not checked)
+            self.only.blockSignals(False)
+            return
+        self.reload(keep=self._shown)
+
+    def done(self, r):
+        if self._confirm_leave():
+            super().done(r)
+
+    # ---- 표
+    def reload(self, keep: tuple | None = None, row: int | None = None):
         fd = self.file.currentData()
         allc = service.extracted_cells(fd)
         self.cells = [c for c in allc if self.needs_check(c)] if self.only.isChecked() else allc
-        n_check = sum(1 for c in allc if self.needs_check(c))
-        self.count.setText(f"확인할 칸 {n_check} / 전체 {len(allc)}")
-        self.table.setRowCount(len(self.cells))
-        for i, c in enumerate(self.cells):
-            src = c["source"]
-            text = "\n".join(src) if isinstance(src, list) else (src or "")
-            vals = [str(c["page"]), c["region"], c["label"], text.replace("\n", " / ")]
-            for j, v in enumerate(vals):
-                it = QTableWidgetItem(v)
-                color = LABEL_COLORS.get(c["label"]) or ("#FFE066" if c["uncertain"] else None)
-                if color and j == 2:
-                    it.setBackground(QColor(color))
-                self.table.setItem(i, j, it)
-        self.table.resizeColumnsToContents()
-        row = 0
-        if keep:
-            row = next((i for i, c in enumerate(self.cells) if (c["page"], c["region"]) == keep), 0)
+        n_att = sum(1 for c in allc if self.needs_attention(c))
+        n_unread = sum(1 for c in allc if c["label"] == self.UNREAD)
+        self.count.setText(f"확인할 칸 {n_att} · 아직 읽지 않은 칸 {n_unread} / 전체 {len(allc)}")
+        self._busy = True
+        try:
+            self.table.setRowCount(len(self.cells))
+            for i, c in enumerate(self.cells):
+                src = c["source"]
+                text = "\n".join(src) if isinstance(src, list) else (src or "")
+                unread = c["label"] == self.UNREAD
+                vals = [str(c["page"]), c["region"], c["label"],
+                        "(아직 추출하지 않음 — ① 글자 추출)" if unread and not text else text.replace("\n", " / ")]
+                for j, v in enumerate(vals):
+                    it = QTableWidgetItem(v)
+                    color = LABEL_COLORS.get(c["label"]) or ("#FFE066" if c["uncertain"] else None)
+                    if color and j == 2:
+                        it.setBackground(QColor(color))
+                    if unread:
+                        it.setForeground(QColor("#888"))
+                    self.table.setItem(i, j, it)
+            self.table.resizeColumnsToContents()
+            if row is None:
+                row = 0
+                if keep:
+                    row = next((i for i, c in enumerate(self.cells) if (c["page"], c["region"]) == keep), 0)
+            row = min(row, len(self.cells) - 1)
+            self._shown = None
+            if self.cells:
+                self.table.setCurrentCell(row, 0)
+        finally:
+            self._busy = False
         if self.cells:
-            self.table.setCurrentCell(row, 0)
+            self._show()
         else:
             self.image.clear()
             self.info.setText("확인할 칸이 없습니다")
             self.edit.clear()
+            self._shown = self._shown_cell = None
+            self._orig_text = ""
         self.save_btn.setEnabled(bool(self.cells))
+        self.next_btn.setEnabled(bool(self.cells))
 
     def current(self) -> dict | None:
         r = self.table.currentRow()
@@ -214,16 +345,36 @@ class SourceReviewDialog(QDialog):
         self.info.setText("\n".join(lines))
         src = c["source"]
         self.edit.setPlainText("\n".join(src) if isinstance(src, list) else (src or ""))
+        self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
+        self._orig_text = self.edit.toPlainText()
 
     def save_current(self):
         c = self.current()
         if c is None:
             return
-        text = self.edit.toPlainText().strip("\n")
-        value = [t.strip() for t in text.split("\n") if t.strip()] if c["kind"] == "tag_pills" else text
-        service.save_source(self.file.currentData(), c["page"], c["region"], value)
-        self.saved += 1
+        self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
+        self._save_shown()
         self.reload(keep=(c["page"], c["region"]))
+
+    def save_and_next(self):
+        """저장하고 다음 칸으로. ‘확인할 칸만’일 때는 저장한 칸이 목록에서 빠지므로 같은 줄 번호가 다음 칸이다."""
+        c = self.current()
+        if c is None:
+            return
+        r = self.table.currentRow()
+        key = (c["page"], c["region"])
+        self._shown, self._shown_cell, self._shown_file = key, c, self.file.currentData()
+        self._save_shown()
+        self.reload(keep=key)  # 새 목록을 만든 뒤 다음 칸을 찾는다
+        idx = next((i for i, x in enumerate(self.cells) if (x["page"], x["region"]) == key), None)
+        nxt = r if idx is None else idx + 1
+        if 0 <= nxt < len(self.cells) and nxt != self.table.currentRow():
+            self.table.setCurrentCell(nxt, 0)
+
+    def move_row(self, d: int):
+        r = self.table.currentRow() + d
+        if 0 <= r < len(self.cells):
+            self.table.setCurrentCell(r, 0)
 
 
 # ================================================================ 아이콘 이름
@@ -242,7 +393,7 @@ class IconReviewDialog(QDialog):
         self.review = review
         self.result = None
         self.setWindowTitle("아이콘 이름 정하기")
-        self.resize(1400, 640)
+        fit_to_screen(self, 1400, 640, maximize_below=0)
         groups = review["groups"]
         self.table = QTableWidget(len(groups), len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
@@ -310,7 +461,7 @@ class IconReviewDialog(QDialog):
         """그 묶음이 나온 카드 자리(영역 이미지)를 차례로 보여 준다."""
         dlg = QDialog(self)
         dlg.setWindowTitle("카드 보기")
-        dlg.resize(1000, 640)
+        fit_to_screen(dlg, 1000, 640, maximize_below=0)
         combo = QComboBox()
         for w in g.get("where", []):
             combo.addItem(w["label"], w)
@@ -409,8 +560,8 @@ class StepActions:
     def _engine(self) -> str | None:
         eng = service.get_settings().engine
         if not service.engine_status()[eng]:
-            QMessageBox.warning(self.page, "엔진을 쓸 수 없음",
-                                service.engine_status()["message"] + "\n파일 > 설정에서 엔진을 바꿀 수 있습니다.")
+            QMessageBox.warning(self.page, "로그인 방식을 쓸 수 없음",
+                                service.engine_status()["message"] + "\n‘파일 > 로그인 방식’에서 바꿀 수 있습니다.")
             return None
         return eng
 
@@ -430,12 +581,12 @@ class StepActions:
 
     def _extract_done(self, r, args):
         self.page.refresh()
-        lines = [f"{f['file']}: {f['state']} — 읽음 {f['done']}장, 남음 {f['remaining']}장, 실패 {f['failed']}장"
+        lines = [f"{f['file']}: {state_label(f['state'])} — 읽음 {f['done']}장, 남음 {f['remaining']}장, 실패 {f['failed']}장"
                  + (f", 두 번 확인 같음 {f['recheck'][0]}·다름 {f['recheck'][1]}" if f.get("recheck") else "")
                  for f in r.files]
         if r.state == "done":
             n_check = sum(1 for g in self.page.ov["groups"] for f in g["files"]
-                          for c in service.extracted_cells(f["dir"]) if SourceReviewDialog.needs_check(c))
+                          for c in service.extracted_cells(f["dir"]) if SourceReviewDialog.needs_attention(c))
             QMessageBox.information(self.page, "추출 끝", "\n".join(lines)
                                     + (f"\n\n확인할 칸 {n_check}개 — ‘원문 확인’에서 이미지와 비교해 고치세요."
                                        if n_check else "\n\n확인할 칸이 없습니다."))
@@ -451,7 +602,7 @@ class StepActions:
                 self.resume_timer.start(ms)
                 self.page.win.statusBar().showMessage(f"추출을 {r.retry_after} 이후 자동으로 이어 합니다")
             return
-        QMessageBox.warning(self.page, f"추출 {r.state}", (r.reason or "") + "\n\n" + "\n".join(lines))
+        QMessageBox.warning(self.page, f"글자 추출 — {state_label(r.state)}", (r.reason or "") + "\n\n" + "\n".join(lines))
 
     # ---- 원문 확인
     def review_sources(self, only_check: bool = True):
@@ -493,6 +644,15 @@ class StepActions:
 
     # ---- 추출 완료 -> 용어집 검증
     def finish(self, accept: bool = False):
+        if not accept and self.page.ov.get("status") in ("glossary_confirmed", "translating", "translated"):
+            ver = self.page.ov.get("glossary_version")
+            r = ask_choice(self.page, "용어집 다시 만들기",
+                           f"용어집이 이미 확정되었습니다{f' (v{ver})' if ver else ''}.",
+                           [("다시 만들기", "destructive"), ("취소", "reject")], default=1,
+                           informative="다시 만들면 상태가 ‘용어집 검증 중’으로 돌아가고, 용어집 엑셀을 다시 가져와야 "
+                                       "번역·한글 넣기를 할 수 있습니다.\n확정된 용어는 그대로 남고 새 용어만 후보로 나옵니다.")
+            if r != 0:
+                return
         eng = self._engine()
         if eng is None:
             return
@@ -513,7 +673,7 @@ class StepActions:
                 self.finish(accept=True)
             return
         if r.state in ("blocked", "paused"):
-            QMessageBox.warning(self.page, f"용어집 {r.state}", (r.reason or "") +
+            QMessageBox.warning(self.page, f"용어집 — {state_label(r.state)}", (r.reason or "") +
                                 (f"\n{r.retry_after} 이후 다시 하세요." if r.retry_after else ""))
             return
         box = QMessageBox(self.page)
@@ -570,7 +730,7 @@ class StepActions:
     def _translate_done(self, r):
         self.page.refresh()
         if r.state != "done":
-            QMessageBox.warning(self.page, f"번역 {r.state}", (r.reason or "")
+            QMessageBox.warning(self.page, f"번역 — {state_label(r.state)}", (r.reason or "")
                                 + (f"\n{r.retry_after} 이후 다시 하면 이어 갑니다." if r.retry_after else ""))
             return
         issues = []

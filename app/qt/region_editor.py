@@ -11,14 +11,15 @@ import copy
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QGuiApplication, QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGraphicsRectItem,
+    QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame, QGraphicsRectItem,
     QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QToolButton, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
 from app import service
+from app.qt.dialogs import ask_choice, fit_to_screen
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
 ALIGN_LABELS = [("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
@@ -311,12 +312,15 @@ class RegionEditor(QDialog):
         self.dirty = False
         self._loading = False
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}")
-        self.resize(1400, 900)
+        fit_to_screen(self, 1400, 900, maximize_below=0)
 
         self.scene = PageScene(self)
         self.view = PageView(self.scene)
         self.pix_item = None
         self._build_ui()
+        for b in self.findChildren(QPushButton):  # 이름 칸 Enter가 ‘화면에 맞춤’ 같은 버튼을 누르지 않게
+            b.setAutoDefault(False)
+            b.setDefault(False)
         self._load_page()
         self._load_regions()
         self.scene.selectionChanged.connect(self._on_selection)
@@ -405,10 +409,15 @@ class RegionEditor(QDialog):
 
         xy = QGridLayout()  # 두 줄: x·y / 너비·높이 (좁은 칸에서도 숫자가 보이게)
         for i, (lab, sp) in enumerate((("x", self.f_x), ("y", self.f_y), ("너비", self.f_w), ("높이", self.f_h))):
-            sp.setMinimumWidth(90)
+            # "0.0863" + 위/아래 버튼이 늘 들어갈 폭 (폼 라벨 열과 무관하게 한 줄 전체를 씀)
+            sp.setMinimumWidth(sp.fontMetrics().horizontalAdvance("0.0000") + 44)
             xy.addWidget(QLabel(lab), i // 2, (i % 2) * 2)
             xy.addWidget(sp, i // 2, (i % 2) * 2 + 1)
-        self.f_rotate = QCheckBox("180도 돌려 인쇄된 영역 (카드 위쪽 반 등)")
+        xy.setColumnStretch(1, 1)
+        xy.setColumnStretch(3, 1)
+        xy.setContentsMargins(0, 0, 0, 0)
+        self.f_rotate = QCheckBox("180도 돌려 인쇄된 영역")
+        self.f_rotate.setToolTip("카드 위쪽 반처럼 거꾸로 인쇄된 글자")
         self.f_align = QComboBox()
         for k, t in ALIGN_LABELS:
             self.f_align.addItem(t, k)
@@ -429,12 +438,15 @@ class RegionEditor(QDialog):
         self.f_keep_tall.setDecimals(1)
         self.f_keep_tall.setSuffix(" pt")
         self.f_keep_tall.setSpecialValueText("끔")
-        self.f_keep_above = QCheckBox("글자 줄 위의 그림(예: 이름 위 왕관)은 남기기")
+        self.f_keep_tall.setMinimumWidth(self.f_keep_tall.fontMetrics().horizontalAdvance("200.0 pt") + 44)
+        self.f_keep_above = QCheckBox("글자 줄 위의 그림은 남기기")
+        self.f_keep_above.setToolTip("예: 이름 위의 왕관 아이콘")
         self.f_notes = QPlainTextEdit()
         self.f_notes.setFixedHeight(70)
         form.addRow("이름", self.f_name)
         form.addRow("종류", self.f_kind)
-        form.addRow("위치(비율)", xy)
+        form.addRow(QLabel("위치(비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
+        form.addRow(xy)
         form.addRow("회전", self.f_rotate)
         form.addRow("정렬", self.f_align)
         form.addRow("글자 색", crow)
@@ -445,14 +457,30 @@ class RegionEditor(QDialog):
         self.form_box = QWidget()
         self.form_box.setLayout(form)
         sl.addWidget(self.form_box)
-        help_ = QLabel("빈 곳 끌기: 새 영역(위 + 버튼을 누른 뒤) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
-                       "영역을 고른 상태: 화살표 1px(Shift 10px) · Alt+화살표 크기 · Delete 지우기 · Esc 고르기 해제\n"
-                       "영역을 고르지 않은 상태: ←/→ 이전·다음 쪽 (PageUp/PageDown은 언제나)\n"
-                       "마우스 휠: 이전·다음 쪽 · Ctrl+휠: 확대 · Shift+휠: 확대한 화면 스크롤")
+        help_text = ("빈 곳 끌기: 새 영역(위 + 버튼을 누른 뒤) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
+                     "영역을 고른 상태: 화살표 1px(Shift 10px) · Alt+화살표 크기 · Delete 지우기 · Esc 고르기 해제\n"
+                     "영역을 고르지 않은 상태: ←/→ 이전·다음 쪽 (PageUp/PageDown은 언제나)\n"
+                     "마우스 휠: 이전·다음 쪽 · Ctrl+휠: 확대 · Shift+휠: 확대한 화면 스크롤")
+        help_ = QLabel(help_text)
         help_.setStyleSheet("color: #666")
+        self.help_label = help_
+        self.help_btn = QToolButton()
+        self.help_btn.setText("단축키 도움말")
+        self.help_btn.setCheckable(True)
+        self.help_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.help_btn.setToolTip(help_text)
+        self.help_btn.setAutoRaise(True)
+        self.help_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.help_btn.toggled.connect(self._toggle_help)
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        low = scr is not None and scr.availableGeometry().height() < 900  # 낮은 화면에서는 접어 둔다
+        self.help_btn.setChecked(not low)
+        self._toggle_help(not low)
+        sl.addWidget(self.help_btn)
         sl.addWidget(help_)
         for w in (self.f_name,):
             w.textEdited.connect(self._from_form)
+        self.f_name.returnPressed.connect(self.view.setFocus)  # Enter: 카드 화면으로 (화살표로 바로 옮기기)
         for w in (self.f_kind, self.f_align, self.f_font):
             w.currentIndexChanged.connect(self._from_form)
         for w in (self.f_x, self.f_y, self.f_w, self.f_h, self.f_keep_tall):
@@ -479,11 +507,19 @@ class RegionEditor(QDialog):
         cl.addWidget(self.prev_btn)
         cl.addWidget(self.view, 1)
         cl.addWidget(self.next_btn)
-        side.setMinimumWidth(360)
+        side.setMinimumWidth(340)
+        # 낮은 화면(768)에서 폼이 찌그러지지 않게, 모자라면 오른쪽 칸 안에서 스크롤
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side_scroll.setWidget(side)
+        side_scroll.setMinimumWidth(360)
+        self.list.setMinimumHeight(90)
         help_.setWordWrap(True)
         split = QSplitter()
         split.addWidget(center)
-        split.addWidget(side)
+        split.addWidget(side_scroll)
         split.setSizes([1000, 420])  # 처음에는 카드 칸을 넓게
         self.split = split
         split.setStretchFactor(0, 3)
@@ -598,16 +634,19 @@ class RegionEditor(QDialog):
         self.view.fit()
         self.status.setText(f"그룹: {g['name']}")
 
+    def _toggle_help(self, shown: bool):
+        self.help_label.setVisible(shown)
+        self.help_btn.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
+
     def _confirm_leave(self) -> bool:
         """바뀐 영역이 있으면 저장할지 묻는다. 계속해도 되면 True."""
         if not self.dirty:
             return True
-        r = QMessageBox.question(self, "저장하지 않은 변경", f"‘{self.group_dir.name}’의 바뀐 영역을 저장할까요?",
-                                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-                                 | QMessageBox.StandardButton.Cancel)
-        if r == QMessageBox.StandardButton.Cancel:
+        r = ask_choice(self, "저장하지 않은 변경", f"‘{self.group_dir.name}’의 바뀐 영역을 저장할까요?",
+                       [("저장", "accept"), ("저장 안 함", "destructive"), ("취소", "reject")], default=0)
+        if r is None or r == 2:
             return False
-        if r == QMessageBox.StandardButton.Save:
+        if r == 0:
             return self.save()
         self.dirty = False
         return True

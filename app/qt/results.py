@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
+from app.qt.dialogs import fit_to_screen
 
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
 
@@ -29,7 +30,8 @@ class ResultViewer(QDialog):
     def __init__(self, runs: list[tuple[str, Path]], parent=None, title: str = "결과 보기"):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(1500, 900)
+        fit_to_screen(self, 1500, 900)  # 낮은 화면에서는 최대화
+        self._img_path: Path | None = None
         self.runs = runs
         self.run = QComboBox()
         for name, d in runs:
@@ -59,10 +61,14 @@ class ResultViewer(QDialog):
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.image)
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.image.setMinimumSize(1, 1)
+        self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(self.scroll, 1)
-        rl.addWidget(QLabel("영역 (고르면 600dpi로 확대해 비교)"))
+        rl.addWidget(QLabel("영역 — 고르면 그 부분을 크게 비교합니다"))
         rl.addWidget(self.regions)
         split = QSplitter()
         split.addWidget(self.pages)
@@ -109,15 +115,32 @@ class ResultViewer(QDialog):
         r = self.pages.currentRow()
         return self.items[r] if 0 <= r < len(self.items) else None
 
+    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._refit)
+        return super().eventFilter(obj, ev)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self._refit)
+
+    def _refit(self):
+        try:
+            self._set_image(self._img_path)
+        except RuntimeError:  # 창이 이미 닫혀 지워졌을 때
+            pass
+
     def _set_image(self, path: Path | None):
+        self._img_path = path
         if not path:
+            self.image.setPixmap(QPixmap())
             self.image.setText("비교 이미지가 없습니다")
             return
         pm = QPixmap(str(path))
-        room = max(400, self.scroll.viewport().width() - 10)
-        if pm.width() > room:
-            pm = pm.scaledToWidth(room, Qt.TransformationMode.SmoothTransformation)
-        self.image.setPixmap(pm)
+        room = self.scroll.viewport().size() - QSize(10, 10)
+        if room.width() > 50 and room.height() > 50 and (pm.width() > room.width() or pm.height() > room.height()):
+            pm = pm.scaled(room, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.image.setPixmap(pm)  # 원본보다 크게 키우지 않는다
 
     def _show_page(self):
         p = self.current()
@@ -126,6 +149,7 @@ class ResultViewer(QDialog):
         self._set_image(p["card_png"])
         self.regions.blockSignals(True)
         self.regions.clear()
+        self.regions.addItem("카드 전체")
         for r in p["regions"]:
             text = f"{r['name']}" + (f" · {', '.join(r['status'])}" if r["status"] else "")
             if r["errors"]:
@@ -134,11 +158,16 @@ class ResultViewer(QDialog):
             if self.problems(r["status"]):
                 it.setBackground(QColor("#F4B183"))
             self.regions.addItem(it)
+        self.regions.setCurrentRow(0)
         self.regions.blockSignals(False)
 
     def _show_region(self):
-        p, r = self.current(), self.regions.currentRow()
-        if p is not None and 0 <= r < len(p["regions"]):
+        p, r = self.current(), self.regions.currentRow() - 1  # 0번 줄은 ‘카드 전체’
+        if p is None:
+            return
+        if r < 0:
+            self._set_image(p["card_png"])
+        elif r < len(p["regions"]):
             self._set_image(p["regions"][r]["png"])
 
     def open_pdf(self):
@@ -159,8 +188,8 @@ class TestRunDialog(QDialog):
             self.file.addItem(f"{f['key']} ({f['pages']}쪽)", str(f["dir"]))
         self.pages = QLineEdit()
         self.pages.setPlaceholderText("예: 2-4 또는 3,7,9")
-        note = QLabel("고른 쪽만 시험 폴더에서 지우고 한글을 넣어 전후를 비교합니다.\n"
-                      "프로젝트의 지운 카드·한글 카드(cleared/·translated/)는 바뀌지 않습니다.")
+        note = QLabel("고른 쪽만 따로 지우고 한글을 넣어 전후를 비교합니다.\n"
+                      "프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다.")
         note.setStyleSheet("color: #666")
         form = QFormLayout()
         form.addRow("파일", self.file)
@@ -218,8 +247,10 @@ class OutputActions:
                                lambda m: QMessageBox.critical(self.page, "오류", m[:3000]))
 
     def _erase_done(self, r):
+        from app.qt.steps import state_label
+
         self.page.refresh()
-        lines = [f"{f['file']}: {f['state']}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
+        lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                  else f" — {f.get('reason', '')}") for f in r.files]
         (QMessageBox.information if r.state == "done" else QMessageBox.warning)(
             self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
@@ -231,7 +262,7 @@ class OutputActions:
                                lambda m: QMessageBox.critical(self.page, "오류", m[:3000]))
 
     def _compose_done(self, r):
-        from app.qt.steps import _ask_list
+        from app.qt.steps import _ask_list, state_label
 
         self.page.refresh()
         if r.state == "needs_confirmation":
@@ -243,7 +274,7 @@ class OutputActions:
         lines = []
         for f in r.files:
             summ = ", ".join(f"{k} {v}" for k, v in (f.get("summary") or {}).items())
-            lines.append(f"{f['file']}: {f['state']} ({f.get('from', '')})" + (f" — {summ}" if summ else "")
+            lines.append(f"{f['file']}: {state_label(f['state'])} ({f.get('from', '')})" + (f" — {summ}" if summ else "")
                          + (f" — {'; '.join(f.get('blocking') or [])}" if f.get("blocking") else ""))
         box = QMessageBox(self.page)
         box.setWindowTitle("한글 넣기")

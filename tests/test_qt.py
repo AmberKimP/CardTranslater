@@ -426,11 +426,11 @@ def test_region_editor_moves_between_groups_and_shows_used_fonts_first(qapp, tmp
 
     # 바꾼 게 있으면 그룹을 옮길 때 묻는다: 취소면 그대로
     ed._mark_dirty()
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Cancel))
+    monkeypatch.setattr("app.qt.region_editor.ask_choice", lambda *a, **k: 2)  # 취소
     ed.file_combo.setCurrentIndex(1)
     assert ed.group_dir == Path(g1["dir"]) and ed.file_combo.currentIndex() == 0
     # 버리면 아이템 그룹 영역으로
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Discard))
+    monkeypatch.setattr("app.qt.region_editor.ask_choice", lambda *a, **k: 1)  # 저장 안 함
     ed.file_combo.setCurrentIndex(1)
     assert ed.group_dir == Path(g2["dir"]) and [i.name for i in ed.items()] == ["효과"] and not ed.dirty
     assert "아이템" in ed.windowTitle() and ed.page_total.text() == "/ 2"
@@ -482,8 +482,9 @@ def test_result_viewer_and_output_buttons(qapp, tmp_path):
     service.erase_project(info.dir)
     service.compose_project(info.dir)
     v = ResultViewer([("카드/cards", fd / "translated")])
-    assert v.pages.count() == 2 and v.image.pixmap() is not None and v.regions.count() == 1
-    v.regions.setCurrentRow(0)
+    assert v.pages.count() == 2 and v.image.pixmap() is not None and v.regions.count() == 2  # 카드 전체 + 영역 1
+    assert v.regions.item(0).text() == "카드 전체" and v.regions.currentRow() == 0
+    v.regions.setCurrentRow(1)
     v.only.setChecked(True)  # 문제 있는 쪽만: 없음
     assert v.pages.count() == 0 and "문제 있는 쪽 0" in v.info.text()
 
@@ -813,3 +814,320 @@ def test_icon_review_merge_cycle_is_blocked(qapp, tmp_path, monkeypatch):
         dlg.rows()
     dlg.accept()
     assert dlg.result is None
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1400, 850), (1600, 900), (1920, 1080)])
+def test_region_editor_number_fields_not_clipped(qapp, tmp_path, size):
+    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.0863, "y": 0.0863, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.resize(*size)
+    ed.show()
+    qapp.processEvents()
+    ed.items()[0].setSelected(True)
+    qapp.processEvents()
+    assert ed.minimumSizeHint().width() <= 900
+    for sp in (ed.f_x, ed.f_y, ed.f_w, ed.f_h):
+        need = sp.fontMetrics().horizontalAdvance("0.0863") + 30  # 글자 + 위/아래 버튼
+        assert sp.width() >= need, (size, sp.width(), need)
+        assert sp.lineEdit().width() >= sp.fontMetrics().horizontalAdvance("0.0863")
+    assert ed.f_keep_tall.width() >= ed.f_keep_tall.fontMetrics().horizontalAdvance("200.0 pt") + 30
+    for cb in (ed.f_kind, ed.f_align, ed.f_font):
+        assert cb.width() >= 80
+    ed.dirty = False
+    ed.close()
+
+
+# ---------------------------------------------------------------- 화면 개선 (ui-ux 검토 P1)
+def test_korean_standard_buttons_and_action_names(qapp, tmp_path):
+    """표준 버튼은 한국어 번역으로, 확인 버튼은 하는 일 이름으로."""
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from app.qt.dialogs import AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog, install_korean
+
+    assert install_korean(qapp)
+    try:
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Yes)
+        assert bb.button(QDialogButtonBox.StandardButton.Cancel).text() == "취소"
+        info = _project(tmp_path)
+        file_dir = service.project_overview(info.dir)["groups"][0]["files"][0]["dir"]
+        for dlg, ok in ((NewProjectDialog(tmp_path), "만들기"), (AddFilesDialog(info.dir), "넣기"),
+                        (ExcludePagesDialog(Path(file_dir), [], ""), "저장"), (SettingsDialog(), "저장")):
+            bb = dlg.findChild(QDialogButtonBox)
+            assert bb.button(QDialogButtonBox.StandardButton.Ok).text() == ok, type(dlg).__name__
+            assert bb.button(QDialogButtonBox.StandardButton.Cancel).text() == "취소"
+    finally:
+        qapp.removeTranslator(qapp._ko_translator)
+
+
+def test_region_editor_enter_in_name_keeps_zoom_and_help_folds(qapp, tmp_path, monkeypatch):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPushButton
+
+    from app.qt import region_editor
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.2}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.show()
+    qapp.processEvents()
+    assert all(not b.autoDefault() for b in ed.findChildren(QPushButton))
+    ed.items()[0].setSelected(True)
+    ed.view.auto_fit = False  # 확대해서 보는 중
+    ed.f_name.setFocus()
+    QTest.keyClick(ed.f_name, Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert ed.view.auto_fit is False  # ‘화면에 맞춤’이 눌리지 않는다
+    # 도움말: 낮은 화면(900 미만)에서는 접힌 채 시작, 버튼으로 펼침·접힘, 툴팁에 전체 문장
+    low = ed.screen().availableGeometry().height() < 900
+    assert ed.help_btn.isChecked() != low and ed.help_btn.text() == "단축키 도움말"
+    assert "Ctrl+휠" in ed.help_btn.toolTip()
+    ed.help_btn.setChecked(False)
+    assert ed.help_label.isHidden()
+    ed.help_btn.setChecked(True)
+    assert not ed.help_label.isHidden()
+    # 저장 확인 버튼 이름
+    seen = {}
+
+    def fake(parent, title, text, buttons, **k):
+        seen["buttons"] = [t for t, _r in buttons]
+        return 2
+
+    monkeypatch.setattr(region_editor, "ask_choice", fake)
+    ed.dirty = True
+    assert ed._confirm_leave() is False and seen["buttons"] == ["저장", "저장 안 함", "취소"]
+    ed.dirty = False
+    ed.close()
+
+
+def test_fit_to_screen_never_exceeds_screen(qapp):
+    from PySide6.QtWidgets import QDialog
+
+    from app.qt.dialogs import fit_to_screen
+
+    g = qapp.primaryScreen().availableGeometry()
+    w = QDialog()
+    fit_to_screen(w, 5000, 5000, maximize_below=0)
+    assert w.width() <= g.width() and w.height() <= g.height()
+    w2 = QDialog()
+    fit_to_screen(w2, 100, 100, maximize_below=g.height() + 1)  # 낮은 화면으로 보고 최대화
+    assert w2.windowState() & Qt.WindowState.WindowMaximized
+    w3 = QDialog()
+    fit_to_screen(w3, 300, 200, maximize_below=0)
+    assert (w3.width(), w3.height()) == (300, 200)
+
+
+def test_result_viewer_refits_image_and_has_whole_card_row(qapp, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    g = qapp.primaryScreen().availableGeometry()
+    assert v.width() <= g.width() and v.height() <= g.height()
+    v.setWindowState(Qt.WindowState.WindowNoState)
+    v.resize(500, 420)
+    v.show()
+    qapp.processEvents()
+    small = v.image.pixmap().width()
+    v.resize(min(1400, g.width()), min(900, g.height()))
+    qapp.processEvents()
+    qapp.processEvents()
+    assert v.image.pixmap().width() > small
+    vp = v.scroll.viewport()
+    assert v.image.pixmap().width() <= vp.width() and v.image.pixmap().height() <= vp.height()
+    assert not any("600" in w.text() for w in v.findChildren(QLabel))
+    # 영역을 고르면 그 영역, ‘카드 전체’를 고르면 다시 카드
+    path_card = v._img_path
+    v.regions.setCurrentRow(1)
+    assert v._img_path != path_card
+    v.regions.setCurrentRow(0)
+    assert v._img_path == path_card
+    v.close()
+
+
+def test_finish_asks_before_redoing_confirmed_glossary(qapp, tmp_path, monkeypatch):
+    from app.qt import steps, worker
+    from app.qt.main import MainWindow
+
+    info, _fd = _project_with_extract(tmp_path)
+    workspace.set_status(workspace.load_project_info(info.dir), "translated", glossary_version=6)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    act = win.project.steps
+    started = []
+    monkeypatch.setattr(act, "_engine", lambda: "claude-code")
+    monkeypatch.setattr(worker, "run_with_dialog", lambda *a, **k: started.append(a[1]))
+    asked = {}
+
+    def answer(n):
+        def f(parent, title, text, buttons, **k):
+            asked.update(title=title, text=text, buttons=[t for t, _r in buttons], more=k.get("informative", ""))
+            return n
+        return f
+
+    monkeypatch.setattr(steps, "ask_choice", answer(1))  # 취소
+    act.finish()
+    assert started == [] and asked["title"] == "용어집 다시 만들기" and "v6" in asked["text"]
+    assert asked["buttons"] == ["다시 만들기", "취소"] and "용어집 검증 중" in asked["more"]
+    monkeypatch.setattr(steps, "ask_choice", answer(0))
+    act.finish()
+    assert len(started) == 1
+    # 아직 확정 전이면 묻지 않는다
+    workspace.set_status(workspace.load_project_info(info.dir), "extracting")
+    win.project.refresh()
+    asked.clear()
+    act.finish()
+    assert not asked and len(started) == 2
+
+
+def test_screens_do_not_show_developer_words(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt.main import MainWindow
+    from app.qt.steps import state_label
+
+    shown = []
+    for name in ("information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(lambda p, title, text, *a, **k: shown.append((title, text))))
+    info, fd = _translated_project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    act = win.project.steps
+    r = service.ProjectExtractResult("blocked", files=[{"file": "카드/cards", "state": "blocked", "done": 0,
+                                                        "remaining": 2, "failed": 0}], reason="엔진 없음")
+    act._extract_done(r, (None, "double-check", "claude-code"))
+    act._finish_done(service.GlossaryReviewResult("blocked", reason="x"))
+    first = service.erase_project(info.dir)
+    again = service.erase_project(info.dir)  # 이미 지운 파일: 건너뜀 문구
+    win.project.out._erase_done(again)
+    assert first.state == "done"
+    assert state_label("done") == "끝남" and state_label("blocked") == "할 수 없음" and state_label("x") == "x"
+    text = "\n".join(f"{t}\n{x}" for t, x in shown)
+    for bad in ("done", "blocked", "skipped", "paused", "--redo", "erase-project", "cleared/", "translated/", "600dpi"):
+        assert bad not in text, (bad, text)
+    assert "건너뜀" in text and "다시 지우려면 ‘모두 다시 지우기’" in text
+    assert any("할 수 없음" in t for t, _x in shown)  # 창 제목도 한국어
+
+
+def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
+    from app.qt import steps
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files)
+    dlg.show()
+    qapp.processEvents()
+    # 확인할 칸과 아직 읽지 않은 칸을 따로 센다
+    assert dlg.count.text() == "확인할 칸 1 · 아직 읽지 않은 칸 2 / 전체 6"
+    assert "아직 읽지 않음" in dlg.only.text()
+    dlg.only.setChecked(False)
+    assert dlg.table.rowCount() == 6
+    dlg.only.setChecked(True)
+    assert dlg.table.rowCount() == 3
+    asked = []
+
+    def answer(n):
+        def f(parent, title, text, buttons, **k):
+            asked.append((title, text, [t for t, _r in buttons]))
+            return n
+        return f
+
+    def saved(page=1, region="이름"):
+        return next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (page, region))
+
+    # 글을 고치고 다른 줄을 누르면 묻는다: 취소 -> 원래 줄·고친 글 그대로, 저장 안 됨
+    dlg.edit.setPlainText("盗掘フェレット")
+    monkeypatch.setattr(steps, "ask_choice", answer(2))
+    dlg.table.setCurrentCell(1, 0)
+    assert dlg.table.currentRow() == 0 and dlg.edit.toPlainText() == "盗掘フェレット"
+    assert asked[0] == ("고친 원문", "1쪽 이름의 고친 원문을 저장할까요?", ["저장", "저장 안 함", "취소"])
+    assert saved()["source"] == "盗賊フェレット"
+    # 저장 안 함 -> 옮겨 가고 저장되지 않음
+    monkeypatch.setattr(steps, "ask_choice", answer(1))
+    dlg.table.setCurrentCell(1, 0)
+    assert dlg.current()["page"] == 3 and saved()["source"] == "盗賊フェレット"
+    # 같은 줄의 다른 열을 눌러도 고친 글이 사라지거나 묻지 않는다
+    dlg.edit.setPlainText("手で直した")
+    n = len(asked)
+    dlg.table.setCurrentCell(1, 3)
+    assert dlg.edit.toPlainText() == "手で直した" and len(asked) == n
+    # 저장 -> 저장하고 옮겨 감
+    monkeypatch.setattr(steps, "ask_choice", answer(0))
+    dlg.table.setCurrentCell(0, 0)
+    assert dlg.saved == 1 and dlg.current() is not None
+    assert any(c["edited"] and c["source"] == "手で直した" for c in service.extracted_cells(fd))
+    # 닫기도 고친 글이 있으면 묻는다 (취소하면 그대로)
+    dlg.edit.setPlainText(dlg.edit.toPlainText() + "!")
+    monkeypatch.setattr(steps, "ask_choice", answer(2))
+    dlg.accept()
+    assert dlg.isVisible()
+    monkeypatch.setattr(steps, "ask_choice", answer(1))
+    dlg.accept()
+    assert not dlg.isVisible()
+
+
+def test_source_review_save_and_next_and_keys(qapp, tmp_path):
+    from PySide6.QtTest import QTest
+
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files, only_check=False)
+    dlg.show()
+    qapp.processEvents()
+    assert dlg.table.rowCount() == 6 and dlg.table.currentRow() == 0
+    # Ctrl+Enter(편집기에 포커스): 저장하고 다음 칸
+    dlg.edit.setFocus()
+    dlg.edit.setPlainText("盗掘フェレット")
+    QTest.keyClick(dlg.edit, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert dlg.saved == 1 and dlg.table.currentRow() == 1
+    assert next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (1, "이름"))["source"] == "盗掘フェレット"
+    # Alt+아래/위로 칸 이동
+    QTest.keyClick(dlg.edit, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
+    assert dlg.table.currentRow() == 2
+    QTest.keyClick(dlg.edit, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+    assert dlg.table.currentRow() == 1
+    # Ctrl+S: 저장하고 그 칸에 머문다
+    dlg.edit.setPlainText("人")
+    QTest.keyClick(dlg.edit, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert dlg.saved == 2 and dlg.table.currentRow() == 1
+    dlg.edit.setPlainText("人人")
+    dlg.next_btn.click()
+    assert dlg.saved == 3 and dlg.table.currentRow() == 2
+    # ‘확인할 칸만’일 때는 저장한 칸이 빠지므로 같은 줄 번호가 다음 칸
+    dlg2 = SourceReviewDialog(files, only_check=True)
+    first, n_before = dlg2.current(), dlg2.table.rowCount()
+    assert n_before >= 2
+    dlg2.edit.setPlainText("盗掘")
+    dlg2.save_and_next()
+    assert dlg2.table.rowCount() == n_before - 1 and dlg2.table.currentRow() == 0 and dlg2.current() != first
+    dlg.close()
+
+
+def test_selftest_reports_korean_translation(qapp, tmp_path):
+    """exe 점검(--selftest)이 표준 버튼 한국어 번역을 불렀는지 알려 준다."""
+    from app.qt.main import main
+
+    out = tmp_path / "st.json"
+    try:
+        main(["prog", "--selftest", str(out)])
+    finally:
+        tr = getattr(qapp, "_ko_translator", None)
+        if tr is not None:
+            qapp.removeTranslator(tr)
+    res = json.loads(out.read_text(encoding="utf-8"))
+    assert res["ko_translation"] is True and res["ko_cancel_text"] == "취소" and res["ui"] is True

@@ -4,16 +4,85 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QIcon, QPixmap
+import sys
+
+from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
+from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
 
 from app import service
 
 LANGS = [("ja", "일본어"), ("en", "영어")]
+
+
+def install_korean(app=None) -> bool:
+    """Qt 표준 버튼(취소·예·아니요 등)을 한국어로. 번역 파일을 찾아 불렀으면 True."""
+    app = app or QApplication.instance()
+    if app is None:
+        return False
+    tr = QTranslator(app)
+    dirs = [QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)]
+    try:
+        import PySide6
+
+        dirs.append(str(Path(PySide6.__file__).parent / "translations"))
+    except Exception:  # noqa: BLE001
+        pass
+    if getattr(sys, "_MEIPASS", None):
+        dirs.append(str(Path(sys._MEIPASS) / "PySide6" / "translations"))
+    for d in dirs:
+        if tr.load("qtbase_ko", d):
+            app.installTranslator(tr)
+            app._ko_translator = tr  # 지워지지 않게 붙들어 둔다
+            return True
+    return False
+
+
+def set_ok_text(bb: QDialogButtonBox, text: str) -> None:
+    """확인 버튼을 ‘확인’ 대신 하는 일 이름(만들기·넣기·저장)으로."""
+    bb.button(QDialogButtonBox.StandardButton.Ok).setText(text)
+
+
+def fit_to_screen(w, width: int, height: int, margin: float = 0.92, maximize_below: int = 800) -> None:
+    """원하는 크기로 열되 화면(작업 표시줄 제외)보다 크지 않게 줄인다. 화면 높이가 낮으면 최대화로 연다."""
+    scr = None
+    try:
+        scr = (w.parentWidget() or w).screen()
+    except Exception:  # noqa: BLE001
+        pass
+    scr = scr or QGuiApplication.primaryScreen()
+    if scr is None:
+        w.resize(width, height)
+        return
+    g = scr.availableGeometry()
+    w.resize(min(width, int(g.width() * margin)), min(height, int(g.height() * margin)))
+    if maximize_below and g.height() < maximize_below:
+        w.setWindowState(w.windowState() | Qt.WindowState.WindowMaximized)
+
+
+def ask_choice(parent, title: str, text: str, buttons: list[tuple[str, str]], default: int | None = None,
+               informative: str = "") -> int | None:
+    """동작 이름 버튼으로 묻는다. buttons: [(문구, 'accept'|'destructive'|'reject')]. 누른 버튼 번호, 닫으면 None."""
+    roles = {"accept": QMessageBox.ButtonRole.AcceptRole, "destructive": QMessageBox.ButtonRole.DestructiveRole,
+             "reject": QMessageBox.ButtonRole.RejectRole}
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(text)
+    if informative:
+        box.setInformativeText(informative)
+    made = [box.addButton(t, roles[r]) for t, r in buttons]
+    if default is not None:
+        box.setDefaultButton(made[default])
+    for b, (_t, r) in zip(made, buttons):
+        if r == "reject":
+            box.setEscapeButton(b)
+    box.exec()
+    clicked = box.clickedButton()
+    return made.index(clicked) if clicked in made else None
 
 
 class NewProjectDialog(QDialog):
@@ -43,6 +112,7 @@ class NewProjectDialog(QDialog):
         form.addRow("", self.hint)
         form.addRow("원문 언어", self.lang)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        set_ok_text(bb, "만들기")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
@@ -117,6 +187,7 @@ class AddFilesDialog(QDialog):
         form.addRow(self.r_new, self.new_name)
         form.addRow("새 그룹 영역", self.copy_from)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        set_ok_text(bb, "넣기")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
@@ -184,6 +255,7 @@ class ExcludePagesDialog(QDialog):
         self.reason = QLineEdit(reason)
         self.reason.setPlaceholderText("뺀 이유 (예: 규칙 카드라 형식이 다름)")
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
@@ -191,7 +263,7 @@ class ExcludePagesDialog(QDialog):
         lay.addWidget(self.list, 1)
         lay.addWidget(self.reason)
         lay.addWidget(bb)
-        self.resize(900, 640)
+        fit_to_screen(self, 900, 640, maximize_below=0)
 
     def checked(self) -> list[int]:
         return [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
@@ -222,6 +294,7 @@ class SettingsDialog(QDialog):
         form.addRow("데이터 폴더 (games·projects)", row)
         form.addRow("로그인 방식", info)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)

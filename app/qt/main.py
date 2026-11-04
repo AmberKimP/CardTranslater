@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
-from app.qt.dialogs import AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog
+from app.qt.dialogs import AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog, install_korean
 from app.qt.region_editor import RegionEditor
 from app.qt.results import OutputActions
 from app.qt.steps import StepActions
@@ -379,12 +379,20 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName(APP_NAME)
     if sys.platform == "win32":  # 한글 화면 글꼴 (화면 없이 띄우는 점검 모드 포함)
         app.setFont(QFont("Malgun Gothic", 10))
+    ko = install_korean(app)  # 표준 버튼(취소·예·아니요)을 한국어로
     args = list(argv if argv is not None else sys.argv)
     if "--selftest" in args:  # exe 점검: 창을 띄우지 않고 결과를 JSON으로 쓴다
         import json
 
         out = Path(args[args.index("--selftest") + 1]) if len(args) > args.index("--selftest") + 1 else None
         res = service.self_check()
+        res["ko_translation"] = ko
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        probe = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)  # 취소 버튼 문구가 한국어인지
+        res["ko_cancel_text"] = probe.button(QDialogButtonBox.StandardButton.Cancel).text()
+        if not ko or res["ko_cancel_text"] != "취소":
+            res["ok"] = False
         try:
             MainWindow()
             res["ui"] = True
