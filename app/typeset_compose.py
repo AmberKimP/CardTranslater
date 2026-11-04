@@ -1,6 +1,8 @@
-"""합성 단계: 지운 PDF + 지우기 메타 + 번역 -> 한글 카드 PDF.
+"""한글 넣기 단계(8단계): 지운 PDF(cleared/) + 지우기 메타 + 번역 -> 한글 카드 PDF(translated/).
 
-    python -m app.cli compose --project projects/sample --erase-run test_runs/<시각>-erase --pages 1-3
+    python -m app.cli compose --project projects/sample [--excel 번역_검수.xlsx] [--pages 1-3]
+
+지우기는 다시 하지 않는다. 번역은 엑셀 ‘번역’ 열(--excel) 또는 samples.json에서 온다.
 
 - 지운 PDF는 메모리로 읽어 사본에 그린다 (지운 PDF·원본 PDF 모두 수정하지 않음).
 - 원문 잉크 높이(F28)·세로 위치·왼쪽 시작점은 **원본 PDF**의 같은 쪽·같은 영역을 렌더링해 잰다.
@@ -12,7 +14,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from pathlib import Path
 
 import numpy as np
@@ -121,7 +122,8 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
                     hs.append(ink.glyph_height)
             ink_h = float(np.median(hs)) if hs else None
             st = TextStyle.from_region_style(style_d, base_dir, size_pt=tl.get("size_pt") or 8.35,
-                                             ink_height_pt=ink_h, valign="middle")
+                                             ink_height_pt=ink_h, valign="middle",
+                                             fixed_size_pt=entry.get("fixed_size_pt"))
             if ink_h is None:
                 rec["warnings"].append("라벨 안 원문 잉크를 못 잼 -> 텍스트 레이어 크기(pt) 사용")
             if not labels:
@@ -162,7 +164,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             draw_rect.y0 = top
         st = TextStyle.from_region_style(
             style_d, base_dir, size_pt=tl.get("size_pt"), ink_height_pt=ink.glyph_height,
-            line_pitch_pt=ink.line_pitch,
+            line_pitch_pt=ink.line_pitch, fixed_size_pt=entry.get("fixed_size_pt"),
         )
         if ink.glyph_height is None:
             rec["warnings"].append("원문 잉크를 못 잼 -> 텍스트 레이어 크기(pt) 사용")
@@ -181,21 +183,37 @@ def _render(page: pymupdf.Page, dpi: int, clip=None) -> np.ndarray:
 SAFE = {"태그": "tag", "이름": "name", "본문": "body"}
 
 
-def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: Path) -> tuple[Path, int]:
+def erased_pdf_path(erase_run: Path) -> Path:
+    """지우기 결과 폴더의 PDF (프로젝트 cleared/는 cleared.pdf, 테스트 실행은 erased.pdf)."""
+    for name in ("cleared.pdf", "erased.pdf"):
+        if (Path(erase_run) / name).exists():
+            return Path(erase_run) / name
+    raise FileNotFoundError(f"지운 PDF가 없습니다: {erase_run} (먼저 erase를 실행하세요)")
+
+
+def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_dir: Path,
+                cards: dict | None = None, translation_source: str = "samples.json",
+                out_name: str = "composed.pdf") -> tuple[Path, int]:
+    """run_dir(새로 만들 빈 폴더)에 결과를 쓴다. cards가 없으면 samples.json을 쓴다."""
     project = load_project(Path(project_dir))
     src_path = project.source_pdf
     erase_run = Path(erase_run).resolve()
-    erased_path = erase_run / "erased.pdf"
+    erased_path = erased_pdf_path(erase_run)
     sha_src_before = sha256_file(src_path)
     sha_erased_before = sha256_file(erased_path)
+    cards = project.samples if cards is None else cards
 
-    run_dir = Path(out_root).resolve() / (time.strftime("%Y%m%d-%H%M%S") + "-compose")
+    run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     ensure_not_source(run_dir / "x", src_path)
 
     src_doc = pymupdf.open(stream=src_path.read_bytes(), filetype="pdf")
     er_doc = pymupdf.open(stream=erased_path.read_bytes(), filetype="pdf")
-    pages = parse_page_spec(pages_spec, src_doc.page_count)
+    if pages_spec:
+        pages = parse_page_spec(pages_spec, src_doc.page_count)
+    else:
+        run_info = json.loads((erase_run / "run.json").read_text(encoding="utf-8"))
+        pages = list(run_info["pages"])
 
     metas = {}
     for pno in pages:
@@ -214,11 +232,11 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: P
     page_recs = []
     for i, pno in enumerate(pages):
         print(f"[compose] page {pno} ...", flush=True)
-        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], project.samples.get(pno), ROOT, styles)
+        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles)
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)
-    out_pdf = run_dir / "composed.pdf"
+    out_pdf = run_dir / out_name
     ensure_not_source(out_pdf, src_path)
     out_doc.save(out_pdf, garbage=3, deflate=True)
     out_doc.close()
@@ -261,6 +279,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str, out_root: P
         "command": "compose",
         "project": str(project.root),
         "erase_run": str(erase_run),
+        "translation_source": translation_source,
         "pages": pages,
         "source_pdf": str(src_path),
         "source_sha256_before": sha_src_before,

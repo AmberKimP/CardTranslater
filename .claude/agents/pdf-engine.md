@@ -18,7 +18,7 @@ model: opus
 
 ## 절대 규칙
 
-1. **원본 PDF는 절대 수정하지 않는다.** 원본은 `projects/<프로젝트>/source/`에 사본으로 두고, 결과는 `output/`이나 `test_runs/<시각>/`에만 쓴다. 저장 전에 경로가 원본과 다른지 코드로 확인한다.
+1. **원본 PDF는 절대 수정하지 않는다.** 원본은 `projects/<프로젝트>/source/`에 사본으로 두고, 결과는 `projects/<프로젝트>/cleared/`·`translated/`이나 `test_runs/<시각>/`에만 쓴다. 저장 전에 경로가 원본과 다른지 코드로 확인한다.
 2. 영역 좌표는 픽셀이 아닌 **카드 너비·높이 대비 비율(0~1)** 로 저장하고, 쓸 때만 PDF 좌표(pt)나 픽셀로 바꾼다. 변환 함수는 `app/regions.py` 한 곳에 둔다.
 3. 결과 PDF의 페이지 크기·박스(MediaBox/CropBox/BleedBox)는 원본과 같아야 한다. CMYK·재단 여백은 바꾸지 않는다.
 
@@ -71,7 +71,7 @@ model: opus
 
 ## 출력 (F15, F18)
 
-- 결과는 원본과 같은 페이지 크기의 PDF로 `output/`에 저장한다. 묶음 PDF와 카드별 PDF/PNG(300dpi)를 모두 만들 수 있게 한다.
+- 지운 카드는 `cleared/`, 한글을 넣은 카드는 `translated/`에 원본과 같은 페이지 크기의 PDF로 저장한다. 묶음 PDF와 카드별 PDF/PNG(300dpi)를 모두 만들 수 있게 한다.
 - 저장할 때 `garbage`, `deflate` 등으로 정리하되, 글꼴 서브셋 내장은 typesetter가 넣은 글꼴이 유지되도록 한다.
 
 ## 작업 방식

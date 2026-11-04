@@ -27,7 +27,7 @@ CardTranslater/
 └── README.md
 ```
 
-`projects/`(카드 원본), `test_runs/`, `output/`, 글꼴 파일은 Git에 올리지 않는다.
+`projects/`(카드 원본과 `cleared/`·`translated/` 결과), `test_runs/`, 글꼴 파일은 Git에 올리지 않는다.
 
 ## 실행
 
@@ -35,11 +35,17 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
-.venv/Scripts/python -m app.cli erase   --project projects/sample --pages 1-3
-.venv/Scripts/python -m app.cli compose --project projects/sample --erase-run test_runs/<시각>-erase --pages 1-3
+# 7단계 글자 지우기 -> projects/sample/cleared/ (한 번만)
+.venv/Scripts/python -m app.cli erase --project projects/sample --pages 1-30
+# 번역 검수 엑셀 -> projects/sample/번역_검수.xlsx ('번역' 열을 고친다)
+.venv/Scripts/python -m app.cli export-excel --project projects/sample
+# 8단계 한글 넣기 -> projects/sample/translated/ (지우기 없이 엑셀 번역만 다시 넣음. 고칠 때마다 반복)
+.venv/Scripts/python -m app.cli compose --project projects/sample --excel projects/sample/번역_검수.xlsx
 .venv/Scripts/python -m pytest -q
 ```
 
+`--test`를 붙이면 프로젝트 폴더 대신 `test_runs/<시각>-erase|compose/`에 쓴다. 엑셀에 확인할 항목(빈 번역, 빠진 행, 원문 수정)이 있으면 목록을 보여 주고 멈춘다. 확인했으면 `--yes`를 붙여 다시 실행한다. 다른 프로젝트의 엑셀이면 항상 멈춘다.
+
 ## Status
 
-1단계(PDF 핵심 실험): ClearScan PDF 1~3쪽의 지우기·한글 합성 완료, 시각 검수 합격(경미 3건).
+1단계(PDF 핵심 실험): ClearScan PDF 30쪽 전체(BATTLE 1~15, DUNGEON 16~30)의 지우기·한글 합성 완료. 회전된 배경 이미지(8·21쪽), 라벨 3개(9쪽), 회색 라벨, 글꼴에 없는 글자(♥·…) 대체 글꼴 처리 포함.

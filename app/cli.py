@@ -1,9 +1,14 @@
 """명령줄 진입점.
 
-    python -m app.cli erase --project projects/sample --pages 1-3
-    python -m app.cli compose --project projects/sample --erase-run test_runs/<시각>-erase --pages 1-3
+7단계 글자 지우기 -> projects/<p>/cleared/  (한 번만)
+    python -m app.cli erase --project projects/sample --pages 1-30
+번역 검수 엑셀 만들기 -> projects/<p>/번역_검수.xlsx
+    python -m app.cli export-excel --project projects/sample
+8단계 한글 넣기 -> projects/<p>/translated/  (지우기를 다시 하지 않음. 엑셀을 고칠 때마다 반복)
+    python -m app.cli compose --project projects/sample --excel projects/sample/번역_검수.xlsx
 
-결과는 test_runs/<YYYYMMDD-HHMMSS>-erase/ , -compose/ 에 쓴다. 원본 PDF는 읽기만 한다.
+--test를 붙이면 프로젝트 폴더 대신 test_runs/<YYYYMMDD-HHMMSS>-erase|compose/ 에 쓴다.
+원본 PDF는 읽기만 한다.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -39,10 +45,10 @@ def cmd_erase(args: argparse.Namespace) -> int:
     src_path = project.source_pdf
     sha_before = sha256_file(src_path)
 
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = Path(args.out_root).resolve() / f"{stamp}-erase"
+    final_dir, run_dir = _output_dirs(args, project.root, "cleared", "erase")
     run_dir.mkdir(parents=True, exist_ok=False)
     ensure_not_source(run_dir / "x", src_path)
+    pdf_name = "erased.pdf" if args.test else "cleared.pdf"
 
     src_bytes = src_path.read_bytes()  # 원본은 메모리로만 읽는다
     src_doc = pymupdf.open(stream=src_bytes, filetype="pdf")
@@ -60,14 +66,14 @@ def cmd_erase(args: argparse.Namespace) -> int:
             "schema": SCHEMA,
             "source_pdf": str(src_path),
             "source_page": pno,
-            "output_pdf": "erased.pdf",
+            "output_pdf": pdf_name,
             "output_page_index": i,
             **r.meta,
         }
         page_metas.append(meta)
         results.append(r)
 
-    out_pdf = run_dir / "erased.pdf"
+    out_pdf = run_dir / pdf_name
     ensure_not_source(out_pdf, src_path)
     out_doc.save(out_pdf, garbage=3, deflate=True)
     out_doc.close()
@@ -186,7 +192,7 @@ def cmd_erase(args: argparse.Namespace) -> int:
         "source_sha256_before": sha_before,
         "source_sha256_after": sha_after,
         "source_unchanged": sha_before == sha_after,
-        "output_pdf": str(out_pdf),
+        "output_pdf": str(final_dir / pdf_name),
         "page_boxes": box_checks,
         "meta_files": [str(mdir / f"page-{p:03d}.json") for p in pages],
     }
@@ -194,27 +200,91 @@ def cmd_erase(args: argparse.Namespace) -> int:
     (run_dir / "source.sha256").write_text(
         f"before {sha_before}  {src_path.name}\nafter  {sha_after}  {src_path.name}\n", encoding="utf-8"
     )
-    print(f"[erase] 결과: {run_dir}")
     if sha_before != sha_after:
-        print("[erase] 경고: 원본 PDF 해시가 바뀌었습니다!", file=sys.stderr)
+        print(f"[erase] 경고: 원본 PDF 해시가 바뀌었습니다! 결과는 {run_dir}에 남겨 둠", file=sys.stderr)
         return 2
+    _commit(run_dir, final_dir)
+    print(f"[erase] 결과: {final_dir}")
     for meta in page_metas:
         for w in meta["warnings"]:
             print(f"  p{meta['source_page']}: {w}")
     return 0
 
 
+def _output_dirs(args, project_root: Path, folder: str, kind: str) -> tuple[Path, Path]:
+    """(최종 폴더, 작업 폴더). 프로젝트 모드는 임시 폴더에 다 쓴 뒤 _commit으로 바꿔 넣는다."""
+    if args.test:
+        d = Path(args.out_root).resolve() / f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}"
+        return d, d
+    final = project_root / folder
+    tmp = project_root / f".{folder}-{time.strftime('%Y%m%d-%H%M%S')}"
+    return final, tmp
+
+
+def _commit(tmp: Path, final: Path) -> None:
+    """다 쓴 작업 폴더를 최종 폴더로 바꿔 넣는다 (예전 결과는 지움)."""
+    if tmp == final:
+        return
+    if final.exists():
+        shutil.rmtree(final)
+    tmp.rename(final)
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
+    from app.excel_io import import_translation
     from app.typeset_compose import run_compose
 
-    run_dir, code = run_compose(Path(args.project), Path(args.erase_run), args.pages, Path(args.out_root))
+    project = load_project(Path(args.project))
+    cleared = Path(args.cleared) if args.cleared else project.root / "cleared"
+    if not cleared.exists():
+        print(f"[compose] 지운 결과가 없습니다: {cleared}\n  먼저 erase를 실행하세요 (7단계).", file=sys.stderr)
+        return 1
+    cards, source = None, "samples.json"
+    if args.excel:
+        imp = import_translation(project, Path(args.excel))
+        print(f"[compose] 엑셀 {args.excel}: {imp.rows}행")
+        for b in imp.blocking:
+            print(f"  [멈춤] {b}", file=sys.stderr)
+        if imp.blocking:
+            return 1
+        for i in imp.issues:
+            print(f"  [확인] {i}")
+        if imp.issues and not args.yes:
+            print("[compose] 위 항목을 확인한 뒤 계속하려면 --yes를 붙여 다시 실행하세요.", file=sys.stderr)
+            return 1
+        cards, source = imp.cards, str(Path(args.excel).resolve())
+
+    final_dir, run_dir = _output_dirs(args, project.root, "translated", "compose")
+    out_name = "composed.pdf" if args.test else "translated.pdf"
+    run_dir, code = run_compose(project.root, cleared, args.pages, run_dir, cards=cards,
+                                translation_source=source, out_name=out_name)
     rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     for status, keys in rep["status_summary"].items():
         print(f"  {status}: {len(keys)}  {', '.join(keys)}")
-    print(f"[compose] 결과: {run_dir}")
     if code:
-        print("[compose] 경고: 원본 또는 지운 PDF 해시가 바뀌었습니다!", file=sys.stderr)
-    return code
+        print(f"[compose] 경고: 원본 또는 지운 PDF 해시가 바뀌었습니다! 결과는 {run_dir}에 남겨 둠", file=sys.stderr)
+        return code
+    _commit(run_dir, final_dir)
+    print(f"[compose] 결과: {final_dir}")
+    return 0
+
+
+def cmd_export_excel(args: argparse.Namespace) -> int:
+    import pymupdf
+
+    from app.excel_io import export_translation
+
+    project = load_project(Path(args.project))
+    out = Path(args.out) if args.out else project.root / "번역_검수.xlsx"
+    if out.exists() and not args.force:
+        print(f"[export-excel] 이미 있습니다: {out}\n  검수한 내용을 덮어쓰지 않도록 멈춥니다. 덮어쓰려면 --force.",
+              file=sys.stderr)
+        return 1
+    with pymupdf.open(project.source_pdf) as d:
+        pages = parse_page_spec(args.pages or f"1-{d.page_count}", d.page_count)
+    export_translation(project, out, pages)
+    print(f"[export-excel] {out}  ({len(pages)}쪽 x {len(project.template.regions)}영역)")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -223,12 +293,23 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("erase", help="영역 글자 지우기 (레드랙션 + 배경 이미지 정리 + 태그 라벨 다시 그리기)")
     e.add_argument("--project", required=True)
     e.add_argument("--pages", required=True, help="예: 1-3 또는 1,5,12-14")
+    e.add_argument("--test", action="store_true", help="프로젝트 cleared/ 대신 test_runs/<시각>-erase/ 에 쓴다")
     e.add_argument("--out-root", default="test_runs")
     e.set_defaults(func=cmd_erase)
-    c = sub.add_parser("compose", help="지운 PDF 위에 한글 번역 합성")
+    x = sub.add_parser("export-excel", help="번역 검수 엑셀(번역_검수.xlsx) 만들기")
+    x.add_argument("--project", required=True)
+    x.add_argument("--pages", help="기본: 전체 쪽")
+    x.add_argument("--out", help="기본: 프로젝트/번역_검수.xlsx")
+    x.add_argument("--force", action="store_true", help="이미 있는 엑셀을 덮어쓴다")
+    x.set_defaults(func=cmd_export_excel)
+    c = sub.add_parser("compose", help="8단계: 지운 카드(cleared/) 위에 한글 넣기 (지우기는 다시 하지 않음)")
     c.add_argument("--project", required=True)
-    c.add_argument("--erase-run", required=True, help="지우기 결과 폴더 (erased.pdf + meta/)")
-    c.add_argument("--pages", required=True, help="예: 1-3 또는 1,5,12-14")
+    c.add_argument("--excel", help="검수한 번역 엑셀. 없으면 samples.json의 한글 초안")
+    c.add_argument("--cleared", "--erase-run", dest="cleared",
+                   help="지운 결과 폴더. 기본: 프로젝트/cleared/ (테스트 실행 폴더도 가능)")
+    c.add_argument("--pages", help="기본: 지운 결과에 있는 쪽 전부")
+    c.add_argument("--yes", action="store_true", help="엑셀 확인 항목이 있어도 계속한다")
+    c.add_argument("--test", action="store_true", help="프로젝트 translated/ 대신 test_runs/<시각>-compose/ 에 쓴다")
     c.add_argument("--out-root", default="test_runs")
     c.set_defaults(func=cmd_compose)
     args = ap.parse_args(argv)
