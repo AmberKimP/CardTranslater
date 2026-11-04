@@ -932,3 +932,218 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResul
         raise
     _commit(run_dir, final_dir)
     return ComposeResult("done", final_dir, status_summary=rep["status_summary"])
+
+
+# ================================================================ 화면용 (PySide6 등)
+# 화면은 아래 함수와 위의 작업 함수만 부른다. 결과는 경로·상태를 담은 dict/dataclass로 준다.
+REGION_KINDS = ("text", "tag_pills")
+ALIGNS = ("left", "center", "right")
+
+
+def list_projects(root: Path | None = None) -> list[dict]:
+    """[{"name", "game", "status", "dir"}] (데이터 폴더의 프로젝트)."""
+    from app import workspace
+
+    return workspace.list_projects(Path(root) if root else workspace.DEFAULT_ROOT)
+
+
+STATUS_LABEL = {
+    "extracting": "추출 중", "glossary_review": "용어집 검증 중", "glossary_confirmed": "용어집 확정",
+    "translating": "번역 중", "translated": "번역 완료",
+}
+
+
+def project_overview(project_dir: Path | str) -> dict:
+    """프로젝트 현황: 그룹·파일별 쪽 수·뺀 쪽·추출·지우기·한글 넣기 상태와 다음에 할 일."""
+    from app import workspace
+    from app.extract import load_extracted
+
+    info = workspace.load_project_info(project_dir)
+    groups = []
+    for g in workspace.list_groups(info):
+        files = []
+        for name in g["files"]:
+            fd = g["dir"] / "files" / name
+            n = workspace.page_count(fd)
+            inc = workspace.included_pages(fd)
+            done = set(load_extracted(fd)) & set(inc)
+            files.append({
+                "name": name, "key": workspace.file_key(fd), "dir": fd, "pages": n,
+                "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(inc)),
+                "exclude_reason": workspace.file_settings(fd).get("exclude_reason", ""),
+                "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
+                "composed": (fd / "translated" / "translated.pdf").exists(),
+                "review_xlsx": (fd / "번역_검수.xlsx") if (fd / "번역_검수.xlsx").exists() else None,
+            })
+        groups.append({"name": g["name"], "dir": g["dir"], "regions": g["regions"],
+                       "has_regions": (g["dir"] / "regions.json").exists(), "files": files})
+    return {"name": info.name, "game": info.game, "dir": info.dir, "status": info.status,
+            "status_label": STATUS_LABEL.get(info.status, info.status),
+            "glossary_version": info.extra.get("glossary_version"), "groups": groups,
+            "next_step": _next_step(info, groups)}
+
+
+def _next_step(info, groups: list[dict]) -> str:
+    if not groups or not any(g["files"] for g in groups):
+        return "파일을 넣으세요"
+    no_regions = [g["name"] for g in groups if not g["has_regions"]]
+    if no_regions:
+        return f"영역을 지정하세요: {', '.join(no_regions)}"
+    left = [f["key"] for g in groups for f in g["files"] if f["extracted"] < f["included"]]
+    if info.status == "extracting":
+        return f"글자를 추출하세요 ({len(left)}개 파일 남음)" if left else "‘추출 완료’를 보내 용어집을 만드세요"
+    if info.status == "glossary_review":
+        return "용어집 검증 엑셀을 고쳐서 가져오세요"
+    if info.status in ("glossary_confirmed", "translating"):
+        return "번역을 시작하세요"
+    files = [f for g in groups for f in g["files"]]
+    if not all(f["erased"] for f in files):
+        return "글자를 지우세요"
+    if not all(f["composed"] for f in files):
+        return "한글을 넣으세요"
+    return "결과를 확인하세요"
+
+
+def set_pages(file_dir: Path | str, exclude: list[int], reason: str = "") -> dict:
+    """파일에서 뺄 쪽을 정한다. {"excluded": [...], "included": [...]}."""
+    from app import workspace
+
+    n = workspace.page_count(Path(file_dir))
+    bad = [p for p in exclude if not 1 <= int(p) <= n]
+    if bad:
+        raise ValueError(f"없는 쪽: {bad} (1~{n})")
+    workspace.set_excluded_pages(Path(file_dir), exclude, reason)
+    return {"excluded": sorted(set(exclude)), "included": workspace.included_pages(Path(file_dir))}
+
+
+def page_count(file_dir: Path | str) -> int:
+    from app import workspace
+
+    return workspace.page_count(Path(file_dir))
+
+
+def page_image(file_dir: Path | str, page: int, dpi: int = 110) -> tuple[bytes, tuple[float, float]]:
+    """파일 폴더 원본의 한 쪽을 PNG로. (PNG, (너비 pt, 높이 pt))."""
+    import pymupdf
+
+    src = next((Path(file_dir) / "source").glob("*.pdf"))
+    with pymupdf.open(src) as d:
+        if not 1 <= page <= d.page_count:
+            raise ValueError(f"없는 쪽: {page}")
+        pg = d[page - 1]
+        return pg.get_pixmap(dpi=dpi, alpha=False).tobytes("png"), (pg.rect.width, pg.rect.height)
+
+
+def pdf_page_image(pdf: Path | str, page: int, dpi: int = 110) -> bytes:
+    """임의 PDF의 한 쪽 PNG (결과 PDF 미리보기 등)."""
+    import pymupdf
+
+    with pymupdf.open(pdf) as d:
+        return d[page - 1].get_pixmap(dpi=dpi, alpha=False).tobytes("png")
+
+
+def font_choices() -> list[dict]:
+    """고를 수 있는 한글 글꼴 [{"label", "family", "file"}] (fonts/에 실제로 있는 파일만)."""
+    from app.typeset import ROOT
+
+    cat = json.loads((ROOT / "fonts" / "catalog.json").read_text(encoding="utf-8"))
+    out = []
+    for fam in cat.get("families", []):
+        d = ROOT / "fonts" / fam["dir"]
+        for f in sorted(d.glob("*.[ot]tf")) if d.exists() else []:
+            weight = f.stem.split("-")[-1] if "-" in f.stem else ""
+            family = fam["name"] + (f" {weight}" if weight and weight != "Regular" else "")
+            out.append({"label": f"{family} — {fam.get('ko_name', '')}", "family": family,
+                        "file": f"fonts/{fam['dir']}/{f.name}", "style": fam.get("style", "")})
+    return out
+
+
+def load_region_template(group_dir: Path | str) -> dict:
+    """그룹의 regions.json 원본 dict (없으면 빈 템플릿). 편집기는 모르는 항목을 그대로 두고 저장한다."""
+    p = Path(group_dir) / "regions.json"
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return {"source_language": "ja", "reference_page": 1, "regions": [], "protect_rects": []}
+
+
+def validate_region_template(data: dict) -> list[str]:
+    from app.typeset import ROOT
+
+    problems = []
+    all_regions = list(data.get("regions", [])) + list(data.get("protect_rects", []))
+    names = [str(r.get("name", "")).strip() for r in all_regions]
+    if not data.get("regions"):
+        problems.append("영역이 하나도 없습니다")
+    if any(not n for n in names):
+        problems.append("이름이 빈 영역이 있습니다")
+    dup = sorted({n for n in names if n and names.count(n) > 1})
+    if dup:
+        problems.append(f"이름이 겹칩니다: {', '.join(dup)}")
+    for r in all_regions:
+        rc = r.get("rect") or {}
+        try:
+            x, y, w, h = (float(rc[k]) for k in ("x", "y", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            problems.append(f"{r.get('name')}: 좌표가 없습니다")
+            continue
+        if w <= 0 or h <= 0 or x < -0.001 or y < -0.001 or x + w > 1.001 or y + h > 1.001:
+            problems.append(f"{r.get('name')}: 카드 밖으로 나갔거나 크기가 0입니다")
+    for r in data.get("regions", []):
+        if r.get("kind", "text") not in REGION_KINDS:
+            problems.append(f"{r.get('name')}: 모르는 종류 {r.get('kind')}")
+        st = r.get("style") or {}
+        if int(st.get("rotate", 0) or 0) not in (0, 180):
+            problems.append(f"{r.get('name')}: 회전은 0 또는 180만")
+        if st.get("align", "left") not in ALIGNS:
+            problems.append(f"{r.get('name')}: 정렬은 left/center/right")
+        f = (st.get("font") or {}).get("file")
+        if f and not (Path(f) if Path(f).is_absolute() else ROOT / f).exists():
+            problems.append(f"{r.get('name')}: 글꼴 파일이 없습니다 ({f})")
+    return problems
+
+
+def save_region_template(group_dir: Path | str, data: dict) -> list[str]:
+    """검사해서 문제가 없으면 regions.json에 저장하고 [] (이전 파일은 regions.json.bak). 문제가 있으면 목록."""
+    problems = validate_region_template(data)
+    if problems:
+        return problems
+    p = Path(group_dir) / "regions.json"
+    if p.exists():
+        shutil.copyfile(p, p.with_suffix(".json.bak"))
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+    return []
+
+
+def engine_status() -> dict:
+    """쓸 수 있는 엔진: {"claude-code": bool, "api": bool, "message"}. 키 값은 돌려주지 않는다."""
+    import os
+
+    cc = bool(shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd"))
+    env = Path(__file__).resolve().parent.parent / ".env"
+    api = bool(os.environ.get("ANTHROPIC_API_KEY")) or (
+        env.exists() and "ANTHROPIC_API_KEY" in env.read_text(encoding="utf-8", errors="ignore"))
+    msg = ("Claude Code를 찾았습니다 (요금제로 실행)" if cc else
+           "Claude Code가 없습니다. 설치·로그인하거나 API 키 방식을 쓰세요")
+    return {"claude-code": cc, "api": api, "message": msg}
+
+
+def get_settings():
+    """앱 설정 (app.settings.Settings)."""
+    from app import settings
+
+    return settings.load()
+
+
+def save_settings(data_dir: str | Path, engine: str = "claude-code") -> Path:
+    from app import settings
+
+    return settings.save(settings.Settings(str(data_dir), engine))
+
+
+def data_dir() -> Path:
+    """games/·projects/가 들어가는 데이터 폴더."""
+    from app import settings
+
+    return settings.data_dir()

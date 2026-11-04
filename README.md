@@ -16,7 +16,9 @@ CardTranslater/
 │   ├── erase.py               # 레드랙션 + 배경 정리 패치 + 태그 라벨
 │   ├── typeset*.py            # 한글 줄바꿈·크기 맞추기·글꼴 보정·그리기
 │   ├── typeset_compose.py     # 지운 PDF 위에 합성
-│   └── cli.py                 # 명령줄 진입점
+│   ├── service.py             # 작업 흐름 (모든 화면이 이것만 부름)
+│   ├── cli.py                 # 명령줄 진입점
+│   └── qt/                    # PySide6 화면 (python -m app.qt)
 ├── tests/              # pytest
 ├── fonts/catalog.json  # 한글 글꼴 목록 (OFL)
 ├── scripts/fetch_fonts.py
@@ -35,6 +37,8 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
+# 화면 (PySide6): 프로젝트 만들기, 파일 넣기·그룹, 뺄 쪽, 영역 지정
+.venv/Scripts/python -m app.qt
 # 0~8단계 전체: 게임·프로젝트·그룹 -> 추출 -> ‘추출 완료’ -> 용어집 검증·확정 -> 번역 -> 검수 -> 지우기 -> 한글 넣기 (projects/, games/ 는 git에 올리지 않음)
 .venv/Scripts/python -m app.cli new-project --name "Dungeon 1차" --game Dungeon
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
@@ -70,5 +74,7 @@ python -m venv .venv
 1단계(PDF 핵심 실험) 완료, 인쇄 확인 통과(2026-11-04): ClearScan PDF 30쪽 전체(BATTLE 1~15, DUNGEON 16~30)의 지우기·한글 합성 완료. 회전된 배경 이미지(8·21쪽), 라벨 3개(9쪽), 회색 라벨, 글꼴에 없는 글자(♥·…) 대체 글꼴 처리 포함.
 
 Items.pdf(텍스트 레이어 없는 스캔, 위아래 반쪽 카드) 2~16쪽도 지우기·한글 넣기 완료.
+
+화면(PySide6) 1차: 프로젝트 목록·새 프로젝트, 파일 넣기(기존/새 그룹), 뺄 쪽, 영역 지정 편집기(그리기·옮기기·크기·회전·글꼴·지우기 옵션, 모르는 항목 보존), 설정(데이터 폴더·엔진). exe 빌드는 3차.
 
 2단계 진행 중: 비전 글자 추출 구현(엔진: Claude Code 요금제 기본 / API 옵션, 모델 opus·sonnet·haiku, 이어 하기, API 일괄 처리·예산).
