@@ -1,6 +1,13 @@
 """명령줄 진입점. 처리 흐름은 app.service에 있고, 여기서는 인자를 받아 부르고 결과를 출력만 한다.
 
-3단계 글자 추출 (Claude Opus 비전) -> projects/<p>/extract/  (끊겨도 같은 명령으로 이어 감)
+게임·프로젝트·그룹 (PRD 2장)
+    python -m app.cli new-project --name 던전1차 [--game Dungeon]      (게임 목록을 보여 주고 고르게 함)
+    python -m app.cli add-files --project projects/던전1차 --files a.pdf b.pdf   (그룹 목록을 보여 주고 고르게 함)
+    python -m app.cli extract-project --project projects/던전1차 [--group 아이템]
+    python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> 용어집_검증.xlsx)
+    python -m app.cli import-glossary --project projects/던전1차 --excel projects/던전1차/용어집_검증.xlsx
+
+3단계 글자 추출 (파일 하나) -> <파일 폴더>/extract/  (끊겨도 같은 명령으로 이어 감)
     python -m app.cli extract --project projects/sample [--mode double-check|opus] [--engine claude-code|api]
     python -m app.cli extract --project projects/sample --test   (시험 폴더 test_runs/extract-sample-double-check)
     python -m app.cli extract-eval --project projects/sample [--from test_runs/extract-sample-double-check]
@@ -149,6 +156,133 @@ def cmd_export_excel(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ask(prompt: str, choices: list[str]) -> str | None:
+    """번호로 고르게 한다 (입력이 없거나 대화형이 아니면 None)."""
+    if not sys.stdin.isatty():
+        return None
+    for i, c in enumerate(choices, start=1):
+        print(f"  {i}. {c}")
+    try:
+        a = input(prompt).strip()
+    except EOFError:
+        return None
+    if a.isdigit() and 1 <= int(a) <= len(choices):
+        return choices[int(a) - 1]
+    return a or None
+
+
+def cmd_new_project(args: argparse.Namespace) -> int:
+    games = service.list_games()
+    game = args.game
+    if not game:
+        print("[new-project] 게임을 고르세요 (번호), 또는 새 게임 이름을 입력하세요:")
+        if not games:
+            print("  (아직 게임이 없습니다)")
+        game = _ask("게임: ", [g["name"] for g in games])
+        if not game:
+            names = ", ".join(g["name"] for g in games) or "없음"
+            print(f"[new-project] --game 으로 게임 이름을 주세요. 이미 있는 게임: {names}", file=sys.stderr)
+            return 1
+    try:
+        info, new_game = service.new_project(args.name, game, args.lang)
+    except FileExistsError as e:
+        print(f"[new-project] 같은 이름의 프로젝트가 이미 있습니다: {e}", file=sys.stderr)
+        return 1
+    print(f"[new-project] {'새 게임' if new_game else '기존 게임'} '{info.game}'에 프로젝트 '{info.name}'을 만듦: {info.dir}")
+    return 0
+
+
+def _print_groups(groups: list[dict]) -> None:
+    if not groups:
+        print("  (아직 그룹이 없습니다)")
+    for g in groups:
+        reg = f"영역 {g['regions']}개" if g["regions"] else "영역 미지정"
+        print(f"  - {g['name']}: 파일 {len(g['files'])}개 ({', '.join(g['files']) or '-'}), {reg}")
+
+
+def cmd_add_files(args: argparse.Namespace) -> int:
+    groups = service.list_groups(args.project)
+    print("[add-files] 이 프로젝트의 그룹:")
+    _print_groups(groups)
+    group, new = args.group, args.new_group
+    if group is None:
+        print("넣을 그룹을 고르세요 (번호), 또는 새 그룹 이름을 입력하세요:")
+        group = _ask("그룹: ", [g["name"] for g in groups])
+        if not group:
+            print("[add-files] --group <기존 그룹> 또는 --group <새 이름> --new-group 으로 정하세요.", file=sys.stderr)
+            return 1
+        new = group not in [g["name"] for g in groups]
+    try:
+        r = service.add_files(args.project, args.files, group, new_group=new, regions_from=args.regions_from)
+    except KeyError:
+        print(f"[add-files] 그룹 '{group}'이 없습니다. 새 그룹이면 --new-group 을 붙이세요.", file=sys.stderr)
+        return 1
+    except FileExistsError:
+        print(f"[add-files] 그룹 '{group}'이 이미 있습니다. 기존 그룹에 넣으려면 --new-group 을 빼세요.", file=sys.stderr)
+        return 1
+    print(f"[add-files] '{group}'{' (새 그룹)' if new else ''}에 {len(r['added'])}개 넣음")
+    for sk in r["skipped"]:
+        print(f"  [건너뜀] {sk}")
+    if not r["has_regions"]:
+        print("  [확인] 이 그룹은 영역 템플릿이 없습니다. 추출 전에 영역을 지정하세요 (--regions-from regions.json).")
+    return 0
+
+
+def cmd_extract_project(args: argparse.Namespace) -> int:
+    try:
+        r = service.extract_project(args.project, args.group, mode=args.mode, engine=args.engine,
+                                    progress=_print_progress("extract"))
+    except KeyboardInterrupt:
+        print("[extract-project] 멈춤. 다시 실행하면 이어 갑니다.", file=sys.stderr)
+        return 130
+    for f in r.files:
+        print(f"  {f['file']}: {f['state']}" + (f", 읽음 {f['done']}장, 남음 {f['remaining']}장, 실패 {f['failed']}장, "
+                                              f"두 번 확인 같음 {f['recheck'][0]}·다름 {f['recheck'][1]}"
+                                              if "done" in f else f" ({f.get('reason', '')})"))
+    if r.state == "done":
+        print("[extract-project] 완료. 모든 그룹이 끝나면 finish-extraction 으로 ‘추출 완료’를 보내세요.")
+        return 0
+    when = f" {r.retry_after} 이후" if r.retry_after else ""
+    print(f"[extract-project] {r.state}: {r.reason}.{when} 다시 실행하면 이어 갑니다.", file=sys.stderr)
+    return 3 if r.state == "paused" else 1
+
+
+def cmd_finish_extraction(args: argparse.Namespace) -> int:
+    print("[finish-extraction] 모든 그룹·파일의 원문을 모아 용어집 후보를 만듭니다")
+    r = service.finish_extraction(args.project, accept_issues=args.yes, engine=args.engine)
+    for i in r.issues:
+        print(f"  [확인] {i}")
+    if r.state == "needs_confirmation":
+        print("[finish-extraction] 위 항목을 확인한 뒤 계속하려면 --yes를 붙여 다시 실행하세요.", file=sys.stderr)
+        return 1
+    if r.state in ("blocked", "paused"):
+        when = f" {r.retry_after} 이후 다시 실행하세요." if r.retry_after else ""
+        print(f"[finish-extraction] {r.state}: {r.reason}.{when}", file=sys.stderr)
+        return 3 if r.state == "paused" else 1
+    print(f"[finish-extraction] 새 용어 후보 {r.new_terms}개, 이미 확정된 용어 {r.confirmed_terms}개")
+    print(f"[finish-extraction] 용어집 검증 엑셀: {r.review_xlsx}")
+    print("  B열(번역)을 확인·수정한 뒤 import-glossary 로 가져오면 용어집이 확정됩니다.")
+    return 0
+
+
+def cmd_import_glossary(args: argparse.Namespace) -> int:
+    r = service.import_glossary(args.project, args.excel, accept_issues=args.yes)
+    for b in r.blocking:
+        print(f"  [멈춤] {b}", file=sys.stderr)
+    for i in r.issues:
+        print(f"  [확인] {i}")
+    if r.state == "blocked":
+        return 1
+    if r.state == "needs_confirmation":
+        print("[import-glossary] 위 항목을 확인한 뒤 확정하려면 --yes를 붙여 다시 실행하세요.", file=sys.stderr)
+        return 1
+    print(f"[import-glossary] 게임 용어집 확정: 버전 {r.version}, 용어 {r.terms}개")
+    if r.changed:
+        print(f"  [확인] 번역이 바뀐 확정 용어: {', '.join(r.changed)} (이 용어가 든 번역은 다시 해야 합니다)")
+    print("  이제 번역(5단계)을 시작할 수 있습니다.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -158,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--test", action="store_true", help="프로젝트 cleared/ 대신 test_runs/<시각>-erase/ 에 쓴다")
     e.add_argument("--out-root", default="test_runs")
     e.set_defaults(func=cmd_erase)
-    t = sub.add_parser("extract", help="3단계: 영역 원문을 Claude Opus로 읽기 (끊기면 다시 실행해 이어 감)")
+    t = sub.add_parser("extract", help="3단계(파일 하나): 영역 원문을 Claude로 읽기 (끊기면 다시 실행해 이어 감)")
     t.add_argument("--project", required=True)
     t.add_argument("--pages", help="기본: 전체 쪽")
     t.add_argument("--engine", default="claude-code", choices=["claude-code", "api"],
@@ -199,6 +333,34 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--test", action="store_true", help="프로젝트 translated/ 대신 test_runs/<시각>-compose/ 에 쓴다")
     c.add_argument("--out-root", default="test_runs")
     c.set_defaults(func=cmd_compose)
+    n = sub.add_parser("new-project", help="0단계: 새 게임 또는 기존 게임으로 프로젝트 만들기")
+    n.add_argument("--name", required=True, help="프로젝트 이름")
+    n.add_argument("--game", help="게임 이름 (없으면 기존 게임 목록에서 고르게 함; 처음 쓰는 이름이면 새 게임)")
+    n.add_argument("--lang", default="ja", choices=["ja", "en"], help="원문 언어")
+    n.set_defaults(func=cmd_new_project)
+    a = sub.add_parser("add-files", help="1단계: 파일을 그룹에 넣기 (기존 그룹 목록을 보여 줌)")
+    a.add_argument("--project", required=True)
+    a.add_argument("--files", nargs="+", required=True)
+    a.add_argument("--group", help="넣을 그룹 (없으면 목록에서 고르게 함)")
+    a.add_argument("--new-group", action="store_true", help="--group 이름으로 새 그룹을 만든다")
+    a.add_argument("--regions-from", help="새 그룹의 영역 템플릿으로 복사할 regions.json")
+    a.set_defaults(func=cmd_add_files)
+    ep = sub.add_parser("extract-project", help="3단계: 그룹(없으면 전체)의 모든 파일에서 텍스트 추출")
+    ep.add_argument("--project", required=True)
+    ep.add_argument("--group")
+    ep.add_argument("--mode", default="double-check", choices=["double-check", "opus"])
+    ep.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
+    ep.set_defaults(func=cmd_extract_project)
+    fx = sub.add_parser("finish-extraction", help="‘추출 완료’: 모은 원문으로 용어집 후보 -> 용어집_검증.xlsx")
+    fx.add_argument("--project", required=True)
+    fx.add_argument("--yes", action="store_true", help="남은 카드·결론 못 낸 칸이 있어도 계속")
+    fx.add_argument("--engine", default="claude-code", choices=["claude-code", "api"])
+    fx.set_defaults(func=cmd_finish_extraction)
+    ig = sub.add_parser("import-glossary", help="4단계: 검증한 용어집 엑셀을 가져와 게임 용어집 확정")
+    ig.add_argument("--project", required=True)
+    ig.add_argument("--excel", required=True)
+    ig.add_argument("--yes", action="store_true", help="확인 항목이 있어도 확정")
+    ig.set_defaults(func=cmd_import_glossary)
     args = ap.parse_args(argv)
     return args.func(args)
 

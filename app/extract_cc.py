@@ -45,9 +45,10 @@ class CCReply:
     usage: dict
 
 
-def _run_subprocess(args: list[str], cwd: Path, timeout: float) -> tuple[int, str, str]:
+def _run_subprocess(args: list[str], cwd: Path, timeout: float, input_text: str | None = None) -> tuple[int, str, str]:
+    """input_text: 긴 지시문은 명령줄 대신 표준 입력으로 (Windows 명령줄 길이 제한 ≈ 32K자)."""
     p = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout)
+                       timeout=timeout, input=input_text)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -89,6 +90,26 @@ class ClaudeCodeClient:
                 "--no-session-persistence"]
         try:
             code, out, err = self.runner(args, crop_dir, CALL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise Paused("Claude Code 응답이 너무 오래 걸림 (다시 실행하면 이어 감)", 60)
+        except FileNotFoundError:
+            raise NotAvailable("claude 명령을 실행하지 못했습니다")
+        return parse_cc_output(code, out, err, model)
+
+    def ask_json(self, prompt: str, schema: dict, model: str, system: str, work_dir: Path) -> CCReply:
+        """이미지 없는 요청 (예: 용어 후보 뽑기·번역). 지시문은 표준 입력으로 보낸다. 도구는 쓰지 않는다."""
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        args = [self.exe or "claude", "-p",
+                "--output-format", "json",
+                "--json-schema", json.dumps(schema, ensure_ascii=False),
+                "--model", CC_MODEL_ALIAS.get(model, model),
+                "--system-prompt", system,
+                "--tools", "",
+                "--permission-prompts", "none",
+                "--no-session-persistence"]
+        try:
+            code, out, err = self.runner(args, work_dir, CALL_TIMEOUT_S, input_text=prompt)
         except subprocess.TimeoutExpired:
             raise Paused("Claude Code 응답이 너무 오래 걸림 (다시 실행하면 이어 감)", 60)
         except FileNotFoundError:

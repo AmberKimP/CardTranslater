@@ -510,7 +510,7 @@ def learn_tag_colors(project_dir: Path | str, save: bool = False) -> tuple[dict,
     with pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf") as d:
         vocab, warns = _learn(project, d, known)
     if save and vocab:
-        path = project.root / "regions.json"
+        path = project.regions_path or project.root / "regions.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         for r in data["regions"]:
             if r["name"] in vocab:
@@ -527,3 +527,155 @@ def evaluate_extract(project_dir: Path | str, from_dir: Path | str | None = None
 
     project = load_project(Path(project_dir))
     return evaluate(load_extracted(project.root, Path(from_dir) if from_dir else None), project.samples)
+
+
+# ---------------------------------------------------------------- 게임·프로젝트·그룹 (PRD 2장)
+def list_games(root: Path | None = None) -> list[dict]:
+    from app import workspace
+
+    return workspace.list_games(root or workspace.DEFAULT_ROOT)
+
+
+def new_project(name: str, game: str, source_language: str = "ja", root: Path | None = None):
+    """(ProjectInfo, 새 게임인지). 게임 이름이 처음이면 게임을 만든다."""
+    from app import workspace
+
+    return workspace.create_project(name, game, source_language, root or workspace.DEFAULT_ROOT)
+
+
+def list_groups(project_dir: Path | str) -> list[dict]:
+    from app import workspace
+
+    return workspace.list_groups(workspace.load_project_info(project_dir))
+
+
+def add_files(project_dir: Path | str, files: list, group: str, *, new_group: bool = False,
+              regions_from: Path | str | None = None) -> dict:
+    """파일을 그룹에 넣는다. 화면은 먼저 list_groups로 기존 그룹을 보여 주고 ‘기존 그룹 / 새 그룹’을 고르게 한다."""
+    from app import workspace
+
+    return workspace.add_files(workspace.load_project_info(project_dir), files, group, new_group=new_group,
+                               regions_from=regions_from)
+
+
+@dataclass
+class ProjectExtractResult:
+    state: str  # done | paused | blocked | waiting_batch
+    files: list[dict] = field(default_factory=list)  # 파일마다 ExtractResult 요약
+    reason: str = ""
+    retry_after: str | None = None
+
+
+def extract_project(project_dir: Path | str, group: str | None = None, *, mode: str = "double-check",
+                    engine: str = "claude-code", client=None, progress: ProgressFn | None = None,
+                    cancel: CancelToken | None = None) -> ProjectExtractResult:
+    """그룹(없으면 모든 그룹)의 모든 파일에서 텍스트를 추출한다. 멈추면 다시 불러 이어 간다."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    if group and group not in [g["name"] for g in workspace.list_groups(info)]:
+        return ProjectExtractResult("blocked", reason=f"그룹이 없습니다: {group}")
+    out = ProjectExtractResult("done")
+    for fd in workspace.file_dirs(info, group):
+        if not ((fd / "regions.json").exists() or (fd.parent.parent / "regions.json").exists()):
+            out.files.append({"file": workspace.file_key(fd), "state": "blocked", "reason": "영역 템플릿 없음"})
+            out.state, out.reason = "blocked", f"{workspace.file_key(fd)}: 영역 지정이 필요합니다"
+            return out
+        r = extract(fd, mode=mode, engine=engine, client=client, progress=progress, cancel=cancel)
+        out.files.append({"file": workspace.file_key(fd), "state": r.state, "done": len(r.done_pages),
+                          "remaining": len(r.remaining_pages), "failed": len(r.failed),
+                          "recheck": (r.recheck_agreed, r.recheck_disagreed)})
+        if r.state != "done":
+            out.state, out.reason, out.retry_after = r.state, f"{workspace.file_key(fd)}: {r.reason}", r.retry_after
+            return out
+    return out
+
+
+# ---------------------------------------------------------------- 추출 완료 -> 용어집 검증 -> 확정 (PRD 5.3 가)
+@dataclass
+class GlossaryReviewResult:
+    state: str  # review_ready | needs_confirmation | blocked | paused
+    review_xlsx: Path | None = None
+    new_terms: int = 0
+    confirmed_terms: int = 0
+    issues: list[str] = field(default_factory=list)
+    reason: str = ""
+    retry_after: str | None = None
+    equiv_usd: float = 0.0
+    spent_usd: float = 0.0
+
+
+GLOSSARY_MODEL = "claude-opus-5-5"  # 용어 후보는 한 번만 묻고 전체 번역의 기준이 되므로 Opus
+
+
+def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, engine: str = "claude-code",
+                      client=None) -> GlossaryReviewResult:
+    """‘추출 완료’: 모든 그룹·파일의 원문을 모아 용어 후보를 뽑고 용어집 검증 엑셀을 만든다."""
+    from app import glossary, workspace
+    from app.extract import Paused, make_client
+    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+
+    info = workspace.load_project_info(project_dir)
+    status = glossary.extraction_status(info)
+    if not status:
+        return GlossaryReviewResult("blocked", reason="프로젝트에 파일이 없습니다 (add-files로 넣으세요)")
+    issues = []
+    for s in status:
+        if not s["has_regions"]:
+            issues.append(f"{s['file']}: 영역 템플릿이 없어 추출하지 못함")
+        elif s["extracted"] < s["pages"] - len(s["failed"]):
+            issues.append(f"{s['file']}: {s['pages']}장 중 {s['extracted']}장만 읽음")
+        if s["failed"]:
+            issues.append(f"{s['file']}: 실패한 카드 {len(s['failed'])}장 (용어 후보에서 빠짐)")
+        if s["no_verdict"]:
+            issues.append(f"{s['file']}: ‘결론 못 냄’ {s['no_verdict']}칸 (원문이 틀렸을 수 있음)")
+    if issues and not accept_issues:
+        return GlossaryReviewResult("needs_confirmation", issues=issues)
+    sources = glossary.collect_sources(info)
+    if not sources:
+        return GlossaryReviewResult("blocked", issues=issues, reason="추출한 원문이 없습니다")
+    if client is None:
+        try:
+            client = ClaudeCodeClient() if engine == "claude-code" else make_client()
+        except Exception as e:  # noqa: BLE001
+            return GlossaryReviewResult("blocked", issues=issues, reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
+    try:
+        terms, api_usd, equiv = glossary.find_candidates(info, sources, client, GLOSSARY_MODEL,
+                                                         info.dir / "work" / "glossary")
+    except Paused as p:
+        from app.extract import _iso_after
+
+        return GlossaryReviewResult("paused", issues=issues, reason=p.reason, retry_after=_iso_after(p.retry_after_s))
+    except (CardError, NotAvailable) as e:
+        return GlossaryReviewResult("blocked", issues=issues, reason=str(e))
+    out = glossary.export_review(info, terms, info.dir / "용어집_검증.xlsx")
+    workspace.set_status(info, "glossary_review")
+    return GlossaryReviewResult("review_ready", out, sum(not t.confirmed for t in terms),
+                                sum(t.confirmed for t in terms), issues, equiv_usd=equiv, spent_usd=api_usd)
+
+
+@dataclass
+class GlossaryConfirmResult:
+    state: str  # confirmed | needs_confirmation | blocked
+    version: int = 0
+    terms: int = 0
+    changed: list[str] = field(default_factory=list)  # 번역이 바뀐 확정 용어 (그 용어가 든 번역은 다시 해야 함)
+    blocking: list[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+
+
+def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues: bool = False) -> GlossaryConfirmResult:
+    """검증한 용어집 엑셀을 검사하고, 문제가 없거나 확인하면 게임 용어집으로 확정한다."""
+    from app import glossary, workspace
+
+    info = workspace.load_project_info(project_dir)
+    res = glossary.import_review(info, Path(xlsx))
+    if res.blocking:
+        return GlossaryConfirmResult("blocked", blocking=res.blocking, issues=res.issues)
+    if not res.terms:
+        return GlossaryConfirmResult("blocked", blocking=["확정할 용어가 없습니다 (번역 열이 모두 비어 있음)"])
+    if res.issues and not accept_issues:
+        return GlossaryConfirmResult("needs_confirmation", terms=len(res.terms), issues=res.issues)
+    c = glossary.confirm(info, res.terms)
+    workspace.set_status(info, "glossary_confirmed", glossary_version=c["version"])
+    return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues)

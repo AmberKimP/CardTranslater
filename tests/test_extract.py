@@ -232,8 +232,9 @@ class FakeRunner:
         self.outputs = list(outputs)
         self.calls = []
 
-    def __call__(self, args, cwd, timeout):
+    def __call__(self, args, cwd, timeout, input_text=None):
         self.calls.append((args, Path(cwd)))
+        self.inputs = getattr(self, "inputs", []) + [input_text]
         return self.outputs.pop(0)
 
 

@@ -16,6 +16,7 @@ class Project:
     source_pdf: Path
     template: RegionTemplate
     samples: dict  # page(1-based) -> 카드 샘플 dict
+    regions_path: Path | None = None  # 영역 템플릿 파일 (그룹 안 파일이면 그룹의 것)
 
 
 def load_project(root: Path) -> Project:
@@ -23,13 +24,18 @@ def load_project(root: Path) -> Project:
     sources = sorted((root / "source").glob("*.pdf"))
     if len(sources) != 1:
         raise FileNotFoundError(f"{root / 'source'} 에 PDF가 정확히 하나 있어야 합니다 (찾은 수: {len(sources)})")
-    template = load_template(root / "regions.json")
+    regions = root / "regions.json"
+    if not regions.exists() and (root.parent.parent / "group.json").exists():
+        regions = root.parent.parent / "regions.json"  # 그룹 안의 파일 폴더: 그룹의 영역 템플릿을 쓴다
+    if not regions.exists():
+        raise FileNotFoundError(f"영역 템플릿이 없습니다: {regions} (영역 지정이 필요합니다)")
+    template = load_template(regions)
     samples: dict = {}
     sp = root / "samples.json"
     if sp.exists():
         for card in json.loads(sp.read_text(encoding="utf-8")).get("cards", []):
             samples[int(card["page"])] = card
-    return Project(root=root, source_pdf=sources[0], template=template, samples=samples)
+    return Project(root=root, source_pdf=sources[0], template=template, samples=samples, regions_path=regions)
 
 
 def parse_page_spec(spec: str, page_count: int) -> list[int]:
