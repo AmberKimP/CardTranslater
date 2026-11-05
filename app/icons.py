@@ -107,6 +107,9 @@ def _text_components(ink: np.ndarray) -> tuple[list[tuple[int, int, int, int, in
     for x, y, w, h, a in raw:
         if a < 6:
             continue
+        # 배경 그림의 가는 선(집·나무 윤곽 등): 크기에 비해 잉크가 아주 적다 (글자 획은 이보다 차 있다)
+        if max(w, h) >= 24 and a < 0.08 * w * h:
+            continue
         if w > W * 0.15 and h < w * 0.12:
             rules.append((y, y + h))
             continue
@@ -136,6 +139,14 @@ def _bands_from(comps: list[tuple[int, int, int, int, int]],
     bands = [b for b in bands if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
+    # 잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다
+    dens = []
+    for y0, y1 in bands:
+        cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
+        x0, x1 = min(c[0] for c in cs), max(c[0] + c[2] for c in cs)
+        dens.append(sum(c[4] for c in cs) / max(1, (x1 - x0) * (y1 - y0)))
+    if len(bands) > 1 and max(dens) > 0:
+        bands = [b for b, d in zip(bands, dens) if d >= 0.06 or d >= 0.4 * max(dens)]
     hmax = max(b[1] - b[0] for b in bands)
     bands = [b for b in bands if b[1] - b[0] >= hmax * 0.35]  # 띠 테두리 같은 가는 줄
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]

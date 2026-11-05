@@ -354,6 +354,7 @@ class ProjectPage(QWidget):
         self.next_btn.setText(f"▶ {NEXT_TEXT.get(key, key)}")
         self.next.setText(o["next_step"])
         keep = self._selection_key()
+        self.tree.blockSignals(True)  # 다시 채우는 동안 선택 바뀜 신호(옛 항목)를 막는다
         self.tree.clear()
         files_all = [f for g in o["groups"] for f in g["files"]]
         allit = QTreeWidgetItem([f"전체  (그룹 {len(o['groups'])}개 · 파일 {len(files_all)}개)"])
@@ -396,6 +397,7 @@ class ProjectPage(QWidget):
             gi.setExpanded(True)
         allit.setExpanded(True)
         self._restore_selection(keep)
+        self.tree.blockSignals(False)
         self.body.setCurrentWidget(self.tree if o["groups"] else self.empty)
         self._sync_buttons()
         self._sync_steps()
@@ -529,7 +531,8 @@ class ProjectPage(QWidget):
         kind, d = sel
         if kind == "group":
             return d
-        return next(g for g in self.ov["groups"] if any(f["dir"] == d["dir"] for f in g["files"]))
+        # 목록을 다시 채우는 사이에는 옛 항목이 잠깐 남을 수 있다: 못 찾으면 None
+        return next((g for g in self.ov["groups"] if any(str(f["dir"]) == str(d["dir"]) for f in g["files"])), None)
 
     def _sync_buttons(self):
         sel = self._selected()

@@ -1667,3 +1667,30 @@ def test_region_editor_select_keeps_view_and_zoom_pan(qapp, tmp_path):
     assert ed.view.auto_fit
     ed.dirty = False
     ed.close()
+
+
+def test_project_names_unique_per_game_and_new_project_dialog_defaults(qapp, tmp_path):
+    from app.qt.dialogs import NewProjectDialog
+
+    a, _ = workspace.create_project("기본판", "게임A", root=tmp_path)
+    b, _ = workspace.create_project("기본판", "게임B", root=tmp_path)  # 다른 게임이면 같은 이름도 된다
+    assert a.dir != b.dir and b.name == "기본판" and b.game == "게임B"
+    try:
+        workspace.create_project("기본판", "게임A", root=tmp_path)
+        raise AssertionError("같은 게임에 같은 이름은 안 된다")
+    except FileExistsError:
+        pass
+    # 창: 게임이 먼저, 새 게임이면 프로젝트 이름 = 게임 이름, 기존 게임이면 비움
+    dlg = NewProjectDialog(tmp_path)
+    form = dlg.layout().itemAt(0).layout()
+    assert form.itemAt(0, form.ItemRole.FieldRole).widget() is dlg.game
+    dlg.game.setCurrentText("새게임")
+    assert dlg.name.text() == "새게임"
+    dlg.game.setCurrentText("게임A")
+    assert dlg.name.text() == ""
+    dlg.name.setText("내 프로젝트")
+    dlg.name.textEdited.emit("내 프로젝트")
+    dlg.game.setCurrentText("또다른게임")
+    assert dlg.name.text() == "내 프로젝트"  # 사람이 넣은 이름은 그대로
+    dlg2 = NewProjectDialog(tmp_path, game="게임B")
+    assert dlg2.name.text() == ""

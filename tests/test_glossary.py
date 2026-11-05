@@ -44,8 +44,10 @@ def test_new_project_creates_or_reuses_game(tmp_path):
     assert new_a and not new_b and a.game == b.game == "Dungeon"
     games = workspace.list_games(tmp_path)
     assert [g["name"] for g in games] == ["Dungeon"] and games[0]["projects"] == ["1차", "2차"]
-    with pytest.raises(FileExistsError):
-        workspace.create_project("1차", "Other", root=tmp_path)
+    with pytest.raises(FileExistsError):  # 같은 게임 안에서는 같은 이름 안 됨
+        workspace.create_project("1차", "Dungeon", root=tmp_path)
+    c, _ = workspace.create_project("1차", "Other", root=tmp_path)  # 다른 게임이면 된다
+    assert c.name == "1차" and c.dir != a.dir
 
 
 def test_add_files_to_new_or_existing_group(tmp_path):

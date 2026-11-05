@@ -192,10 +192,12 @@ class NewProjectDialog(QDialog):
         self.hint.setStyleSheet("color: #666")
         self.game.currentTextChanged.connect(self._hint)
         form = QFormLayout()
-        form.addRow("프로젝트 이름", self.name)
-        form.addRow("게임", self.game)
+        form.addRow("게임", self.game)  # 프로젝트는 게임 안에 있다: 게임을 먼저
         form.addRow("", self.hint)
+        form.addRow("프로젝트 이름", self.name)
         form.addRow("원문 언어", self.lang)
+        self.name.textEdited.connect(lambda _t: setattr(self, "_name_auto", False))
+        self._name_auto = True
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "만들기")
         bb.accepted.connect(self.accept)
@@ -213,6 +215,9 @@ class NewProjectDialog(QDialog):
             self.hint.setText("기존 게임: 확정된 용어집과 아이콘 사전을 그대로 씁니다")
         else:
             self.hint.setText("새 게임을 만듭니다")
+        # 프로젝트 이름 기본값: 새 게임이면 게임 이름, 기존 게임에 더하는 프로젝트면 비움 (사람이 고친 이름은 둔다)
+        if getattr(self, "_name_auto", True):
+            self.name.setText("" if (not t or t in self.games) else t)
 
     def accept(self):
         name, game = self.name.text().strip(), self.game.currentText().strip()
@@ -223,8 +228,8 @@ class NewProjectDialog(QDialog):
         try:
             info, _new = service.new_project(name, game, self.lang.currentData(), root=self.root)
         except FileExistsError:
-            show_error(self, "프로젝트를 만들 수 없습니다", f"같은 이름의 프로젝트(‘{name}’)가 이미 있습니다.",
-                       "다른 이름을 넣으세요.")
+            show_error(self, "프로젝트를 만들 수 없습니다", f"‘{game}’ 게임에 같은 이름의 프로젝트(‘{name}’)가 이미 있습니다.",
+                       "다른 이름을 넣으세요. (다른 게임에는 같은 이름을 써도 됩니다)")
             return
         except ValueError as e:
             show_problem(self, "프로젝트를 만들 수 없습니다", str(e), "이름에서 쓸 수 없는 글자를 빼고 다시 넣으세요.")

@@ -94,15 +94,26 @@ class ProjectInfo:
 
 def create_project(name: str, game: str, source_language: str = "ja",
                    root: Path = DEFAULT_ROOT) -> tuple[ProjectInfo, bool]:
-    """(프로젝트, 새 게임을 만들었는지). 게임이 없으면 만든다. 같은 이름의 프로젝트가 있으면 FileExistsError."""
+    """(프로젝트, 새 게임을 만들었는지). 게임이 없으면 만든다.
+    같은 게임 안에 같은 이름의 프로젝트가 있으면 FileExistsError (다른 게임이면 같은 이름도 된다)."""
     gdir = game_dir(game, root)
     new_game = not (gdir / "game.json").exists()
     if new_game:
         _write(gdir / "game.json", {"name": game.strip(), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                                     "source_language": source_language})
-    pdir = projects_dir(root) / _safe(name)
-    if pdir.exists():
-        raise FileExistsError(str(pdir))
+    gname = _read(gdir / "game.json")["name"]
+    pd = projects_dir(root)
+    for f in (pd.glob("*/project.json") if pd.exists() else []):  # 같은 게임 안에 같은 이름은 안 된다
+        d = _read(f)
+        if d.get("game") == gname and d.get("name", "").strip() == name.strip():
+            raise FileExistsError(str(f.parent))
+    pdir = pd / _safe(name)
+    if pdir.exists():  # 다른 게임의 같은 이름 프로젝트: 폴더 이름만 다르게 (화면에는 프로젝트 이름 그대로)
+        pdir = pd / _safe(f"{name} ({gname})")
+        n = 2
+        while pdir.exists():
+            pdir = pd / _safe(f"{name} ({gname}) {n}")
+            n += 1
     _write(pdir / "project.json", {"name": name.strip(), "game": _read(gdir / "game.json")["name"],
                                    "status": "extracting", "source_language": source_language,
                                    "created": time.strftime("%Y-%m-%d %H:%M:%S")})
