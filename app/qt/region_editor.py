@@ -439,6 +439,11 @@ class RegionEditor(QDialog):
         self.f_keep_tall.setSuffix(" pt")
         self.f_keep_tall.setSpecialValueText("끔")
         self.f_keep_tall.setMinimumWidth(self.f_keep_tall.fontMetrics().horizontalAdvance("200.0 pt") + 44)
+        self.f_erase_mode = QComboBox()
+        for k, t in service.ERASE_MODES:
+            self.f_erase_mode.addItem(t, k)
+        self.f_erase_mode.setToolTip("글자 뒤가 그림인 영역에서 글자를 어떻게 지울지. 결과 보기에서 카드마다 바꿀 수도 있습니다.\n"
+                                     "텍스트 레이어가 있는 PDF는 ‘자동’이면 예전 방식으로 지웁니다.")
         self.f_keep_above = QCheckBox("글자 줄 위의 그림은 남기기")
         self.f_keep_above.setToolTip("예: 이름 위의 왕관 아이콘")
         self.f_notes = QPlainTextEdit()
@@ -451,6 +456,7 @@ class RegionEditor(QDialog):
         form.addRow("정렬", self.f_align)
         form.addRow("글자 색", crow)
         form.addRow("한글 글꼴", self.f_font)
+        form.addRow("글자 지우기", self.f_erase_mode)
         form.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
         form.addRow("", self.f_keep_above)
         form.addRow("메모", self.f_notes)
@@ -481,7 +487,7 @@ class RegionEditor(QDialog):
         for w in (self.f_name,):
             w.textEdited.connect(self._from_form)
         self.f_name.returnPressed.connect(self.view.setFocus)  # Enter: 카드 화면으로 (화살표로 바로 옮기기)
-        for w in (self.f_kind, self.f_align, self.f_font):
+        for w in (self.f_kind, self.f_align, self.f_font, self.f_erase_mode):
             w.currentIndexChanged.connect(self._from_form)
         for w in (self.f_x, self.f_y, self.f_w, self.f_h, self.f_keep_tall):
             w.valueChanged.connect(self._from_form)
@@ -952,12 +958,14 @@ class RegionEditor(QDialog):
                 self.f_font.addItem(f"{(st.get('font') or {}).get('family') or Path(ff).stem} (목록 밖)", ff)
                 idx = self.f_font.count() - 1
             self.f_font.setCurrentIndex(max(0, idx))
+            self.f_erase_mode.setCurrentIndex(max(0, self.f_erase_mode.findData(er.get("mode") or "auto")))
             self.f_keep_tall.setValue(float(er.get("keep_ink_taller_than_pt") or 0))
             self.f_keep_above.setChecked(bool(er.get("keep_ink_above_text")))
             self.f_notes.setPlainText(it.data.get("notes", ""))
             prot = it.kind == "protect"
             for w in (self.f_rotate, self.f_align, self.f_color, self.f_font, self.f_keep_tall, self.f_keep_above):
                 w.setEnabled(not prot)
+            self.f_erase_mode.setEnabled(it.kind == "text")
         finally:
             self._loading = False
 
@@ -1001,6 +1009,11 @@ class RegionEditor(QDialog):
         elif not ff:
             st.pop("font", None)
         er = d.setdefault("erase", {})
+        mode = self.f_erase_mode.currentData()
+        if mode and mode != "auto" and it.kind == "text":
+            er["mode"] = mode
+        else:
+            er.pop("mode", None)
         if self.f_keep_tall.value() > 0:
             er["keep_ink_taller_than_pt"] = round(self.f_keep_tall.value(), 1)
         else:

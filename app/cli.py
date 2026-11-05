@@ -5,12 +5,12 @@
     python -m app.cli add-files --project projects/던전1차 --files a.pdf b.pdf   (그룹 목록을 보여 주고 고르게 함)
     python -m app.cli add-files --project projects/던전1차 --files s1.jpg s2.jpg --cols 3 --rows 3 --name 시트   (이미지)
     python -m app.cli extract-project --project projects/던전1차 [--group 아이템]
-    python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> 용어집_검증.xlsx)
-    python -m app.cli find-icons --project projects/던전1차               (이름 없는 아이콘 -> 아이콘_검증.xlsx)
-    python -m app.cli import-icons --project projects/던전1차 --excel projects/던전1차/아이콘_검증.xlsx
-    python -m app.cli import-glossary --project projects/던전1차 --excel projects/던전1차/용어집_검증.xlsx
+    python -m app.cli finish-extraction --project projects/던전1차        (‘추출 완료’ -> games/<게임>/용어집_검증.xlsx)
+    python -m app.cli find-icons --project projects/던전1차               (이름 없는 아이콘 -> games/<게임>/아이콘_검증.xlsx)
+    python -m app.cli import-icons --project projects/던전1차 --excel games/<게임>/아이콘_검증.xlsx
+    python -m app.cli import-glossary --project projects/던전1차 --excel games/<게임>/용어집_검증.xlsx
     python -m app.cli translate --project projects/던전1차                (확정 용어집 기준 초벌 번역)
-    python -m app.cli export-excel --project projects/던전1차             (파일마다 번역_검수.xlsx)
+    python -m app.cli export-excel --project projects/던전1차             (게임에 하나: games/<게임>/번역_검수.xlsx, 그룹마다 시트)
     python -m app.cli erase-project --project projects/던전1차            (7단계, 모든 파일)
     python -m app.cli compose-project --project projects/던전1차          (8단계, 검수 엑셀 또는 초벌 번역)
     python -m app.cli set-pages --project projects/던전1차 --file 아이템/Items --exclude 1   (뺄 쪽)
@@ -154,7 +154,7 @@ def cmd_learn_tag_colors(args: argparse.Namespace) -> int:
 
 
 def cmd_export_excel(args: argparse.Namespace) -> int:
-    if (Path(args.project) / "project.json").exists():  # 게임 프로젝트: 파일마다 하나씩
+    if (Path(args.project) / "project.json").exists():  # 게임 프로젝트: 게임에 하나 (그룹마다 시트)
         try:
             outs = service.export_project_excel(args.project, force=args.force)
         except FileExistsError as e:

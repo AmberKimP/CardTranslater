@@ -66,11 +66,22 @@ class ResultViewer(QDialog):
         self.image.setMinimumSize(1, 1)
         self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다. 휠은 이전/다음 쪽
         self.scroll.setToolTip("마우스 휠: 위로 이전 쪽, 아래로 다음 쪽")
+        # 이 카드의 이 영역만 다른 방식으로 지우기 (그림 배경 등)
+        self.erase_mode = QComboBox()
+        self.erase_mode.setToolTip("이 카드의 고른 영역만 다른 방식으로 지웁니다. 다른 카드는 영역 설정대로입니다.")
+        self.redo_btn = QPushButton("이 방식으로 다시 지우고 한글 넣기")
+        self.redo_btn.clicked.connect(self.redo_card)
+        erow = QHBoxLayout()
+        self.erase_label = QLabel("이 카드 글자 지우기")
+        erow.addWidget(self.erase_label)
+        erow.addWidget(self.erase_mode, 1)
+        erow.addWidget(self.redo_btn)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(self.scroll, 1)
         rl.addWidget(QLabel("영역 — 고르면 그 부분을 크게 비교합니다"))
         rl.addWidget(self.regions)
+        rl.addLayout(erow)
         split = QSplitter()
         split.addWidget(self.pages)
         split.addWidget(right)
@@ -88,6 +99,11 @@ class ResultViewer(QDialog):
 
     def run_dir(self) -> Path:
         return Path(self.run.currentData())
+
+    def file_dir(self) -> Path | None:
+        """프로젝트 결과(translated/)를 볼 때의 파일 폴더. 시험 폴더면 None (다시 지우기 없음)."""
+        d = self.run_dir()
+        return d.parent if d.name == "translated" and (d.parent / "cleared").exists() else None
 
     @staticmethod
     def problems(st: list[str]) -> list[str]:
@@ -165,8 +181,15 @@ class ResultViewer(QDialog):
         self.regions.blockSignals(True)
         self.regions.clear()
         self.regions.addItem("카드 전체")
+        fd = self.file_dir()
+        self._erase_info = service.card_erase_info(fd, p["page"]) if fd else {}
         for r in p["regions"]:
             text = f"{r['name']}" + (f" · {', '.join(r['status'])}" if r["status"] else "")
+            ei = self._erase_info.get(r["name"]) or {}
+            if ei.get("mode"):
+                text += f" · 지우기: {dict(service.ERASE_MODES)[ei['mode']]}"
+            elif ei.get("needs_choice"):
+                text += " · 그림 배경: 지우기 방식 확인"
             if r["errors"]:
                 text += f" — {'; '.join(r['errors'])[:120]}"
             it = QListWidgetItem(text)
@@ -175,8 +198,54 @@ class ResultViewer(QDialog):
             self.regions.addItem(it)
         self.regions.setCurrentRow(0)
         self.regions.blockSignals(False)
+        self._sync_erase()
+
+    def _sync_erase(self):
+        p, r = self.current(), self.regions.currentRow() - 1
+        name = p["regions"][r]["name"] if p and 0 <= r < len(p["regions"]) else None
+        ei = (getattr(self, "_erase_info", {}) or {}).get(name) if name else None
+        ok = bool(ei) and ei.get("kind") == "text"
+        self.erase_mode.blockSignals(True)
+        self.erase_mode.clear()
+        if ok:
+            labels = dict(service.ERASE_MODES)
+            used = f", 이번에 쓴 방식: {labels.get(ei['used'], ei['used'])}" if ei.get("used") else ""
+            self.erase_mode.addItem(f"영역 설정대로 ({labels.get(ei['default'], ei['default'])}{used})", None)
+            for k, t in service.ERASE_MODES:
+                if k != "auto":
+                    self.erase_mode.addItem(t, k)
+            self.erase_mode.setCurrentIndex(max(0, self.erase_mode.findData(ei.get("mode"))) if ei.get("mode") else 0)
+        self.erase_mode.blockSignals(False)
+        for w in (self.erase_mode, self.redo_btn, self.erase_label):
+            w.setEnabled(ok)
+        if not ok:
+            self.erase_mode.addItem("영역을 고르면 그 영역의 지우기 방식을 바꿀 수 있습니다" if self.file_dir()
+                                    else "시험 결과에서는 바꿀 수 없습니다")
+
+    def redo_card(self):
+        p, r = self.current(), self.regions.currentRow() - 1
+        fd = self.file_dir()
+        if not (p and fd and 0 <= r < len(p["regions"])):
+            return
+        page, region = p["page"], p["regions"][r]["name"]
+        service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())
+
+        def done(res):
+            if res.state != "done":
+                QMessageBox.warning(self, "다시 하기", res.error or "\n".join(res.blocking) or res.state)
+            row = next((i for i, it in enumerate(self.items) if it["page"] == page), 0)
+            self.reload()
+            self.pages.setCurrentRow(min(row, max(0, len(self.items) - 1)))
+            names = [x["name"] for x in (self.current() or {}).get("regions", [])]
+            if region in names:
+                self.regions.setCurrentRow(names.index(region) + 1)
+
+        job = worker.Job(service.redo_file, fd)
+        worker.run_with_dialog(self, "다시 지우고 한글 넣기", job, done,
+                               lambda m: QMessageBox.warning(self, "다시 하기", m))
 
     def _show_region(self):
+        self._sync_erase()
         p, r = self.current(), self.regions.currentRow() - 1  # 0번 줄은 ‘카드 전체’
         if p is None:
             return

@@ -110,7 +110,7 @@ def test_excel_shows_draft_terms_and_checks_human_edits(tmp_path):
         [_reply(["[불꽃]의 판정"])])))
     [x] = service.export_project_excel(info.dir)
     wb = load_workbook(x)
-    ws = wb["번역"]
+    ws = wb["카드"]  # 게임 검수 엑셀: 그룹마다 시트
     head = [c.value for c in ws[1]]
     row = [c.value for c in ws[2]]
     assert row[head.index("초벌 번역")] == "[불꽃]의 판정" and row[head.index("번역")] == "[불꽃]의 판정"

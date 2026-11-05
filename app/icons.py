@@ -534,13 +534,21 @@ class ScanResult:
         return len(self.occurrences)
 
 
+def _occ_dir(info, f: str) -> Path:
+    """찾은 자리의 파일 폴더. 데이터 폴더 기준 경로(게임 단위), 예전 결과는 프로젝트 기준."""
+    from app.workspace import data_root
+
+    d = data_root(info) / f
+    return d if d.exists() else info.dir / f
+
+
 def pending_count(info) -> int:
-    """프로젝트(뺀 쪽 제외) 원문에 남은 ``[[?]]`` 수."""
+    """게임의 모든 프로젝트(뺀 쪽 제외) 원문에 남은 ``[[?]]`` 수 (아이콘 검증은 게임 단위)."""
     from app.extract import load_extracted
-    from app.workspace import file_dirs, included_pages
+    from app.workspace import game_file_dirs, included_pages
 
     n = 0
-    for fd in file_dirs(info):
+    for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
         for pno, regs in load_extracted(fd).items():
             if pno in inc:
@@ -555,8 +563,9 @@ def scan(info, work: Path) -> ScanResult:
 
     from app.extract import load_extracted
     from app.project import load_project
-    from app.workspace import file_dirs, file_key, included_pages
+    from app.workspace import data_root, game_file_dirs, game_file_key, included_pages
 
+    root = data_root(info)
     work = Path(work)
     if work.exists():
         shutil.rmtree(work)
@@ -569,7 +578,7 @@ def scan(info, work: Path) -> ScanResult:
             known[name] = shape_of(load_png(p))
     res = ScanResult()
     n = 0
-    for fd in file_dirs(info):
+    for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
         ext = load_extracted(fd)
         todo = [(p, r, v["source"]) for p, regs in sorted(ext.items()) if p in inc
@@ -587,7 +596,7 @@ def scan(info, work: Path) -> ScanResult:
                 auto_map, left = {}, []
                 for k, ti in enumerate(ph):
                     n += 1
-                    oc = Occurrence(f"o{n:03d}", str(fd.relative_to(info.dir)), file_key(fd), pno, rname, k,
+                    oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
                                     text.replace("\n", " / "))
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
                     box, why = locate(img, text, ti)
@@ -869,7 +878,7 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
     for o in res.occurrences:
         per_region.setdefault((o.file, o.page, o.region), {})[o.index] = decision[o.group]
     for (f, page, region), mapping in per_region.items():
-        apply_to_extract(info.dir / f, page, region, mapping)
+        apply_to_extract(_occ_dir(info, f), page, region, mapping)
         out.removed += sum(1 for v in mapping.values() if v == "")
         out.replaced += sum(1 for v in mapping.values() if v)
     shutil.rmtree(work, ignore_errors=True)

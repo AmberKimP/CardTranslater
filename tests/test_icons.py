@@ -180,7 +180,7 @@ def test_exports_list_icon_positions_groups_and_fonts(tmp_path):
     r = service.find_icons(info.dir, suggest=False)
     loc = _rows(load_workbook(r.review_xlsx)["위치"])
     assert [(x["카드"], x["영역"], x["줄"], x["줄에서 순서"], x["위치 찾기"]) for x in loc] == [
-        ("카드/cards p1", "본문", 1, 1, "찾음"), ("카드/cards p2", "본문", 1, 1, "찾음")]
+        ("1차/카드/cards p1", "본문", 1, 1, "찾음"), ("1차/카드/cards p2", "본문", 1, 1, "찾음")]
 
     # 번역 검수 엑셀: 이름 없는 아이콘은 확인 목록에, 행마다 그룹·글꼴
     x = service.export_excel(fd)

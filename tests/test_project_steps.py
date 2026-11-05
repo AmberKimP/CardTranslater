@@ -135,3 +135,93 @@ def test_card_limit_erase_redoes_when_limit_grows(tmp_path):
     service.set_card_limit(info.dir, None)  # 장수를 늘리면 일부만 지운 결과를 다시 만든다
     r = service.erase_project(info.dir)
     assert r.files[0]["state"] == "done" and r.files[0]["pages"] == 2
+
+
+def test_move_pages_of_one_pdf_to_another_group(tmp_path):
+    """한 PDF에 형식이 다른 카드가 섞여 있으면 쪽 일부를 다른 그룹에서 처리한다."""
+    import pytest
+
+    info, fd = _project(tmp_path)
+    with pytest.raises(ValueError):
+        service.move_pages_to_group(fd, [9], "정예", new_group=True)  # 없는 쪽
+    t = service.move_pages_to_group(fd, [2], "정예", new_group=True)
+    assert workspace.included_pages(fd) == [1] and workspace.included_pages(t) == [2]
+    assert t.parent.parent.name == "정예" and (t / "source" / "cards.pdf").exists()
+    assert workspace.file_settings(fd)["pages_in_groups"] == {"정예": [2]}
+    assert workspace.file_settings(t)["pages_in_groups"] == {"카드": [1]}
+    # 다시 보내면 같은 파일 폴더를 쓴다 (새로 넣지 않음)
+    service.set_pages(t, [1, 2])
+    assert service.move_pages_to_group(fd, [2], "정예") == t
+    assert workspace.included_pages(t) == [2]
+    with pytest.raises(ValueError):
+        service.move_pages_to_group(fd, [1], "카드")  # 같은 그룹
+    keys = [workspace.file_key(d) for d in workspace.file_dirs(info)]
+    assert sorted(keys) == ["정예/cards", "카드/cards"]
+
+
+def test_game_review_excel_one_file_sheet_per_group(tmp_path):
+    """검수 엑셀은 게임에 하나, 그룹마다 시트. 같은 그룹 이름이 여러 프로젝트에 있으면 ‘프로젝트·그룹’."""
+    from openpyxl import load_workbook
+
+    from app.excel_io import game_files, import_translation
+    from app.project import load_project
+    from tests.test_glossary import _pdf_and_regions
+
+    info, fd = _project(tmp_path)
+    t = service.move_pages_to_group(fd, [2], "정예", new_group=True)
+    _pdf, regions = _pdf_and_regions(tmp_path / "x")
+    import shutil
+
+    shutil.copyfile(regions, t.parent.parent / "regions.json")
+    info2, _ = workspace.create_project("q", "G", root=tmp_path)
+    workspace.add_files(info2, [_pdf], "카드", new_group=True, regions_from=regions)
+    for d in workspace.game_file_dirs(info):
+        for p in workspace.included_pages(d):
+            _write_extract(d, p, f"T{p}")
+    [x] = service.export_project_excel(info.dir)
+    assert x == info.game_dir / "번역_검수.xlsx"
+    files = game_files(x)
+    assert sorted((f["시트"], f["프로젝트"], f["그룹"], f["쪽"]) for f in files) == [
+        ("p·카드", "p", "카드", "1"), ("q·카드", "q", "카드", "1,2"), ("정예", "p", "정예", "2")]
+    wb = load_workbook(x)
+    ws = wb["정예"]
+    head = [c.value for c in ws[1]]
+    ws.cell(2, head.index("번역") + 1).value = "고친 번역"
+    wb.save(x)
+    assert service.review_xlsx_for(t) == x and service.review_xlsx_for(fd) == x
+    res = import_translation(load_project(t), x)
+    assert not res.blocking and list(res.cards) == [2] and res.cards[2]["이름"]["ko"] == "고친 번역"
+    res = import_translation(load_project(fd), x)
+    assert not res.blocking and list(res.cards) == [1]  # 이 파일의 쪽만
+    import pytest
+
+    with pytest.raises(FileExistsError):
+        service.export_project_excel(info2.dir)  # 같은 게임: 같은 엑셀
+    service.export_project_excel(info2.dir, force=True)  # 다시 만들어도 사람이 고친 번역은 남는다
+    ws = load_workbook(x)["정예"]
+    assert ws.cell(2, head.index("번역") + 1).value == "고친 번역"
+
+
+def test_glossary_review_is_game_wide(tmp_path):
+    """‘추출 완료’는 같은 게임의 모든 프로젝트 원문을 모아 게임 폴더에 용어집 검증 엑셀을 만든다."""
+    from app.extract_cc import ClaudeCodeClient
+    from tests.test_glossary import _pdf_and_regions
+
+    info, fd = _project(tmp_path)
+    _write_extract(fd, 1, "炎の判定")
+    _pdf, regions = _pdf_and_regions(tmp_path / "x")
+    info2, _ = workspace.create_project("q", "G", root=tmp_path)
+    workspace.add_files(info2, [_pdf], "카드", new_group=True, regions_from=regions)
+    fd2 = workspace.file_dirs(info2)[0]
+    _write_extract(fd2, 1, "生命の雫")
+    keys = sorted(s.key for s in glossary.collect_sources(info, game=True))
+    assert keys == ["p/카드/cards#p1#이름", "q/카드/cards#p1#이름"]
+    assert [s.key for s in glossary.collect_sources(info)] == ["카드/cards#p1#이름"]  # 번역은 프로젝트 단위
+    reply = json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0,
+                        "modelUsage": {}, "structured_output": {"terms": []}})
+    assess = json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0,
+                         "modelUsage": {}, "structured_output": {"terms": []}})
+    r = service.finish_extraction(info.dir, accept_issues=True,
+                                  client=ClaudeCodeClient(exe="claude", runner=FakeRunner([(0, reply, ""), (0, assess, "")])))
+    assert r.state == "review_ready" and r.review_xlsx == info.game_dir / "용어집_검증.xlsx"
+    assert {p.status for p in workspace.game_projects(info)} == {"glossary_review"}

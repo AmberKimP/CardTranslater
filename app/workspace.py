@@ -67,7 +67,9 @@ def list_games(root: Path = DEFAULT_ROOT) -> list[dict]:
         gl = g / "glossary.json"
         terms = len(_read(gl).get("terms", [])) if gl.exists() else 0
         projects = [p["name"] for p in list_projects(root) if p["game"] == info["name"]]
-        out.append({"name": info["name"], "dir": g, "terms": terms, "projects": projects})
+        files = {"glossary_review": (g / "용어집_검증.xlsx").exists(), "icon_review": (g / "아이콘_검증.xlsx").exists(),
+                 "translation_review": (g / "번역_검수.xlsx").exists()}
+        out.append({"name": info["name"], "dir": g, "terms": terms, "projects": projects, "files": files})
     return out
 
 
@@ -125,6 +127,35 @@ def set_status(info: ProjectInfo, status: str, **extra) -> None:
     data.update(extra)
     _write(info.dir / "project.json", data)
     info.status = status
+
+
+def data_root(info: ProjectInfo) -> Path:
+    """games/·projects/가 들어 있는 데이터 폴더."""
+    return info.dir.parent.parent
+
+
+def game_projects(info: ProjectInfo) -> list[ProjectInfo]:
+    """같은 게임의 모든 프로젝트 (이름 순, 자기 자신 포함)."""
+    out = []
+    pd = info.dir.parent
+    for d in sorted(pd.iterdir()) if pd.exists() else []:
+        f = d / "project.json"
+        if f.exists() and _read(f).get("game") == info.game:
+            out.append(load_project_info(d))
+    if not any(p.dir == info.dir for p in out):
+        out.append(info)
+    return out
+
+
+def game_file_dirs(info: ProjectInfo) -> list[Path]:
+    """같은 게임의 모든 프로젝트·그룹·파일 폴더 (용어집·아이콘·검수 엑셀은 게임 단위)."""
+    return [fd for p in game_projects(info) for fd in file_dirs(p)]
+
+
+def game_file_key(file_dir: Path) -> str:
+    """'프로젝트/그룹/파일' (게임 안에서 겹치지 않는 이름)."""
+    fd = Path(file_dir)
+    return f"{fd.parents[3].name}/{fd.parent.parent.name}/{fd.name}"
 
 
 def card_limit(info: ProjectInfo) -> int | None:
@@ -213,6 +244,54 @@ def add_files(info: ProjectInfo, files: list[Path | str], group: str, *, new_gro
         shutil.copyfile(f, dest)  # 원본은 읽기만 한다 (사본으로 작업)
         added.append(dest.parent.parent)
     return {"group": group, "added": added, "skipped": skipped, "has_regions": (gdir / "regions.json").exists()}
+
+
+def move_pages_to_group(file_dir: Path, pages: list[int], group: str, *, new_group: bool = False,
+                        regions_from: Path | str | None = None) -> Path:
+    """한 PDF 안에 형식이 다른 카드가 섞여 있을 때: 고른 쪽을 다른 그룹에서 처리하게 한다.
+    같은 PDF를 그 그룹에도 넣고(이미 있으면 그대로) 그 그룹에서는 고른 쪽만 처리하게 하며,
+    이 그룹에서는 그 쪽을 뺀다. 돌려주는 값: 그 그룹의 파일 폴더."""
+    src_dir = Path(file_dir)
+    info = project_of(src_dir)
+    if info is None:
+        raise ValueError("게임 프로젝트의 파일이 아닙니다")
+    pages = sorted({int(p) for p in pages})
+    n = page_count(src_dir)
+    if not pages or any(not 1 <= p <= n for p in pages):
+        raise ValueError(f"쪽을 1~{n} 안에서 고르세요")
+    src_group = _read(src_dir.parent.parent / "group.json")["name"]
+    if group == src_group:
+        raise ValueError("지금 그룹과 같은 그룹입니다")
+    pdf = sorted((src_dir / "source").glob("*.pdf"))[0]
+    gdir = group_dir(info, group)
+    target = gdir / "files" / src_dir.name
+    tpdf = target / "source" / pdf.name
+    if tpdf.exists():
+        import hashlib
+
+        h = lambda f: hashlib.sha256(Path(f).read_bytes()).hexdigest()  # noqa: E731
+        if h(tpdf) != h(pdf):
+            raise FileExistsError(f"'{group}' 그룹에 이름이 같은 다른 파일이 있습니다: {src_dir.name}")
+        if new_group:
+            new_group = False
+    else:
+        add_files(info, [pdf], group, new_group=new_group, regions_from=regions_from)
+        set_excluded_pages(target, list(range(1, n + 1)), f"{src_group} 그룹의 쪽")  # 처음엔 모두 뺀 채로
+    tset = file_settings(target)
+    t_excl = set(tset.get("exclude_pages", [])) - set(pages)
+    set_excluded_pages(target, sorted(t_excl), tset.get("exclude_reason") or f"{src_group} 그룹의 쪽")
+    sset = file_settings(src_dir)
+    s_excl = set(sset.get("exclude_pages", [])) | set(pages)
+    set_excluded_pages(src_dir, sorted(s_excl), sset.get("exclude_reason") or "다른 그룹에서 처리")
+    for d, other, moved in ((src_dir, group, pages), (target, src_group, None)):
+        data = file_settings(d)
+        links = data.setdefault("pages_in_groups", {})
+        if moved is not None:
+            links[other] = sorted(set(links.get(other, [])) | set(moved))
+        else:
+            links[other] = sorted(set(range(1, n + 1)) - set(included_pages(target, limited=False)))
+        _write(d / "file.json", data)
+    return target
 
 
 def file_dirs(info: ProjectInfo, group: str | None = None) -> list[Path]:

@@ -716,7 +716,7 @@ class StepActions:
     # ---- 용어집 가져오기
     def import_glossary(self, path: str | None = None, accept: bool = False):
         if path is None:
-            default = str(self.pdir / "용어집_검증.xlsx")
+            default = str(service.game_dir(self.pdir) / "용어집_검증.xlsx")
             path, _ = QFileDialog.getOpenFileName(self.page, "검증한 용어집 엑셀", default, "Excel (*.xlsx)")
             if not path:
                 return
@@ -780,5 +780,6 @@ class StepActions:
     def _excel_done(self, paths):
         self.page.refresh()
         QMessageBox.information(self.page, "번역 검수 엑셀",
-                                "만들었습니다:\n" + "\n".join(str(p) for p in paths)
-                                + "\n\n파일을 고르고 ‘폴더 열기’로 열 수 있습니다.")
+                                "만들었습니다 (게임에 하나, 그룹마다 시트):\n" + "\n".join(str(p) for p in paths)
+                                + "\n\n같은 게임의 다른 프로젝트도 이 엑셀에 함께 들어 있습니다. "
+                                  "홈 화면의 ‘게임 폴더 열기’로 열 수 있습니다.")

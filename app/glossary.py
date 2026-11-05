@@ -61,14 +61,15 @@ class Source:
     verdict: str = ""  # 추출 확인: "" (확실) | "확인 필요" | "결론 못 냄"
 
 
-def collect_sources(info: ProjectInfo) -> list[Source]:
-    """프로젝트 모든 그룹·파일의 추출 결과(extract/)를 모은다 (처리할 쪽만)."""
+def collect_sources(info: ProjectInfo, game: bool = False) -> list[Source]:
+    """프로젝트(game=True면 같은 게임의 모든 프로젝트) 모든 그룹·파일의 추출 결과를 모은다 (처리할 쪽만)."""
     from app.extract import load_extracted, verification_label
     from app.project import load_project
-    from app.workspace import included_pages
+    from app.workspace import game_file_dirs, game_file_key, included_pages
 
     out: list[Source] = []
-    for fd in file_dirs(info):
+    for fd in (game_file_dirs(info) if game else file_dirs(info)):
+        fkey = game_file_key(fd) if game else file_key(fd)
         included = set(included_pages(fd))  # 뺀 쪽 제외, 시험 모드면 앞 card_limit장만
         try:
             proj = load_project(fd)
@@ -86,19 +87,21 @@ def collect_sources(info: ProjectInfo) -> list[Source]:
                     continue
                 v = verification_label(r)
                 verdict = "결론 못 냄" if v == "결론 못 냄" else ("확인 필요" if r.get("uncertain") else "")
-                out.append(Source(f"{file_key(fd)}#p{pno}#{rname}", rname, kinds.get(rname, "text"), src, card_name,
+                out.append(Source(f"{fkey}#p{pno}#{rname}", rname, kinds.get(rname, "text"), src, card_name,
                                   verdict))
     return out
 
 
-def extraction_status(info: ProjectInfo) -> list[dict]:
+def extraction_status(info: ProjectInfo, game: bool = False) -> list[dict]:
     """파일마다 추출 진행: 전체 쪽, 읽은 쪽, 실패, '결론 못 냄'·확인 필요 칸."""
     import pymupdf
 
     from app.extract import ExtractState, extract_dir, load_extracted, verification_label
 
+    from app.workspace import game_file_dirs, game_file_key
+
     rows = []
-    for fd in file_dirs(info):
+    for fd in (game_file_dirs(info) if game else file_dirs(info)):
         pdfs = sorted((fd / "source").glob("*.pdf"))
         if not pdfs:
             continue
@@ -111,7 +114,7 @@ def extraction_status(info: ProjectInfo) -> list[dict]:
         st = ExtractState.load(extract_dir(fd) / "state.json")
         cells = [r for regs in ext.values() for r in regs.values()]
         rows.append({
-            "file": file_key(fd), "dir": fd, "pages": total, "extracted": len(ext), "failed": dict(st.failed),
+            "file": game_file_key(fd) if game else file_key(fd), "dir": fd, "pages": total, "extracted": len(ext), "failed": dict(st.failed),
             "status": st.status, "has_regions": has_regions,
             "excluded": file_settings(fd).get("exclude_pages", []),
             "no_verdict": sum(verification_label(r) == "결론 못 냄" for r in cells),

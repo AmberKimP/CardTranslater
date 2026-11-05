@@ -178,7 +178,8 @@ def test_main_window_home_and_project(qapp, tmp_path):
 
     info = _project(tmp_path)
     win = MainWindow(root=tmp_path)
-    assert win.home.table.rowCount() == 1 and win.home.table.item(0, 0).text() == "p"
+    g = win.home.tree.topLevelItem(0)  # 게임 > 프로젝트
+    assert win.home.tree.topLevelItemCount() == 1 and g.text(0) == "G" and g.child(0).text(0) == "p"
     win.open_project(info.dir)
     assert win.stack.currentWidget() is win.project
     top = win.project.tree.topLevelItem(0)
@@ -529,7 +530,7 @@ def test_delete_project_group_file_go_to_trash(qapp, tmp_path, monkeypatch):
     assert service.project_overview(info.dir)["groups"] == []
     # 홈: 프로젝트 삭제. 게임(용어집 폴더)은 남는다
     win.show_home()
-    win.home.table.selectRow(0)
+    assert win.home.select_project("p")
     win.home.delete_selected()
     assert service.list_projects(tmp_path) == [] and (tmp_path / "games" / "G" / "game.json").exists()
     assert len(list((tmp_path / ".trash").iterdir())) == 3
@@ -1140,3 +1141,109 @@ def test_selftest_reports_korean_translation(qapp, tmp_path):
             qapp.removeTranslator(tr)
     res = json.loads(out.read_text(encoding="utf-8"))
     assert res["ko_translation"] is True and res["ko_cancel_text"] == "취소" and res["ui"] is True
+
+
+def test_card_erase_mode_override_and_redo(qapp, tmp_path):
+    """결과 보기에서 카드 한 장의 영역만 다른 방식으로 다시 지우고 한글을 다시 넣는다."""
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    region = next(iter(service.card_erase_info(fd, 1)))
+    with pytest.raises(ValueError):
+        service.set_card_erase_mode(fd, 1, region, "bogus")
+    service.set_card_erase_mode(fd, 1, region, "rect_avg")
+    assert workspace.file_settings(fd)["erase_modes"] == {"1": {region: "rect_avg"}}
+    r = service.redo_file(fd)
+    assert r.state == "done"
+    info1, info2 = service.card_erase_info(fd, 1)[region], service.card_erase_info(fd, 2)[region]
+    assert info1["mode"] == "rect_avg" and info1["used"] == "rect_avg" and info1["text_mask"]
+    assert info2["mode"] is None and not info2["text_mask"]  # 다른 카드는 영역 설정대로 (예전 방식)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    v.regions.setCurrentRow(1)
+    assert v.redo_btn.isEnabled() and v.erase_mode.currentData() == "rect_avg"
+    assert "지우기: 그림: 사각형 + 평균색" in v.regions.item(1).text()
+    service.set_card_erase_mode(fd, 1, region, None)  # 영역 설정대로 되돌리기
+    assert "erase_modes" not in workspace.file_settings(fd)
+
+
+def test_home_new_project_prefills_selected_game(qapp, tmp_path, monkeypatch):
+    """홈 화면에서 게임(또는 그 프로젝트)을 고르고 ‘새 프로젝트’를 누르면 그 게임이 채워진다."""
+    from app.qt import main as qmain
+    from app.qt.main import MainWindow
+
+    _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    seen = []
+
+    class Fake:
+        created = None
+
+        def __init__(self, root, parent=None, game=None):
+            seen.append(game)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(qmain, "NewProjectDialog", Fake)
+    g = win.home.tree.topLevelItem(0)
+    win.home.tree.setCurrentItem(g)
+    win.home.new_project()
+    win.home.tree.setCurrentItem(g.child(0))
+    win.home.new_project()
+    assert seen == ["G", "G"]
+    win.home.tree.setCurrentItem(None)
+    win.home.new_project()
+    assert seen[-1] is None
+    from app.qt.dialogs import NewProjectDialog
+    assert NewProjectDialog(tmp_path, game="G").game.currentText() == "G"
+
+
+def test_region_editor_erase_mode_saves_and_loads(qapp, tmp_path):
+    """영역 지정 창의 ‘글자 지우기’ 콤보가 regions.json erase.mode로 저장되고 다시 열면 보이며, 자동이면 키가 없어진다."""
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    gdir = Path(g["dir"])
+    service.save_region_template(gdir, {"regions": [
+        {"name": "본문", "kind": "text", "rect": {"x": 0.1, "y": 0.5, "w": 0.5, "h": 0.2}}]})
+    files = [Path(f["dir"]) for f in g["files"]]
+    ed = RegionEditor(gdir, files)
+    it = ed.items()[0]
+    it.setSelected(True)
+    ed.f_erase_mode.setCurrentIndex(ed.f_erase_mode.findData("inpaint"))
+    ed._from_form()
+    assert ed.save()
+    data = json.loads((gdir / "regions.json").read_text(encoding="utf-8"))
+    assert data["regions"][0]["erase"]["mode"] == "inpaint"
+    ed2 = RegionEditor(gdir, files)
+    ed2.items()[0].setSelected(True)
+    assert ed2.f_erase_mode.currentData() == "inpaint"
+    ed2.f_erase_mode.setCurrentIndex(ed2.f_erase_mode.findData("auto"))
+    ed2._from_form()
+    assert ed2.save()
+    data = json.loads((gdir / "regions.json").read_text(encoding="utf-8"))
+    assert "erase" not in data["regions"][0]
+    ed.dirty = ed2.dirty = False
+
+
+def test_exclude_dialog_send_to_group(qapp, tmp_path, monkeypatch):
+    """‘뺄 쪽’ 창에서 체크한 쪽을 다른 그룹으로 보내면 이 그룹에서는 빠지고, 체크가 없으면 아무것도 하지 않는다."""
+    from PySide6.QtWidgets import QInputDialog
+
+    from app.qt.dialogs import ExcludePagesDialog
+
+    info = _project(tmp_path)
+    fd = Path(service.project_overview(info.dir)["groups"][0]["files"][0]["dir"])
+    e = ExcludePagesDialog(fd, [])
+    e.send_to_group()  # 체크 없음
+    assert not e.moved and workspace.included_pages(fd) == [1, 2, 3]
+    e.list.item(1).setCheckState(Qt.CheckState.Checked)
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("정예", True)))
+    assert e.target.currentData() is None  # 다른 그룹이 없으면 ‘새 그룹 만들기’
+    e.send_to_group()
+    assert e.moved and workspace.included_pages(fd) == [1, 3]
+    names = [x["name"] for x in service.list_groups(info.dir)]
+    assert "정예" in names

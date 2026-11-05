@@ -1,0 +1,265 @@
+"""글자 모양만 지우기 (텍스트 레이어가 없는 그림 카드). PRD 5.4.
+
+영역 상자 전체를 덮지 않고 **글자 픽셀만** 찾아, 그 픽셀만 주변에 맞춰 채운다.
+
+글자 찾기 (``text_mask``)
+  1. 큰 중앙값 흐림(글자 획보다 넓은 창)을 배경으로 보고, 배경과 크게 다른 픽셀을 밝은 쪽·어두운 쪽으로 나눠
+     덩어리로 묶는다. 흰 글자 + 검은 테두리 + 스테인드글라스 납선이 한 덩어리로 붙지 않게 하려는 것이다.
+  2. 글자가 아닌 덩어리는 뺀다: 상자 밖으로 이어지는 것(그림·선), 상자만큼 큰 것(테두리), 긴 가로선(구분선),
+     글자 크기의 3배를 넘는 것(테두리 곡선).
+  3. 상자 배경이 고르면(종이·무늬) 남은 덩어리 중 주변이 바쁜 것(상자에 걸친 그림 조각)을 빼되, 주요 글자색과 같은
+     것(획이 빽빽한 한자)은 되살린다. 배경이 그림이면 덩어리를 색으로 묶어 ‘가장 넓고 상자 밖에 드문 색’ 묶음만 글자로 본다.
+  4. 글자에 붙은 테두리·그림자(배경과 조금 다른 픽셀)를 몇 px 넓혀 포함하고, 글자 속 닫힌 빈칸(코인 아이콘 속 등)을 채운다.
+
+채우기 (``fill_text``) — 영역 설정 ``erase.mode``(카드별로 바꿀 수 있음)
+  auto      배경을 보고 고름: 단색 -> solid, 무늬 -> pattern, 그림 -> inpaint (그림이면 ‘방식 확인’ 표시)
+  solid     글자 자리를 주변 색(매끄러운 배경 추정)으로 덮음
+  pattern   글자 자리를 주변 무늬로 이어 채움 (복원, 좁은 반경)
+  rect_avg  글자 줄마다 사각형으로 지우고 사각형 둘레의 평균색으로 채움
+  inpaint   글자 뒤 그림을 주변에서 유추해 채움 (복원, 넓은 반경)
+numpy 배열만 다룬다(PDF·화면을 모름).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import cv2
+import numpy as np
+
+MODES = ("auto", "solid", "pattern", "rect_avg", "inpaint")
+MODE_LABELS = {
+    "auto": "자동 (배경 보고 고름)",
+    "solid": "단색: 주변 색으로 덮기",
+    "pattern": "무늬: 주변 무늬로 채우기",
+    "rect_avg": "그림: 사각형 + 평균색",
+    "inpaint": "그림: 뒤 그림 유추해 채우기",
+}
+STRONG = 60.0  # 배경과 이만큼(RGB 최대 채널) 다르면 글자 후보
+WEAK = 30.0  # 글자에 붙은 테두리·그림자로 넓힐 때의 기준
+COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
+
+
+def _disk(r: int) -> np.ndarray:
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
+def _lum(a: np.ndarray) -> np.ndarray:
+    return a @ np.array([0.299, 0.587, 0.114], np.float32)
+
+
+def _local_std(lum: np.ndarray, k: int = 15) -> np.ndarray:
+    m1 = cv2.blur(lum, (k, k))
+    m2 = cv2.blur(lum * lum, (k, k))
+    return np.sqrt(np.maximum(m2 - m1 * m1, 0))
+
+
+@dataclass
+class TextMask:
+    mask: np.ndarray  # 지울 픽셀 (글자 + 테두리 + 닫힌 빈칸)
+    core: np.ndarray  # 글자로 고른 덩어리 (넓히기 전)
+    busy: bool  # 상자 배경이 그림(바쁨)인가
+    texture: float  # 상자 배경의 국소 표준편차 중앙값
+    glyph_px: float = 0.0  # 글자 크기 추정 (px)
+    notes: list[str] = field(default_factory=list)
+
+
+def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None) -> TextMask:
+    """img(H×W×3 uint8, 상자 둘레에 여유가 있는 자른 그림) 안 box(x0,y0,x1,y1)의 글자 픽셀."""
+    x0, y0, x1, y1 = box
+    H, W = img.shape[:2]
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    I = img.astype(np.float32)
+    k = int(max(31, min(81, bh * 0.6))) | 1  # 글자 획보다 넓은 창
+    med = np.dstack([cv2.medianBlur(np.ascontiguousarray(img[..., c]), k) for c in range(3)]).astype(np.float32)
+    D = np.abs(I - med).max(axis=2)
+    lum, lmed = _lum(I), _lum(med)
+    inbox = np.zeros((H, W), bool)
+    inbox[max(0, y0):y1, max(0, x0):x1] = True
+    strong_all = D > STRONG
+    near = cv2.dilate(strong_all.astype(np.uint8), _disk(4)).astype(bool)
+    sel = inbox & ~near
+    texture = float(np.median(_local_std(lum)[sel])) if sel.sum() > 50 else 99.0
+    busy = texture >= 8.0
+
+    cands = []  # (덩어리, 평균색, 넓이, 큰 변)
+    lines = []  # 가로 구분선의 (세로 중심, 두께): 선 사이의 장식(◆)도 남긴다
+    for pol in (1, -1):
+        strong = (strong_all & (np.sign(lum - lmed) == pol)).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(strong, connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, a = (int(v) for v in st[i])
+            if a < 6:
+                continue
+            if w > 0.6 * bw or h > 0.8 * bh:  # 테두리·큰 그림
+                continue
+            if not busy and w > 0.25 * bw and w > 4 * h:  # 종이 위 가로 구분선 (그림 위의 긴 'ー'는 글자)
+                lines.append((y + h / 2, h))
+                continue
+            comp = lab == i
+            if (comp & ~inbox).sum() / a > 0.03:  # 상자 밖으로 이어지는 그림·선
+                continue
+            cands.append((comp, I[comp].mean(axis=0), a, max(w, h)))
+    def on_line(c):
+        ys, xs = np.nonzero(c[0])
+        cy, ch = (ys.min() + ys.max()) / 2, ys.max() - ys.min() + 1
+        return any(abs(cy - ly) <= max(3.0, lh) and ch <= 4 * lh + 6 for ly, lh in lines)
+
+    cands = [c for c in cands if not on_line(c)]  # 구분선 위의 작은 장식
+    sizes = [c[3] for c in cands if c[2] >= 30]
+    glyph = float(np.percentile(sizes, 75)) if sizes else 0.0
+    if glyph:
+        cands = [c for c in cands if c[3] <= 3.0 * glyph]  # 테두리 곡선·큰 그림
+
+    keep = np.zeros((H, W), bool)
+    notes: list[str] = []
+    if not busy:
+        lum2 = np.where(near, lmed, lum)  # 글자 근처는 배경값으로 바꿔 놓고 바쁜 곳을 잰다
+        busy_map = _local_std(lum2) > 2.5 * texture + 8
+        busy_map = cv2.dilate(busy_map.astype(np.uint8), _disk(10)).astype(bool)
+        kept, dropped = [], []
+        for c in cands:
+            ys, xs = np.nonzero(c[0])
+            touch = xs.min() <= x0 + 2 or ys.min() <= y0 + 2 or xs.max() >= x1 - 3 or ys.max() >= y1 - 3
+            ov = (c[0] & busy_map).sum() / c[2]
+            (dropped if ov > 0.3 or (touch and ov > 0.05) else kept).append((c, touch))
+        kept = [c for c, _t in kept]
+        # 종이 위 글자는 둘레가 종이색이다. 둘레가 그림(유리 조각·테두리)인 조각은 빼다
+        paper = np.median(I[sel], axis=0) if sel.sum() > 50 else None
+        free = ~cv2.dilate(strong_all.astype(np.uint8), _disk(2)).astype(bool) & inbox
+
+        def on_paper(c) -> bool:
+            if paper is None:
+                return True
+            ring = cv2.dilate(c[0].astype(np.uint8), _disk(6)).astype(bool) & free
+            if ring.sum() < 15:
+                return True
+            return float((np.abs(I[ring] - paper).max(axis=1) < 45).mean()) >= 0.5
+
+        kept = [c for c in kept if on_paper(c)]
+        dropped = [(c, t) for c, t in dropped if on_paper(c)]
+        if kept:  # 획이 빽빽한 글자는 주변이 바빠 보인다: 주요 글자색이고 가장자리에 닿지 않으면 되살린다
+            tot = sum(c[2] for c in kept)
+            main = []
+            for c in sorted(kept, key=lambda c: -c[2]):
+                if any(np.abs(m - c[1]).max() < COLOR_TOL for m in main):
+                    continue
+                if sum(d[2] for d in kept if np.abs(d[1] - c[1]).max() < COLOR_TOL) / tot >= 0.2:
+                    main.append(c[1])
+            kept += [c for c, t in dropped if not t and any(np.abs(m - c[1]).max() < 35 for m in main)]
+        for c in kept:
+            keep |= c[0]
+    else:
+        ring_out = cv2.dilate(inbox.astype(np.uint8), _disk(14)).astype(bool) & ~inbox
+        out_cols = I[ring_out]
+        groups: list[dict] = []
+        for c in sorted(cands, key=lambda c: -c[2]):
+            for g in groups:
+                if np.abs(g["color"] - c[1]).max() < COLOR_TOL:
+                    g["items"].append(c)
+                    g["area"] += c[2]
+                    break
+            else:
+                groups.append({"color": c[1], "items": [c], "area": c[2]})
+        best, best_score = None, 0.0
+        for g in groups:
+            g["rare"] = float((np.abs(out_cols - g["color"]).max(axis=1) < COLOR_TOL).mean()) if len(out_cols) else 0.0
+            score = g["area"] * max(0.0, 1 - g["rare"] * 8)
+            if score > best_score:
+                best, best_score = g, score
+        for g in groups:
+            if g is best or g["rare"] < 0.005:
+                for c in g["items"]:
+                    keep |= c[0]
+        if best is None:
+            notes.append("그림 배경에서 글자색을 찾지 못함")
+
+    grown = keep.copy()
+    weak = D > WEAK
+    for _ in range(4):  # 글자에 붙은 테두리·그림자
+        grown |= cv2.dilate(grown.astype(np.uint8), _disk(2)).astype(bool) & weak & inbox
+    inv = (~grown).astype(np.uint8)  # 닫힌 빈칸 채우기 (글자 속, 코인 속)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(inv, connectivity=4)
+    lim = (0.5 * bh) ** 2 if busy else (0.25 * bh) ** 2
+    for i in range(1, n):
+        x, y, w, h, a = (int(v) for v in st[i])
+        if x == 0 or y == 0 or x + w >= W or y + h >= H:
+            continue
+        if a <= lim and w < 0.3 * bw:
+            grown |= lab == i
+    # 번짐: 종이 1px, 그림 배경은 흰 채움·테두리 잔상이 남지 않게 3px
+    grown = cv2.dilate(grown.astype(np.uint8), _disk(3 if busy else 1)).astype(bool) & inbox
+    if protect is not None:
+        grown &= ~protect
+    return TextMask(grown, keep, busy, texture, glyph, notes)
+
+
+def background_kind(img: np.ndarray, tm: TextMask) -> str:
+    """글자 주변 배경: solid(단색) | pattern(무늬) | image(그림)."""
+    if tm.busy:
+        return "image"
+    ring = cv2.dilate(tm.mask.astype(np.uint8), _disk(8)).astype(bool) & ~tm.mask
+    if ring.sum() < 20:
+        return "solid"
+    # 글자를 뺀 주변만으로 고주파(무늬) 세기를 잰다 (완만한 색 변화는 단색으로 본다)
+    lum = _lum(img.astype(np.float32))
+    known = (~tm.mask).astype(np.float32)
+    smooth = cv2.GaussianBlur(lum * known, (0, 0), 4) / np.maximum(cv2.GaussianBlur(known, (0, 0), 4), 1e-4)
+    s = float(np.std((lum - smooth)[ring]))
+    return "solid" if s < 2.0 else "pattern"
+
+
+def _rects(mask: np.ndarray, glyph: float) -> list[tuple[int, int, int, int]]:
+    """글자 줄마다 사각형 (가로로 이어 붙여 묶음)."""
+    gx = int(max(5, glyph * 0.8)) | 1
+    joined = cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_RECT, (gx, 3)))
+    n, _lab, st, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    return [(int(st[i, 0]), int(st[i, 1]), int(st[i, 0] + st[i, 2]), int(st[i, 1] + st[i, 3])) for i in range(1, n)]
+
+
+def fill_text(img: np.ndarray, tm: TextMask, mode: str = "auto",
+              box: tuple[int, int, int, int] | None = None) -> tuple[np.ndarray, str, np.ndarray]:
+    """(채운 그림, 실제로 쓴 방식, 바뀐 픽셀). 바뀌는 픽셀은 글자 자리(rect_avg면 줄 사각형)뿐이다."""
+    if mode not in MODES:
+        mode = "auto"
+    kind = background_kind(img, tm)
+    used = mode if mode != "auto" else {"solid": "solid", "pattern": "pattern", "image": "inpaint"}[kind]
+    out = img.copy()
+    m = tm.mask
+    if not m.any():
+        return out, used, m
+    if used == "rect_avg":
+        changed = np.zeros(m.shape, bool)
+        H, W = m.shape
+        bx0, by0, bx1, by1 = box or (0, 0, W, H)
+        for x0, y0, x1, y1 in _rects(m, tm.glyph_px):
+            x0, y0, x1, y1 = max(bx0, x0 - 1), max(by0, y0 - 1), min(bx1, x1 + 1), min(by1, y1 + 1)
+            r = np.zeros(m.shape, bool)
+            r[max(0, y0 - 3):min(H, y1 + 3), max(0, x0 - 3):min(W, x1 + 3)] = True
+            r[y0:y1, x0:x1] = False
+            r &= ~m
+            col = img[r].mean(axis=0) if r.sum() else img[y0:y1, x0:x1].reshape(-1, 3).mean(axis=0)
+            out[y0:y1, x0:x1] = np.clip(np.rint(col), 0, 255).astype(np.uint8)
+            changed[y0:y1, x0:x1] = True
+        return out, used, changed
+    if used == "solid":
+        known = ~cv2.dilate(m.astype(np.uint8), _disk(1)).astype(bool)
+        f = img.astype(np.float32)
+        w = cv2.GaussianBlur(known.astype(np.float32), (0, 0), 6)
+        bgs = cv2.GaussianBlur(f * known[..., None], (0, 0), 6) / np.maximum(w, 1e-4)[..., None]
+        for s in (12, 24, 48):  # 큰 글자 속처럼 주변이 먼 곳은 더 넓게
+            hole = w < 0.02
+            if not hole.any():
+                break
+            w2 = cv2.GaussianBlur(known.astype(np.float32), (0, 0), s)
+            b2 = cv2.GaussianBlur(f * known[..., None], (0, 0), s) / np.maximum(w2, 1e-4)[..., None]
+            bgs = np.where(hole[..., None], b2, bgs)
+            w = np.where(hole, w2, w)
+        out[m] = np.clip(np.rint(bgs[m]), 0, 255).astype(np.uint8)
+        return out, used, m
+    radius = 3 if used == "pattern" else 5
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    bgr = cv2.inpaint(bgr, m.astype(np.uint8) * 255, radius, cv2.INPAINT_TELEA)
+    out = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    out[~m] = img[~m]
+    return out, used, m

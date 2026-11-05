@@ -169,13 +169,17 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> E
     out_doc = pymupdf.open(stream=src_bytes, filetype="pdf")
     out_doc.select([p - 1 for p in pages])
 
+    from app.workspace import file_settings
+
+    card_modes = file_settings(project.root).get("erase_modes", {})  # 카드별 지우기 방식 {쪽: {영역: 방식}}
     page_metas = []
     results = []
     for i, pno in enumerate(pages):
         if cancel:
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
-        r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno)
+        r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno,
+                       modes=card_modes.get(str(pno)))
         page_metas.append({
             "schema": SCHEMA,
             "source_pdf": str(src_path),
@@ -629,7 +633,7 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
     info = workspace.load_project_info(project_dir)
     if not icons.pending_count(info):
         return IconScanResult("done")
-    work = info.dir / "work" / "icons"
+    work = info.game_dir / "work" / "icons"
     res = icons.scan(info, work)
     out = IconScanResult("done", auto=res.auto)
     if not res.occurrences:
@@ -643,7 +647,7 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
             icons._save_scan(work, res)
         except (Paused, CardError, NotAvailable, Exception) as e:  # noqa: BLE001 - 제안 없이도 검증은 할 수 있다
             note = f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
-    xlsx = icons.export_review(info, res, info.dir / "아이콘_검증.xlsx")
+    xlsx = icons.export_review(info, res, info.game_dir / "아이콘_검증.xlsx")  # 아이콘 검증은 게임 단위
     return IconScanResult("icons_review", xlsx, res.auto, len(res.groups), len(res.occurrences),
                           sum(1 for o in res.occurrences if not o.png), note)
 
@@ -663,7 +667,7 @@ def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
-    work = info.dir / "work" / "icons"
+    work = info.game_dir / "work" / "icons"
     if not (work / "scan.json").exists():
         return IconImportResult("blocked", blocking=["아이콘 찾기 결과가 없습니다 (find-icons를 먼저 하세요)"])
     r = icons.import_review(info, Path(xlsx), work)
@@ -697,7 +701,7 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
     from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
 
     info = workspace.load_project_info(project_dir)
-    status = glossary.extraction_status(info)
+    status = glossary.extraction_status(info, game=True)  # 용어집 검증은 게임 단위 (모든 프로젝트)
     if not status:
         return GlossaryReviewResult("blocked", reason="프로젝트에 파일이 없습니다 (add-files로 넣으세요)")
     issues = []
@@ -719,7 +723,7 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
                                     reason=f"이름을 정할 아이콘 묶음 {ic.groups}개 ({ic.occurrences}곳)"
                                            + (f", 위치 못 찾음 {ic.not_found}곳" if ic.not_found else "")
                                            + (f". {ic.reason}" if ic.reason else ""))
-    sources = glossary.collect_sources(info)
+    sources = glossary.collect_sources(info, game=True)
     if not sources:
         return GlossaryReviewResult("blocked", issues=issues, reason="추출한 원문이 없습니다")
     if client is None:
@@ -729,15 +733,17 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
             return GlossaryReviewResult("blocked", issues=issues, reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
     try:
         terms, api_usd, equiv = glossary.find_candidates(info, sources, client, GLOSSARY_MODEL,
-                                                         info.dir / "work" / "glossary")
+                                                         info.game_dir / "work" / "glossary")
     except Paused as p:
         from app.extract import _iso_after
 
         return GlossaryReviewResult("paused", issues=issues, reason=p.reason, retry_after=_iso_after(p.retry_after_s))
     except (CardError, NotAvailable) as e:
         return GlossaryReviewResult("blocked", issues=issues, reason=str(e))
-    out = glossary.export_review(info, terms, info.dir / "용어집_검증.xlsx")
-    workspace.set_status(info, "glossary_review")
+    out = glossary.export_review(info, terms, info.game_dir / "용어집_검증.xlsx")
+    for p_ in workspace.game_projects(info):  # 같은 게임의 프로젝트가 함께 용어집 검증 단계로
+        if p_.dir == info.dir or p_.status in ("extracting", "glossary_review"):
+            workspace.set_status(p_, "glossary_review")
     return GlossaryReviewResult("review_ready", out, sum(not t.confirmed for t in terms),
                                 sum(t.confirmed for t in terms), issues, equiv_usd=equiv, spent_usd=api_usd)
 
@@ -766,8 +772,12 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
         return GlossaryConfirmResult("needs_confirmation", terms=len(res.terms), issues=res.issues)
     c = glossary.confirm(info, res.terms)
     # 번역한 뒤 다시 가져와도 번역이 바뀐 용어가 없으면 번역 상태를 그대로 둔다 (바뀌면 다시 번역해야 함)
-    keep = info.status in ("translating", "translated") and not c["changed"]
-    workspace.set_status(info, info.status if keep else "glossary_confirmed", glossary_version=c["version"])
+    # 용어집은 게임 단위: 같은 게임에서 용어집 검증 중이던 프로젝트도 함께 확정된다
+    for p_ in workspace.game_projects(info):
+        if p_.dir != info.dir and p_.status != "glossary_review":
+            continue
+        keep = p_.status in ("translating", "translated") and not c["changed"]
+        workspace.set_status(p_, p_.status if keep else "glossary_confirmed", glossary_version=c["version"])
     return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues)
 
 
@@ -810,18 +820,54 @@ def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine:
     return r
 
 
-def export_project_excel(project_dir: Path | str, force: bool = False) -> list[Path]:
-    """게임 프로젝트의 파일마다 번역 검수 엑셀을 만든다 (초벌 번역·용어 검사 포함)."""
+def game_dir(project_dir: Path | str) -> Path:
+    """프로젝트가 속한 게임 폴더 (용어집·아이콘 검증, 번역 검수 엑셀이 있는 곳)."""
     from app import workspace
 
+    return workspace.load_project_info(project_dir).game_dir
+
+
+def review_xlsx_for(file_dir: Path | str) -> Path | None:
+    """파일의 번역 검수 엑셀: 게임 검수 엑셀에 이 파일이 있으면 그것, 없으면 예전 파일별 엑셀, 둘 다 없으면 None."""
+    from app import workspace
+    from app.excel_io import game_files
+
+    fd = Path(file_dir)
+    info = workspace.project_of(fd)
+    if info is not None:
+        gx = info.game_dir / "번역_검수.xlsx"
+        if gx.exists():
+            files = game_files(gx) or []
+            pdf = next((fd / "source").glob("*.pdf"), None)
+            if any(f["프로젝트"] == info.name and f["그룹"] == fd.parent.parent.name and pdf and f["원본 파일"] == pdf.name
+                   for f in files):
+                return gx
+    legacy = fd / "번역_검수.xlsx"
+    return legacy if legacy.exists() else None
+
+
+def export_project_excel(project_dir: Path | str, force: bool = False) -> list[Path]:
+    """게임의 번역 검수 엑셀 하나(games/<게임>/번역_검수.xlsx)를 만든다: 같은 게임의 모든 프로젝트, 그룹마다 시트.
+    이미 있으면 FileExistsError (force면 다시 만들되 사람이 고친 번역·메모·글자 크기는 옮겨 담는다)."""
+    from app import workspace
+    from app.excel_io import export_game, group_of, read_human_edits
+
     info = workspace.load_project_info(project_dir)
-    out = []
-    for fd in workspace.file_dirs(info):
-        try:
-            out.append(export_excel(fd, force=force))
-        except FileExistsError:
-            raise
-    return out
+    out = info.game_dir / "번역_검수.xlsx"
+    if out.exists() and not force:
+        raise FileExistsError(str(out))
+    keep = read_human_edits(out) if out.exists() else {}
+    entries = []
+    for p_ in workspace.game_projects(info):
+        for fd in workspace.file_dirs(p_):
+            try:
+                proj = load_project(fd)
+            except FileNotFoundError:
+                continue  # 영역 템플릿이 없는 그룹
+            pages = workspace.included_pages(fd)
+            if pages:
+                entries.append({"project_name": p_.name, "group": group_of(proj), "project": proj, "pages": pages})
+    return [export_game(info.game, entries, out, keep=keep)]
 
 
 # ---------------------------------------------------------------- 7·8단계를 프로젝트 단위로 (모든 그룹·파일)
@@ -919,8 +965,8 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
             out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑧ 글자 지우기)"})
             out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
             continue
-        xlsx = fd / "번역_검수.xlsx"
-        if xlsx.exists() and not use_draft:
+        xlsx = review_xlsx_for(fd)
+        if xlsx and not use_draft:
             r = compose(fd, excel=xlsx, accept_issues=accept_issues, progress=progress, cancel=cancel)
             src = "번역_검수.xlsx"
         else:
@@ -961,6 +1007,10 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResul
 # ================================================================ 화면용 (PySide6 등)
 # 화면은 아래 함수와 위의 작업 함수만 부른다. 결과는 경로·상태를 담은 dict/dataclass로 준다.
 REGION_KINDS = ("text", "tag_pills")
+# 글자 지우기 방식 (그림 카드, app.erase_text). [(키, 화면 문구)]
+ERASE_MODES = [("auto", "자동 (배경 보고 고름)"), ("solid", "단색: 주변 색으로 덮기"),
+               ("pattern", "무늬: 주변 무늬로 채우기"), ("rect_avg", "그림: 사각형 + 평균색"),
+               ("inpaint", "그림: 뒤 그림 유추해 채우기")]
 ALIGNS = ("left", "center", "right")
 
 
@@ -1008,7 +1058,7 @@ def project_overview(project_dir: Path | str) -> dict:
                 "exclude_reason": workspace.file_settings(fd).get("exclude_reason", ""),
                 "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
                 "composed": (fd / "translated" / "translated.pdf").exists(),
-                "review_xlsx": (fd / "번역_검수.xlsx") if (fd / "번역_검수.xlsx").exists() else None,
+                "review_xlsx": review_xlsx_for(fd),
                 "no_regions": no_regions,
             })
         n_regions = (len({r.get("name") for ps in (tdata.get("page_regions") or {}).values()
@@ -1059,6 +1109,14 @@ def set_pages(file_dir: Path | str, exclude: list[int], reason: str = "") -> dic
         raise ValueError(f"없는 쪽: {bad} (1~{n})")
     workspace.set_excluded_pages(Path(file_dir), exclude, reason)
     return {"excluded": sorted(set(exclude)), "included": workspace.included_pages(Path(file_dir), limited=False)}
+
+
+def move_pages_to_group(file_dir: Path | str, pages: list[int], group: str, *, new_group: bool = False) -> Path:
+    """한 파일의 쪽 일부를 다른 그룹(형식)으로 보낸다. 같은 PDF가 그 그룹에도 들어가 그 쪽만 처리되고,
+    이 그룹에서는 빠진다. 새 그룹이면 영역 지정이 필요하다."""
+    from app import workspace
+
+    return workspace.move_pages_to_group(Path(file_dir), pages, group, new_group=new_group)
 
 
 def page_count(file_dir: Path | str) -> int:
@@ -1288,7 +1346,7 @@ def icon_review(project_dir: Path | str) -> dict | None:
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
-    work = info.dir / "work" / "icons"
+    work = info.game_dir / "work" / "icons"
     if not (work / "scan.json").exists():
         return None
     res = icons.load_scan(work)
@@ -1300,7 +1358,7 @@ def icon_review(project_dir: Path | str) -> dict | None:
                        "suggest": gi.get("suggest", ""), "meaning": gi.get("meaning", ""), "ko": gi.get("ko", ""),
                        "count": len(members),
                        "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
-                       "where": [{"file_dir": info.dir / o.file, "page": o.page, "region": o.region, "line": o.line,
+                       "where": [{"file_dir": icons._occ_dir(info, o.file), "page": o.page, "region": o.region, "line": o.line,
                                   "png": o.png or None, "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
                                  for o in members],
                        "reason": members[0].reason if members and not gi.get("rep") else ""})
@@ -1313,7 +1371,7 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
-    work = info.dir / "work" / "icons"
+    work = info.game_dir / "work" / "icons"
     if not (work / "scan.json").exists():
         return IconImportResult("blocked", blocking=["아이콘 찾기 결과가 없습니다"])
     xl = [{"묶음": r["group"], "이름": r.get("name", ""), "뜻(원문)": r.get("meaning", ""),
@@ -1354,6 +1412,64 @@ def result_pages(run_dir: Path | str) -> list[dict]:
     return out
 
 
+def card_erase_info(file_dir: Path | str, page: int) -> dict:
+    """카드 한 장의 영역별 지우기: {영역: {"mode": 이 카드에 정한 방식, "default": 영역 설정, "used": 실제로 쓴 방식,
+    "needs_choice": 그림 배경이라 확인이 필요한가, "text_mask": 글자 모양만 지우는 영역인가}}."""
+    from app.workspace import file_settings
+
+    fd = Path(file_dir)
+    meta_f = fd / "cleared" / "meta" / f"page-{int(page):03d}.json"
+    meta = json.loads(meta_f.read_text(encoding="utf-8")) if meta_f.exists() else {"regions": []}
+    over = file_settings(fd).get("erase_modes", {}).get(str(int(page)), {})
+    proj = load_project(fd)
+    out = {}
+    for reg in proj.template.regions_for(int(page)):
+        m = next((r for r in meta["regions"] if r["name"] == reg.name), None)
+        tm = ((m or {}).get("erase") or {}).get("text_mask")
+        out[reg.name] = {"mode": over.get(reg.name), "default": (reg.erase or {}).get("mode") or "auto",
+                         "used": (tm or {}).get("used"), "needs_choice": bool((tm or {}).get("needs_choice")),
+                         "text_mask": tm is not None, "kind": reg.kind}
+    return out
+
+
+def set_card_erase_mode(file_dir: Path | str, page: int, region: str, mode: str | None) -> None:
+    """이 카드의 이 영역만 다른 방식으로 지운다 (None·빈 값이면 영역 설정을 따름). 반영은 redo_file로."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    if mode and mode not in dict(ERASE_MODES):
+        raise ValueError(f"모르는 지우기 방식: {mode}")
+    data = workspace.file_settings(fd)
+    modes = data.setdefault("erase_modes", {})
+    card = modes.setdefault(str(int(page)), {})
+    if mode:
+        card[region] = mode
+    else:
+        card.pop(region, None)
+    if not card:
+        modes.pop(str(int(page)), None)
+    if not modes:
+        data.pop("erase_modes", None)
+    workspace._write(fd / "file.json", data)
+
+
+def redo_file(file_dir: Path | str, progress: ProgressFn | None = None,
+              cancel: CancelToken | None = None) -> ComposeResult:
+    """파일 하나를 다시 지우고(지금 설정·카드별 방식으로) 한글을 다시 넣는다. 지운 쪽은 그대로.
+    검수 엑셀이 있으면 그것(확인 항목은 이미 본 것으로 봄), 없으면 초벌 번역으로 넣는다."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    pages = sorted(_cleared_pages(fd)) or workspace.included_pages(fd)
+    r = erase(fd, workspace.pages_spec(pages), progress=progress, cancel=cancel)
+    if not r.ok:
+        return ComposeResult("failed", error=r.error or "지우기 실패")
+    xlsx = review_xlsx_for(fd)
+    if xlsx:
+        return compose(fd, excel=xlsx, accept_issues=True, progress=progress, cancel=cancel)
+    return _compose_with_cards(fd, cards_from_translation(fd), progress, cancel)
+
+
 @dataclass
 class TestRunResult:
     state: str  # done | blocked
@@ -1383,8 +1499,8 @@ def test_run(file_dir: Path | str, pages: str, *, out_root: Path | str | None = 
     er = erase(fd, pages, test=True, out_root=root, progress=progress, cancel=cancel)
     if not er.ok:
         return TestRunResult("blocked", erase_dir=er.output_dir, reason=er.error or "지우기 실패")
-    xlsx = fd / "번역_검수.xlsx"
-    if xlsx.exists():
+    xlsx = review_xlsx_for(fd)
+    if xlsx:
         imp = import_translation(project, xlsx)
         cards, source = imp.cards, str(xlsx)
     else:

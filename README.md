@@ -47,13 +47,13 @@ python -m venv .venv
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차"
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차" --limit 3   # 시험 모드: 파일마다 앞 3장만 (번역·검수·지우기·한글 넣기도 그 카드만, 0이면 끄고 남은 카드부터)
-.venv/Scripts/python -m app.cli finish-extraction --project "projects/Dungeon 1차"           # -> 용어집_검증.xlsx
-# (이름 없는 아이콘 [[?]]가 있으면 finish-extraction이 먼저 아이콘_검증.xlsx를 만든다)
+.venv/Scripts/python -m app.cli finish-extraction --project "projects/Dungeon 1차"           # -> games/<게임>/용어집_검증.xlsx (같은 게임의 모든 프로젝트 원문)
+# (이름 없는 아이콘 [[?]]가 있으면 finish-extraction이 먼저 games/<게임>/아이콘_검증.xlsx를 만든다)
 .venv/Scripts/python -m app.cli find-icons --project "projects/Dungeon 1차"
-.venv/Scripts/python -m app.cli import-icons --project "projects/Dungeon 1차" --excel "projects/Dungeon 1차/아이콘_검증.xlsx"
-.venv/Scripts/python -m app.cli import-glossary --project "projects/Dungeon 1차" --excel "projects/Dungeon 1차/용어집_검증.xlsx"
+.venv/Scripts/python -m app.cli import-icons --project "projects/Dungeon 1차" --excel "games/Dungeon/아이콘_검증.xlsx"
+.venv/Scripts/python -m app.cli import-glossary --project "projects/Dungeon 1차" --excel "games/Dungeon/용어집_검증.xlsx"
 .venv/Scripts/python -m app.cli translate --project "projects/Dungeon 1차"              # 5단계: 확정 용어집 기준 초벌 번역
-.venv/Scripts/python -m app.cli export-excel --project "projects/Dungeon 1차"           # 파일마다 번역_검수.xlsx
+.venv/Scripts/python -m app.cli export-excel --project "projects/Dungeon 1차"           # games/Dungeon/번역_검수.xlsx (게임에 하나, 그룹마다 시트)
 .venv/Scripts/python -m app.cli erase-project --project "projects/Dungeon 1차"          # 7단계, 모든 파일
 .venv/Scripts/python -m app.cli compose-project --project "projects/Dungeon 1차"        # 8단계, 검수 엑셀 또는 초벌 번역
 .venv/Scripts/python -m app.cli set-pages --project "projects/Dungeon 1차" --file 아이템/Items --exclude 1   # 다른 형식의 쪽 빼기
@@ -90,3 +90,7 @@ Items.pdf(텍스트 레이어 없는 스캔, 위아래 반쪽 카드) 2~16쪽도
 화면(PySide6) 1차: 프로젝트 목록·새 프로젝트, 파일 넣기(기존/새 그룹), 뺄 쪽, 영역 지정 편집기(그리기·옮기기·크기·회전·글꼴·지우기 옵션, 모르는 항목 보존), 설정(데이터 폴더·엔진). exe 빌드는 3차.
 
 2단계 진행 중: 비전 글자 추출 구현(엔진: Claude Code 요금제 기본 / API 옵션, 모델 opus·sonnet·haiku, 이어 하기, API 일괄 처리·예산).
+
+게임 > 프로젝트(2026-11-05): 홈 화면은 게임 아래에 프로젝트를 보여 준다. 용어집·아이콘 사전·용어집 검증·아이콘 검증·번역 검수 엑셀은 게임 폴더(`games/<게임>/`)에 하나씩 있고 같은 게임의 모든 프로젝트가 함께 쓴다. 검수 엑셀은 그룹마다 시트(같은 그룹 이름이 여러 프로젝트에 있으면 ‘프로젝트·그룹’). 한 PDF에 형식이 다른 카드가 섞여 있으면 ‘뺄 쪽’ 창에서 체크한 쪽을 다른 그룹으로 보낸다.
+
+그림 카드 글자 지우기(2026-11-05): 텍스트 레이어가 없는 영역은 글자 픽셀만 찾아 그 자리만 채운다(`app/erase_text.py`). 영역마다 방식(자동·단색·무늬·사각형+평균색·뒤 그림 유추)을 영역 지정 창에서 고르고, 결과 보기에서 카드 한 장의 영역만 다른 방식으로 다시 지울 수 있다. 텍스트 레이어가 있는 PDF(ClearScan)와 예전 설정을 쓰는 영역은 예전 방식 그대로.

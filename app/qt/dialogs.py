@@ -11,7 +11,7 @@ from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QSpinBox,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
+    QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
 
 from app import service
@@ -89,7 +89,7 @@ def ask_choice(parent, title: str, text: str, buttons: list[tuple[str, str]], de
 class NewProjectDialog(QDialog):
     """새 게임 이름을 넣거나 기존 게임을 골라 프로젝트를 만든다 (PRD 0단계)."""
 
-    def __init__(self, root: Path, parent=None):
+    def __init__(self, root: Path, parent=None, game: str | None = None):
         super().__init__(parent)
         self.root = Path(root)
         self.created = None
@@ -99,7 +99,7 @@ class NewProjectDialog(QDialog):
         self.game.setEditable(True)
         self.games = [g["name"] for g in service.list_games(self.root)]
         self.game.addItems(self.games)
-        self.game.setCurrentText("")
+        self.game.setCurrentText(game or "")
         self.game.lineEdit().setPlaceholderText("기존 게임을 고르거나 새 게임 이름을 입력")
         self.lang = QComboBox()
         for k, t in LANGS:
@@ -388,14 +388,31 @@ class ExcludePagesDialog(QDialog):
             self.list.addItem(it)
         self.reason = QLineEdit(reason)
         self.reason.setPlaceholderText("뺀 이유 (예: 규칙 카드라 형식이 다름)")
+        # 한 PDF에 형식이 다른 카드가 섞여 있으면: 체크한 쪽을 다른 그룹에서 처리
+        self.moved = False
+        self.target = QComboBox()
+        pdir = self.file_dir.parents[3]
+        here = self.file_dir.parent.parent.name
+        for g in service.list_groups(pdir):
+            if g["dir"].name != here:
+                self.target.addItem(g["name"], g["name"])
+        self.target.addItem("새 그룹 만들기…", None)
+        send = QPushButton("체크한 쪽을 이 그룹으로 보내기")
+        send.clicked.connect(self.send_to_group)
+        mrow = QHBoxLayout()
+        mrow.addWidget(QLabel("다른 형식이면:"))
+        mrow.addWidget(self.target, 1)
+        mrow.addWidget(send)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("체크한 쪽은 추출·용어집·번역·지우기·한글 넣기에서 모두 빠집니다"))
+        lay.addWidget(QLabel("체크한 쪽은 추출·용어집·번역·지우기·한글 넣기에서 모두 빠집니다.\n"
+                             "다른 형식의 카드라면 아래에서 다른 그룹으로 보내면 그 그룹의 영역으로 처리합니다."))
         lay.addWidget(self.list, 1)
         lay.addWidget(self.reason)
+        lay.addLayout(mrow)
         lay.addWidget(bb)
         fit_to_screen(self, 900, 640, maximize_below=0)
 
@@ -405,6 +422,28 @@ class ExcludePagesDialog(QDialog):
 
     def accept(self):
         service.set_pages(self.file_dir, self.checked(), self.reason.text().strip())
+        super().accept()
+
+    def send_to_group(self):
+        pages = self.checked()
+        if not pages:
+            QMessageBox.warning(self, "보낼 쪽", "다른 그룹으로 보낼 쪽을 체크하세요")
+            return
+        group, new = self.target.currentData(), False
+        if group is None:
+            group, ok = QInputDialog.getText(self, "새 그룹", "새 그룹 이름 (카드 형식, 예: 정예 카드)")
+            group = (group or "").strip()
+            if not ok or not group:
+                return
+            new = True
+        try:
+            service.move_pages_to_group(self.file_dir, pages, group, new_group=new)
+        except (ValueError, FileExistsError) as e:
+            QMessageBox.warning(self, "보낼 수 없음", str(e))
+            return
+        self.moved = True
+        QMessageBox.information(self, "보냄", f"{len(pages)}쪽을 ‘{group}’ 그룹으로 보냈습니다. 이 그룹에서는 빠집니다."
+                                + ("\n새 그룹이므로 영역을 지정하세요." if new else ""))
         super().accept()
 
 

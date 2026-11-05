@@ -26,61 +26,118 @@ def open_path(p: Path) -> None:
 
 
 class HomePage(QWidget):
+    """게임 > 프로젝트 목록. 용어집·아이콘 사전·검수 엑셀은 게임에 속하고, 프로젝트는 게임 안의 작업 한 건이다."""
+
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
         self.root_label = QLabel()
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["프로젝트", "게임", "상태"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.doubleClicked.connect(lambda _i: self.open_selected())
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["게임 / 프로젝트", "상태", "게임 자료"])
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.itemDoubleClicked.connect(lambda _it, _c: self.open_selected())
         new = QPushButton("새 프로젝트")
+        new.setToolTip("고른 게임에 프로젝트를 만듭니다 (게임을 고르지 않았으면 새 게임도 만들 수 있음)")
         new.clicked.connect(self.new_project)
         opn = QPushButton("열기")
         opn.clicked.connect(self.open_selected)
+        folder = QPushButton("게임 폴더 열기")
+        folder.setToolTip("용어집·아이콘 검증 엑셀과 번역 검수 엑셀이 있는 게임 폴더")
+        folder.clicked.connect(self.open_game_folder)
         ref = QPushButton("새로 고침")
         ref.clicked.connect(self.refresh)
-        dele = QPushButton("삭제")
+        dele = QPushButton("프로젝트 삭제")
         dele.clicked.connect(self.delete_selected)
         btns = QHBoxLayout()
-        for b in (new, opn, ref, dele):
+        for b in (new, opn, folder, ref, dele):
             btns.addWidget(b)
         btns.addStretch(1)
-        title = QLabel("프로젝트")
+        title = QLabel("게임 · 프로젝트")
         title.setFont(QFont(title.font().family(), 14, QFont.Weight.Bold))
         lay = QVBoxLayout(self)
         lay.addWidget(title)
         lay.addWidget(self.root_label)
         lay.addLayout(btns)
-        lay.addWidget(self.table, 1)
+        lay.addWidget(self.tree, 1)
         self.projects: list[dict] = []
+        self.games: list[dict] = []
 
     def refresh(self):
         root = self.win.root
         self.root_label.setText(f"데이터 폴더: {root}")
         self.projects = service.list_projects(root)
-        self.table.setRowCount(len(self.projects))
-        for i, p in enumerate(self.projects):
-            for j, v in enumerate((p["name"], p["game"], service.STATUS_LABEL.get(p["status"], p["status"]))):
-                self.table.setItem(i, j, QTableWidgetItem(v))
+        self.games = service.list_games(root)
+        known = {g["name"] for g in self.games}
+        for p in self.projects:  # 게임 폴더가 없는 프로젝트(예전 데이터)도 보여 준다
+            if p["game"] not in known:
+                self.games.append({"name": p["game"], "dir": None, "terms": 0, "projects": [], "files": {}})
+                known.add(p["game"])
+        self.tree.clear()
+        bold = QFont(self.tree.font())
+        bold.setBold(True)
+        for g in self.games:
+            ps = [p for p in self.projects if p["game"] == g["name"]]
+            extra = [f"용어 {g['terms']}개"] if g.get("terms") else []
+            extra += [label for key, label in (("glossary_review", "용어집 검증"), ("icon_review", "아이콘 검증"),
+                                               ("translation_review", "검수 엑셀")) if (g.get("files") or {}).get(key)]
+            gi = QTreeWidgetItem([g["name"], f"프로젝트 {len(ps)}개", " · ".join(extra)])
+            gi.setFont(0, bold)
+            gi.setData(0, Qt.ItemDataRole.UserRole, ("game", g))
+            for p in ps:
+                pi = QTreeWidgetItem([p["name"], service.STATUS_LABEL.get(p["status"], p["status"]), ""])
+                pi.setData(0, Qt.ItemDataRole.UserRole, ("project", p))
+                gi.addChild(pi)
+            self.tree.addTopLevelItem(gi)
+            gi.setExpanded(True)
+
+    def selected(self):
+        it = self.tree.currentItem()
+        return it.data(0, Qt.ItemDataRole.UserRole) if it else None
+
+    def select_project(self, name: str) -> bool:
+        for i in range(self.tree.topLevelItemCount()):
+            gi = self.tree.topLevelItem(i)
+            for j in range(gi.childCount()):
+                if gi.child(j).data(0, Qt.ItemDataRole.UserRole)[1]["name"] == name:
+                    self.tree.setCurrentItem(gi.child(j))
+                    return True
+        return False
 
     def open_selected(self):
-        row = self.table.currentRow()
-        if 0 <= row < len(self.projects):
-            self.win.open_project(Path(self.projects[row]["dir"]))
+        sel = self.selected()
+        if not sel:
+            return
+        if sel[0] == "project":
+            self.win.open_project(Path(sel[1]["dir"]))
+        else:
+            it = self.tree.currentItem()
+            it.setExpanded(not it.isExpanded())
+
+    def _game_of_selection(self) -> str | None:
+        sel = self.selected()
+        return sel[1]["name"] if sel and sel[0] == "game" else (sel[1]["game"] if sel else None)
+
+    def open_game_folder(self):
+        game = self._game_of_selection()
+        g = next((x for x in self.games if x["name"] == game), None)
+        if not g or not g.get("dir"):
+            QMessageBox.information(self, "게임 고르기", "폴더를 열 게임(또는 그 게임의 프로젝트)을 고르세요")
+            return
+        open_path(Path(g["dir"]))
 
     def delete_selected(self):
-        row = self.table.currentRow()
-        if not 0 <= row < len(self.projects):
-            QMessageBox.information(self, "프로젝트 고르기", "삭제할 프로젝트를 고르세요")
+        sel = self.selected()
+        if not sel or sel[0] != "project":
+            QMessageBox.information(self, "프로젝트 고르기", "삭제할 프로젝트를 고르세요 (게임은 지우지 않습니다)")
             return
-        p = self.projects[row]
+        p = sel[1]
         if QMessageBox.question(
                 self, "프로젝트 삭제",
                 f"‘{p['name']}’ 프로젝트를 삭제할까요?\n\n그룹·파일·추출·번역·결과가 모두 데이터 폴더의 .trash로 옮겨집니다 "
-                f"(되살리려면 그 폴더에서 projects/로 다시 옮기세요).\n게임 ‘{p['game']}’의 용어집·아이콘 사전은 남습니다.") \
+                f"(되살리려면 그 폴더에서 projects/로 다시 옮기세요).\n게임 ‘{p['game']}’의 용어집·아이콘 사전·검수 엑셀은 남습니다.") \
                 != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -92,7 +149,7 @@ class HomePage(QWidget):
         self.refresh()
 
     def new_project(self):
-        dlg = NewProjectDialog(self.win.root, self)
+        dlg = NewProjectDialog(self.win.root, self, game=self._game_of_selection())
         if dlg.exec() and dlg.created:
             self.refresh()
             self.win.open_project(dlg.created)

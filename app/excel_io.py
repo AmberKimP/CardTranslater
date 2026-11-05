@@ -70,7 +70,8 @@ def group_of(project: Project) -> str:
     return project.root.parent.parent.name if project_of(project.root) else "-"
 
 
-def _font_sheet(wb, project: Project, group: str) -> None:
+def _font_sheet(wb, groups: list) -> None:
+    """groups: [(Project, 그룹 이름)] (그룹마다 영역 템플릿 하나)."""
     from openpyxl.styles import Font
 
     ws = wb.create_sheet(FONT_SHEET)
@@ -78,61 +79,63 @@ def _font_sheet(wb, project: Project, group: str) -> None:
     ws.append(head)
     for c in ws[1]:
         c.font = Font(bold=True)
-    for reg in project.template.regions:
-        st = reg.style or {}
-        font = st.get("font") or {}
-        ws.append([group, reg.name, reg.kind, font_label(st), font.get("file") or DEFAULT_FONT,
-                   font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf") or "-",
-                   font.get("bold_file") or "-", st.get("color", "#000000"), st.get("align", "left"),
-                   st.get("rotate") or 0, font.get("chosen") or ""])
+    for project, group in groups:
+        for reg in project.template.regions:
+            st = reg.style or {}
+            font = st.get("font") or {}
+            ws.append([group, reg.name, reg.kind, font_label(st), font.get("file") or DEFAULT_FONT,
+                       font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf") or "-",
+                       font.get("bold_file") or "-", st.get("color", "#000000"), st.get("align", "left"),
+                       st.get("rotate") or 0, font.get("chosen") or ""])
     for col, w in zip("ABCDEFGHIJK", (16, 10, 10, 34, 44, 40, 30, 9, 8, 6, 30)):
         ws.column_dimensions[col].width = w
     ws.protection.sheet = True
 
 
-def _icon_sheet(wb, project: Project, extracted: dict, pages: list[int], drafts: dict) -> int:
-    """원문에 든 아이콘의 쪽·영역·줄·순서와 상태. 사람이 확인할 줄 수를 돌려준다."""
+def _icon_sheet(wb, files: list, drafts: dict) -> int:
+    """원문에 든 아이콘의 쪽·영역·줄·순서와 상태. files: [(Project, 추출 결과, 쪽)]. 확인할 줄 수를 돌려준다."""
     from openpyxl.drawing.image import Image as XLImage
     from openpyxl.styles import Font, PatternFill
 
     from app import icons
     from app.workspace import project_of
 
-    info = project_of(project.root)
-    dic = icons.load_dictionary(info)["icons"] if info else {}
-    idir = icons.icons_dir(info) if info else None
     ws = wb.create_sheet(ICON_SHEET)
     head = ["key", "카드", "영역", "줄", "줄에서 순서", "아이콘", "그림", "상태", "번역에 있음", "원문"]
     ws.append(head)
     for c in ws[1]:
         c.font = Font(bold=True)
     need = PatternFill("solid", fgColor="F4B183")
-    pdf = project.source_pdf.name
     row, n_check = 2, 0
-    for pno in pages:
-        for reg in project.template.regions_for(pno):
-            ext = (extracted.get(pno) or {}).get(reg.name) or {}
-            src = ext.get("source")
-            if not isinstance(src, str):
-                continue
-            key = make_key(pdf, pno, reg.name)
-            for li, k, name in icons.tokens_in(src):
-                st, check_it = icons.token_status(name, dic, ext.get("icon_note", ""))
-                ko = drafts.get(key) or ""
-                ws.append([key, f"{pdf} p{pno}", reg.name, li, k, f"[[{name}]]", None, st,
-                           ("예" if f"[[{name}]]" in ko else "아니오") if ko else "번역 없음", src])
-                if check_it:
-                    n_check += 1
-                    for c in (6, 8):
-                        ws.cell(row, c).fill = need
-                p = idir / dic[name].get("file", f"{name}.png") if idir and name in dic else None
-                if p and p.exists():
-                    img = XLImage(str(p))
-                    sc = 20 / max(img.height, 1)
-                    img.width, img.height = int(img.width * sc), int(img.height * sc)
-                    ws.add_image(img, ws.cell(row, 7).coordinate)
-                    ws.row_dimensions[row].height = 18
-                row += 1
+    for project, extracted, pages in files:
+        info = project_of(project.root)
+        dic = icons.load_dictionary(info)["icons"] if info else {}
+        idir = icons.icons_dir(info) if info else None
+        pdf = project.source_pdf.name
+        for pno in pages:
+            for reg in project.template.regions_for(pno):
+                ext = (extracted.get(pno) or {}).get(reg.name) or {}
+                src = ext.get("source")
+                if not isinstance(src, str):
+                    continue
+                key = make_key(pdf, pno, reg.name)
+                for li, k, name in icons.tokens_in(src):
+                    st, check_it = icons.token_status(name, dic, ext.get("icon_note", ""))
+                    ko = drafts.get(key) or ""
+                    ws.append([key, f"{pdf} p{pno}", reg.name, li, k, f"[[{name}]]", None, st,
+                               ("예" if f"[[{name}]]" in ko else "아니오") if ko else "번역 없음", src])
+                    if check_it:
+                        n_check += 1
+                        for c in (6, 8):
+                            ws.cell(row, c).fill = need
+                    p = idir / dic[name].get("file", f"{name}.png") if idir and name in dic else None
+                    if p and p.exists():
+                        img = XLImage(str(p))
+                        sc = 20 / max(img.height, 1)
+                        img.width, img.height = int(img.width * sc), int(img.height * sc)
+                        ws.add_image(img, ws.cell(row, 7).coordinate)
+                        ws.row_dimensions[row].height = 18
+                    row += 1
     if row == 2:
         ws.append(["(아이콘 없음)"])
     for col, w in zip("ABCDEFGHIJ", (28, 18, 10, 5, 9, 14, 7, 40, 10, 60)):
@@ -186,37 +189,40 @@ def read_human_edits(xlsx_path: Path) -> dict:
     번역이 초벌 번역과 다르거나, 메모·글자 크기를 적은 행만."""
     from openpyxl import load_workbook
 
+    files = game_files(xlsx_path)
     wb = load_workbook(xlsx_path, data_only=True)
-    if SHEET not in wb.sheetnames:
-        return {}
-    ws = wb[SHEET]
-    head = [c.value for c in ws[1]]
-    if "key" not in head:
-        return {}
-    ix = {h: head.index(h) for h in head if h}
+    if files is not None:  # 게임 검수 엑셀: {"시트|key": ...}
+        sheets = [(f["시트"], f"{f['시트']}|") for f in files]
+        sheets = list(dict.fromkeys(sheets))
+    else:
+        sheets = [(SHEET, "")]
     out = {}
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        key = r[ix["key"]]
-        if not key:
+    for name, prefix in sheets:
+        if name not in wb.sheetnames:
             continue
-        vals = {h: r[ix[h]] for h in KEEP_COLS if h in ix}
-        edited = ("초벌 번역" in ix and vals.get("번역") != r[ix["초벌 번역"]]) or vals.get("메모") or vals.get("글자 크기")
-        if edited:
-            out[str(key)] = vals
+        ws = wb[name]
+        head = [c.value for c in ws[1]]
+        if "key" not in head:
+            continue
+        ix = {h: head.index(h) for h in head if h}
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            key = r[ix["key"]]
+            if not key:
+                continue
+            vals = {h: r[ix[h]] for h in KEEP_COLS if h in ix}
+            edited = ("초벌 번역" in ix and vals.get("번역") != r[ix["초벌 번역"]]) or vals.get("메모") or vals.get("글자 크기")
+            if edited:
+                out[prefix + str(key)] = vals
     return out
 
 
-def export_translation(project: Project, out_path: Path, pages: list[int], keep: dict | None = None) -> Path:
-    """keep: read_human_edits()의 결과. 같은 key 행의 번역·메모·글자 크기를 그대로 옮긴다."""
-    import pymupdf
-    from openpyxl import Workbook
-    from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.comments import Comment
-    from openpyxl.styles import Alignment, Font, PatternFill, Protection
+GAME_KIND = "번역 검수(게임)"  # 게임 하나에 엑셀 하나, 그룹마다 시트 (정보 시트의 ‘종류’)
+GAME_INFO_HEAD = ["시트", "프로젝트", "그룹", "원본 파일", "원본 sha256", "쪽"]
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = SHEET
+
+def _setup_sheet(ws) -> None:
+    from openpyxl.styles import Font
+
     ws.append(HEADERS)
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -225,6 +231,22 @@ def export_translation(project: Project, out_path: Path, pages: list[int], keep:
     for h, wdt in widths.items():
         ws.column_dimensions[ws.cell(1, COL[h]).column_letter].width = wdt
     ws.freeze_panes = "B2"
+
+
+def _lock(ws) -> None:
+    # key·초벌 번역 등 앱이 채운 열은 잠근다 (암호 없음: 실수 방지용)
+    ws.protection.sheet = True
+    ws.protection.formatColumns = False
+    ws.protection.formatRows = False
+
+
+def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: int) -> tuple[int, dict]:
+    """파일 하나의 행을 row부터 쓴다. (다음 행, {key: 번역})."""
+    import pymupdf
+    from openpyxl.comments import Comment
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, PatternFill, Protection
+
     edit_fill = PatternFill("solid", fgColor="FFF8DC")
     unsure_fill = PatternFill("solid", fgColor="FFE066")
     no_verdict_fill = PatternFill("solid", fgColor="F4B183")  # 두 번 읽어도 결론 못 낸 칸 (주황)
@@ -237,7 +259,6 @@ def export_translation(project: Project, out_path: Path, pages: list[int], keep:
     group = group_of(project)
     fonts = {r.name: font_label(r.style) for r in project.template.regions}
     drafts: dict = {}
-    row = 2
     for pno in pages:
         card = project.samples.get(pno) or {}
         for reg in project.template.regions_for(pno):
@@ -286,23 +307,32 @@ def export_translation(project: Project, out_path: Path, pages: list[int], keep:
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             buf.seek(0)
-            xl = XLImage(buf)
-            ws.add_image(xl, ws.cell(row, COL["미리보기"]).coordinate)
+            ws.add_image(XLImage(buf), ws.cell(row, COL["미리보기"]).coordinate)
             ws.row_dimensions[row].height = max(30, img.height * 0.75 + 4)
             row += 1
     src_doc.close()
-    # key·초벌 번역 등 앱이 채운 열은 잠근다 (암호 없음: 실수 방지용)
-    ws.protection.sheet = True
-    ws.protection.formatColumns = False
-    ws.protection.formatRows = False
+    return row, drafts
 
-    n_icon_check = _icon_sheet(wb, project, extracted, pages, drafts)
-    _font_sheet(wb, project, group)
+
+def export_translation(project: Project, out_path: Path, pages: list[int], keep: dict | None = None) -> Path:
+    """파일 하나의 검수 엑셀 (예전 방식·명령줄). keep: read_human_edits()의 결과."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET
+    _setup_sheet(ws)
+    _row, drafts = _write_rows(ws, project, pages, keep, 2)
+    _lock(ws)
+    group = group_of(project)
+    extracted = load_extracted(project.root)
+    n_icon_check = _icon_sheet(wb, [(project, extracted, pages)], drafts)
+    _font_sheet(wb, [(project, group)])
 
     info = wb.create_sheet(INFO)
     for k, v in [
         ("프로젝트", project.root.name),
-        ("원본 파일", pdf),
+        ("원본 파일", project.source_pdf.name),
         ("원본 sha256", sha256_file(project.source_pdf)),
         ("원문 언어", project.template.source_language),
         ("내보낸 시각", time.strftime("%Y-%m-%d %H:%M:%S")),
@@ -322,6 +352,91 @@ def export_translation(project: Project, out_path: Path, pages: list[int], keep:
     return out_path
 
 
+def _sheet_title(label: str, used: set) -> str:
+    bad = set("[]:*?/\\")
+    t = "".join("_" if c in bad else c for c in label).strip() or "그룹"
+    t = t[:31]
+    base, n = t, 2
+    while t in used or t in (INFO, ICON_SHEET, FONT_SHEET):
+        suf = f" ({n})"
+        t = base[:31 - len(suf)] + suf
+        n += 1
+    used.add(t)
+    return t
+
+
+def export_game(game: str, entries: list[dict], out_path: Path, keep: dict | None = None) -> Path:
+    """게임 하나의 검수 엑셀: 그룹마다 시트 하나 (여러 프로젝트에 같은 이름의 그룹이 있으면 ‘프로젝트·그룹’).
+    entries: [{"project_name", "group", "project": Project, "pages"}]. keep: read_human_edits()의 결과
+    ({"시트|key": {...}})."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    names: dict = {}
+    for e in entries:
+        names.setdefault(e["group"], set()).add(e["project_name"])
+    used: set = set()
+    sheets: dict = {}
+    rows: dict = {}
+    info_rows, icon_files, font_groups, all_drafts = [], [], [], {}
+    for e in entries:
+        label = e["group"] if len(names[e["group"]]) == 1 else f"{e['project_name']}·{e['group']}"
+        sk = (e["project_name"], e["group"])
+        if sk not in sheets:
+            ws = wb.create_sheet(_sheet_title(label, used))
+            _setup_sheet(ws)
+            sheets[sk] = ws
+            rows[ws.title] = 2
+            font_groups.append((e["project"], label))
+        ws = sheets[sk]
+        k = {key.split("|", 1)[1]: v for key, v in (keep or {}).items() if key.split("|", 1)[0] == ws.title}
+        rows[ws.title], drafts = _write_rows(ws, e["project"], e["pages"], k, rows[ws.title])
+        all_drafts.update(drafts)
+        icon_files.append((e["project"], load_extracted(e["project"].root), e["pages"]))
+        info_rows.append([ws.title, e["project_name"], e["group"], e["project"].source_pdf.name,
+                          sha256_file(e["project"].source_pdf), ",".join(map(str, e["pages"]))])
+    for ws in sheets.values():
+        _lock(ws)
+    n_icon_check = _icon_sheet(wb, icon_files, all_drafts)
+    _font_sheet(wb, font_groups)
+    info = wb.create_sheet(INFO)
+    for k_, v in [("종류", GAME_KIND), ("게임", game), ("내보낸 시각", time.strftime("%Y-%m-%d %H:%M:%S")),
+                  ("앱 버전", APP_VERSION), ("확인할 아이콘", n_icon_check)]:
+        info.append([k_, v])
+    info.append([])
+    info.append(GAME_INFO_HEAD)
+    for r in info_rows:
+        info.append(r)
+    for col, w in zip("ABCDEF", (24, 16, 16, 24, 70, 40)):
+        info.column_dimensions[col].width = w
+    info.protection.sheet = True
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    return out_path
+
+
+def game_files(xlsx_path: Path) -> list | None:
+    """게임 검수 엑셀이면 파일 목록 [{"시트", "프로젝트", "그룹", "원본 파일", "원본 sha256", "쪽"}], 아니면 None."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx_path, read_only=True, data_only=True)
+    try:
+        if INFO not in wb.sheetnames:
+            return None
+        rows = list(wb[INFO].iter_rows(values_only=True))
+    finally:
+        wb.close()
+    meta = {str(r[0]): r[1] for r in rows if r and r[0] and len(r) > 1}
+    if meta.get("종류") != GAME_KIND:
+        return None
+    h = next((i for i, r in enumerate(rows) if r and list(r[:len(GAME_INFO_HEAD)]) == GAME_INFO_HEAD), None)
+    if h is None:
+        return []
+    return [dict(zip(GAME_INFO_HEAD, r)) for r in rows[h + 1:] if r and r[0]]
+
+
 @dataclass
 class ImportResult:
     cards: dict  # page -> {영역: {"source": ..., "ko": ..., "fixed_size_pt": ...}}  (samples.json과 같은 모양)
@@ -333,21 +448,40 @@ class ImportResult:
 def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
     from openpyxl import load_workbook
 
-    wb = load_workbook(xlsx_path, data_only=True)
+    from app.workspace import project_of
+
     res = ImportResult(cards={})
-    if SHEET not in wb.sheetnames or INFO not in wb.sheetnames:
-        res.blocking.append(f"`{SHEET}`·`{INFO}` 시트가 없습니다. 이 앱이 내보낸 엑셀인지 확인하세요")
-        return res
-
-    info = {str(r[0].value): r[1].value for r in wb[INFO].iter_rows(min_row=1) if r[0].value}
-    if info.get("프로젝트") != project.root.name:
-        res.blocking.append(f"다른 프로젝트의 엑셀입니다 (엑셀: {info.get('프로젝트')}, 지금: {project.root.name})")
-    if info.get("원본 sha256") and info.get("원본 sha256") != sha256_file(project.source_pdf):
-        res.blocking.append("엑셀을 내보낸 뒤 원본 PDF가 바뀌었습니다")
-    if res.blocking:
-        return res
-
-    ws = wb[SHEET]
+    files = game_files(xlsx_path)
+    wb = load_workbook(xlsx_path, data_only=True)
+    if files is not None:  # 게임 검수 엑셀: 이 파일의 그룹 시트에서 이 파일의 행만
+        pinfo = project_of(project.root)
+        pname, group, pdf_name = (pinfo.name if pinfo else "-"), group_of(project), project.source_pdf.name
+        info = next((f for f in files if f["프로젝트"] == pname and f["그룹"] == group and f["원본 파일"] == pdf_name),
+                    None)
+        if info is None:
+            res.blocking.append(f"게임 검수 엑셀에 이 파일이 없습니다 ({pname} / {group} / {pdf_name}). 검수 엑셀을 다시 만드세요")
+            return res
+        if info.get("원본 sha256") and info["원본 sha256"] != sha256_file(project.source_pdf):
+            res.blocking.append("엑셀을 내보낸 뒤 원본 PDF가 바뀌었습니다")
+        if info["시트"] not in wb.sheetnames:
+            res.blocking.append(f"시트가 없습니다: {info['시트']}")
+        if res.blocking:
+            return res
+        ws = wb[info["시트"]]
+        only_pdf = True
+    else:
+        if SHEET not in wb.sheetnames or INFO not in wb.sheetnames:
+            res.blocking.append(f"`{SHEET}`·`{INFO}` 시트가 없습니다. 이 앱이 내보낸 엑셀인지 확인하세요")
+            return res
+        info = {str(r[0].value): r[1].value for r in wb[INFO].iter_rows(min_row=1) if r[0].value}
+        if info.get("프로젝트") != project.root.name:
+            res.blocking.append(f"다른 프로젝트의 엑셀입니다 (엑셀: {info.get('프로젝트')}, 지금: {project.root.name})")
+        if info.get("원본 sha256") and info.get("원본 sha256") != sha256_file(project.source_pdf):
+            res.blocking.append("엑셀을 내보낸 뒤 원본 PDF가 바뀌었습니다")
+        if res.blocking:
+            return res
+        ws = wb[SHEET]
+        only_pdf = False
     head = [c.value for c in ws[1]]
     missing_cols = [h for h in ("key", "원문", "번역", "글자 크기") if h not in head]
     if missing_cols:
@@ -367,6 +501,8 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
         if not key:
             continue
         key = str(key).strip()
+        if only_pdf and key.split("#", 1)[0] != pdf:
+            continue  # 같은 그룹 시트의 다른 파일 행
         res.rows += 1
         if key in seen:
             res.blocking.append(f"key가 두 번 나옵니다: {key}")

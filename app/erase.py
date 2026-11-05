@@ -1000,9 +1000,22 @@ def detect_tag_labels(page, template: RegionTemplate, region: Region) -> list[di
             for lab, _bpx, bpt in _tag_labels_in(rect_pt, protect_pt, bg, before)]
 
 
+def uses_text_mask(reg: Region, has_text_layer: bool) -> bool:
+    """글자 모양만 지우는 방식(app.erase_text)을 쓸 영역인가.
+    텍스트 레이어가 없는 글자 영역(그림 카드) 또는 지우기 방식(erase.mode)을 정한 영역. 예전 설정
+    (keep_ink_taller_than_pt)을 쓰는 영역과 텍스트 레이어가 있는 영역은 지금까지의 방식을 그대로 쓴다."""
+    er = reg.erase or {}
+    if reg.kind != "text":
+        return False
+    if er.get("mode"):
+        return True
+    return not has_text_layer and not er.get("keep_ink_taller_than_pt")
+
+
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
-               params: CleanParams | None = None) -> PageErase:
-    """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다."""
+               params: CleanParams | None = None, modes: dict | None = None) -> PageErase:
+    """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다.
+    modes: 이 카드만 다르게 지울 영역 {영역 이름: 방식} (영역 설정 erase.mode보다 우선)."""
     import pymupdf
 
     warnings: list[str] = []
@@ -1034,6 +1047,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     forced_pt: list[Box] = []
     span_forced_pt: list[Box] = []
     used_spans: set[int] = set()
+    mask_regions: dict[str, str] = {}  # 글자 모양만 지울 영역 -> 방식
 
     for reg in template.regions:
         rect_pt = ratio_to_pt(reg.rect, prect)
@@ -1052,6 +1066,9 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             else:
                 partial_warn.append(f"span {_r(s['bbox'], 1)} 이 영역에 {r:.0%}만 걸쳐 지우지 않음")
         boxes = [rect_pt] + [s["bbox"] for s in assigned]
+        # 쪽에 텍스트 레이어가 조금이라도 있으면(ClearScan) 예전 방식: 빠진 제목도 그 방식으로 맞춰 왔다
+        if (modes or {}).get(reg.name) or uses_text_mask(reg, bool(assigned) or bool(spans)):
+            mask_regions[reg.name] = (modes or {}).get(reg.name) or (reg.erase or {}).get("mode") or "auto"
 
         labels_meta = []
         if reg.kind == "tag_pills":
@@ -1158,8 +1175,9 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         return (b[0] - cx0, b[1] - cy0, b[2] - cx0, b[3] - cy0)
 
     work_m = np.zeros((ch, cw), bool)
-    for b in work_px.values():
-        fill_box(work_m, local(b))
+    for name, b in work_px.items():
+        if name not in mask_regions:  # 글자 모양만 지울 영역은 아래에서 따로
+            fill_box(work_m, local(b))
     # 무조건 지울 픽셀: 텍스트 레이어가 실제로 칠한 픽셀(렌더 - 이미지 차이; 글자 모양 그대로)
     # + 태그 라벨 bbox + 인라인 이미지. span bbox 전체를 칠하지 않는 이유: bbox 안의 깨끗한
     # 종이 픽셀이 배경 추정에 필요하다.
@@ -1193,9 +1211,37 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     if any(m_.get("image_text_box_pt") for m_ in region_metas):
         protect_m |= non_paper_mask(raw[cy0:cy1, cx0:cx1]) & ~work_m
 
-    res = clean_area(raw[cy0:cy1, cx0:cx1], work_m, forced_m, protect_m, params, seed=seed)
+    if work_m.any():
+        res = clean_area(raw[cy0:cy1, cx0:cx1], work_m, forced_m, protect_m, params, seed=seed)
+    else:
+        z = np.zeros((ch, cw), bool)
+        res = CleanResult(raw[cy0:cy1, cx0:cx1].copy(), z, z.copy(), z.copy(), z.copy(), 0.0, 0.0)
     new_img = raw.copy()
     new_img[cy0:cy1, cx0:cx1] = res.image
+
+    # ---- 3b. 글자 모양만 지우기 (그림 카드): 글자 픽셀만 찾아 그 자리만 채운다 (app.erase_text)
+    from app import erase_text
+
+    text_mask_meta: dict[str, dict] = {}
+    for name, mode in mask_regions.items():
+        b = work_px[name]
+        mg = 24
+        ox0, oy0 = max(0, b[0] - mg), max(0, b[1] - mg)
+        ox1, oy1 = min(size[0], b[2] + mg), min(size[1], b[3] + mg)
+        sub = new_img[oy0:oy1, ox0:ox1]
+        lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
+        prot = protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
+        tm = erase_text.text_mask(sub, lb, prot)
+        filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
+        new_img[oy0:oy1, ox0:ox1] = filled
+        res.mask[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] |= changed
+        res.image[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] = filled
+        wa = max(1, (b[3] - b[1]) * (b[2] - b[0]))
+        text_mask_meta[name] = {
+            "mode": mode, "used": used, "background": erase_text.background_kind(sub, tm),
+            "mask_ratio": round(float(changed.sum()) / wa, 4), "texture": round(tm.texture, 2),
+            "needs_choice": mode == "auto" and tm.busy, "notes": tm.notes,
+        }
 
     # ---- 4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,
     # 영역(work_rect) 크기의 무손실 패치를 배경 이미지 픽셀 격자에 정확히 맞춰 위에 그린다.
@@ -1247,6 +1293,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         else:
             method = "none"
         flags = []
+        if m_["name"] in text_mask_meta:
+            bg_change = 0.0  # 글자 픽셀만 바꿨다 (바뀐 픽셀 = 지울 픽셀)
         if bg_change > 0.02:
             flags.append("배경 변화 큼")
         m_["work_rect_px"] = list(work_px[m_["name"]])
@@ -1256,7 +1304,13 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             m_["kept_above_text_boxes_px"] = [list(map(int, b)) for b in keep_above_px[m_["name"]]]
         m_["missing_from_text_layer"] = bool(missing)
         m_["image_text_detected"] = bool(img_text)
+        if m_["name"] in text_mask_meta:
+            tmm = text_mask_meta[m_["name"]]
+            method = f"text_mask:{tmm['used']}"
+            if tmm["needs_choice"]:
+                flags.append("그림 배경: 지우기 방식 확인")
         m_["erase"] = {
+            "text_mask": text_mask_meta.get(m_["name"]),
             "redacted_spans": len(m_["text_layer"]["spans"]),
             "removed_inline_images": sum(
                 1 for rb in removed_inline if overlap_ratio(rb, tuple(m_["rect_pt"])) > 0.5
