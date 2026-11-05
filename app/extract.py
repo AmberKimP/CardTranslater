@@ -63,6 +63,8 @@ Rules:
 - Keep punctuation as printed (full-width 、。！？「」（）, brackets such as [4階層] or [炎], dashes such as ——).
 - Region kind "tag_pills": colored rounded labels with short words. Output one label per line, left to right.
 - A small picture inside a sentence (an icon standing for a word) is written [[?]] at its position.
+  Never drop an icon: every picture between words must appear as [[?]] (e.g. "ごとに[[?]]を得る", not "ごとにを得る").
+  A number printed on the icon itself (a coin showing 3, a tile showing 2) belongs to the icon: write only [[?]].
   A line inside the region made only of icons, signs and numbers (e.g. a coin icon followed by +2, written
   [[?]] +2) IS text: keep it as its own line. Skip only decorative art, big stat numbers printed outside the
   region's text (card corners, badges), and small icons above a title.
@@ -121,8 +123,18 @@ def cost_usd(usage, model: str = MODEL, batch: bool = False) -> float:
 
 
 # ---------------------------------------------------------------- 요청 만들기
-def region_crop_png(page, region, max_px: int = MAX_CROP_PX) -> bytes:
-    """원본 쪽에서 영역을 잘라 PNG로 (180도 영역은 바로 세워서)."""
+def ocr_excludes(template, page_no: int) -> list:
+    """그 쪽의 ‘글자 읽기에서 빼기’ 보호 영역."""
+    try:
+        prot = template.protect_for(page_no)
+    except Exception:  # noqa: BLE001
+        prot = getattr(template, "protect", [])
+    return [p for p in prot if (p.extract or {}).get("ocr_exclude")]
+
+
+def region_crop_png(page, region, max_px: int = MAX_CROP_PX, exclude=None) -> bytes:
+    """원본 쪽에서 영역을 잘라 PNG로 (180도 영역은 바로 세워서).
+    exclude: 가릴 영역(보호 영역 중 ‘글자 읽기에서 빼기’). 그 자리는 그림의 바탕색으로 덮어 모델이 읽지 않게 한다."""
     import pymupdf
 
     from app.regions import ratio_to_pt
@@ -134,7 +146,32 @@ def region_crop_png(page, region, max_px: int = MAX_CROP_PX) -> bytes:
         dpi = int(max_px * 72 / long_pt)
     rot = int((region.style or {}).get("rotate", 0)) % 360
     mat = pymupdf.Matrix(dpi / 72, dpi / 72).prerotate(rot)
-    return page.get_pixmap(matrix=mat, clip=rect, alpha=False).tobytes("png")
+    pix = page.get_pixmap(matrix=mat, clip=rect, alpha=False)
+    boxes = []
+    for ex in exclude or []:
+        r = pymupdf.Rect(ratio_to_pt(ex.rect, tuple(page.rect))) & rect
+        if r.is_empty:
+            continue
+        s = dpi / 72
+        x0, y0, x1, y1 = (r.x0 - rect.x0) * s, (r.y0 - rect.y0) * s, (r.x1 - rect.x0) * s, (r.y1 - rect.y0) * s
+        if rot == 180:
+            x0, x1 = pix.width - x1, pix.width - x0
+            y0, y1 = pix.height - y1, pix.height - y0
+        boxes.append((int(x0), int(y0), int(x1 + 0.999), int(y1 + 0.999)))
+    if not boxes:
+        return pix.tobytes("png")
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
+    bgc = np.median(a.reshape(-1, 3), axis=0).astype(np.uint8)  # 그림 바탕색
+    for x0, y0, x1, y1 in boxes:
+        a[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = bgc
+    buf = io.BytesIO()
+    Image.fromarray(a).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def region_hint(reg) -> str:
@@ -158,7 +195,8 @@ def build_params(project, page_no: int, src_doc, model: str = MODEL, regions=Non
         content.append({"type": "text", "text": f"Region name: {reg.name} (kind: {reg.kind}). {region_hint(reg)}"})
         content.append({"type": "image", "source": {
             "type": "base64", "media_type": "image/png",
-            "data": base64.standard_b64encode(region_crop_png(page, reg)).decode("ascii"),
+            "data": base64.standard_b64encode(
+                region_crop_png(page, reg, exclude=ocr_excludes(project.template, page_no))).decode("ascii"),
         }})
     content.append({"type": "text", "text": "Return one entry per region, in the order given."})
     return {

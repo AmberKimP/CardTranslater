@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton,
     QVBoxLayout,
@@ -10,6 +14,28 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt import worker
 from app.qt.dialogs import show_error, show_failure, show_problem
+
+
+# 시작 화면 그림 (exe에서는 assets/가 함께 묶인다: packaging/build.py)
+LOGIN_IMAGE = Path(__file__).resolve().parent.parent.parent / "assets" / "login.jpg"
+
+
+def login_banner(width: int) -> QLabel | None:
+    """로그인 창 위의 그림. 화면이 낮으면 높이를 줄인다. 그림 파일이 없으면 None."""
+    if not LOGIN_IMAGE.exists():
+        return None
+    pm = QPixmap(str(LOGIN_IMAGE))
+    if pm.isNull():
+        return None
+    scr = QGuiApplication.primaryScreen()
+    max_h = int(scr.availableGeometry().height() * 0.42) if scr else 420
+    pm = pm.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+    if pm.height() > max_h:
+        pm = pm.scaledToHeight(max_h, Qt.TransformationMode.SmoothTransformation)
+    lab = QLabel()
+    lab.setPixmap(pm)
+    lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return lab
 
 
 class LoginDialog(QDialog):
@@ -85,6 +111,10 @@ class LoginDialog(QDialog):
         f.setBold(True)
         title.setFont(f)
         lay = QVBoxLayout(self)
+        banner = login_banner(620) if first_run else None  # 프로그램을 시작할 때만
+        if banner is not None:
+            lay.addWidget(banner)
+        self.banner = banner
         lay.addWidget(title)
         lay.addWidget(box(self.r_claude, self.claude_status, crow))
         lay.addWidget(box(self.r_api, krow, self.api_status, note))

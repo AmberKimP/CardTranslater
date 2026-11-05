@@ -48,7 +48,8 @@ def build() -> Path:
     print(f"[build] 글꼴 {n}개 파일")
     args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,
             "--distpath", str(ROOT / "dist"), "--workpath", str(work / "pyi"), "--specpath", str(work),
-            "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts"]
+            "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts",
+            "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets"]  # 로그인 화면 그림
     for m in EXCLUDE:
         args += ["--exclude-module", m]
     args.append(str(ROOT / "packaging" / "launch.py"))

@@ -287,3 +287,36 @@ def test_tiles_differing_only_in_digit_are_different_icons():
     a, b, a2 = icons.shape_pair(tile("1")), icons.shape_pair(tile("2")), icons.shape_pair(tile("1"))
     assert icons.same_icon(a, a2) > 0.95
     assert icons.same_icon(a, b) == 0.0
+
+
+def test_same_frame_different_content_or_number_are_different_icons():
+    """테두리·바탕이 같고 안의 내용(동전 숫자 3·5, 상자 안 동전·병)만 다르면 다른 아이콘. 크기만 다르면 같은 아이콘."""
+    import cv2
+
+    def coin(d, size=120):
+        img = np.zeros((size, size, 4), np.uint8)
+        c = size // 2
+        cv2.circle(img, (c, c), int(size * 0.46), (200, 160, 60, 255), -1)
+        cv2.circle(img, (c, c), int(size * 0.46), (120, 90, 30, 255), max(2, size // 30))
+        cv2.putText(img, d, (int(size * 0.3), int(size * 0.68)), cv2.FONT_HERSHEY_SIMPLEX, size / 50, (90, 60, 20, 255),
+                    max(2, size // 30))
+        return img
+
+    def crate(inner, size=120):
+        img = np.zeros((size, size, 4), np.uint8)
+        cv2.rectangle(img, (0, 0), (size - 1, size - 1), (120, 70, 40, 255), -1)
+        cv2.rectangle(img, (0, 0), (size - 1, size - 1), (60, 30, 20, 255), max(2, size // 25))
+        c, r = size // 2, size // 4
+        if inner == "coin":
+            cv2.circle(img, (c, c), r, (200, 170, 60, 255), -1)
+        else:  # 병: 좁은 목 + 둥근 몸통
+            cv2.rectangle(img, (c - r // 4, c - r), (c + r // 4, c - r // 3), (230, 200, 200, 255), -1)
+            cv2.circle(img, (c, c + r // 3), int(r * 0.7), (220, 60, 80, 255), -1)
+        return img
+
+    c3, c3s, c5 = icons.shape_pair(coin("1")), icons.shape_pair(coin("1", 60)), icons.shape_pair(coin("8"))
+    assert icons.same_icon(c3, c3s) > 0  # 크기만 다름
+    assert icons.same_icon(c3, c5) == 0.0  # 숫자가 다름
+    gold, red = icons.shape_pair(crate("coin")), icons.shape_pair(crate("potion"))
+    assert icons.same_icon(gold, icons.shape_pair(crate("coin", 80))) > 0
+    assert icons.same_icon(gold, red) == 0.0

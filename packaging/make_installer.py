@@ -1,0 +1,47 @@
+"""설치 파일 만들기 (Inno Setup 6의 ISCC.exe).
+
+    .venv/Scripts/python packaging/build.py            # 먼저 dist/CardTranslater/
+    .venv/Scripts/python packaging/make_installer.py   # dist/CardTranslater-Setup-<버전>.exe
+
+버전은 날짜로 정한다 (1.0.YYYYMMDD). Inno Setup이 없으면: winget install JRSoftware.InnoSetup
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def find_iscc() -> Path | None:
+    cands = [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+             Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"), Path(r"C:\Program Files\Inno Setup 6\ISCC.exe")]
+    found = shutil.which("iscc")
+    if found:
+        cands.insert(0, Path(found))
+    return next((c for c in cands if c.exists()), None)
+
+
+def main() -> int:
+    exe = ROOT / "dist" / "CardTranslater" / "CardTranslater.exe"
+    if not exe.exists():
+        print("먼저 빌드하세요: .venv/Scripts/python packaging/build.py")
+        return 1
+    iscc = find_iscc()
+    if iscc is None:
+        print("Inno Setup이 없습니다: winget install JRSoftware.InnoSetup")
+        return 1
+    version = time.strftime("1.0.%Y%m%d")
+    subprocess.run([str(iscc), f"/DAppVersion={version}", str(ROOT / "packaging" / "installer.iss")], check=True)
+    out = ROOT / "dist" / f"CardTranslater-Setup-{version}.exe"
+    print(f"[installer] {out} ({out.stat().st_size / 1e6:.1f} MB)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

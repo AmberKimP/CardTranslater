@@ -228,3 +228,51 @@ def test_label_pill_text_is_text_and_icon_only_and_extra_lines_are_kept():
     assert not tm.mask[12:26, 285:340].any()  # 원문에 없는 카드 번호는 남김
     assert not tm.mask[110:142, 115:145].any()  # 아이콘만 있는 줄의 숫자도 남김
     assert erase_text.is_icon_line("4[[coin]] [[tile]]") and not erase_text.is_icon_line("迷宮[[x]]")
+
+
+def test_small_protect_box_does_not_clip_region_width():
+    """영역 높이 일부만 덮는 작은 보호 사각형(카드 번호)은 영역을 자르지 않는다. 세로 띠 보호 영역은 자른다."""
+    from app.regions import clip_horizontally
+
+    region = (18.0, 36.0, 162.0, 68.0)
+    assert clip_horizontally(region, [(132.0, 64.0, 166.0, 72.0)]) == region  # 아래쪽 4pt만 걸침
+    assert clip_horizontally(region, [(140.0, 0.0, 180.0, 250.0)])[2] == 140.0  # 오른쪽 세로 띠
+
+
+def test_ocr_exclude_area_is_painted_out_of_extraction_crop():
+    import io
+
+    from PIL import Image
+
+    from app.extract import region_crop_png
+    from app.regions import RatioRect, Region, _protect
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=100)
+    page.draw_rect(pymupdf.Rect(150, 10, 190, 30), color=None, fill=(0, 0, 0))  # 카드 번호 자리 (검정)
+    reg = Region("제목", RatioRect(0.0, 0.0, 1.0, 0.5))
+    ex = _protect({"name": "번호", "rect": {"x": 0.7, "y": 0.05, "w": 0.3, "h": 0.3}, "ocr_exclude": True})
+    assert ex.extract.get("ocr_exclude")
+    plain = np.array(Image.open(io.BytesIO(region_crop_png(page, reg))).convert("L"))
+    masked = np.array(Image.open(io.BytesIO(region_crop_png(page, reg, exclude=[ex]))).convert("L"))
+    h, w = plain.shape
+    box = (slice(int(h * 0.3), int(h * 0.5)), slice(int(w * 0.8), int(w * 0.9)))
+    assert plain[box].mean() < 50 and masked[box].mean() > 200  # 읽기 제외 자리는 바탕색으로 덮임
+
+
+def test_region_align_modes_for_line_slots():
+    """영역 정렬 설정: 왼쪽(글 칸 왼쪽 끝) · 가운데(영역 가운데) · 오른쪽(글 칸 오른쪽 끝) · 원래 위치 그대로."""
+    lay = _layout()
+    lay["lines"][1]["bbox_pt"] = [40, 32, 110, 40]  # 둘째 줄은 들여 쓴 줄
+    rect = (10, 10, 170, 100)
+
+    def boxes(align):
+        doc = pymupdf.open()
+        page = doc.new_page(width=180, height=110)
+        return compose_layout_region(page, rect, "첫 줄\n둘째\n+2\n아래", {"align": align} if align else {}, lay)["line_boxes_pt"]
+
+    left, orig, center, right = boxes("left"), boxes("original"), boxes("center"), boxes("right")
+    assert abs(left[1][0] - 20) < 1  # 글 칸 왼쪽 끝(가장 왼쪽 원문 줄 20)
+    assert abs(orig[1][0] - 40) < 1  # 그 줄의 원문 시작점
+    assert all(abs((b[0] + b[2]) / 2 - 90) < 1.5 for b in center)  # 영역 가운데
+    assert all(abs(b[2] - 150) < 1.5 for b in right[:2])  # 글 칸 오른쪽 끝(150)

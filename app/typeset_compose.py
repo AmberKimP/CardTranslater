@@ -286,8 +286,9 @@ def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pi
         st.rotate, st.pivot = 180, pivot
     if "color" not in style_d:
         st.color = ln["color"]
-    if "align" not in style_d:
-        st.align = ln.get("align", "left")
+    mode = style_d.get("align") or ""  # 영역 설정: ''(자동) | left | center | right | original(원래 위치 그대로)
+    if mode in ("", "original"):
+        st.align = ln.get("align", "left") if mode == "" else "left"
     st.bold = bool(style_d.get("bold", ln.get("bold", False)))
     if ln.get("stroke_color") and not style_d.get("stroke_color") and ln.get("stroke_pt"):
         st.stroke_color = ln["stroke_color"]
@@ -392,7 +393,17 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 pad = 0.5 * gh
                 cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
                 top = cy - gh / 2
-                if st.align == "center":
+                mode = style_d.get("align") or ""
+                if mode == "center":  # 영역 가운데
+                    st.align = "center"
+                    r = pymupdf.Rect(rect.x0, top, rect.x1, top + 1.6 * gh)
+                elif mode == "left":  # 글 칸의 왼쪽 끝(가장 왼쪽 원문 줄)
+                    r = pymupdf.Rect(left, top, min(rect.x1, right + pad), top + 1.6 * gh)
+                elif mode == "right":  # 글 칸의 오른쪽 끝(가장 오른쪽 원문 줄)
+                    r = pymupdf.Rect(max(rect.x0, left - pad), top, right, top + 1.6 * gh)
+                elif mode == "original":  # 원래 위치 그대로: 그 줄의 원문 시작점에서
+                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + 1.6 * gh)
+                elif st.align == "center":  # 자동: 원문 줄의 정렬을 따른다
                     cx = (b[0] + b[2]) / 2
                     hw = max(min(cx - rect.x0, rect.x1 - cx), (b[2] - b[0]) / 2)
                     hw = min(hw, max(cx - left, right - cx) + pad)
@@ -413,8 +424,13 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             gh = ln0["glyph_h_pt"]
             top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
             bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)
-            x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
-            r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + 1.6 * gh))
+            mode = style_d.get("align") or ""
+            if mode == "center":
+                st.align = "center"
+                r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + 1.6 * gh))
+            else:
+                x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
+                r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + 1.6 * gh))
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.extract import SYSTEM_PROMPT, Paused, region_crop_png
+from app.extract import SYSTEM_PROMPT, Paused, ocr_excludes, region_crop_png
 
 CC_MODEL_ALIAS = {"claude-opus-5-5": "opus", "claude-sonnet-5-5": "sonnet", "claude-haiku-5-5": "haiku"}
 CALL_TIMEOUT_S = 600
@@ -77,7 +77,7 @@ class ClaudeCodeClient:
         page = src_doc[page_no - 1]
         for i, reg in enumerate(regions, start=1):
             f = crop_dir / f"region{i:02d}.png"
-            f.write_bytes(region_crop_png(page, reg))
+            f.write_bytes(region_crop_png(page, reg, exclude=ocr_excludes(project.template, page_no)))
             lines.append(f"- {f.name}: region name {reg.name} (kind: {reg.kind}). {region_hint(reg)}")
         prompt = (f"Source language: {lang}. Card page {page_no}. Read these region images in order:\n"
                   + "\n".join(lines) + "\nReturn one entry per region, in the order given.")

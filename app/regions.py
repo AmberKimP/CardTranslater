@@ -93,7 +93,9 @@ def _region(r: dict) -> Region:
 
 
 def _protect(p: dict) -> Region:
-    return Region(name=p["name"], rect=RatioRect.from_dict(p["rect"]), kind="protect")
+    """보호 영역 (지우지 않음). ocr_exclude면 글자 읽기(추출) 그림에서도 가린다 (카드 번호·장식 글자 등)."""
+    return Region(name=p["name"], rect=RatioRect.from_dict(p["rect"]), kind="protect",
+                  extract={"ocr_exclude": True} if p.get("ocr_exclude") else {})
 
 
 def page_key(file_name: str, page: int) -> str:
@@ -221,6 +223,10 @@ def clip_horizontally(b: Box, protect: Iterable[Box]) -> Box:
     x0, y0, x1, y1 = b
     for p in protect:
         if area(intersect((x0, y0, x1, y1), p)) <= 0:
+            continue
+        # 영역 높이의 일부만 덮는 작은 보호 사각형(카드 번호 등)은 영역을 자르지 않는다:
+        # 그 픽셀만 지키면 된다 (지우기의 보호 마스크). 자르면 그 오른쪽 글자가 통째로 안 지워진다
+        if min(y1, p[3]) - max(y0, p[1]) < 0.8 * (y1 - y0):
             continue
         cx = (x0 + x1) / 2
         if p[0] <= x0 < p[2] and p[2] < x1:

@@ -106,7 +106,7 @@ class TextStyle:
         kw = dict(
             font_file=str(p),
             color=style.get("color", "#000000"),
-            align=style.get("align", "left"),
+            align={"original": "left", "": "left"}.get(style.get("align", "left"), style.get("align", "left")),
             italic=bool(style.get("italic", False)),
         )
         fb = font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf")

@@ -1379,13 +1379,13 @@ def region_crop(file_dir: Path | str, page: int, region: str) -> bytes:
     """원본에서 영역을 잘라 바로 세운 PNG (원문 확인 화면)."""
     import pymupdf
 
-    from app.extract import region_crop_png
+    from app.extract import ocr_excludes, region_crop_png
 
     fd = Path(file_dir)
     proj = load_project(fd)
     reg = next(r for r in proj.template.regions_for(page) if r.name == region)
-    with pymupdf.open(proj.source_pdf) as d:
-        return region_crop_png(d[page - 1], reg, 1600)
+    with pymupdf.open(proj.source_pdf) as d:  # 원문 확인도 모델이 본 그림 그대로 (읽기 제외 영역은 가림)
+        return region_crop_png(d[page - 1], reg, 1600, exclude=ocr_excludes(proj.template, page))
 
 
 def save_source(file_dir: Path | str, page: int, region: str, source) -> None:

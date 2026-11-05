@@ -1707,3 +1707,14 @@ def test_extract_summary_counts_cards_not_files(qapp, tmp_path):
     s = page.steps.extract_summary()
     assert f"카드 {n}장" in s and "파일" in s
     win.close()
+
+
+def test_login_shows_banner_image_only_at_startup(qapp):
+    from app.qt.login import LOGIN_IMAGE, LoginDialog
+
+    assert LOGIN_IMAGE.exists()
+    d1 = LoginDialog(None, first_run=True)
+    assert d1.banner is not None and not d1.banner.pixmap().isNull()
+    assert d1.banner.pixmap().width() <= 620
+    d2 = LoginDialog(None, first_run=False)  # 파일 > 로그인 방식에서 열 때는 그림 없이
+    assert d2.banner is None

@@ -30,6 +30,7 @@ NAME_RE = re.compile(r"^[a-z0-9_]+$")
 CROP_DPI = 600
 SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아이콘 후보
 SAME_GRAY = 0.82  # 밝기 무늬 상관이 이 이상이면 같은 아이콘 (같은 타일 2: 0.83~0.91, 타일 1·2: 0.78 이하)
+SAME_INNER = 0.82  # 가운데 내용 상관 (같은 아이콘 0.86 이상, 동전 3·5 0.78, 상자 안 동전·병 0.37)
 SAME_DETAIL = 0.90  # 그리고 64칸으로 자세히 본 상관계수도 이 이상 (숫자만 다른 타일 1·2를 가른다)
 MAX_COLOR_DIST = 80.0  # 평균 색 거리(0~441)가 이보다 크면 다른 아이콘 (빨간 하트·파란 하트)
 DEFAULT_SCALE = 1.1
@@ -278,6 +279,11 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         return None, "원문에서 아이콘 자리를 못 찾음"
     em_guess = img.shape[0] / max(1, len(lines)) * 0.6
     ink = _ink(img, em_guess)
+    lum = img.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    # 색 아이콘을 쓰는 카드인가 (잉크 중 색 있는 픽셀이 5% 이상). 검정 선 아이콘 카드에서는 ‘검정=글자’로 거르지 않는다
+    _px = img[ink].astype(np.float32)
+    color_design = bool(len(_px)) and float(
+        (((_px.max(axis=1) - _px.min(axis=1)) / np.maximum(_px.max(axis=1), 1.0)) >= 0.3).mean()) >= 0.05
     all_comps, rules = _text_components(ink)
     # 줄 띠를 두 가지로 잡아 본다: 보통 방법 -> 안 되면 글자 크기 덩어리로만 (큰 아이콘이 줄을 가리거나 붙인 경우)
     def _try(bands):
@@ -293,6 +299,7 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         band_h = y1 - y0
         em = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]  # 보통 글자 줄 높이
         comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
+        comps = [c for c in comps if not _light_drawing(img, lum, ink, c)] or comps
         if not comps:
             return None, "그 줄에 잉크가 없음"
         seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
@@ -307,8 +314,22 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
             return None, "그 줄에서 글자 칸을 찾지 못함"
         k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
         tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
-        if len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
+        n_tok = sum(1 for t in seq if t == "\u25a0")
+        text_line = any(_WORDY_CH.match(t) for t in seq)
+        # 글이 있는 줄의 숫자는 검정 글자라 색 덩어리가 아니다: 아이콘만 세면 된다
+        # 그 줄의 글자 높이 (줄 띠 높이는 큰 아이콘 줄·붙은 줄 때문에 커질 수 있다)
+        hs_l = sorted(c[3] for c in comps if c[4] >= 30)
+        em_line = min(em, float(hs_l[len(hs_l) // 2]) * 1.15) if hs_l else em
+        colored = _colored_icon_boxes(img, lum, ink, comps, em_line,
+                                      [t for t in seq if not _DIGIT_CH.match(t)] if text_line else seq,
+                                      min_gray_fill=0.45 if text_line else 0.3)
+        if colored is not None:  # 글자(검정)와 색이 다른 덩어리 = 아이콘. 수가 맞으면 순서대로 (가장 믿을 만함)
+            box = colored[k]
+        elif len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
             box = cells[tok_pos]
+        elif _ordinal_icon_cell(cells, seq, tok_pos, band_h, em) is not None:
+            # 칸 수는 달라도 아이콘 크기 칸의 수가 원문 아이콘 수와 같으면 순서대로 (같은 칸을 두 번 고르지 않는다)
+            box = _ordinal_icon_cell(cells, seq, tok_pos, band_h, em)
         else:  # 다르면 위치 비율로 가장 가까운 칸 (아이콘 크기만)
             lx0, lx1 = cells[0][0], cells[-1][2]
             units = [1.1 if t == "\u25a0" else _units(t) for t in seq]
@@ -320,12 +341,15 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
                 return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
             # 가깝고 큰 칸(아이콘은 보통 글자보다 크다)을 고른다
             box = max(cand, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]) * float(np.exp(-abs((c[0] + c[2]) / 2 - expect) / reach)))
-        bx0, by0, bx1, by1 = box
+        if colored is None and text_line and _line_color_design(img, ink, y0, y1) and _looks_like_text(img, lum, ink, box):
+            # 색 아이콘을 못 찾아 칸으로 짐작한 자리가 검정 글자처럼 보이면 틀린 자리다 (못 찾음으로 둔다)
+            return None, "아이콘 자리로 짐작한 곳이 글자임"
+        bx0, by0, bx1, by1 = _grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
         by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
         box = (bx0, by0, bx1, by1)
         if (not (em * 0.35 <= bx1 - bx0 <= em * 3.0) or by1 - by0 > em * 2.5 or by1 - by0 < em * 0.3
-                or bx1 - bx0 < 0.45 * (by1 - by0)  # 세로로 가늘고 긴 것은 배경 그림 조각
+                or bx1 - bx0 < 0.55 * (by1 - by0)  # 세로로 가늘고 긴 것은 배경 그림 조각
                 or bx1 - bx0 > 2.4 * (by1 - by0)  # 가로로 긴 것은 라벨 띠
                 or float(ink[int(by0):int(by1), int(bx0):int(bx1)].mean()) < 0.15):  # 드문드문한 선 = 그림
             return None, "찾은 덩어리 크기가 아이콘 같지 않음"
@@ -336,6 +360,148 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         return first
     second = _try(_bands_text_first(all_comps, rules))
     return second if second[0] is not None else first
+
+
+LIGHT_DRAWING = 135.0  # 덩어리의 가장 진한 쪽(10%) 밝기가 이보다 밝으면 연한 배경 그림 (0~255)
+
+
+def _light_drawing(img: np.ndarray, lum: np.ndarray, ink: np.ndarray, c) -> bool:
+    """연하고 색이 거의 없고 드문드문한 덩어리 = 배경 그림 선.
+    (금색 동전처럼 밝아도 색이 있거나, 회색 타일처럼 속이 꽉 찬 것은 아이콘)"""
+    x, y, w, h, _a = c
+    m = ink[y:y + h, x:x + w]
+    if not m.any():
+        return True
+    if float(m.mean()) >= 0.4:  # 속이 찬 덩어리는 그림 선이 아니다
+        return False
+    if float(np.percentile(lum[y:y + h, x:x + w][m], 10)) < LIGHT_DRAWING:
+        return False
+    px = img[y:y + h, x:x + w][m].astype(np.float32)
+    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
+    return float(np.median(sat)) < 0.25
+
+
+_WORDY_CH = re.compile(r"[ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ가-힣]")
+_DIGIT_CH = re.compile(r"[0-9０-９＋+×xX]")
+
+
+def _line_color_design(img, ink, y0: int, y1: int) -> bool:
+    """그 줄에 글자색과 다른 ‘색 있는’ 잉크가 5% 이상: 아이콘이 색으로 그려진 카드 (검정 선 아이콘·빨간 글자 카드는 아님)."""
+    m = ink[y0:y1]
+    if m.sum() < 50:
+        return False
+    px = img[y0:y1][m].astype(np.float32)
+    text_col = np.median(px, axis=0)
+    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
+    other = (sat >= 0.3) & (np.abs(px - text_col).max(axis=1) > 80)
+    return float(other.mean()) >= 0.05
+
+
+def _looks_like_text(img, lum, ink, box) -> bool:
+    """상자 안 잉크가 진하고 색이 없다 = 검정 글자."""
+    x0, y0, x1, y1 = (int(v) for v in box)
+    m = ink[y0:y1, x0:x1]
+    if m.sum() < 20:
+        return True
+    px = img[y0:y1, x0:x1][m].astype(np.float32)
+    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
+    # 진한 쪽(30%) 밝기로 본다: 옆의 연한 그림 선이 섞여도 글자 획은 진하다
+    if not (float(np.median(sat)) < 0.2 and float(np.percentile(lum[y0:y1, x0:x1][m], 30)) < 100):
+        return False
+    # 테두리가 넓은 속을 감싸면(동전·타일처럼) 아이콘이다. 글자 속 빈칸은 작다
+    import cv2
+
+    inv = (~m).astype(np.uint8)
+    h, w = inv.shape
+    if h < 3 or w < 3:
+        return True
+    ff = inv.copy()
+    mask = np.zeros((h + 2, w + 2), np.uint8)
+    for sx, sy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if ff[sy, sx]:
+            cv2.floodFill(ff, mask, (sx, sy), 0)
+    holes = float(ff.sum()) / max(1, h * w)
+    return holes < 0.2
+
+
+def _colored_icon_boxes(img, lum, ink, comps, em: float, seq: list[str], min_gray_fill: float = 0.45):
+    """줄 안에서 글자색(진한 무채색)이 아닌 덩어리(금색 동전·빨간 병·초록 책·회색 타일 등)를 겹치는 것끼리 묶은
+    아이콘 상자들(왼쪽부터, 원문 아이콘 순서). 수가 맞을 때만 돌려준다.
+    색 숫자(갈색 ‘4’ 등)가 섞이면 원문 줄의 숫자·아이콘 순서에 맞춰 숫자 자리를 뺀다."""
+    n_tok = sum(1 for t in seq if t == "\u25a0")
+    if not n_tok:
+        return None
+    picked = []
+    for c in comps:
+        x, y, w, h, _a = c
+        m = ink[y:y + h, x:x + w]
+        if m.sum() < 20 or _light_drawing(img, lum, ink, c):
+            continue
+        px = img[y:y + h, x:x + w][m].astype(np.float32)
+        sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
+        med_l = float(np.median(lum[y:y + h, x:x + w][m]))
+        fill = float(m.sum()) / max(1, w * h)
+        colored = float(np.median(sat)) >= 0.25 and fill >= 0.25
+        gray_solid = med_l >= 95 and fill >= min_gray_fill  # 회색 타일처럼 속이 찬 것 (드문드문한 그림 선은 빼다)
+        if colored or gray_solid:
+            picked.append([x, y, x + w, y + h])
+    boxes: list[list[int]] = []
+    for b in sorted(picked):  # 겹치거나 아주 가까운 것끼리 하나로
+        g = 0  # 겹치는 것만 (옆에 붙은 숫자는 따로)
+        for bb in boxes:
+            if b[0] <= bb[2] + g and b[2] >= bb[0] - g and b[1] <= bb[3] + g and b[3] >= bb[1] - g:
+                bb[:] = [min(bb[0], b[0]), min(bb[1], b[1]), max(bb[2], b[2]), max(bb[3], b[3])]
+                break
+        else:
+            boxes.append(list(b))
+    boxes = [b for b in boxes if (b[3] - b[1]) >= 0.5 * em and (b[2] - b[0]) >= 0.35 * em
+             and (b[2] - b[0]) >= 0.55 * (b[3] - b[1])]  # 괄호처럼 좁은 것은 빼다
+    boxes.sort()
+    sub = [t for t in seq if t == "\u25a0" or _DIGIT_CH.match(t)]
+    if len(sub) > n_tok:  # 줄에 숫자가 있다 (색 숫자 ‘4’ 등이 상자로 잡혔을 수 있음)
+        # 원문 줄의 숫자·아이콘 순서와 상자 수가 같으면 아이콘 자리만
+        if len(boxes) == len(sub):
+            return [tuple(b) for b, t in zip(boxes, sub) if t == "\u25a0"]
+        wide = [b for b in boxes if (b[2] - b[0]) >= 0.68 * (b[3] - b[1])]  # 숫자는 좁다
+        if len(wide) == n_tok:
+            return [tuple(b) for b in wide]
+        return None
+    if len(boxes) == n_tok:
+        return [tuple(b) for b in boxes]
+    if len(boxes) > n_tok:  # 글 속의 색 숫자(갈색 ‘2’ 등)가 더 잡혔으면 숫자처럼 좁은 것을 뺀다
+        wide = [b for b in boxes if (b[2] - b[0]) >= 0.75 * (b[3] - b[1])]
+        if len(wide) == n_tok:
+            return [tuple(b) for b in wide]
+    return None
+
+
+def _ordinal_icon_cell(cells, seq, tok_pos: int, band_h: float, em: float):
+    """아이콘 크기 칸(줄 높이의 70% 이상이거나 보통 글자보다 넓은 것)이 원문의 아이콘 수와 같으면 k번째 아이콘 칸."""
+    n_tok = sum(1 for t in seq if t == "\u25a0")
+    k = sum(1 for t in seq[:tok_pos] if t == "\u25a0")
+    big = [c for c in cells if (c[3] - c[1]) >= 0.7 * band_h and (c[2] - c[0]) >= 0.8 * em]  # 숫자 폭은 빼다
+    if len(big) == n_tok and n_tok:
+        return big[k]
+    return None
+
+
+def _grow_box(box, comps, gap: int = 3):
+    """box에 닿거나 겹치는 덩어리를 붙여 넓힌다 (조각난 아이콘을 한 그림으로). 너무 커지면 그대로."""
+    bx0, by0, bx1, by1 = box
+    h0, w0 = by1 - by0, bx1 - bx0
+    changed = True
+    while changed:
+        changed = False
+        for x, y, w, h, _a in comps:
+            ix = min(bx1, x + w) - max(bx0, x)
+            iy = min(by1, y + h) - max(by0, y)
+            # 많이 겹치는 조각만 (상자 테두리가 안의 동전을 감싸는 것 등). 옆 글자처럼 닿기만 한 것은 붙이지 않는다
+            if ix > 0 and iy > 0 and ix * iy >= 0.5 * min(w * h, (bx1 - bx0) * (by1 - by0)):
+                nb = (min(bx0, x), min(by0, y), max(bx1, x + w), max(by1, y + h))
+                if nb != (bx0, by0, bx1, by1) and (nb[3] - nb[1]) <= 1.6 * h0 + 4 and (nb[2] - nb[0]) <= 1.6 * w0 + 4:
+                    bx0, by0, bx1, by1 = nb
+                    changed = True
+    return bx0, by0, bx1, by1
 
 
 def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[tuple[int, int, int, int]]:
@@ -534,9 +700,27 @@ def gray_feature(rgba: np.ndarray, n: int = 24) -> np.ndarray:
     return g / nrm if nrm > 0 else g
 
 
+def inner_feature(rgba: np.ndarray, n: int = 32, frac: float = 0.6) -> np.ndarray:
+    """가운데(60%)만 자세히 본 밝기 무늬: 같은 테두리·바탕 안의 내용(동전 숫자 3·5, 상자 안 동전·병)을 가른다."""
+    import cv2
+
+    al = rgba[:, :, 3] > 80
+    ys, xs = np.nonzero(al)
+    a = rgba[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if len(xs) else rgba
+    h, w = a.shape[:2]
+    m0, m1 = int(h * (1 - frac) / 2), int(w * (1 - frac) / 2)
+    a = a[m0:h - m0 or h, m1:w - m1 or w]
+    g = a[:, :, :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    g = cv2.GaussianBlur(g, (0, 0), max(1.0, h / 60))  # 크기·인쇄 상태 차이를 줄인다
+    g = cv2.resize(g, (n, n), interpolation=cv2.INTER_AREA).ravel()
+    g = g - g.mean()
+    nrm = float(np.linalg.norm(g))
+    return g / nrm if nrm > 0 else g
+
+
 def shape_pair(rgba: np.ndarray):
-    """(대강 모양 32칸, 자세한 모양 64칸, 밝기 무늬)."""
-    return shape_of(rgba), shape_of(rgba, 64), gray_feature(rgba)
+    """(대강 모양 32칸, 자세한 모양 64칸, 밝기 무늬, 가운데 자세히)."""
+    return shape_of(rgba), shape_of(rgba, 64), gray_feature(rgba), inner_feature(rgba)
 
 
 def _comparable(a: Shape, b: Shape) -> bool:
@@ -553,6 +737,9 @@ def same_icon(a, b) -> float:
     if not _comparable(a[0], b[0]):
         return 0.0
     gray = float(a[2] @ b[2]) if len(a) > 2 and len(b) > 2 else 0.0
+    inner = float(a[3] @ b[3]) if len(a) > 3 and len(b) > 3 else 1.0
+    if inner < SAME_INNER:  # 테두리·바탕이 같아도 안의 내용이 다르면 다른 아이콘
+        return 0.0
     s = similarity(a[0], b[0])
     if gray >= SAME_GRAY:
         return max(s, gray)

@@ -22,7 +22,8 @@ from app import service
 from app.qt.dialogs import ask_choice, fit_to_screen, show_problem
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
-ALIGN_LABELS = [("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
+ALIGN_LABELS = [("", "자동 (원문 줄마다 따라감)"), ("left", "왼쪽 정렬"), ("center", "가운데 정렬"),
+                ("right", "오른쪽 정렬"), ("original", "정렬 안 함 (원래 위치 그대로)")]
 COLORS = {"text": QColor(30, 110, 230), "tag_pills": QColor(150, 60, 200), "protect": QColor(220, 40, 40)}
 EDGE = 6.0  # 가장자리로 보는 거리 (화면 px)
 MIN_SIZE = 4.0
@@ -180,8 +181,11 @@ class PageScene(QGraphicsScene):
             self.clearSelection()
             self._start = ev.scenePos()
             kind = self.add_kind
-            data = {"name": "", "kind": "text" if kind == "protect" else kind}
-            self._new = RegionItem(QRectF(self._start, self._start), data, protect=kind == "protect")
+            prot = kind in ("protect", "ocr_exclude")  # 읽기 제외 영역도 보호 영역 (글자 읽기에서도 뺌)
+            data = {"name": "", "kind": "text" if prot else kind}
+            if kind == "ocr_exclude":
+                data["ocr_exclude"] = True
+            self._new = RegionItem(QRectF(self._start, self._start), data, protect=prot)
             self.addItem(self._new)
             ev.accept()
             return
@@ -355,6 +359,7 @@ class PageView(QGraphicsView):
             return
         plain = not (ev.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier))
         letters = {Qt.Key.Key_T: "add_text", Qt.Key.Key_L: "add_tag", Qt.Key.Key_P: "add_protect",
+                   Qt.Key.Key_O: "add_ocr_exclude",
                    Qt.Key.Key_F: "fit", Qt.Key.Key_R: "rotate"}
         if plain and k in letters:
             self.key_action.emit(letters[k])
@@ -454,7 +459,7 @@ class RegionEditor(QDialog):
         tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
         self.add_buttons = {}
         for kind, text, key in (("text", "+ 글자 영역", "T"), ("tag_pills", "+ 태그 라벨 영역", "L"),
-                                ("protect", "+ 보호 영역", "P")):
+                                ("protect", "+ 보호 영역", "P"), ("ocr_exclude", "+ 읽기 제외 영역", "O")):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(f"카드 위를 끌어서 새 영역을 그립니다 (단축키 {key})")
@@ -542,6 +547,9 @@ class RegionEditor(QDialog):
         self.f_rotate = QCheckBox("180도 돌려 인쇄된 영역")
         self.f_rotate.setToolTip("카드 위쪽 반처럼 거꾸로 인쇄된 글자")
         self.f_align = QComboBox()
+        self.f_align.setToolTip("한글을 놓는 방법\n"
+                                "자동: 원문 줄마다 찾은 정렬을 따름 · 왼쪽/오른쪽: 글 칸의 왼쪽/오른쪽 끝에 맞춤\n"
+                                "가운데: 영역 가운데 · 정렬 안 함: 줄마다 원문이 시작한 자리에서 시작")
         for k, t in ALIGN_LABELS:
             self.f_align.addItem(t, k)
         self.f_color = QLineEdit()
@@ -567,6 +575,8 @@ class RegionEditor(QDialog):
             self.f_erase_mode.addItem(t, k)
         self.f_erase_mode.setToolTip("글자 뒤가 그림인 영역에서 글자를 어떻게 지울지. 결과 보기에서 카드마다 바꿀 수도 있습니다.\n"
                                      "텍스트 레이어가 있는 PDF는 ‘자동’이면 예전 방식으로 지웁니다.")
+        self.f_ocr_exclude = QCheckBox("글자 읽기(OCR)에서도 빼기")
+        self.f_ocr_exclude.setToolTip("카드 번호·장식 글자처럼 번역하지 않을 글자: 읽을 때 가리고, 지우지도 않습니다")
         self.f_keep_above = QCheckBox("글자 줄 위의 그림은 남기기")
         self.f_keep_above.setToolTip("예: 이름 위의 왕관 아이콘")
         self.f_notes = QPlainTextEdit()
@@ -582,11 +592,12 @@ class RegionEditor(QDialog):
         form.addRow("글자 지우기", self.f_erase_mode)
         form.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
         form.addRow("", self.f_keep_above)
+        form.addRow("보호 영역", self.f_ocr_exclude)
         form.addRow("메모", self.f_notes)
         self.form_box = QWidget()
         self.form_box.setLayout(form)
         sl.addWidget(self.form_box)
-        help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
+        help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
                      "고른 영역: 화살표 1px(Shift 10px) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
                      "쪽: ←/→(영역을 안 골랐을 때) · PageUp/PageDown · Home/End 처음·끝 · 마우스 휠\n"
@@ -616,7 +627,7 @@ class RegionEditor(QDialog):
             w.currentIndexChanged.connect(self._from_form)
         for w in (self.f_x, self.f_y, self.f_w, self.f_h, self.f_keep_tall):
             w.valueChanged.connect(self._from_form)
-        for w in (self.f_rotate, self.f_keep_above):
+        for w in (self.f_rotate, self.f_keep_above, self.f_ocr_exclude):
             w.toggled.connect(self._from_form)
         self.f_color.editingFinished.connect(self._from_form)
         self.f_notes.textChanged.connect(self._from_form)
@@ -978,8 +989,9 @@ class RegionEditor(QDialog):
         self._sync_nav()
 
     def _key_action(self, act: str):
-        if act in ("add_text", "add_tag", "add_protect"):
-            kind = {"add_text": "text", "add_tag": "tag_pills", "add_protect": "protect"}[act]
+        if act in ("add_text", "add_tag", "add_protect", "add_ocr_exclude"):
+            kind = {"add_text": "text", "add_tag": "tag_pills", "add_protect": "protect",
+                    "add_ocr_exclude": "ocr_exclude"}[act]
             self._set_add_kind(None if self.scene.add_kind == kind else kind)
         elif act == "fit":
             self.view.fit_again()
@@ -1186,7 +1198,12 @@ class RegionEditor(QDialog):
     def _on_created(self, it: RegionItem):
         if it not in self._order:
             self._order.append(it)
-        base = {"text": "본문", "tag_pills": "태그", "protect": "보호"}[it.kind]
+        if it.kind == "ocr_exclude":  # 읽기 제외 = 보호 영역 + 글자 읽기에서도 빼기
+            it.kind = "protect"
+            it.data["ocr_exclude"] = True
+            it.data["kind"] = "protect"
+            it.refresh()
+        base = {"text": "본문", "tag_pills": "태그", "protect": "읽기 제외" if it.data.get("ocr_exclude") else "보호"}[it.kind]
         names = {i.name for i in self.items()}
         n, name = 1, base
         while name in names:
@@ -1247,8 +1264,8 @@ class RegionEditor(QDialog):
             for sp, k in ((self.f_x, "x"), (self.f_y, "y"), (self.f_w, "w"), (self.f_h, "h")):
                 sp.setValue(r[k])
             self.f_rotate.setChecked(int(st.get("rotate", 0) or 0) == 180)
-            self.f_align.setCurrentIndex(max(0, [k for k, _t in ALIGN_LABELS].index(st.get("align", "left"))
-                                             if st.get("align", "left") in dict(ALIGN_LABELS) else 0))
+            self.f_align.setCurrentIndex(max(0, [k for k, _t in ALIGN_LABELS].index(st.get("align", ""))
+                                             if st.get("align", "") in dict(ALIGN_LABELS) else 0))
             self.f_color.setText(st.get("color", ""))
             ff = (st.get("font") or {}).get("file", "")
             self._fill_fonts(exclude=it)
@@ -1265,6 +1282,8 @@ class RegionEditor(QDialog):
             for w in (self.f_rotate, self.f_align, self.f_color, self.f_font, self.f_keep_tall, self.f_keep_above):
                 w.setEnabled(not prot)
             self.f_erase_mode.setEnabled(it.kind == "text")
+            self.f_ocr_exclude.setEnabled(prot)
+            self.f_ocr_exclude.setChecked(bool(it.data.get("ocr_exclude")) and prot)
         finally:
             self._loading = False
 
@@ -1292,7 +1311,10 @@ class RegionEditor(QDialog):
             st["rotate"] = 180
         else:
             st.pop("rotate", None)
-        st["align"] = self.f_align.currentData()
+        if self.f_align.currentData():  # 자동이면 적지 않는다 (그림 카드는 원문 줄의 정렬을 따름)
+            st["align"] = self.f_align.currentData()
+        else:
+            st.pop("align", None)
         color = self.f_color.text().strip()
         if color:
             st["color"] = color
@@ -1325,6 +1347,11 @@ class RegionEditor(QDialog):
             er.pop("keep_ink_above_text", None)
         if not er:
             d.pop("erase", None)
+        if it.kind == "protect":
+            if self.f_ocr_exclude.isChecked():
+                d["ocr_exclude"] = True
+            else:
+                d.pop("ocr_exclude", None)
         notes = self.f_notes.toPlainText().strip()
         if notes:
             d["notes"] = notes
