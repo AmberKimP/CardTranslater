@@ -266,6 +266,56 @@ class PageView(QGraphicsView):
         self.auto_fit = True
         self.fit()
 
+    def zoom(self, f: float):
+        """확대·축소 (화면 가운데 기준). 확대하면 스크롤 막대와 끌어서 옮기기를 쓸 수 있다."""
+        old = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.scale(f, f)
+        self.setTransformationAnchor(old)
+        self.auto_fit = False
+        self._set_bars()
+
+    # 끌어서 옮기기: 가운데 버튼(휠 누르기) 또는 Space를 누른 채 왼쪽 버튼
+    def _pan_start(self, ev) -> bool:
+        if ev.button() == Qt.MouseButton.MiddleButton or (
+                ev.button() == Qt.MouseButton.LeftButton and getattr(self, "_space", False)):
+            self._pan = ev.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            return True
+        return False
+
+    def mousePressEvent(self, ev):
+        if self._pan_start(ev):
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if getattr(self, "_pan", None) is not None:
+            p = ev.position().toPoint()
+            d = p - self._pan
+            self._pan = p
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - d.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - d.y())
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if getattr(self, "_pan", None) is not None:
+            self._pan = None
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor if getattr(self, "_space", False)
+                                      else Qt.CursorShape.ArrowCursor)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space and not ev.isAutoRepeat():
+            self._space = False
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        super().keyReleaseEvent(ev)
+
     def event(self, ev):
         # Tab은 포커스 이동 대신 영역 고르기 (Shift+Tab 거꾸로)
         from PySide6.QtCore import QEvent
@@ -287,6 +337,12 @@ class PageView(QGraphicsView):
         if k in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown) or (
                 not items and k in (Qt.Key.Key_Left, Qt.Key.Key_Right)):
             self.page_step.emit(-1 if k in (Qt.Key.Key_PageUp, Qt.Key.Key_Left) else 1)
+            ev.accept()
+            return
+        if k == Qt.Key.Key_Space:  # Space를 누른 채 끌면 옮기기
+            if not ev.isAutoRepeat():
+                self._space = True
+                self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
             ev.accept()
             return
         if k in (Qt.Key.Key_Home, Qt.Key.Key_End):
@@ -434,6 +490,12 @@ class RegionEditor(QDialog):
         self.cards_row = cards
         tools.addStretch(1)
         top.addStretch(1)
+        for text, f, tip in (("－", 1 / 1.25, "축소 (Ctrl+휠 아래)"), ("＋", 1.25, "확대 (Ctrl+휠 위)")):
+            zb = QPushButton(text)
+            zb.setFixedWidth(36)
+            zb.setToolTip(tip + " · 확대한 뒤 가운데 버튼(휠)을 누른 채 끌거나 Space+끌기로 옮기기")
+            zb.clicked.connect(lambda _c=False, ff=f: self.view.zoom(ff))
+            top.addWidget(zb)
         fit = QPushButton("화면에 맞춤 (F)")
         fit.clicked.connect(self.view.fit_again)
         top.addWidget(fit)
@@ -528,7 +590,7 @@ class RegionEditor(QDialog):
                      "고른 영역: 화살표 1px(Shift 10px) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
                      "쪽: ←/→(영역을 안 골랐을 때) · PageUp/PageDown · Home/End 처음·끝 · 마우스 휠\n"
-                     "F: 화면에 맞춤 · Ctrl+휠: 확대 · Shift+휠: 확대한 화면 스크롤 · Ctrl+Shift+V: 이전 카드 영역 · "
+                     "F: 화면에 맞춤 · ＋/－ 또는 Ctrl+휠: 확대·축소 · 휠 누른 채 끌기 또는 Space+끌기: 옮기기 · Ctrl+Shift+V: 이전 카드 영역 · "
                      "Ctrl+S 저장 · F1 이 도움말")
         help_ = QLabel(help_text)
         help_.setStyleSheet("color: #666")
@@ -1014,8 +1076,8 @@ class RegionEditor(QDialog):
 
     def _toggle_per_card(self, on: bool):
         if on:
-            msg = ("카드마다 영역을 정합니다. 지금 보이는 영역은 이 카드(현재 쪽)의 영역이 되고,\n"
-                   "다른 카드는 쪽을 넘기며 하나씩 정합니다 (‘이전 카드 영역 복사’로 시작할 수 있음).")
+            msg = ("카드마다 영역을 정합니다. 지금 영역은 모든 카드에 그대로 남고,\n"
+                   "카드마다 다른 곳만 쪽을 넘기며 고치면 됩니다.")
         else:
             msg = ("모든 카드가 같은 영역을 쓰도록 바꿉니다. 지금 카드의 영역이 공통 영역이 되고,\n"
                    "다른 카드에 정한 영역은 저장할 때 지워집니다.")
@@ -1028,6 +1090,10 @@ class RegionEditor(QDialog):
             self._card_store = {}
             self._current_key = self.card_key()
             self._stash_card()
+            cur = self._cards().get(self._current_key)
+            if cur:  # 공통 영역을 쓰던 모든 카드(앞·뒤 카드 모두)에 그대로 남긴다
+                for k in self.all_card_keys():
+                    self._cards().setdefault(k, copy.deepcopy(cur))
         else:
             self._card_store = {}
             self._current_key = None
@@ -1099,7 +1165,8 @@ class RegionEditor(QDialog):
         if 0 <= row < len(self._order):
             self.scene.clearSelection()
             self._order[row].setSelected(True)
-            self.view.centerOn(self._order[row])
+            if not self.view.auto_fit:  # 화면에 맞춰 보는 중이면 카드를 움직이지 않는다
+                self.view.ensureVisible(self._order[row], 20, 20)
 
     def _on_selection(self):
         try:

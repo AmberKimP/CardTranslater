@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.extract import FALLBACK_BETA, SERVER_FALLBACK_MODELS, classify_error, cost_usd
+from app.extract import SERVER_FALLBACK_MODELS, classify_error, cost_usd, send_message
 
 
 def _content(prompt: str, images: list[Path] | None):
@@ -47,10 +47,7 @@ def complete_json(client, model: str, system: str, prompt: str, schema: dict,
         "output_config": {"format": {"type": "json_schema", "schema": schema}},
     }
     try:
-        if model in SERVER_FALLBACK_MODELS:
-            msg = client.beta.messages.create(**params, betas=[FALLBACK_BETA], fallbacks="default")
-        else:
-            msg = client.messages.create(**params)
+        msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)  # 스트리밍 (긴 응답)
     except Exception as e:  # noqa: BLE001
         p = classify_error(e)
         if p is None:

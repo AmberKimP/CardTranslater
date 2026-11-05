@@ -216,7 +216,14 @@ class SourceReviewDialog(QDialog):
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.edit = QPlainTextEdit()
         self.edit.setFont(source_font(self.edit.font(), 3))
-        self.edit.setPlaceholderText("원문 (줄바꿈 그대로. 태그 칸은 한 줄에 하나. 아이콘은 [[이름]])")
+        self.edit.setPlaceholderText("원문 (줄바꿈 그대로. 태그 칸은 한 줄에 하나. 아이콘은 [[이름]]). "
+                                     "읽은 결과가 맞으면 고치지 않고 저장해도 ‘사람이 확인’이 됩니다")
+        # 두 번 읽은 결과가 다르면: 그중 하나를 골라 편집 칸에 넣는다 (그 뒤 고쳐서 저장해도 된다)
+        self.pick_row = QHBoxLayout()
+        self.pick_label = QLabel("읽은 결과 쓰기:")
+        self.pick_row.addWidget(self.pick_label)
+        self.pick_buttons: list[QPushButton] = []
+        self.pick_row.addStretch(1)
         self.save_btn = QPushButton("고친 원문 저장")
         self.save_btn.setToolTip("Ctrl+S")
         self.save_btn.clicked.connect(self.save_current)
@@ -232,6 +239,7 @@ class SourceReviewDialog(QDialog):
         rl = QVBoxLayout(right)
         rl.addWidget(scroll, 2)
         rl.addWidget(self.info)
+        rl.addLayout(self.pick_row)
         rl.addWidget(self.edit, 1)
         rl.addLayout(btns)
         rl.addWidget(hint)
@@ -415,10 +423,35 @@ class SourceReviewDialog(QDialog):
         if c["note"]:
             lines.append(plain_note(c["note"]))
         self.info.setText("\n".join(lines))
+        self._fill_picks(c)
         src = c["source"]
         self.edit.setPlainText("\n".join(src) if isinstance(src, list) else (src or ""))
         self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
         self._orig_text = self.edit.toPlainText()
+
+    def _fill_picks(self, c: dict):
+        """읽은 결과마다 ‘이것으로’ 버튼. 결과가 하나뿐이거나 같으면 숨긴다."""
+        for b in self.pick_buttons:
+            self.pick_row.removeWidget(b)
+            b.deleteLater()
+        self.pick_buttons = []
+        texts = []
+        for rd in c["readings"]:
+            s = rd["source"]
+            t = "\n".join(s) if isinstance(s, list) else (s or "")
+            if t not in [x for _n, x in texts]:
+                texts.append((reader_name(rd["model"]), t))
+        show = len(texts) >= 2
+        self.pick_label.setVisible(show)
+        if not show:
+            return
+        for i, (name, t) in enumerate(texts):
+            b = QPushButton(f"{name}대로")
+            b.setAutoDefault(False)
+            b.setToolTip(t)
+            b.clicked.connect(lambda _c=False, tt=t: (self.edit.setPlainText(tt), self.edit.setFocus()))
+            self.pick_row.insertWidget(1 + i, b)
+            self.pick_buttons.append(b)
 
     def save_current(self):
         c = self.current()

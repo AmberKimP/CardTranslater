@@ -1363,7 +1363,7 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "note": (r or {}).get("note", ""),
                 "readings": [{"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"]}
                              for x in (r or {}).get("readings") or []],
-                "edited": bool(r and r.get("edited_by")),
+                "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
             })
     return out
 
@@ -1397,13 +1397,16 @@ def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
         rec = json.loads(f.read_text(encoding="utf-8"))
         r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
         old = r.get("source")
-        if old == source:
-            continue
-        r["source"] = source
         r["uncertain"] = False
-        r["edited_by"] = "사람"
-        r["note"] = (f"사람이 고침 (모델: {json.dumps(old, ensure_ascii=False)})" if old is not None
-                     else "사람이 입력")
+        if old == source:  # 고치지 않고 저장 = 사람이 보고 맞다고 확인함
+            r["checked_by"] = "사람"
+            if not r.get("edited_by"):
+                r["note"] = "사람이 확인 (읽은 그대로)"
+        else:
+            r["source"] = source
+            r["edited_by"] = "사람"
+            r["note"] = (f"사람이 고침 (모델: {json.dumps(old, ensure_ascii=False)})" if old is not None
+                         else "사람이 입력")
         tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(f)

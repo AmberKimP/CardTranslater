@@ -347,6 +347,12 @@ class AddFilesDialog(QDialog):
         return [f for f in self.all_files() if Path(f).suffix.lower() in IMAGE_EXTS]
 
     def _sync(self):
+        # 새 그룹 이름: 비어 있거나 앞서 자동으로 넣은 이름이면 첫 파일 이름으로 채운다 (사람이 고친 이름은 둔다)
+        files = self.all_files()
+        stem = Path(files[0]).stem if files else ""
+        if self.new_name.text().strip() in ("", getattr(self, "_auto_name", "")):
+            self.new_name.setText(stem)
+        self._auto_name = stem
         ex = self.r_exist.isChecked()
         self.group_combo.setEnabled(ex)
         self.new_name.setEnabled(not ex)

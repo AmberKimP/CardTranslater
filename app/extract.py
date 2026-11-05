@@ -288,6 +288,8 @@ def verification_label(r: dict | None) -> str:
         return "손 입력"
     if r.get("edited_by"):  # 화면에서 사람이 고친 칸
         return "사람이 고침"
+    if r.get("checked_by"):  # 사람이 보고 읽은 그대로 맞다고 저장한 칸
+        return "사람이 확인"
     if r.get("readings"):  # 두 번째 모델로 다시 읽은 칸
         return "결론 못 냄" if r.get("uncertain") else "두 번 확인"
     if (r.get("note") or "").startswith("라벨 색"):
@@ -317,6 +319,19 @@ def _write_page(base: Path, page_no: int, regions: dict, msg, batch: bool) -> fl
 
 
 # ---------------------------------------------------------------- API 오류 분류
+def send_message(client, params: dict, fallback: bool = False):
+    """Messages API 요청 한 번. 응답이 길 수 있어(max_tokens가 크면 SDK가 스트리밍을 요구함) 스트리밍으로 받아
+    완성된 메시지를 돌려준다. fallback이면 거절 시 서버가 대체 모델로 다시 하는 베타를 쓴다.
+    stream이 없는 클라이언트(테스트의 가짜 등)는 create로."""
+    api = client.beta.messages if fallback else client.messages
+    kw = {"betas": [FALLBACK_BETA], "fallbacks": "default"} if fallback else {}
+    stream = getattr(api, "stream", None)
+    if stream is None:
+        return api.create(**params, **kw)
+    with stream(**params, **kw) as s:
+        return s.get_final_message()
+
+
 def classify_error(e: Exception) -> Paused | None:
     """멈추고 나중에 이어 할 오류면 Paused, 그 카드만 실패로 볼 오류면 None. 그 밖은 그대로 던진다."""
     import anthropic
@@ -427,10 +442,8 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 continue
             params = build_params(project, pno, src_doc, model, to_read)
             try:
-                if model in SERVER_FALLBACK_MODELS:  # 거절되면 서버가 대체 모델로 다시 읽는다
-                    msg = client.beta.messages.create(**params, betas=[FALLBACK_BETA], fallbacks="default")
-                else:
-                    msg = client.messages.create(**params)
+                # 거절되면 서버가 대체 모델로 다시 읽는다 (SERVER_FALLBACK_MODELS)
+                msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)
             except Exception as e:  # noqa: BLE001
                 p = classify_error(e)
                 if p is None:
@@ -737,10 +750,7 @@ def _read_regions_once(client, project, pno, src_doc, model, base, regions) -> t
             raise CardError(f"응답 오류: {e}")
     params = build_params(project, pno, src_doc, model, regions)
     try:
-        if model in SERVER_FALLBACK_MODELS:
-            msg = client.beta.messages.create(**params, betas=[FALLBACK_BETA], fallbacks="default")
-        else:
-            msg = client.messages.create(**params)
+        msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)
     except Exception as e:  # noqa: BLE001
         p = classify_error(e)
         if p is None:

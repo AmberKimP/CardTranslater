@@ -638,10 +638,15 @@ def test_region_editor_per_card_mode(qapp, tmp_path, monkeypatch):
         {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
     ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
-    ed.per_card.setChecked(True)  # 지금 영역이 1쪽 카드의 영역이 된다
-    assert "이 카드: 영역 1개" in ed.card_info.text() and "지정한 카드 1/3" in ed.card_info.text()
-    ed.step_page(1)  # 2쪽: 아직 영역 없음
-    assert ed.items() == [] and "영역 없음" in ed.card_info.text()
+    ed.per_card.setChecked(True)  # 지금(공통) 영역이 모든 카드에 그대로 남는다
+    assert "이 카드: 영역 1개" in ed.card_info.text() and "지정한 카드 3/3" in ed.card_info.text()
+    ed.step_page(1)  # 2쪽: 공통 영역을 그대로 가짐 -> 이 카드만 비우고 새로 그린다
+    assert [i.name for i in ed.items()] == ["이름"]
+    ed.items()[0].setSelected(True)
+    ed.delete_selected()
+    ed._stash_card()
+    ed._load_card(ed.card_key())
+    assert ed.items() == []
     pr = ed.scene.page_rect
     it = RegionItem(QRectF(pr.width() * 0.2, pr.height() * 0.5, pr.width() * 0.4, pr.height() * 0.2),
                     {"name": "", "kind": "text"})
@@ -1601,3 +1606,64 @@ def test_scoped_service_steps(tmp_path):
     assert service.scoped_file_dirs(workspace.load_project_info(info.dir), None, [fds[1]]) == [fds[1]]
     r = service.erase_project(info.dir, files=[fds[1]])
     assert [f["file"] for f in r.files] == [workspace.file_key(fds[1])]
+
+
+def test_save_source_unchanged_marks_checked_and_reading_pick_buttons(qapp, tmp_path):
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    c1 = {(c["page"], c["region"]): c for c in service.extracted_cells(fd)}[(1, "이름")]
+    assert c1["label"] == "결론 못 냄"
+    service.save_source(fd, 1, "이름", c1["source"])  # 고치지 않고 저장 = 확인
+    c1 = {(c["page"], c["region"]): c for c in service.extracted_cells(fd)}[(1, "이름")]
+    assert c1["label"] == "사람이 확인" and not c1["uncertain"]
+    # 두 번 읽은 결과가 다르면 그중 하나를 골라 넣는 버튼
+    info2, fd2 = _project_with_extract(tmp_path / "b")
+    dlg = SourceReviewDialog(service.project_overview(info2.dir)["groups"][0]["files"], None, only_check=True)
+    row = next(i for i, c in enumerate(dlg.cells) if c["page"] == 1 and c["region"] == "이름")
+    dlg.table.setCurrentCell(row, 0)
+    assert len(dlg.pick_buttons) == 2 and dlg.pick_label.isVisibleTo(dlg)
+    dlg.pick_buttons[1].click()  # 정밀 읽기대로
+    assert dlg.edit.toPlainText() == "盗掘フェレット"
+    dlg.save_and_next()
+    c = {(x["page"], x["region"]): x for x in service.extracted_cells(fd2)}[(1, "이름")]
+    assert c["source"] == "盗掘フェレット" and c["label"] == "사람이 고침"
+    dlg._orig_text = dlg.edit.toPlainText()
+    dlg.close()
+
+
+def test_add_files_new_group_defaults_to_file_name(qapp, tmp_path):
+    from app.qt.dialogs import AddFilesDialog
+
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    dlg = AddFilesDialog(info.dir, files=[str(tmp_path / "in" / "Monster Cards.pdf")])
+    assert dlg.r_new.isChecked() and dlg.new_name.text() == "Monster Cards"
+    dlg.new_name.setText("내 이름")
+    dlg.files.addItem(str(tmp_path / "in" / "other.pdf"))
+    assert dlg.new_name.text() == "내 이름"  # 사람이 고친 이름은 그대로
+
+
+def test_region_editor_select_keeps_view_and_zoom_pan(qapp, tmp_path):
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}},
+        {"name": "본문", "rect": {"x": 0.1, "y": 0.8, "w": 0.6, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.resize(900, 600)
+    ed.show()
+    qapp.processEvents()
+    before = (ed.view.transform().m11(), ed.view.horizontalScrollBar().value(), ed.view.verticalScrollBar().value())
+    ed.list.setCurrentRow(1)
+    qapp.processEvents()
+    assert (ed.view.transform().m11(), ed.view.horizontalScrollBar().value(),
+            ed.view.verticalScrollBar().value()) == before  # 카드가 움직이지 않는다
+    s0 = ed.view.transform().m11()
+    ed.view.zoom(1.25)
+    assert abs(ed.view.transform().m11() / s0 - 1.25) < 1e-6 and not ed.view.auto_fit
+    ed.view.fit_again()
+    assert ed.view.auto_fit
+    ed.dirty = False
+    ed.close()
