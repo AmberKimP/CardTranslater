@@ -1,6 +1,6 @@
 ---
 name: pdf-engine
-description: PDF 처리 담당. 카드 PDF에서 영역별 텍스트·서식(글꼴·크기·색·굵기·기울임)·아이콘 위치를 추출하고, 영역 안 글자만 지우고(레드랙션), 결과 PDF를 저장·묶는 코드(app/erase.py, app/regions.py, PDF 출력)를 만들거나 고칠 때 사용한다. Claude로 원문 읽기(app/extract.py)·용어집·번역은 extract-translate 담당. PRD 5.1·5.2·5.4·5.7(추출 쪽)·F15·F18 범위.
+description: 글자 지우기·PDF 담당 (7단계). 카드 영역 안 글자만 지우고(레드랙션 + 배경 정리 + 태그 라벨 다시 그리기) cleared/에 저장하는 코드(app/erase.py, app/regions.py, app/project.py, app/report.py), 프로젝트 단위 지우기 흐름(service.erase/erase_project), JPG·PNG 카드를 PDF로 바꾸는 입력(app/images.py), 결과 PDF 저장·묶기를 만들거나 고칠 때 사용한다. 지운 자국·얼룩이 남음, 그림이 같이 지워짐, 라벨 모양이 틀림, 이미지 시트가 잘못 잘림 같은 문제에 쓴다. Claude로 원문 읽기·용어집·번역은 extract-translate, 한글 넣기는 korean-typesetter 담당. PRD 5.1·5.4·F15·F18·F27 범위.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: opus
 ---
@@ -9,12 +9,14 @@ model: opus
 
 작업 전에 반드시 `docs/PRD.md`의 해당 절(5.1, 5.2, 5.4, 5.7, 9장 1단계)을 읽고 따른다. PRD와 이 문서가 다르면 PRD가 우선이고, 차이를 보고에 적는다.
 
-## 현재 단계: 1단계 핵심 실험 (프로토타입)
+## 지금 상태 (2026-11-05)
 
-- 화면 없이 명령줄로만 돈다. 영역은 사람이 손으로 쓴 JSON으로 받는다.
-- 실제 카드 PDF 약 10장으로 "텍스트·서식 추출 → 레드랙션 → (typesetter가) 한글 삽입"이 되는지 판단하는 것이 목표다.
-- 번역은 손으로 쓴 샘플을 쓴다. Claude API 호출 코드는 이 단계에서 만들지 않는다.
-- 나중 단계 기능(자동 정렬, 엑셀, 용어집, 화면)은 만들지 말고, 붙일 자리만 깔끔하게 남긴다.
+1단계 실험은 끝났고(Dungeon.pdf 30쪽, Items.pdf 2~16쪽 지우기·한글 넣기 완료, 인쇄 확인 통과) 앱 전체 흐름에 들어가 있다.
+- 지우기는 8단계 흐름의 7단계다. 화면·명령줄 모두 `service.erase_project`(모든 그룹·파일) → `service.erase`(파일 하나)를 부른다.
+  결과는 파일 폴더의 `cleared/`(cleared.pdf, `run.json`의 처리한 쪽, `meta/page-NNN.json`)에 쓴다. `korean-typesetter`가 이 메타(태그 라벨 등)를 읽으므로 형식을 바꾸면 알린다.
+- 처리할 쪽은 `workspace.included_pages(fd)`로만 얻는다. 뺀 쪽과 시험 모드(파일마다 앞 X장, `card_limit`)가 여기서 적용된다. 시험 모드로 일부만 지운 파일은 장수가 늘면 다시 지운다(`_cleared_pages`).
+- 원문 글자 읽기는 이제 Claude 비전(`app/extract.py`, `extract-translate` 담당)이 한다. 이 문서 아래의 '추출' 절(텍스트 레이어 span 병합·서식 판별)은 1단계 설계 기록이다. 텍스트 레이어에서 여전히 쓰는 것은 위치·크기·색과 지우기용 bbox다.
+- 입력: 프로젝트 = 게임 아래의 작업 한 건, 안에 그룹(카드 형식마다 영역 템플릿 하나, 또는 `layout: per_card`로 카드마다 영역) → 파일. ClearScan PDF, 텍스트 레이어 없는 스캔(Items.pdf), 이미지에서 만든 PDF(카드 한 장 = 한 쪽, `app/images.py`)를 모두 같은 경로로 지운다.
 
 ## 절대 규칙
 

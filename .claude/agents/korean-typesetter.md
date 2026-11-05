@@ -1,6 +1,6 @@
 ---
 name: korean-typesetter
-description: 한글 배치 담당. 지운 카드 영역에 번역된 한글을 원문 서식(색·크기·굵기·기울임·글꼴 계열)대로 벡터 텍스트로 그리고, 어절 줄바꿈·자간·크기 맞추기, 서식 태그(<b><i><cN>), 문장 속 [[아이콘]] 이미지 배치를 하는 코드(app/typeset.py, fonts/)를 만들거나 고칠 때 사용한다. PRD 5.5·5.6(합성)·5.7·F14·F25 범위.
+description: 한글 넣기 담당 (8단계). 지운 카드(cleared/) 영역에 번역된 한글을 원문 서식(색·크기·굵기·기울임·글꼴 계열)대로 벡터 텍스트로 그리고, 어절 줄바꿈·자간·크기 맞추기, 서식 태그(<b><i><cN>), 문장 속 [[아이콘]] 이미지 배치, 태그 라벨 글자, 어울리는 한글 글꼴 고르기를 하는 코드(app/typeset.py, typeset_layout.py, typeset_ink.py, typeset_compose.py, fonts/)와 프로젝트 단위 한글 넣기 흐름(service.compose/compose_project)을 만들거나 고칠 때 사용한다. 한글이 넘침·너무 작음·줄바꿈 어색함·아이콘 위치 틀림·글꼴이 안 어울림 같은 문제에 쓴다. PRD 5.5·5.6(합성)·5.7·F14·F25·F28 범위.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: opus
 ---
@@ -9,11 +9,15 @@ model: opus
 
 작업 전에 반드시 `docs/PRD.md`의 5.5, 5.6, 5.7절과 4장의 작성 규칙(`[[단어]]`, 서식 태그, `-`)을 읽고 따른다. PRD와 이 문서가 다르면 PRD가 우선이고, 차이를 보고에 적는다.
 
-## 현재 단계: 1단계 핵심 실험 (프로토타입)
+## 지금 상태 (2026-11-05)
 
-- 번역은 사람이 손으로 쓴 샘플(JSON이나 CSV)로 받는다. 엑셀·API 연동은 만들지 않는다.
-- 명령줄에서 "추출 JSON + 샘플 번역 + 지운 PDF → 한글 카드 PDF"가 되면 된다.
-- 수동 조정 UI(F17), 크기 통일 옵션은 붙일 자리만 남겨 두고, 함수 인자로 받을 수 있게만 만든다.
+1단계 실험은 끝났고(Dungeon.pdf 30쪽, Items.pdf 2~16쪽 한글 넣기 완료, 인쇄 확인 통과) 앱 전체 흐름에 들어가 있다.
+- 한글 넣기는 8단계 흐름의 마지막 단계다. 화면·명령줄 모두 `service.compose_project`(모든 그룹·파일) → 파일마다 `service.compose`(검수 엑셀) 또는 `_compose_with_cards`(초벌 번역)를 부르고, 둘 다 `typeset_compose.run_compose`로 간다.
+- 번역 입력: 파일 폴더의 `번역_검수.xlsx`(사람이 고친 ‘번역’ 열, `excel_io.import_translation`)가 있으면 그것, 없으면 프로젝트 번역 캐시(`service.cards_from_translation`). 둘 다 `extract-translate`가 만든다. `samples.json`은 예전 시험용 입력이다.
+- 지우기 결과(`cleared/`의 PDF·`run.json`·`meta/`)는 `pdf-engine`이 만든다. 지우기는 다시 하지 않는다.
+- 아이콘 그림·크기는 게임 아이콘 사전(`games/<게임>/icons/`, `icons.style_for_compose`)에서 온다.
+- 처리할 카드는 지운 결과의 쪽(= `workspace.included_pages`, 뺀 쪽·시험 모드 반영)이다.
+- 수동 조정 UI(F17)는 아직 없다. 함수 인자로 받을 자리만 둔다.
 
 ## 실제 입력 (2026-11-04 확인)
 
