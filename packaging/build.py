@@ -47,14 +47,21 @@ def build() -> Path:
     n = stage_fonts(fonts)
     print(f"[build] 글꼴 {n}개 파일")
     args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,
-            "--distpath", str(ROOT / "dist"), "--workpath", str(work / "pyi"), "--specpath", str(work),
+            "--distpath", str(work / "dist"), "--workpath", str(work / "pyi"), "--specpath", str(work),
             "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts",
             "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets"]  # 로그인 화면 그림
     for m in EXCLUDE:
         args += ["--exclude-module", m]
     args.append(str(ROOT / "packaging" / "launch.py"))
     subprocess.run(args, check=True, cwd=ROOT)
-    exe = ROOT / "dist" / NAME / f"{NAME}.exe"
+    # build/dist에 만든 뒤 dist/<NAME>로 옮긴다. 폴더 자체는 지우지 않고 안만 비우므로, 그 폴더를 터미널·탐색기가
+    # 열고 있어도 된다. 실행 중인 exe가 있으면 파일이 잠겨 여기서 실패한다 (먼저 끈다).
+    out = ROOT / "dist" / NAME
+    out.mkdir(parents=True, exist_ok=True)
+    for child in out.iterdir():
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    shutil.copytree(work / "dist" / NAME, out, dirs_exist_ok=True)
+    exe = out / f"{NAME}.exe"
     print(f"[build] {exe}")
     return exe
 

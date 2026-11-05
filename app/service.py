@@ -28,6 +28,7 @@ from typing import Callable
 import numpy as np
 
 from app import report
+from app.claude_setup import find_claude
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.typeset_compose import safe_name
@@ -1315,14 +1316,14 @@ def engine_status() -> dict:
     """쓸 수 있는 엔진: {"claude-code": bool, "api": bool, "message"}. 키 값은 돌려주지 않는다."""
     from app.extract import api_key_source
 
-    cc = bool(shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd"))
+    cc = bool(find_claude())
     api = bool(api_key_source()[0])
     eng = get_settings().engine
     if eng == "api":
         msg = "API 키로 실행 (사용한 만큼 요금)" if api else "API 키가 없습니다 — 파일 > 로그인 방식에서 키를 넣으세요"
     else:
         msg = ("Claude 구독으로 실행 (Claude Code)" if cc else
-               "Claude Code가 없습니다 — 설치·로그인하거나 API 키 방식을 쓰세요")
+               "Claude Code가 없습니다 — 파일 > 로그인 방식에서 ‘Claude Code 설치’를 누르거나 API 키 방식을 쓰세요")
     return {"claude-code": cc, "api": api, "message": msg}
 
 
@@ -1803,7 +1804,7 @@ def claude_login_status(check: bool = False, runner=None) -> dict:
     from app.extract import Paused
     from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
 
-    exe = shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd")
+    exe = find_claude()
     if not exe and runner is None:
         return {"installed": False, "logged_in": False,
                 "message": "Claude Code가 설치되어 있지 않습니다 (claude 명령 없음)"}
@@ -1829,11 +1830,25 @@ def launch_claude_login() -> None:
     import subprocess
     import sys
 
+    exe = find_claude()
+    if not exe:
+        raise OSError("Claude Code가 설치되어 있지 않습니다 — ‘Claude Code 설치’를 누르세요")
     if sys.platform == "win32":
         subprocess.Popen(["cmd", "/c", "start", "Claude 로그인", "cmd", "/k",
-                          "echo 로그인하려면 /login 을 입력하세요 & claude"])
+                          f'echo 로그인하려면 /login 을 입력하세요 & "{exe}"'])
     else:
-        subprocess.Popen(["x-terminal-emulator", "-e", "claude"])
+        subprocess.Popen(["x-terminal-emulator", "-e", exe])
+
+
+def install_claude_code(progress: ProgressFn = _noop, cancel: CancelToken | None = None) -> str:
+    """Claude Code가 없으면 Node.js(없을 때만, 사용자 폴더)와 Claude Code(npm)를 설치한다. claude 경로를 돌려준다.
+    실패하면 claude_setup.SetupError (메시지는 그대로 보여 줘도 된다)."""
+    from app import claude_setup
+
+    def say(stage, done, total, message):
+        progress(ProgressEvent(stage, done, total, message))
+
+    return claude_setup.install_claude_code(say, cancel)
 
 
 def set_engine(engine: str) -> None:

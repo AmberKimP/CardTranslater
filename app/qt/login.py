@@ -63,7 +63,11 @@ class LoginDialog(QDialog):
         self.b_login = QPushButton("로그인 창 열기")
         self.b_login.setToolTip("새 창에서 claude를 띄웁니다. /login 을 입력해 로그인한 뒤 ‘로그인 확인’을 누르세요")
         self.b_login.clicked.connect(self.open_claude_login)
+        self.b_install = QPushButton("Claude Code 설치")
+        self.b_install.setToolTip("Node.js(없을 때만)와 Claude Code를 이 사용자 폴더에 설치합니다 (관리자 권한 필요 없음)")
+        self.b_install.clicked.connect(self.install_claude)
         crow = QHBoxLayout()
+        crow.addWidget(self.b_install)
         crow.addWidget(self.b_check)
         crow.addWidget(self.b_login)
         crow.addStretch(1)
@@ -136,6 +140,8 @@ class LoginDialog(QDialog):
         self.claude_status.setText(mark + st["message"])
         self.claude_status.setStyleSheet(f"color: {color}")
         self.b_check.setEnabled(st["installed"])
+        self.b_install.setVisible(not st["installed"])
+        self.b_login.setEnabled(st["installed"])
         self._claude = st
 
     def _refresh_api(self):
@@ -153,14 +159,33 @@ class LoginDialog(QDialog):
         api = self.r_api.isChecked()
         for w in (self.key, self.b_save, self.b_clear, self.api_status):
             w.setEnabled(api if w is not self.b_clear else api and self._api["source"] == "저장한 키")
-        for w in (self.b_check, self.b_login, self.claude_status):
-            w.setEnabled(not api and (w is not self.b_check or self._claude["installed"]))
+        for w in (self.b_install, self.b_check, self.b_login, self.claude_status):
+            needs_cc = w in (self.b_check, self.b_login)
+            w.setEnabled(not api and (not needs_cc or self._claude["installed"]))
 
     # ---- 동작
     def check_claude(self):
         job = worker.Job(service.claude_login_status, check=True, with_progress=False)
         worker.run_with_dialog(self, "Claude 로그인 확인 중", job, self._refresh_claude,
                                lambda m: show_failure(self, "로그인을 확인하지 못했습니다", m), cancellable=False)
+
+    def install_claude(self):
+        msg = ("Claude Code를 설치할까요?\n\n"
+               "• Node.js 22 이상이 없으면 공식 사이트(nodejs.org)에서 받아 이 사용자 폴더에 둡니다 (약 30MB)\n"
+               "• 그다음 npm으로 Claude Code를 설치합니다 (약 330MB 내려받기)\n"
+               "• 관리자 권한은 필요 없고, 인터넷 연결이 필요합니다. 몇 분 걸릴 수 있습니다.\n\n"
+               "설치한 뒤 ‘로그인 창 열기’에서 Claude 구독 계정으로 로그인하세요.")
+        if QMessageBox.question(self, "Claude Code 설치", msg) != QMessageBox.StandardButton.Yes:
+            return
+        job = worker.Job(service.install_claude_code)
+        worker.run_with_dialog(self, "Claude Code 설치 중", job, self._installed,
+                               lambda m: show_failure(self, "Claude Code를 설치하지 못했습니다", m))
+
+    def _installed(self, _exe):
+        self._refresh_claude(service.claude_login_status(check=False))
+        self._sync()
+        if self._claude["installed"]:
+            QMessageBox.information(self, "Claude Code 설치", "설치했습니다. 이제 ‘로그인 창 열기’를 눌러 /login 으로 로그인하세요.")
 
     def open_claude_login(self):
         try:

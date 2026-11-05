@@ -765,7 +765,7 @@ def test_set_api_key_validates_without_real_calls(tmp_path, monkeypatch):
 def test_claude_login_status(tmp_path, monkeypatch):
     from tests.test_extract import FakeRunner
 
-    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.service.find_claude", lambda: None)
     assert service.claude_login_status()["installed"] is False
     ok = (0, json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.0,
                          "modelUsage": {}, "structured_output": {"ok": True}}), "")

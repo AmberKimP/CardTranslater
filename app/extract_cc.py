@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.claude_setup import find_claude
 from app.extract import SYSTEM_PROMPT, Paused, ocr_excludes, region_crop_png
 
 CC_MODEL_ALIAS = {"claude-opus-5-5": "opus", "claude-sonnet-5-5": "sonnet", "claude-haiku-5-5": "haiku"}
@@ -59,7 +59,7 @@ class ClaudeCodeClient:
     engine = "claude-code"
 
     def __init__(self, exe: str | None = None, runner=None):
-        self.exe = exe or shutil.which("claude") or shutil.which("claude.exe") or shutil.which("claude.cmd")
+        self.exe = exe or find_claude()
         self.runner = runner or _run_subprocess
         if not self.exe and runner is None:
             raise NotAvailable("claude 명령을 찾지 못했습니다 (Claude Code 설치·PATH 확인)")

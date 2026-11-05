@@ -103,6 +103,9 @@ Nov 3, 2026
 | F19 | 바뀐 카드만 다시 합성 | P1 | 같은 프로젝트에 엑셀을 다시 가져오면 번역이 바뀐 카드만 처리한다 |
 | F20 | 용어 변경 일괄 반영 | P1 | 검수 중 용어집의 번역을 바꾸면, 그 용어가 들어간 행을 모두 찾아 바뀜 후보로 보여 주고 확인하면 한꺼번에 바꾼다 |
 | F27 | 캡처 이미지 입력 | P1 | PNG·JPG(그리고 WEBP·BMP·TIFF)도 같은 흐름으로 처리한다. 넣을 때 **카드 한 장 = PDF 한 쪽**으로 바꿔 그룹에 넣으므로 영역 지정·추출·지우기·한글 넣기는 글자 레이어 없는 스캔 PDF와 같은 경로를 탄다(2026-11-05 구현). 이미지 한 장에 카드 한 장, 또는 한 장에 가로 X × 세로 Y 배열을 고른다. 배열은 카드 사이의 빈 틈(바탕색, 스캔 잡음 기준으로 판단)을 배열 전체에서 공통으로 찾아 자르므로 같은 열·행의 카드는 같은 크기로 잘리고, 바깥 여백은 잘라 낸다. 틈이 없으면 같은 간격으로 나누고 알린다. 자를 자리는 미리 보기(빨간 상자·번호)로 확인한다. 쪽 크기는 이미지 DPI(없으면 300dpi), 사진 회전 정보(EXIF)를 반영하고, 투명한 곳은 흰색으로 한다. 원본 이미지는 그 파일의 `source/images/`에 사본을 두고, 자른 설정은 `file.json`의 `from_images`에 남긴다 |
+| F29 | Claude Code 찾기·자동 설치 | P1 | 구독(Claude Code)으로 쓰려는데 그 PC에 `claude`가 없으면 로그인 창의 ‘Claude Code 설치’로 설치한다(2026-11-05 구현). Node.js 22 이상이 없으면 nodejs.org의 최신 LTS zip을 받아 SHA256을 확인한 뒤 `%LOCALAPPDATA%\CardTranslater	ools
+ode`에 풀고, 그 npm으로 `@anthropic-ai/claude-code`를 `tools\claude`에 설치한다. 관리자 권한·PATH 변경이 필요 없고, 앱을 지워도 이 폴더는 남는다. `claude`는 PATH만이 아니라 알려진 설치 위치(공식 설치 프로그램 `~\.localin`, npm `%APPDATA%
+pm`, winget, 이 앱의 `tools\claude`)에서도 찾으므로 설치 직후 PATH가 반영되지 않아도 쓸 수 있다. 로그인은 설치 뒤 사용자가 ‘로그인 창 열기’에서 `/login`으로 한다 |
 | F22 | 여러 카드 타입 | P2 | 한 프로젝트에 영역 템플릿을 여러 개 두고 카드마다 고른다 |
 | F23 | 보존할 단어 | P2 | 고유명사·수치 등 지정한 단어를 번역하지 않고 그대로 둔다 |
 
@@ -410,8 +413,9 @@ Nov 3, 2026
 처리 엔진은 **Python**으로 만든다. 이번 앱의 어려운 부분(이미지 처리, 글자 인식, 배경 복원, PDF, 엑셀, AI 호출)에 필요한 도구가 거의 모두 Python에 가장 잘 갖춰져 있기 때문이다. 화면은 처음에 로컬 웹으로 계획했으나, **exe로 만들어 일반 프로그램처럼 쓰기 위해 PySide6로 바꿨다.** 영역 그리기·확대·끌기는 QGraphicsView가 기본으로 지원한다. 엔진은 처음부터 화면과 나눠 두었으므로(`service.py`) 그대로 쓴다.
 
 - **배포:** PyInstaller 폴더 방식(onedir)으로 `CardTranslater.exe`와 `_internal/`(글꼴 포함)을 만든다. 파일 하나로 묶는 방식은 실행이 느리고 백신 오탐이 잦으며, PySide6(LGPL)는 폴더 방식이 깔끔하다. 크기는 약 200~350MB로 예상한다.
+- **설치 파일:** Inno Setup 6으로 `CardTranslater-Setup-<버전>.exe`를 만든다(`packaging/make_installer.py`, 버전 1.0.YYYYMMDD). 관리자 권한 없이 `%LOCALAPPDATA%\Programs\CardTranslater`에 설치하고, 제거해도 데이터 폴더와 `tools/`(Node.js·Claude Code)는 남는다. 빌드할 때 `dist/CardTranslater.exe`가 실행 중이면 파일이 잠겨 빌드가 실패하므로 먼저 끈다.
 - **데이터 폴더:** exe로 쓸 때는 프로그램 폴더가 아니라 사용자가 고른 데이터 폴더(기본 `문서\CardTranslater`)에 `games/`·`projects/`를 둔다. 설정은 `%APPDATA%\CardTranslater\settings.json`. 개발 중에는 저장소 폴더를 쓴다.
-- **로그인 (시작 화면):** 프로그램을 켜면 ‘Claude로 로그인(Claude 구독 · Claude Code)’과 ‘API 키 사용’ 중에서 고른다. Claude 쪽은 설치 여부를 보여 주고, ‘로그인 확인’(아주 짧은 Haiku 요청 한 번)과 ‘로그인 창 열기’(새 창에서 claude → /login)를 둔다. API 쪽은 키를 붙여 넣고 ‘확인하고 저장’한다. 고른 방식은 설정에 남아 다음 시작 때 기본으로 고른다. 파일 > 로그인 방식에서 언제든 바꾼다. `claude` 명령(Claude Code)은 exe에 넣을 수 없으므로, 구독으로 쓰려면 그 PC에 Claude Code가 설치되어 있어야 한다.
+- **로그인 (시작 화면):** 프로그램을 켜면 ‘Claude로 로그인(Claude 구독 · Claude Code)’과 ‘API 키 사용’ 중에서 고른다. Claude 쪽은 설치 여부를 보여 주고, ‘로그인 확인’(아주 짧은 Haiku 요청 한 번)과 ‘로그인 창 열기’(새 창에서 claude → /login)를 둔다. API 쪽은 키를 붙여 넣고 ‘확인하고 저장’한다. 고른 방식은 설정에 남아 다음 시작 때 기본으로 고른다. 파일 > 로그인 방식에서 언제든 바꾼다. `claude` 명령(Claude Code)은 exe에 넣지 않는다(크기 약 330MB, 배포 조건·자동 업데이트 문제). 그 PC에 Claude Code가 없으면 ‘Claude Code 설치’ 버튼이 보이고, 누르면 Node.js(없을 때만)와 Claude Code를 사용자 폴더에 설치한다(F29).
 - **포기한 것:** 휴대폰 브라우저로 진행·결과 보기. 완료 알림은 Claude 쪽 알림으로 받는다.
 
 | 역할 | 도구 | 쓰는 곳 |
@@ -459,6 +463,7 @@ CardTranslater/
 │  ├─ workspace.py     게임·프로젝트·그룹
 │  ├─ glossary.py      용어 후보·검증 엑셀·확정
 │  ├─ extract*.py      비전 글자 추출 (Claude Code / API)
+│  ├─ claude_setup.py  Claude Code 찾기·자동 설치 (Node.js + npm, F29)
 │  ├─ cli.py           명령줄 화면
 │  ├─ qt/              PySide6 화면 (python -m app.qt). service만 부른다
 │  ├─ project.py       프로젝트 폴더·설정 저장
