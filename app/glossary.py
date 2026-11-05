@@ -42,6 +42,12 @@ HEADERS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 _BRACKET = re.compile(r"(?<!\[)\[([^\[\]\n]{1,24})\](?!\])")  # 카드에 인쇄된 [炎]·[人族] (아이콘 [[x]]는 제외)
 _ICON = re.compile(r"\[\[[a-z0-9_]+\]\]")
+_ICON_TOKEN = re.compile(r"\[\[[^\[\]]*\]\]")  # [[coin]]·[[?]] 등 모든 아이콘 자리표시
+
+
+def is_icon_term(source: str) -> bool:
+    """아이콘 자리표시가 든 용어. 아이콘은 아이콘 사전이 맡으므로 용어집에 넣지 않는다."""
+    return bool(_ICON_TOKEN.search(source or ""))
 
 
 # ---------------------------------------------------------------- 원문 모으기
@@ -273,6 +279,7 @@ category words and tags, keywords and abilities, resources and tokens, repeated 
 Do not list ordinary words or whole flavor sentences.
 Prefer single words and short noun phrases. A fixed multi-word rule phrase with particles or a verb
 (e.g. すべての判定にボーナスがもらえる, ダイスを振り) goes under category 문구: it is a style hint, not a strict term.
+Never list icon placeholders such as [[coin]] or [[?]], or terms containing them: icons are handled separately.
 Write each term exactly as it appears in the texts (same characters). Suggest a natural Korean translation
 that fits a board game rulebook. Use the given category names."""
 
@@ -316,16 +323,18 @@ def find_candidates(info: ProjectInfo, sources: list[Source], client, model: str
 
     terms: dict[str, Term] = {}
     for src, t in existing.items():
+        if is_icon_term(src):
+            continue
         c, ex = count_and_examples(src, sources, t.get("variants", []))
         terms[src] = Term(src, ko=t.get("ko", ""), category=t.get("category", "기타"), count=c, examples=ex,
                           variants=t.get("variants", []), note=t.get("note", ""), confirmed=True)
     for w, cat in local.items():
-        if w not in terms:
+        if w not in terms and not is_icon_term(w):
             c, ex = count_and_examples(w, sources)
             terms[w] = Term(w, category=cat, count=c, examples=ex)
     for item in data.get("terms", []):
         w = item["term"].strip()
-        if not w:
+        if not w or is_icon_term(w):
             continue
         if w in terms:
             if not terms[w].confirmed and not terms[w].suggested:
@@ -354,11 +363,14 @@ def glossary_path(info: ProjectInfo) -> Path:
 
 def load_glossary(info: ProjectInfo) -> dict:
     p = glossary_path(info)
-    return _read(p) if p.exists() else {"game": info.game, "version": 0, "terms": []}
+    data = _read(p) if p.exists() else {"game": info.game, "version": 0, "terms": []}
+    data["terms"] = [t for t in data.get("terms", []) if not is_icon_term(t.get("source", ""))]  # 예전에 들어간 아이콘
+    return data
 
 
 def confirm(info: ProjectInfo, terms: list[dict]) -> dict:
     """게임 용어집을 확정한다 (버전 +1, 바뀐 용어 기록)."""
+    terms = [t for t in terms if not is_icon_term(t.get("source", ""))]
     old = load_glossary(info)
     before = {t["source"]: t.get("ko") for t in old.get("terms", [])}
     changed = [t["source"] for t in terms if t["source"] in before and before[t["source"]] != t["ko"]]
@@ -470,6 +482,7 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
     seen: dict[str, int] = {}
     by_ko: dict[str, list[str]] = {}
     unchanged_checks: list[str] = []
+    icon_rows: list[str] = []
     current = {t["source"]: t.get("ko") for t in load_glossary(info).get("terms", [])}  # 이미 확정된 번역
     for n, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         src = cell(row, "원문 용어")
@@ -479,6 +492,9 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
             res.blocking.append(f"원문 용어가 두 번 있습니다: '{src}' ({seen[src]}행, {n}행)")
             continue
         seen[src] = n
+        if is_icon_term(src):
+            icon_rows.append(src)
+            continue
         ko = cell(row, "번역")
         if not ko:
             res.unused.append(src)
@@ -500,6 +516,8 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
     if unchanged_checks:
         res.issues.append(f"‘번역 확인’ 용어를 추천 번역 그대로 확정 {len(unchanged_checks)}개 (다른 후보를 봤는지 확인): "
                           + ", ".join(unchanged_checks[:20]) + (" …" if len(unchanged_checks) > 20 else ""))
+    if icon_rows:
+        res.issues.append(f"아이콘은 용어집에 넣지 않음 (아이콘 사전이 맡음): {', '.join(icon_rows)}")
     if res.unused:
         res.issues.append(f"번역이 비어 용어로 쓰지 않음 {len(res.unused)}개: {', '.join(res.unused[:20])}"
                           + (" …" if len(res.unused) > 20 else ""))

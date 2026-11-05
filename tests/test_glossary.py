@@ -154,3 +154,15 @@ def test_import_blocks_duplicates_and_other_game(tmp_path):
     meta["B1"] = "Other"
     wb.save(x)
     assert "다른 게임" in service.import_glossary(info.dir, x).blocking[0]
+
+
+def test_icons_never_enter_the_glossary(tmp_path):
+    """아이콘 자리표시([[coin]]·[[?]])는 용어 후보·확정·불러오기 어디서도 용어가 아니다."""
+    from app import glossary, workspace
+
+    assert glossary.is_icon_term("[[coin]]") and glossary.is_icon_term("[[?]]を払う")
+    assert not glossary.is_icon_term("召喚石") and not glossary.is_icon_term("[炎]")
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    glossary.confirm(info, [{"source": "[[coin]]", "ko": "[[coin]]", "category": "자원·토큰"},
+                            {"source": "召喚石", "ko": "소환석", "category": "자원·토큰"}])
+    assert [t["source"] for t in glossary.load_glossary(info)["terms"]] == ["召喚石"]

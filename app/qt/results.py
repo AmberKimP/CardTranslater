@@ -64,7 +64,8 @@ class ResultViewer(QDialog):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.image.setMinimumSize(1, 1)
-        self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다
+        self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다. 휠은 이전/다음 쪽
+        self.scroll.setToolTip("마우스 휠: 위로 이전 쪽, 아래로 다음 쪽")
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(self.scroll, 1)
@@ -118,7 +119,21 @@ class ResultViewer(QDialog):
     def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
         if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Resize:
             QTimer.singleShot(0, self._refit)
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Wheel:
+            self._wheel(ev.angleDelta().y())
+            return True
         return super().eventFilter(obj, ev)
+
+    def _wheel(self, dy: int):
+        """그림 위에서 휠: 아래로 굴리면 다음 쪽, 위로 굴리면 이전 쪽 (터치패드의 작은 값은 모아서 한 칸)."""
+        self._wheel_acc = getattr(self, "_wheel_acc", 0) + dy
+        step = 0
+        while abs(self._wheel_acc) >= 120:
+            step += -1 if self._wheel_acc > 0 else 1
+            self._wheel_acc -= 120 if self._wheel_acc > 0 else -120
+        if step and self.items:
+            row = max(0, min(len(self.items) - 1, self.pages.currentRow() + step))
+            self.pages.setCurrentRow(row)
 
     def showEvent(self, ev):
         super().showEvent(ev)

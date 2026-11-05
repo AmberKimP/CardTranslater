@@ -731,8 +731,8 @@ class StepActions:
         self.page.refresh()
         QMessageBox.information(self.page, "용어집 확정",
                                 f"게임 용어집 버전 {r.version}, 용어 {r.terms}개."
-                                + (f"\n번역이 바뀐 용어: {', '.join(r.changed)}" if r.changed else "")
-                                + "\n이제 번역을 시작할 수 있습니다.")
+                                + (f"\n번역이 바뀐 용어: {', '.join(r.changed)}\n‘번역’을 다시 하면 이 용어가 든 칸만 다시 번역합니다."
+                                   if r.changed else "\n번역을 시작하거나 이어 할 수 있습니다."))
 
     # ---- 번역
     def translate(self):

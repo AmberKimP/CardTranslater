@@ -222,7 +222,8 @@ class ProjectPage(QWidget):
         on = {
             "extract": ready, "review": extracted, "icons": extracted,
             "finish": extracted and st in ("extracting", "glossary_review", "glossary_confirmed", "translated"),
-            "glossary": st == "glossary_review",
+            # 확정 뒤에도 고친 엑셀을 다시 가져올 수 있다 (바뀐 용어가 든 칸만 다시 번역됨)
+            "glossary": st in ("glossary_review", "glossary_confirmed", "translating", "translated"),
             "translate": st in ("glossary_confirmed", "translating", "translated"),
             "excel": st == "translated",
             "erase": ready,

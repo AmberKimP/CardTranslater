@@ -765,7 +765,9 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
     if res.issues and not accept_issues:
         return GlossaryConfirmResult("needs_confirmation", terms=len(res.terms), issues=res.issues)
     c = glossary.confirm(info, res.terms)
-    workspace.set_status(info, "glossary_confirmed", glossary_version=c["version"])
+    # 번역한 뒤 다시 가져와도 번역이 바뀐 용어가 없으면 번역 상태를 그대로 둔다 (바뀌면 다시 번역해야 함)
+    keep = info.status in ("translating", "translated") and not c["changed"]
+    workspace.set_status(info, info.status if keep else "glossary_confirmed", glossary_version=c["version"])
     return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues)
 
 

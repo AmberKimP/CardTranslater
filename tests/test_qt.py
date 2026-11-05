@@ -367,7 +367,8 @@ def test_project_step_buttons_follow_status(qapp, tmp_path):
                   "test": False}
     workspace.set_status(workspace.load_project_info(info.dir), "glossary_confirmed")
     win.project.refresh()
-    assert win.project.step_buttons["translate"].isEnabled() and not win.project.step_buttons["glossary"].isEnabled()
+    # 확정 뒤에도 고친 용어집 엑셀을 다시 가져올 수 있다
+    assert win.project.step_buttons["translate"].isEnabled() and win.project.step_buttons["glossary"].isEnabled()
 
 
 def test_step_flows_ask_and_continue(qapp, tmp_path, monkeypatch):
@@ -485,6 +486,14 @@ def test_result_viewer_and_output_buttons(qapp, tmp_path):
     assert v.pages.count() == 2 and v.image.pixmap() is not None and v.regions.count() == 2  # 카드 전체 + 영역 1
     assert v.regions.item(0).text() == "카드 전체" and v.regions.currentRow() == 0
     v.regions.setCurrentRow(1)
+    v._wheel(-120)  # 아래로 한 칸: 다음 쪽
+    assert v.pages.currentRow() == 1
+    v._wheel(-120)  # 마지막 쪽에서 더 내려도 그대로
+    assert v.pages.currentRow() == 1
+    v._wheel(60)
+    assert v.pages.currentRow() == 1  # 터치패드의 작은 값은 모아서
+    v._wheel(60)
+    assert v.pages.currentRow() == 0
     v.only.setChecked(True)  # 문제 있는 쪽만: 없음
     assert v.pages.count() == 0 and "문제 있는 쪽 0" in v.info.text()
 
