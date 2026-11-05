@@ -182,7 +182,9 @@ def test_main_window_home_and_project(qapp, tmp_path):
     assert win.home.tree.topLevelItemCount() == 1 and g.text(0) == "G" and g.child(0).text(0) == "p"
     win.open_project(info.dir)
     assert win.stack.currentWidget() is win.project
-    top = win.project.tree.topLevelItem(0)
+    allit = win.project.tree.topLevelItem(0)  # 맨 위 ‘전체’ 아래에 그룹 > 파일
+    assert allit.text(0).startswith("전체") and win.project.tree.currentItem() is allit
+    top = allit.child(0)
     assert "영역 없음" in top.text(0) and top.child(0).text(1) == "3"
     assert "영역을 지정하세요" in win.project.next.text()
 
@@ -528,7 +530,8 @@ def test_delete_project_group_file_go_to_trash(qapp, tmp_path, monkeypatch):
     # 화면: 그룹 삭제 (예)
     win = MainWindow(root=tmp_path)
     win.open_project(info.dir)
-    win.project.tree.setCurrentItem(win.project.tree.topLevelItem(0))
+    assert not win.project.b_delete.isEnabled()  # ‘전체’는 지울 수 없다
+    win.project.tree.setCurrentItem(win.project.tree.topLevelItem(0).child(0))
     assert win.project.b_delete.isEnabled()
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     win.project.delete_selected()
@@ -1316,7 +1319,7 @@ def test_next_button_runs_next_step_and_steps_show_progress(qapp, tmp_path, monk
     p2.do_next()
     assert called[-1] == "extract"
     # 파일 표: 쉬운 표기
-    fi = p2.tree.topLevelItem(0).child(0)
+    fi = p2.tree.topLevelItem(0).child(0).child(0)
     assert fi.text(3) == "2/3장" and fi.text(4) == "—" and fi.text(5) == "—" and fi.text(2) == "—"
 
 
@@ -1334,7 +1337,7 @@ def test_translated_project_marks_done_steps(qapp, tmp_path):
     assert st["results"] == "now" and page.next_btn.text() == "▶ 결과 보기"
     b = page.step_buttons["translate"]
     assert b.text().endswith("✓") and b.property("step") == "done" and "끝난 단계" in b.toolTip()
-    fi = page.tree.topLevelItem(0).child(0)
+    fi = page.tree.topLevelItem(0).child(0).child(0)
     assert fi.text(4) == "완료" and fi.text(5) == "완료"
     assert "v" not in page.sub.text()  # 용어집 버전은 ‘N번째 확정본’으로
 
@@ -1348,7 +1351,7 @@ def test_card_limit_banner_and_turn_off(qapp, tmp_path):
     win.open_project(info.dir)
     page = win.project
     assert not page.banner.isHidden() and "앞 2장만" in page.banner_text.text()
-    assert "(시험)" in page.tree.topLevelItem(0).child(0).text(3)
+    assert "(시험)" in page.tree.topLevelItem(0).child(0).child(0).text(3)
     page.turn_off_card_limit()
     assert page.banner.isHidden() and service.project_overview(info.dir)["card_limit"] is None
 
@@ -1489,3 +1492,112 @@ def test_region_editor_shortcuts_and_fit_without_scrollbars(qapp, tmp_path):
     assert len(ed.items()) == 6 and len({i.name for i in ed.items()}) == 6  # 이름은 겹치지 않게
     ed.dirty = False
     ed.close()
+
+
+def _two_group_project(tmp_path):
+    info = _project(tmp_path)
+    service.add_files(info.dir, [_pdf(tmp_path / "in" / "more.pdf")], "둘째", new_group=True)
+    return info
+
+
+def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, monkeypatch):
+    """그리드 맨 위 ‘전체’. 작업·결과 버튼은 고른 범위(전체·그룹·파일)에 대해 한다."""
+    from app.qt import results as res_mod
+    from app.qt.main import MainWindow
+
+    info = _two_group_project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    allit = page.tree.topLevelItem(0)
+    assert page.tree.topLevelItemCount() == 1 and allit.childCount() == 2
+    assert page.scope() == ("전체", None) and "전체" in page.scope_label.text()
+    g2 = next(allit.child(i) for i in range(allit.childCount()) if allit.child(i).text(0).startswith("둘째"))
+    page.tree.setCurrentItem(g2)
+    label, dirs = page.scope()
+    assert "둘째" in label and len(dirs) == 1 and "둘째" in page.scope_label.text()
+    page.tree.setCurrentItem(g2.child(0))
+    assert page.scope()[0].startswith("파일") and len(page.scoped_files()) == 1
+    # 새로 고쳐도 고른 항목 유지
+    page.refresh()
+    assert page.scope()[0].startswith("파일")
+    # ⑦ 지우기: 고른 파일만 erase_project(files=...)로
+    seen = {}
+
+    def fake_run(parent, title, job, done, fail, **k):
+        seen["files"] = job.kwargs.get("files")
+    monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
+    page.out.erase()
+    assert seen["files"] == dirs
+    page.select_all()
+    page.out.erase()
+    assert seen["files"] is None
+
+
+def test_extract_asks_all_or_selected_and_moves_grid_to_all(qapp, tmp_path, monkeypatch):
+    from app.qt import steps as steps_mod
+    from app.qt.main import MainWindow
+
+    info = _two_group_project(tmp_path)
+    for g in service.project_overview(info.dir)["groups"]:
+        service.save_region_template(g["dir"], {"regions": [
+            {"name": "이름", "kind": "text", "rect": {"x": 0.1, "y": 0.7, "w": 0.6, "h": 0.15}}]})
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    page.tree.setCurrentItem(page.tree.topLevelItem(0).child(1))
+    asked = []
+    answers = iter([1, 0])  # 처음: 고른 항목만, 다음: 전체
+    monkeypatch.setattr("app.qt.dialogs.ask_choice", lambda *a, **k: (asked.append(a[2]), next(answers))[1])
+
+    class FakeDlg:
+        def __init__(self, *a, **k):
+            pass
+
+        def exec(self):
+            return True
+
+        def card_limit(self):
+            return None
+
+        def choice(self):
+            return None, "double-check", "claude-code"
+    monkeypatch.setattr(steps_mod, "ExtractDialog", FakeDlg)
+    runs = []
+    monkeypatch.setattr(steps_mod.StepActions, "_run_extract", lambda self, files, m, e: runs.append(files))
+    page.steps.extract()
+    assert len(runs[0]) == 1 and "고른" not in asked[0]
+    page.steps.extract()
+    assert runs[1] is None and page.tree.currentItem() is page.tree.topLevelItem(0)  # 전체로 옮김
+    # 이미 ‘전체’를 고른 상태면 묻지 않는다
+    page.steps.extract()
+    assert len(asked) == 2 and runs[2] is None
+
+
+def test_reset_keeps_files_and_regions_unlike_delete(qapp, tmp_path, monkeypatch):
+    from app.qt.main import MainWindow
+
+    info, fd = _project_with_extract(tmp_path)
+    (fd / "cleared").mkdir()
+    (fd / "cleared" / "cleared.pdf").write_bytes(b"x")
+    (fd / "translated").mkdir()
+    workspace.set_status(workspace.load_project_info(info.dir), "translated")
+    r = service.reset_files(info.dir, [fd], "output")
+    assert len(r["moved"]) == 2 and not (fd / "cleared").exists() and (fd / "extract").exists()
+    assert workspace.load_project_info(info.dir).status == "translated"
+    # 화면: 전체 초기화 -> 추출부터 모두
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    monkeypatch.setattr("app.qt.dialogs.ask_choice", lambda *a, **k: 1)
+    win.project.reset_selected()
+    assert not (fd / "extract").exists() and (fd / "source").exists()
+    assert (Path(service.project_overview(info.dir)["groups"][0]["dir"]) / "regions.json").exists()
+    assert workspace.load_project_info(info.dir).status == "extracting"
+
+
+def test_scoped_service_steps(tmp_path):
+    info = _two_group_project(tmp_path)
+    fds = workspace.file_dirs(workspace.load_project_info(info.dir))
+    assert service.scoped_file_dirs(workspace.load_project_info(info.dir), None, [fds[1]]) == [fds[1]]
+    r = service.erase_project(info.dir, files=[fds[1]])
+    assert [f["file"] for f in r.files] == [workspace.file_key(fds[1])]

@@ -1242,6 +1242,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             "mode": mode, "used": used, "background": erase_text.background_kind(sub, tm),
             "mask_ratio": round(float(changed.sum()) / wa, 4), "texture": round(tm.texture, 2),
             "needs_choice": mode == "auto" and tm.busy, "notes": tm.notes,
+            # 상자 안에서 글자를 거의 못 찾음: 영역 위치가 카드와 안 맞을 수 있다 (예: 거꾸로 인쇄된 카드)
+            "few_text": bool(float(tm.core[lb[1]:lb[3], lb[0]:lb[2]].mean()) < 0.01),
         }
         # 원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt
         lay = erase_text.text_layout(sub, tm, lb)
@@ -1252,8 +1254,9 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             return [round(v, 3) for v in q]
 
         layout_meta[name] = {
-            "lines": [{**{k: v for k, v in ln.items() if k not in ("bbox", "glyph_h", "stroke_px", "accents")},
+            "lines": [{**{k: v for k, v in ln.items() if k not in ("bbox", "glyph_h", "stroke_px", "accents", "cy")},
                        "bbox_pt": _pt(ln["bbox"]), "glyph_h_pt": round(ln["glyph_h"] * ppx, 3),
+                       "cy_pt": _pt((ln["bbox"][0], ln["cy"], ln["bbox"][2], ln["cy"]))[1],
                        "stroke_pt": round(ln["stroke_px"] * ppx, 3),
                        "accents": [{"color": a_["color"],
                                     "x_pt": [[_pt((u, ln["bbox"][1], v, ln["bbox"][3]))[0],
@@ -1330,6 +1333,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             m_["text_layout"] = layout_meta.get(m_["name"])
             if tmm["needs_choice"]:
                 flags.append("그림 배경: 지우기 방식 확인")
+            if tmm.get("few_text"):
+                flags.append("글자를 거의 못 찾음: 영역 위치 확인")
         m_["erase"] = {
             "text_mask": text_mask_meta.get(m_["name"]),
             "redacted_spans": len(m_["text_layer"]["spans"]),

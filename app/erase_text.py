@@ -66,6 +66,24 @@ class TextMask:
     dividers: list[tuple[int, int, int, int]] = field(default_factory=list)  # 남긴 가로 구분선 (x0,y0,x1,y1)
 
 
+def _outlined(I: np.ndarray, c) -> bool:
+    """덩어리 둘레(2~4px 고리)가 고른 한 색이고 덩어리 색과 크게 다르면 테두리 두른 글자 획."""
+    comp = c[0]
+    ring = cv2.dilate(comp.astype(np.uint8), _disk(4)).astype(bool) & ~cv2.dilate(comp.astype(np.uint8), _disk(1)).astype(bool)
+    if ring.sum() < 20:
+        return False
+    rp = I[ring]
+    med = np.median(rp, axis=0)
+    coherent = float((np.abs(rp - med).max(axis=1) < COLOR_TOL).mean())
+    if coherent < 0.6 or float(np.abs(med - c[1]).max()) < 100:
+        return False
+    # 글자 테두리는 흰 글자 + 어두운 테두리(또는 그 반대)다. 납선에 둘러싸인 색유리 조각은 빼다
+    col = np.asarray(c[1])
+    light_on_dark = col.min() >= 190 and med.max() <= 110
+    dark_on_light = col.max() <= 80 and med.min() >= 170
+    return bool(light_on_dark or dark_on_light)
+
+
 def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None) -> TextMask:
     """img(H×W×3 uint8, 상자 둘레에 여유가 있는 자른 그림) 안 box(x0,y0,x1,y1)의 글자 픽셀."""
     x0, y0, x1, y1 = box
@@ -176,9 +194,15 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         best, best_score = None, 0.0
         for g in groups:
             g["rare"] = float((np.abs(out_cols - g["color"]).max(axis=1) < COLOR_TOL).mean()) if len(out_cols) else 0.0
+            g["outlined"] = sum(c[2] for c in g["items"] if _outlined(I, c)) / max(1, g["area"])
             score = g["area"] * max(0.0, 1 - g["rare"] * 8)
             if score > best_score:
                 best, best_score = g, score
+        # 테두리 두른 글자(흰 글자 + 검은 외곽선 등): 둘레가 고르고 글자와 대비가 큰 색 묶음이 있으면 그것이 글자다.
+        # 상자 밖에 같은 색(예: 띠 위아래 흰 패널)이 많아도 놓치지 않게 ‘드묾’보다 먼저 본다.
+        lined = [g for g in groups if g["outlined"] >= 0.5 and g["area"] >= 0.3 * max(gg["area"] for gg in groups)]
+        if lined:
+            best = max(lined, key=lambda g: g["area"] * g["outlined"])
         for g in groups:
             if g is best or g["rare"] < 0.005:
                 for c in g["items"]:
@@ -401,14 +425,23 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
             "stroke_px": round(stroke_px, 2),
             "weight": round(weight, 3),
             "bold": weight >= BOLD_WEIGHT,
+            # 줄의 세로 가운데: 잉크가 몰린 곳(행 10~90%) 기준. 「 」·ー 같은 튀어나온 획에 끌리지 않게
+            "cy": round(float(np.mean(np.percentile(ys, [10, 90]))) + 0.5, 2),
         })
-    # 정렬: 줄 가운데가 상자 가운데에 가깝고 왼쪽 끝이 다른 줄보다 들어가 있으면 가운데 정렬
+    # 정렬: 구분선으로 나뉜 묶음마다 본다. 줄 가운데가 상자 가운데에 가깝고, 묶음의 다른 줄보다 들어가 있거나
+    # 묶음에 줄이 하나뿐이면 가운데 정렬
     cx = (x0 + x1) / 2
-    lmin = min(ln["bbox"][0] for ln in lines)
+    cuts = sorted((d[1] + d[3]) / 2 for d in divs)
+
+    def section(ln):
+        return sum((ln["bbox"][1] + ln["bbox"][3]) / 2 > c for c in cuts)
+
     for ln in lines:
         left, _t, right, _b = ln["bbox"]
         mid = (left + right) / 2
-        if abs(mid - cx) <= 0.06 * bw and (left - lmin > 0.04 * bw or len(lines) == 1):
+        same = [o for o in lines if section(o) == section(ln)]
+        lmin = min(o["bbox"][0] for o in same)
+        if abs(mid - cx) <= 0.06 * bw and (left - lmin > 0.04 * bw or len(same) == 1):
             ln["align"] = "center"
         elif right >= x1 - 0.04 * bw and left - lmin > 0.15 * bw:
             ln["align"] = "right"

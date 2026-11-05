@@ -139,3 +139,68 @@ def test_compose_layout_region_upside_down_region():
     spans = [s for b in page.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
     assert any(abs(l_["dir"][0] + 1) < 1e-3 for b in page.get_text("dict")["blocks"] for l_ in b.get("lines", []))
     assert spans
+
+
+def test_outlined_white_name_found_even_when_white_panels_surround_band():
+    """Dungeon 이름 띠: 띠 위아래에 흰 패널이 있어도(흰색이 상자 밖에 흔함) 흰 글자 + 검은 테두리를 글자로 찾는다."""
+    band = _glass(h=90, w=420)
+    img = np.full((170, 420, 3), (245, 240, 236), np.uint8)  # 위아래 흰 패널
+    img[40:130] = band
+    white = np.zeros(img.shape[:2], np.uint8)
+    cv2.putText(white, "NAME", (110, 105), cv2.FONT_HERSHEY_SIMPLEX, 1.5, 255, 6)
+    outline = cv2.dilate(white, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
+    img[outline > 0] = (40, 38, 42)
+    img[white > 0] = (240, 238, 236)
+    box = (20, 44, 400, 126)
+    tm = erase_text.text_mask(img, box)
+    assert tm.busy and tm.mask[white > 0].mean() > 0.9
+    lay = erase_text.text_layout(img, tm, box)
+    assert len(lay["lines"]) == 1 and lay["lines"][0]["stroke_color"]
+
+
+def test_single_line_section_below_divider_is_centered():
+    img = _paper(h=220)
+    cv2.putText(img, "LEFT LINE ONE", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (40, 40, 40), 3, cv2.LINE_AA)
+    cv2.putText(img, "LINE TWO", (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (40, 40, 40), 3, cv2.LINE_AA)
+    cv2.line(img, (40, 140), (320, 140), (40, 40, 40), 3)
+    (tw, _), _ = cv2.getTextSize("flavor", cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+    cv2.putText(img, "flavor", (180 - tw // 2, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (40, 40, 40), 2, cv2.LINE_AA)
+    box = (20, 10, 340, 210)
+    lay = erase_text.text_layout(img, erase_text.text_mask(img, box), box)
+    assert [ln["align"] for ln in lay["lines"]] == ["left", "left", "center"]
+    assert all("cy" in ln for ln in lay["lines"])
+
+
+def test_compose_layout_falls_back_on_noise_lines_and_sizes_sections_separately():
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    noise = {"lines": [{"bbox_pt": [20, 20, 150, 22], "glyph_h_pt": 1.5, "color": "#ffff00", "stroke_color": None,
+                        "stroke_pt": 0, "weight": 0.1, "bold": False, "align": "left", "accents": []}], "dividers_pt": []}
+    assert compose_layout_region(page, (10, 10, 170, 100), "이름", {}, noise) is None
+    lay = _layout()
+    lay["lines"][3]["glyph_h_pt"] = 5.0  # 구분선 아래 문구는 작은 글자
+    rec = compose_layout_region(page, (10, 10, 170, 100), "첫 줄\n둘째 줄\n+2\n아래 문구", {}, lay)
+    hs = [b[3] - b[1] for b in rec["line_boxes_pt"]]
+    assert hs[3] < 0.8 * hs[0]  # 아래 묶음은 따로 작게
+
+
+def test_compose_page_flags_erased_region_without_translation(tmp_path):
+    from app.typeset_compose import STATUS_NO_TRANSLATION, compose_page
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    src = doc.new_page(width=180, height=110)
+    meta = {"regions": [{"name": "본문", "kind": "text", "rect_pt": [10, 10, 170, 100],
+                         "erase": {"text_mask": {"used": "pattern"}}, "text_layout": _layout()}]}
+    out = compose_page(page, src, meta, {"본문": {"ko": ""}})
+    assert out["본문"]["status"] == [STATUS_NO_TRANSLATION]
+
+
+def test_compose_layout_flags_lines_erased_but_not_read():
+    from app.typeset_compose import STATUS_MISSING_LINE
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    rec = compose_layout_region(page, (10, 10, 170, 100), "첫 줄\n둘째 줄\n아래 문구", {}, _layout(),
+                                source_text="一行目\n二行目\n下の文")  # 원문 3줄, 지운 줄 4줄 (coin +2 줄을 못 읽음)
+    assert STATUS_MISSING_LINE in rec["status"]

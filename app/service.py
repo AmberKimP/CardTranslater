@@ -583,17 +583,28 @@ class ProjectExtractResult:
     retry_after: str | None = None
 
 
+def scoped_file_dirs(info, group: str | None = None, files: list | None = None) -> list[Path]:
+    """작업 범위의 파일 폴더: files(화면에서 고른 파일들)가 있으면 그것만, 없으면 그룹(없으면 전체)의 모든 파일."""
+    from app import workspace
+
+    all_ = workspace.file_dirs(info, group)
+    if files is None:
+        return all_
+    want = {Path(f).resolve() for f in files}
+    return [fd for fd in all_ if fd.resolve() in want]
+
+
 def extract_project(project_dir: Path | str, group: str | None = None, *, mode: str = "double-check",
                     engine: str = "claude-code", client=None, progress: ProgressFn | None = None,
-                    cancel: CancelToken | None = None) -> ProjectExtractResult:
-    """그룹(없으면 모든 그룹)의 모든 파일에서 텍스트를 추출한다. 멈추면 다시 불러 이어 간다."""
+                    cancel: CancelToken | None = None, files: list | None = None) -> ProjectExtractResult:
+    """그룹(없으면 모든 그룹)의 모든 파일에서 텍스트를 추출한다. files를 주면 그 파일만. 멈추면 다시 불러 이어 간다."""
     from app import workspace
 
     info = workspace.load_project_info(project_dir)
     if group and group not in [g["name"] for g in workspace.list_groups(info)]:
         return ProjectExtractResult("blocked", reason=f"그룹이 없습니다: {group}")
     out = ProjectExtractResult("done")
-    for fd in workspace.file_dirs(info, group):
+    for fd in scoped_file_dirs(info, group, files):
         if not ((fd / "regions.json").exists() or (fd.parent.parent / "regions.json").exists()):
             out.files.append({"file": workspace.file_key(fd), "state": "blocked", "reason": "영역 템플릿 없음"})
             out.state, out.reason = "blocked", f"{workspace.file_key(fd)}: 영역 지정이 필요합니다"
@@ -788,8 +799,10 @@ TRANSLATE_MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 
 
 def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine: str = "claude-code",
-                      client=None, progress: ProgressFn | None = None, cancel: CancelToken | None = None):
+                      client=None, progress: ProgressFn | None = None, cancel: CancelToken | None = None,
+                      files: list | None = None):
     """확정 게임 용어집을 기준으로 프로젝트의 모든 그룹·파일 원문을 번역한다 (같은 원문은 한 번).
+    files를 주면 그 파일의 원문만 (상태는 프로젝트 전체를 번역했을 때만 ‘번역 완료’가 된다).
     용어집이 확정되기 전에는 막는다. 끊겨도 다시 부르면 남은 칸부터 이어 간다."""
     from app import glossary, workspace
     from app.extract import make_client
@@ -802,6 +815,11 @@ def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine:
                                                  "finish-extraction -> import-glossary 를 먼저 하세요")
     terms = glossary.load_glossary(info).get("terms", [])
     sources = glossary.collect_sources(info)
+    partial = False
+    if files is not None:
+        keys = {workspace.file_key(fd) for fd in scoped_file_dirs(info, None, files)}
+        partial = keys != {workspace.file_key(fd) for fd in workspace.file_dirs(info)}
+        sources = [s_ for s_ in sources if s_.key.split("#", 1)[0] in keys]
     if not sources:
         return TranslateResult("blocked", reason="번역할 원문이 없습니다")
     if model not in TRANSLATE_MODELS:
@@ -811,14 +829,18 @@ def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine:
             client = ClaudeCodeClient() if engine == "claude-code" else make_client()
         except Exception as e:  # noqa: BLE001
             return TranslateResult("blocked", reason=f"{engine} 엔진을 쓸 수 없습니다: {e}")
-    workspace.set_status(info, "translating")
+    if not (partial and info.status == "translated"):
+        workspace.set_status(info, "translating")
     from app.icons import load_dictionary
 
     r = run_translate(info.dir, sources, terms, client, TRANSLATE_MODELS[model], game=info.game,
                       work_dir=info.dir / "work" / "translate", progress=progress or _noop, cancel=cancel,
                       icons=load_dictionary(info)["icons"])
     if r.state == "done":
-        workspace.set_status(info, "translated")
+        if not partial or info.status == "translated":
+            workspace.set_status(info, "translated")
+    elif partial and info.status == "translated":
+        pass  # 이미 전체 번역을 마친 프로젝트는 그대로
     return r
 
 
@@ -925,13 +947,14 @@ class ProjectStepResult:
 
 
 def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bool = False,
-                  progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> ProjectStepResult:
+                  progress: ProgressFn | None = None, cancel: CancelToken | None = None,
+                  files: list | None = None) -> ProjectStepResult:
     """7단계를 모든 그룹·파일에. 이미 지운 파일(cleared/)은 건너뛴다(redo=True면 다시)."""
     from app import workspace
 
     info = workspace.load_project_info(project_dir)
     out = ProjectStepResult("done")
-    for fd in workspace.file_dirs(info, group):
+    for fd in scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
         pages = workspace.included_pages(fd)
         if (fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd):
@@ -975,14 +998,14 @@ def set_card_limit(project_dir: Path | str, n: int | None) -> int | None:
 
 def compose_project(project_dir: Path | str, group: str | None = None, *, accept_issues: bool = False,
                     use_draft: bool = False, progress: ProgressFn | None = None,
-                    cancel: CancelToken | None = None) -> ProjectStepResult:
+                    cancel: CancelToken | None = None, files: list | None = None) -> ProjectStepResult:
     """8단계를 모든 그룹·파일에. 파일마다 검수한 번역_검수.xlsx가 있으면 그것, 없으면(또는 use_draft)
     초벌 번역으로 한글을 넣는다. 지우기는 다시 하지 않는다."""
     from app import workspace
 
     info = workspace.load_project_info(project_dir)
     out = ProjectStepResult("done")
-    for fd in workspace.file_dirs(info, group):
+    for fd in scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
         if not (fd / "cleared").exists():
             out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑦ 글자 지우기)"})
@@ -1632,6 +1655,34 @@ def delete_project(project_dir: Path | str) -> Path:
 
     info = workspace.load_project_info(project_dir)
     return _to_trash(info.dir, info.dir.parent.parent, f"project-{info.dir.name}")
+
+
+RESET_WHAT = {
+    "all": ("extract", "cleared", "translated"),  # 글자 추출부터 다시
+    "output": ("cleared", "translated"),  # 지운 카드·한글 카드만 다시
+}
+
+
+def reset_files(project_dir: Path | str, files: list | None = None, what: str = "output") -> dict:
+    """초기화: 고른 파일(없으면 전체)의 작업 결과를 휴지통(.trash)으로 옮긴다. 파일·영역·뺄 쪽 설정은 그대로.
+    (삭제와 다름: 삭제는 그룹·파일 자체를 프로젝트에서 뺀다.)
+    what="all"이면 추출 결과까지 -> 프로젝트 상태를 ‘추출 중’으로 되돌린다. 돌려준다 {"moved": [...], "files": n}."""
+    from app import workspace
+
+    if what not in RESET_WHAT:
+        raise ValueError(f"모르는 초기화: {what}")
+    info = workspace.load_project_info(project_dir)
+    root = workspace.data_root(info)
+    moved = []
+    fds = scoped_file_dirs(info, None, files)
+    for fd in fds:
+        for sub in RESET_WHAT[what]:
+            d = fd / sub
+            if d.exists():
+                moved.append(str(_to_trash(d, root, f"{info.name}-{fd.parent.parent.name}-{fd.name}-{sub}")))
+    if what == "all" and fds and info.status != "extracting":
+        workspace.set_status(info, "extracting")
+    return {"moved": moved, "files": len(fds)}
 
 
 def delete_group(project_dir: Path | str, group: str) -> Path:

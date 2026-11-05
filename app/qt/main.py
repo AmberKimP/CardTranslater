@@ -257,8 +257,10 @@ class ProjectPage(QWidget):
         self.b_delete = QPushButton("삭제")
         self.b_delete.setToolTip("고른 그룹 또는 파일을 휴지통으로 옮깁니다")
         self.b_delete.clicked.connect(self.delete_selected)
+        self.b_reset = QPushButton("초기화")
+        self.b_reset.clicked.connect(self.reset_selected)
         btns = QHBoxLayout()
-        for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, self.b_game_folder, ref, self.b_delete):
+        for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, self.b_game_folder, ref, self.b_reset, self.b_delete):
             btns.addWidget(b)
         btns.addStretch(1)
         # 2단계 작업: 추출 -> 원문 확인 -> 아이콘 -> 추출 완료(용어집) -> 용어집 가져오기 -> 번역(+검수 엑셀)
@@ -287,6 +289,11 @@ class ProjectPage(QWidget):
                 ("test", self.out.test_run)):
             outs.addWidget(self._step_button(key, fn))
         outs.addStretch(1)
+        self.scope_label = QLabel("작업 대상: 전체")
+        self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
+        self.scope_label.setToolTip("아래 목록에서 고른 항목. 작업·결과 버튼(①②⑥⑦⑧·결과 보기·시험 실행)은 이 범위에 대해 합니다.\n"
+                                    "③ 아이콘 이름 · ④ 용어집 · ⑤ 용어집 가져오기는 프로젝트(게임) 전체에 대해 합니다.")
+        outs.addWidget(self.scope_label)
         self.setStyleSheet(STEP_QSS)
         # 파일이 없을 때 표 자리에 보이는 안내
         empty = QWidget()
@@ -346,7 +353,18 @@ class ProjectPage(QWidget):
         key = o.get("next_key") or "add"
         self.next_btn.setText(f"▶ {NEXT_TEXT.get(key, key)}")
         self.next.setText(o["next_step"])
+        keep = self._selection_key()
         self.tree.clear()
+        files_all = [f for g in o["groups"] for f in g["files"]]
+        allit = QTreeWidgetItem([f"전체  (그룹 {len(o['groups'])}개 · 파일 {len(files_all)}개)"])
+        allit.setData(0, Qt.ItemDataRole.UserRole, ("all", {"name": "전체"}))
+        bold = QFont(self.tree.font())
+        bold.setBold(True)
+        allit.setFont(0, bold)
+        allit.setToolTip(0, "전체를 고르면 작업·결과 버튼이 프로젝트의 모든 파일에 대해 진행합니다.\n"
+                            "그룹이나 파일을 고르면 그것만 합니다.")
+        self.tree.addTopLevelItem(allit)
+        self.all_item = allit
         for g in o["groups"]:
             if g.get("per_card"):
                 left = sum(len(f["no_regions"]) for f in g["files"])
@@ -360,7 +378,7 @@ class ProjectPage(QWidget):
             gi.setData(0, Qt.ItemDataRole.UserRole, ("group", g))
             if not g["has_regions"]:
                 gi.setBackground(0, QColor("#F4B183"))
-            self.tree.addTopLevelItem(gi)
+            allit.addChild(gi)
             for f in g["files"]:
                 ex = f"{len(f['excluded'])}쪽 뺌" if f["excluded"] else "—"
                 full = f["included"] > 0 and f["extracted"] >= f["included"]
@@ -376,6 +394,8 @@ class ProjectPage(QWidget):
                         fi.setBackground(col, QColor(DONE_BG))
                 gi.addChild(fi)
             gi.setExpanded(True)
+        allit.setExpanded(True)
+        self._restore_selection(keep)
         self.body.setCurrentWidget(self.tree if o["groups"] else self.empty)
         self._sync_buttons()
         self._sync_steps()
@@ -456,9 +476,55 @@ class ProjectPage(QWidget):
         it = self.tree.currentItem()
         return it.data(0, Qt.ItemDataRole.UserRole) if it else None
 
-    def _group_of_selection(self) -> dict | None:
+    def _selection_key(self):
         sel = self._selected()
         if not sel:
+            return ("all", None)
+        kind, d = sel
+        return (kind, None if kind == "all" else str(d["dir"]))
+
+    def _restore_selection(self, key):
+        """새로 고친 뒤에도 고른 항목을 그대로 (없어졌으면 ‘전체’)."""
+        kind, ident = key or ("all", None)
+        target = self.all_item
+        if kind != "all":
+            stack = [self.all_item]
+            while stack:
+                it = stack.pop()
+                d = it.data(0, Qt.ItemDataRole.UserRole)
+                if d and d[0] == kind and str(d[1].get("dir")) == ident:
+                    target = it
+                    break
+                stack += [it.child(i) for i in range(it.childCount())]
+        self.tree.setCurrentItem(target)
+
+    def select_all(self):
+        """그리드에서 ‘전체’를 고른다."""
+        if getattr(self, "all_item", None) is not None:
+            self.tree.setCurrentItem(self.all_item)
+
+    def scope(self) -> tuple[str, list | None]:
+        """작업·결과 버튼이 할 범위: (설명, 파일 폴더 목록 | None=전체)."""
+        sel = self._selected()
+        if not sel or sel[0] == "all":
+            return "전체", None
+        kind, d = sel
+        if kind == "group":
+            return f"그룹 ‘{d['name']}’", [f["dir"] for f in d["files"]]
+        return f"파일 ‘{d['key']}’", [d["dir"]]
+
+    def scoped_files(self) -> list[dict]:
+        """범위 안 파일(overview의 파일 dict)."""
+        _label, dirs = self.scope()
+        files = [f for g in self.ov["groups"] for f in g["files"]]
+        if dirs is None:
+            return files
+        want = {str(Path(x)) for x in dirs}
+        return [f for f in files if str(Path(f["dir"])) in want]
+
+    def _group_of_selection(self) -> dict | None:
+        sel = self._selected()
+        if not sel or sel[0] == "all":
             return self.ov["groups"][0] if len(self.ov.get("groups", [])) == 1 else None
         kind, d = sel
         if kind == "group":
@@ -467,7 +533,14 @@ class ProjectPage(QWidget):
 
     def _sync_buttons(self):
         sel = self._selected()
-        self.b_delete.setEnabled(bool(sel))
+        self.b_delete.setEnabled(bool(sel) and sel[0] != "all")
+        if hasattr(self, "b_reset"):
+            self.b_reset.setEnabled(bool(self.ov.get("groups")))
+            label, _d = self.scope()
+            self.b_reset.setToolTip(f"{label}의 작업 결과(추출·지운 카드·한글 카드)를 비우고 다시 할 수 있게 합니다.\n"
+                                    "파일·영역·뺄 쪽 설정은 그대로입니다 (‘삭제’는 그룹·파일 자체를 뺍니다).")
+        if hasattr(self, "scope_label"):
+            self.scope_label.setText(f"작업 대상: {self.scope()[0]}")
         self.b_pages.setEnabled(bool(sel and sel[0] == "file"))
         self.b_regions.setEnabled(self._group_of_selection() is not None)
 
@@ -500,6 +573,27 @@ class ProjectPage(QWidget):
         ed.saved.connect(self.refresh)
         ed.setWindowState(ed.windowState() | Qt.WindowState.WindowMaximized)
         ed.exec()
+        self.refresh()
+
+    def reset_selected(self):
+        """초기화: 고른 범위(전체·그룹·파일)의 작업 결과를 비운다. 파일·영역은 남긴다 (삭제와 다름)."""
+        from app.qt.dialogs import ask_choice, show_failure
+
+        label, dirs = self.scope()
+        r = ask_choice(self, "초기화", f"{label}의 작업 결과를 비울까요?",
+                       [("지운 카드·한글 카드만", "accept"), ("글자 추출부터 모두", "destructive"), ("취소", "reject")],
+                       default=0,
+                       informative="파일·영역·뺄 쪽 설정은 그대로 두고 결과만 휴지통(.trash)으로 옮깁니다.\n"
+                                   "‘삭제’는 다릅니다: 그룹·파일 자체를 프로젝트에서 뺍니다.\n"
+                                   "‘글자 추출부터 모두’는 읽은 원문도 비우므로 ① 글자 추출부터 다시 해야 합니다.")
+        if r not in (0, 1):
+            return
+        try:
+            res = service.reset_files(self.project_dir, dirs, "output" if r == 0 else "all")
+        except OSError as e:
+            show_failure(self, "초기화하지 못했습니다", str(e))
+            return
+        self.win.statusBar().showMessage(f"{label}: 결과 {len(res['moved'])}개를 휴지통으로 옮겼습니다")
         self.refresh()
 
     def delete_selected(self):

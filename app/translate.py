@@ -32,7 +32,8 @@ Rules:
   the sentence (e.g. 버리다 -> 버린다 / 버려진다 / 버린 뒤), but keep its stem, meaning and nuance; never swap it
   for a synonym.
 - Rule/effect text: concise rulebook style ending in the plain "~한다/~할 수 있다" form.
-  Flavor text and quotes: keep the tone; Japanese 「」 become Korean “ ”.
+  Flavor text and quotes: keep the tone; Japanese 「」 become Korean “ ”. Do not add quotation marks
+  or brackets that are not in the source.
 - Keep the same number of lines: the source line breaks (\\n) mark where the card breaks lines.
 - Keep [[icon]] placeholders unchanged (move them only to fit Korean word order).
   Keep card brackets such as [炎] as [ ] around the translated glossary word, e.g. [불꽃].

@@ -139,7 +139,10 @@ class ExtractDialog(QDialog):
         note.setWordWrap(True)
         note.setStyleSheet("color: #666")
         form = QFormLayout()
-        form.addRow("그룹", self.group)
+        if groups:
+            form.addRow("그룹", self.group)
+        else:
+            self.group.hide()
         form.addRow("읽는 방식", mode_box)
         form.addRow("로그인 방식", self.engine)
         form.addRow("시험으로 몇 장만", limit_box)
@@ -635,18 +638,38 @@ class StepActions:
         return eng
 
     # ---- 추출
+    def ask_scope(self, what: str) -> list | None | bool:
+        """전체로 할지 고른 항목만 할지 묻는다. 전체면 그리드에서 ‘전체’를 고른다.
+        돌려줌: None(전체) | 파일 폴더 목록(고른 항목) | False(취소)."""
+        from app.qt.dialogs import ask_choice
+
+        label, dirs = self.page.scope()
+        if dirs is None:
+            return None
+        r = ask_choice(self.page, what, f"{what}을(를) 어디에 할까요?",
+                       [("전체", "accept"), (f"고른 항목만 ({label})", "accept"), ("취소", "reject")], default=0)
+        if r == 0:
+            self.page.select_all()
+            return None
+        if r == 1:
+            return dirs
+        return False
+
     def extract(self):
-        groups = [g["name"] for g in self.page.ov["groups"]]
-        dlg = ExtractDialog(groups, self.page, self.page.ov.get("card_limit"))
+        files = self.ask_scope("글자 추출")
+        if files is False:
+            return
+        dlg = ExtractDialog([], self.page, self.page.ov.get("card_limit"))
         if not dlg.exec():
             return
         service.set_card_limit(self.pdir, dlg.card_limit())
-        self._run_extract(*dlg.choice())
+        _group, mode, engine = dlg.choice()
+        self._run_extract(files, mode, engine)
 
-    def _run_extract(self, group, mode, engine):
-        job = worker.Job(service.extract_project, self.pdir, group, mode=mode, engine=engine)
+    def _run_extract(self, files, mode, engine):
+        job = worker.Job(service.extract_project, self.pdir, None, mode=mode, engine=engine, files=files)
         worker.run_with_dialog(self.page, "글자 추출", job,
-                               lambda r: self._extract_done(r, (group, mode, engine)),
+                               lambda r: self._extract_done(r, (files, mode, engine)),
                                _fail_as(self.page, "글자 추출을 끝내지 못했습니다"))
 
     def _extract_done(self, r, args):
@@ -682,7 +705,7 @@ class StepActions:
 
     # ---- 원문 확인
     def review_sources(self, only_check: bool = True):
-        files = [f for g in self.page.ov["groups"] for f in g["files"]]
+        files = self.page.scoped_files()  # 그리드에서 고른 범위
         if not files:
             return
         dlg = SourceReviewDialog(files, self.page, only_check)
@@ -802,7 +825,7 @@ class StepActions:
         model = {sonnet: "sonnet", opus: "opus"}.get(box.clickedButton())
         if not model:
             return
-        job = worker.Job(service.translate_project, self.pdir, model=model, engine=eng)
+        job = worker.Job(service.translate_project, self.pdir, model=model, engine=eng, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "번역", job, self._translate_done, _fail_as(self.page, "번역을 끝내지 못했습니다"))
 
     def _translate_done(self, r):

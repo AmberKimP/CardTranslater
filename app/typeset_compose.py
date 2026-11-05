@@ -98,6 +98,10 @@ def safe_name(name: str, idx: int) -> str:
     return SAFE.get(name) or f"r{idx}"
 
 
+STATUS_NO_TRANSLATION = "번역 없음 (원문만 지워짐)"
+STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많음)"
+
+
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
                  base_dir: Path = ROOT, styles: dict | None = None,
                  region_erase: dict | None = None) -> dict:
@@ -172,8 +176,16 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
             rec.update(source_ink={"layout_lines": len(layout["lines"])}, draw_rect_pt=[round(v, 3) for v in rect])
             r_ = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
-            rec["warnings"] += r_.pop("warnings")
-            rec.update(r_)
+            if r_ is not None:
+                rec["warnings"] += r_.pop("warnings")
+                rec.update(r_)
+                out[name] = rec
+                continue
+            rec["warnings"].append("줄 모양이 믿을 만하지 않아 영역 전체에 넣음")
+        if not text and (reg.get("erase") or {}).get("text_mask"):
+            # 원문은 지웠는데 번역이 없다: 빈 카드가 되므로 크게 알린다
+            rec.update(status=[STATUS_NO_TRANSLATION], lines=[], line_boxes_pt=[], overflow_text="", errors=[],
+                       drawn=False, draw_rect_pt=[round(v, 3) for v in rect])
             out[name] = rec
             continue
         rot = int(style_d.get("rotate", 0)) % 360
@@ -212,7 +224,8 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
 
 # ---------------------------------------------------------------- 그림 카드: 원문 줄 자리에 한 줄씩
-SLOT_MIN_RATIO = 0.7  # 줄 자리에 넣을 때 원문 글자 높이의 70%까지 줄인다
+SLOT_MIN_RATIO = 0.7
+_WORDY = re.compile(r"[가-힣A-Za-z]")  # 글자가 있는 줄 (기호·숫자·아이콘만 있는 줄은 크기를 정하지 않는다)  # 줄 자리에 넣을 때 원문 글자 높이의 70%까지 줄인다
 
 
 def _rgb(h: str) -> tuple[int, int, int]:
@@ -295,6 +308,14 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     - 묶음 안 줄 수가 원문과 다르면 그 묶음 안에서 줄바꿈해 맞춘다
     """
     rect = pymupdf.Rect(rect)
+    # 잡음 줄(테두리 조각 등 아주 낮은 줄)은 빼고, 남는 줄이 없으면 None (영역 전체 배치로)
+    good = [ln for ln in layout["lines"] if ln["glyph_h_pt"] >= 2.5]
+    if good:
+        gmax = max(ln["glyph_h_pt"] for ln in good)
+        good = [ln for ln in good if ln["glyph_h_pt"] >= 0.3 * gmax]
+    if not good:
+        return None
+    layout = {**layout, "lines": good}
     pivot = None
     if int(style_d.get("rotate", 0)) % 360 == 180:
         # 거꾸로 인쇄된 영역: 줄 모양을 ‘돌린 틀’ 좌표로 옮겨 배치하고, 그릴 때만 돌린다 (typeset의 rotate·pivot)
@@ -307,6 +328,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         flipped = []
         for ln in layout["lines"]:
             f = {**ln, "bbox_pt": flip(ln["bbox_pt"]),
+                 **({"cy_pt": sy - ln["cy_pt"]} if ln.get("cy_pt") is not None else {}),
                  "align": {"left": "right", "right": "left"}.get(ln.get("align", "left"), ln.get("align", "left")),
                  "accents": [{**a, "x_pt": sorted([[sx - v, sx - u] for u, v in a.get("x_pt", [])])}
                              for a in ln.get("accents") or []]}
@@ -323,13 +345,17 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             if a["color"] not in region_accents:
                 region_accents.append(a["color"])
     # 같은 서식 줄(색이 가깝고 글자 높이가 비슷)은 한 묶음: 색은 하나로, 크기는 가장 작게 맞은 줄에 맞춘다
+    sec_of = {id(ln): k for k, sec in enumerate(secs) for ln in sec["lines"]}
     groups: list[list[dict]] = []
     for ln in lines_all:
         c = np.array(_rgb(ln["color"]))
         for g in groups:
             g0 = g[0]
-            if (np.abs(np.array(_rgb(g0["color"])) - c).max() < 70 and bool(g0.get("stroke_color")) == bool(ln.get("stroke_color"))
-                    and abs(ln["glyph_h_pt"] - g0["glyph_h_pt"]) <= 0.25 * max(ln["glyph_h_pt"], g0["glyph_h_pt"])):
+            gh_med = float(np.median([x["glyph_h_pt"] for x in g]))
+            if (sec_of.get(id(g0)) == sec_of.get(id(ln))
+                    and np.abs(np.array(_rgb(g0["color"])) - c).max() < 70
+                    and bool(g0.get("stroke_color")) == bool(ln.get("stroke_color"))
+                    and abs(ln["glyph_h_pt"] - gh_med) <= 0.25 * max(ln["glyph_h_pt"], gh_med)):
                 g.append(ln)
                 break
         else:
@@ -358,7 +384,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 gh = ln["glyph_h_pt"]
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot)
                 pad = 0.5 * gh
-                cy = (b[1] + b[3]) / 2
+                cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
                 top = cy - gh / 2
                 if st.align == "center":
                     cx = (b[0] + b[2]) / 2
@@ -386,12 +412,24 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}
-    for ln, ko, r, st, top in slots:
+    own: dict[int, float] = {}
+    for i, (ln, ko, r, st, top) in enumerate(slots):
         d = typeset_region(page, r, ko, st, top_anchor=top, draw=False)
         if d.size:
-            fit_size[ln["_g"]] = min(fit_size.get(ln["_g"], d.size), d.size)
-    for ln, ko, r, st, top in slots:
+            own[i] = d.size
+            if _WORDY.search(re.sub(r"\[\[[^\]]*\]\]|</?(?:b|i|c\d+)>", "", ko)):
+                fit_size[ln["_g"]] = min(fit_size.get(ln["_g"], d.size), d.size)
+    for i, (ln, ko, r, st, top) in enumerate(slots):
         size = fit_size.get(ln["_g"])
+        if size and i in own and size > own[i] + 1e-6:
+            # 기호·아이콘 줄처럼 원문 높이가 낮게 재진 줄: 묶음 크기로 넣어 보고, 안 들어가면 이 줄만 작게
+            st.fixed_size_pt = size
+            trial = typeset_region(page, r, ko, st, top_anchor=top, draw=False)
+            st.fixed_size_pt = None
+            if trial.overflow_text:
+                size = own[i]
+        elif i in own and not size:
+            size = own[i]
         if size:
             start = st.start_size()
             st.fixed_size_pt = size
@@ -403,8 +441,12 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             res = typeset_region(page, r, ko, st, top_anchor=top)
         results.append((res, "slot"))
     status = sorted({s for r, _ in results for s in r.status})
+    # 지운 줄보다 읽은(원문) 줄이 적다: 추출이 줄을 빠뜨렸으면 그 줄은 지워지기만 하고 다시 넣지 못한다
+    n_src = len([t for t in (source_text or "").split("\n") if t.strip()]) if source_text else None
+    if n_src is not None and n_src < len(lines_all):
+        status = sorted(set(status) | {STATUS_MISSING_LINE})
     sizes = [r.size for r, _ in results if r.size]
-    errors = [e for r, _ in results for e in r.errors]
+    errors =[e for r, _ in results for e in r.errors]
     if ko_lines and len(ko_lines) != len(lines_all):
         errors_note = f"번역 {len(ko_lines)}줄, 원문 {len(lines_all)}줄: 묶음 안에서 줄바꿈"
     else:

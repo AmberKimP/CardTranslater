@@ -314,7 +314,8 @@ class OutputActions:
         return self.page.project_dir
 
     def _files(self) -> list[dict]:
-        return [f for g in self.page.ov["groups"] for f in g["files"]]
+        """그리드에서 고른 범위(전체·그룹·파일)의 파일."""
+        return self.page.scoped_files()
 
     # ---- 지우기
     def erase(self):
@@ -332,7 +333,7 @@ class OutputActions:
             if box.clickedButton() not in (skip, again):
                 return
             redo = box.clickedButton() is again
-        job = worker.Job(service.erase_project, self.pdir, redo=redo)
+        job = worker.Job(service.erase_project, self.pdir, redo=redo, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "글자 지우기", job, self._erase_done,
                                lambda m: show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m))
 
@@ -350,7 +351,7 @@ class OutputActions:
 
     # ---- 한글 넣기
     def compose(self, accept: bool = False):
-        job = worker.Job(service.compose_project, self.pdir, accept_issues=accept)
+        job = worker.Job(service.compose_project, self.pdir, accept_issues=accept, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "한글 넣기", job, self._compose_done,
                                lambda m: show_failure(self.page, "한글 넣기를 끝내지 못했습니다", m))
 
