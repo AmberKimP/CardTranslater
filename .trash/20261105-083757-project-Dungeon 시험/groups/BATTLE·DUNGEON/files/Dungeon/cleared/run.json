@@ -1,0 +1,1215 @@
+{
+  "command": "erase",
+  "project": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon",
+  "pages": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30
+  ],
+  "source_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\source\\Dungeon.pdf",
+  "source_sha256_before": "0f368f3c536bc984535d0384d2a663593c218566f0daf89724d86bcfb36c3ccb",
+  "source_sha256_after": "0f368f3c536bc984535d0384d2a663593c218566f0daf89724d86bcfb36c3ccb",
+  "source_unchanged": true,
+  "output_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\cleared\\cleared.pdf",
+  "page_boxes": [
+    {
+      "source_page": 1,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 2,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 3,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 4,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.2,
+          178.56
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          252.72,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.2,
+          178.56
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          252.72,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 5,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 6,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 7,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 8,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.56
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.56
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 9,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          177.6
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.12
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          177.6
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.12
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 10,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 11,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 12,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.28,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.04,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.28,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.04,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 13,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 14,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 15,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 16,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.32
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.52,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          178.32
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.52,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 17,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 18,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          177.6
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.12
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.0,
+          177.6
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.76,
+          177.12
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 19,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.44,
+          179.52
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          252.96,
+          179.04
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.44,
+          179.52
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          252.96,
+          179.04
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 20,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 21,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.72,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.48,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 22,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 23,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.68,
+          178.56
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          253.2,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.68,
+          178.56
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          253.2,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 24,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          178.32
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 25,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 26,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          251.76,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          251.52,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 27,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.2,
+          178.56
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.96,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          253.2,
+          178.56
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.96,
+          178.08
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 28,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.96,
+          177.84
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.72,
+          177.36
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 29,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.48,
+          178.08
+        ],
+        "cropbox": [
+          0.0,
+          0.24,
+          252.24,
+          177.6
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    },
+    {
+      "source_page": 30,
+      "same": true,
+      "source": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.24,
+          178.32
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.76,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      },
+      "output": {
+        "mediabox": [
+          0.0,
+          0.0,
+          252.24,
+          178.32
+        ],
+        "cropbox": [
+          0.24,
+          0.48,
+          251.76,
+          177.84
+        ],
+        "BleedBox": "null",
+        "TrimBox": "null",
+        "ArtBox": "null"
+      }
+    }
+  ],
+  "meta_files": [
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-001.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-002.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-003.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-004.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-005.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-006.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-007.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-008.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-009.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-010.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-011.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-012.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-013.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-014.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-015.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-016.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-017.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-018.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-019.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-020.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-021.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-022.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-023.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-024.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-025.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-026.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-027.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-028.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-029.json",
+    "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\meta\\page-030.json"
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: pdf-engine
-description: PDF 처리 담당. 카드 PDF에서 영역별 텍스트·서식(글꼴·크기·색·굵기·기울임)·아이콘 위치를 추출하고, 영역 안 글자만 지우고(레드랙션), 결과 PDF를 저장·묶는 코드(app/extract.py, app/erase.py, app/regions.py, PDF 출력)를 만들거나 고칠 때 사용한다. PRD 5.1·5.2·5.4·5.7(추출 쪽)·F15·F18 범위.
+description: PDF 처리 담당. 카드 PDF에서 영역별 텍스트·서식(글꼴·크기·색·굵기·기울임)·아이콘 위치를 추출하고, 영역 안 글자만 지우고(레드랙션), 결과 PDF를 저장·묶는 코드(app/erase.py, app/regions.py, PDF 출력)를 만들거나 고칠 때 사용한다. Claude로 원문 읽기(app/extract.py)·용어집·번역은 extract-translate 담당. PRD 5.1·5.2·5.4·5.7(추출 쪽)·F15·F18 범위.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: opus
 ---

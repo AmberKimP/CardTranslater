@@ -1,0 +1,6689 @@
+{
+  "command": "compose",
+  "project": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items",
+  "erase_run": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\cleared",
+  "translation_source": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\번역_검수.xlsx",
+  "pages": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16
+  ],
+  "source_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\source\\Items.pdf",
+  "source_sha256_before": "9bc90a4d939bdf73e49378ead1926c285d9e52eeb72826642b92a94742aaaf0b",
+  "source_sha256_after": "9bc90a4d939bdf73e49378ead1926c285d9e52eeb72826642b92a94742aaaf0b",
+  "source_unchanged": true,
+  "erased_sha256_before": "61b051797d82ddcbfee860e4356e118a9e4277f7b49ea9318b659b08620d8736",
+  "erased_sha256_after": "61b051797d82ddcbfee860e4356e118a9e4277f7b49ea9318b659b08620d8736",
+  "erased_unchanged": true,
+  "output_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.translated-20261104-193319\\translated.pdf",
+  "size_rule": "원문 글자 높이 기준: 시작크기 = 원문 잉크 높이 / 글꼴 보정 배율, min = 시작크기 x 0.8 (한글 글자 높이가 원문의 80% 아래로 가지 않음). 잉크 높이를 모르면 min = max(원문pt x 0.8, min(6pt, 원문pt))",
+  "status_summary": {
+    "글자 축소": [
+      "Items.pdf#p2#위_설명",
+      "Items.pdf#p3#아래_설명",
+      "Items.pdf#p3#위_설명",
+      "Items.pdf#p5#아래_이름",
+      "Items.pdf#p5#위_이름",
+      "Items.pdf#p8#아래_설명",
+      "Items.pdf#p8#아래_효과",
+      "Items.pdf#p11#아래_설명",
+      "Items.pdf#p15#아래_효과"
+    ]
+  },
+  "pages_detail": [
+    {
+      "page": 2,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.999,
+            150.696,
+            171.847,
+            170.856
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              69.619,
+              158.196,
+              159.859,
+              168.996
+            ],
+            "lines_pt": [
+              [
+                158.196,
+                168.996
+              ]
+            ],
+            "line_x_pt": [
+              [
+                69.619,
+                159.859
+              ]
+            ],
+            "glyph_height_pt": 10.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            69.619,
+            150.696,
+            161.28,
+            170.856
+          ],
+          "status": [],
+          "size_pt": 12.232,
+          "start_size_pt": 12.232,
+          "min_size_pt": 9.785,
+          "tracking": 0.0,
+          "lines": [
+            "마을 팬클럽"
+          ],
+          "line_boxes_pt": [
+            [
+              69.62,
+              158.2,
+              125.09,
+              168.78
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.999,
+            171.36,
+            171.847,
+            183.456
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              70.339,
+              176.88,
+              145.459,
+              182.64
+            ],
+            "lines_pt": [
+              [
+                176.88,
+                182.4
+              ]
+            ],
+            "line_x_pt": [
+              [
+                70.339,
+                145.459
+              ]
+            ],
+            "glyph_height_pt": 5.16,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            70.339,
+            171.36,
+            146.64,
+            183.456
+          ],
+          "status": [],
+          "size_pt": 5.787,
+          "start_size_pt": 5.787,
+          "min_size_pt": 4.63,
+          "tracking": -0.03,
+          "lines": [
+            "“당신이 왕이라면 대환영이야!”"
+          ],
+          "line_boxes_pt": [
+            [
+              70.34,
+              176.88,
+              145.9,
+              182.49
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.575,
+            200.34,
+            166.505,
+            240.66
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              19.015,
+              215.52,
+              119.575,
+              232.32
+            ],
+            "lines_pt": [
+              [
+                215.52,
+                221.76
+              ],
+              [
+                226.32,
+                232.32
+              ]
+            ],
+            "line_x_pt": [
+              [
+                19.015,
+                73.015
+              ],
+              [
+                19.015,
+                119.575
+              ]
+            ],
+            "glyph_height_pt": 5.64,
+            "line_pitch_pt": 10.8
+          },
+          "draw_rect_pt": [
+            19.015,
+            200.34,
+            120.0,
+            240.66
+          ],
+          "status": [],
+          "size_pt": 6.325,
+          "start_size_pt": 6.325,
+          "min_size_pt": 5.06,
+          "tracking": 0.0,
+          "lines": [
+            "[1계층]에 있을 때,",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              19.01,
+              215.52,
+              70.52,
+              221.91
+            ],
+            [
+              19.01,
+              226.32,
+              99.7,
+              232.71
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.233,
+            81.144,
+            113.081,
+            101.304
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.673,
+            81.144,
+            112.32,
+            101.304
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.67,
+              84.8,
+              75.3,
+              95.72
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.673,
+              84.804,
+              78.473,
+              95.844
+            ],
+            "lines_pt": [
+              [
+                84.804,
+                95.844
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.673,
+                78.473
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.233,
+            81.144,
+            110.88,
+            101.304
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "심연의 적휘석"
+          ],
+          "line_boxes_pt": [
+            [
+              43.25,
+              86.73,
+              110.88,
+              97.65
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.233,
+            68.544,
+            113.081,
+            80.64
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.673,
+            68.544,
+            112.56,
+            80.64
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.67,
+              70.46,
+              111.96,
+              75.29
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.673,
+              70.464,
+              101.513,
+              75.744
+            ],
+            "lines_pt": [
+              [
+                70.464,
+                75.744
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.673,
+                101.513
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.233,
+            68.544,
+            111.12,
+            80.64
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.302,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": -0.05,
+          "lines": [
+            "가장 깊은 곳에 가까워질수록 핏빛을 띠며 빛난다"
+          ],
+          "line_boxes_pt": [
+            [
+              6.83,
+              73.89,
+              111.12,
+              78.72
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.575,
+            11.34,
+            166.505,
+            51.66
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.775,
+            11.34,
+            163.2,
+            51.66
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.77,
+              22.44,
+              66.74,
+              29.13
+            ],
+            [
+              12.77,
+              33.72,
+              97.33,
+              40.41
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.775,
+              22.44,
+              113.575,
+              39.96
+            ],
+            "lines_pt": [
+              [
+                22.44,
+                28.68
+              ],
+              [
+                33.72,
+                39.96
+              ]
+            ],
+            "line_x_pt": [
+              [
+                13.015,
+                67.015
+              ],
+              [
+                12.775,
+                113.575
+              ]
+            ],
+            "glyph_height_pt": 5.91,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.575,
+            11.34,
+            162.0,
+            51.66
+          ],
+          "status": [],
+          "size_pt": 6.628,
+          "start_size_pt": 6.628,
+          "min_size_pt": 5.302,
+          "tracking": 0.0,
+          "lines": [
+            "[4계층]에 있을 때,",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              108.03,
+              33.87,
+              162.0,
+              40.56
+            ],
+            [
+              77.44,
+              22.59,
+              162.0,
+              29.28
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "마을 팬클럽\n“당신이 왕이라면 대환영이야!”\n[1계층]에 있을 때,\n모든 판정에 보너스를 받는다.\n심연의 적휘석\n가장 깊은 곳에 가까워질수록 핏빛을 띠며 빛난다\n[4계층]에 있을 때,\n모든 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 3,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.736,
+            150.983,
+            171.152,
+            171.181
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.936,
+              157.703,
+              163.016,
+              168.503
+            ],
+            "lines_pt": [
+              [
+                157.703,
+                168.503
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.936,
+                163.016
+              ]
+            ],
+            "glyph_height_pt": 10.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.936,
+            150.983,
+            164.4,
+            171.181
+          ],
+          "status": [],
+          "size_pt": 12.232,
+          "start_size_pt": 12.232,
+          "min_size_pt": 9.785,
+          "tracking": -0.03,
+          "lines": [
+            "쌍둥이자리 탈리스만"
+          ],
+          "line_boxes_pt": [
+            [
+              68.94,
+              157.7,
+              163.72,
+              168.41
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.736,
+            171.686,
+            171.152,
+            183.805
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.696,
+              176.426,
+              153.896,
+              181.946
+            ],
+            "lines_pt": [
+              [
+                176.666,
+                181.946
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.696,
+                153.896
+              ]
+            ],
+            "glyph_height_pt": 5.28,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.696,
+            171.686,
+            155.28,
+            183.805
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.122,
+          "start_size_pt": 5.921,
+          "min_size_pt": 4.737,
+          "tracking": -0.05,
+          "lines": [
+            "잡몹 마물 정도는 가까이 오지 못하게 한다"
+          ],
+          "line_boxes_pt": [
+            [
+              68.7,
+              176.67,
+              155.25,
+              181.3
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.528,
+            200.722,
+            165.832,
+            241.118
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              18.248,
+              215.542,
+              118.568,
+              233.062
+            ],
+            "lines_pt": [
+              [
+                215.542,
+                222.022
+              ],
+              [
+                226.822,
+                233.062
+              ]
+            ],
+            "line_x_pt": [
+              [
+                18.488,
+                72.488
+              ],
+              [
+                18.248,
+                118.568
+              ]
+            ],
+            "glyph_height_pt": 5.82,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            18.248,
+            200.722,
+            119.76,
+            241.118
+          ],
+          "status": [],
+          "size_pt": 6.527,
+          "start_size_pt": 6.527,
+          "min_size_pt": 5.222,
+          "tracking": 0.0,
+          "lines": [
+            "[2계층]에 있을 때,",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              18.25,
+              215.54,
+              71.4,
+              222.13
+            ],
+            [
+              18.25,
+              226.82,
+              101.51,
+              233.41
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.208,
+            81.299,
+            112.624,
+            101.497
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            81.299,
+            111.84,
+            101.497
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              85.38,
+              98.15,
+              96.79
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              85.379,
+              77.728,
+              96.419
+            ],
+            "lines_pt": [
+              [
+                85.379,
+                96.419
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                77.728
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            81.299,
+            110.4,
+            101.497
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "3개의 송곳니 장식"
+          ],
+          "line_boxes_pt": [
+            [
+              19.9,
+              86.01,
+              110.4,
+              97.42
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.208,
+            68.675,
+            112.624,
+            80.794
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.408,
+            68.675,
+            112.08,
+            80.794
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.41,
+              71.26,
+              111.49,
+              76.32
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.408,
+              71.255,
+              95.008,
+              76.535
+            ],
+            "lines_pt": [
+              [
+                71.255,
+                76.535
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.408,
+                95.008
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            68.675,
+            110.88,
+            80.794
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.552,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": -0.05,
+          "lines": [
+            "방심을 엄하게 경계하게 해 주는 날카로운 부적"
+          ],
+          "line_boxes_pt": [
+            [
+              6.8,
+              73.15,
+              110.88,
+              78.21
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.528,
+            11.362,
+            165.832,
+            51.758
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.728,
+            11.362,
+            162.72,
+            51.758
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.73,
+              22.82,
+              65.33,
+              29.35
+            ],
+            [
+              12.73,
+              34.1,
+              95.13,
+              40.63
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.728,
+              22.822,
+              113.528,
+              40.582
+            ],
+            "lines_pt": [
+              [
+                22.822,
+                29.062
+              ],
+              [
+                34.102,
+                40.582
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.728,
+                66.728
+              ],
+              [
+                12.728,
+                113.528
+              ]
+            ],
+            "glyph_height_pt": 5.76,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.528,
+            11.362,
+            161.52,
+            51.758
+          ],
+          "status": [],
+          "size_pt": 6.46,
+          "start_size_pt": 6.46,
+          "min_size_pt": 5.168,
+          "tracking": 0.0,
+          "lines": [
+            "[3계층]에 있을 때,",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              108.92,
+              33.77,
+              161.52,
+              40.3
+            ],
+            [
+              79.12,
+              22.49,
+              161.52,
+              29.02
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "쌍둥이자리 탈리스만\n잡몹 마물 정도는 가까이 오지 못하게 한다\n[2계층]에 있을 때,\n모든 판정에 보너스를 받는다.\n3개의 송곳니 장식\n방심을 엄하게 경계하게 해 주는 날카로운 부적\n[3계층]에 있을 때,\n모든 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 4,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.824,
+            151.27,
+            171.384,
+            171.507
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.984,
+              154.81,
+              158.424,
+              166.09
+            ],
+            "lines_pt": [
+              [
+                154.81,
+                165.85
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.984,
+                158.424
+              ]
+            ],
+            "glyph_height_pt": 10.44,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.984,
+            151.27,
+            159.84,
+            171.507
+          ],
+          "status": [],
+          "size_pt": 12.093,
+          "start_size_pt": 12.093,
+          "min_size_pt": 9.674,
+          "tracking": 0.0,
+          "lines": [
+            "스틱스의 영약"
+          ],
+          "line_boxes_pt": [
+            [
+              66.98,
+              154.81,
+              132.36,
+              165.39
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.824,
+            172.013,
+            171.384,
+            184.155
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.744,
+              174.053,
+              156.984,
+              179.333
+            ],
+            "lines_pt": [
+              [
+                174.053,
+                179.333
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.744,
+                156.984
+              ]
+            ],
+            "glyph_height_pt": 4.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.744,
+            172.013,
+            158.4,
+            184.155
+          ],
+          "status": [],
+          "size_pt": 5.383,
+          "start_size_pt": 5.383,
+          "min_size_pt": 4.307,
+          "tracking": -0.04,
+          "lines": [
+            "죽음에 이른 영혼이 왕의 힘을 끌어당긴다"
+          ],
+          "line_boxes_pt": [
+            [
+              66.74,
+              174.05,
+              157.81,
+              178.97
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.544,
+            201.103,
+            166.056,
+            241.577
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              16.344,
+              203.563,
+              152.424,
+              231.643
+            ],
+            "lines_pt": [
+              [
+                203.803,
+                209.323
+              ],
+              [
+                214.123,
+                220.363
+              ],
+              [
+                225.163,
+                231.643
+              ]
+            ],
+            "line_x_pt": [
+              [
+                16.344,
+                152.424
+              ],
+              [
+                16.344,
+                111.144
+              ],
+              [
+                16.344,
+                111.144
+              ]
+            ],
+            "glyph_height_pt": 5.88,
+            "line_pitch_pt": 10.68
+          },
+          "draw_rect_pt": [
+            16.344,
+            201.103,
+            153.6,
+            241.577
+          ],
+          "status": [],
+          "size_pt": 6.594,
+          "start_size_pt": 6.594,
+          "min_size_pt": 5.276,
+          "tracking": -0.01,
+          "lines": [
+            "이 아이템을 얻은 순간, 자신의 HP를 1로 만든다.",
+            "그 후 한 번만 HP 감소를 막고,",
+            "막은 뒤에 이 카드를 버린다."
+          ],
+          "line_boxes_pt": [
+            [
+              16.34,
+              203.8,
+              152.3,
+              210.3
+            ],
+            [
+              16.34,
+              214.48,
+              100.4,
+              220.98
+            ],
+            [
+              16.34,
+              225.16,
+              94.67,
+              231.66
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.216,
+            81.453,
+            112.776,
+            101.69
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.416,
+            81.453,
+            110.16,
+            101.69
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.42,
+              88.11,
+              76.92,
+              99.43
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.416,
+              88.113,
+              54.456,
+              99.393
+            ],
+            "lines_pt": [
+              [
+                88.113,
+                99.393
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.416,
+                54.456
+              ]
+            ],
+            "glyph_height_pt": 11.1,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.216,
+            81.453,
+            108.96,
+            101.69
+          ],
+          "status": [],
+          "size_pt": 12.857,
+          "start_size_pt": 12.857,
+          "min_size_pt": 10.286,
+          "tracking": 0.0,
+          "lines": [
+            "생명의 물방울"
+          ],
+          "line_boxes_pt": [
+            [
+              39.46,
+              83.71,
+              108.96,
+              95.03
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.216,
+            68.805,
+            112.776,
+            80.947
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.656,
+            68.805,
+            109.44,
+            80.947
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.66,
+              73.97,
+              45.33,
+              79.77
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.656,
+              73.965,
+              56.856,
+              79.965
+            ],
+            "lines_pt": [
+              [
+                73.965,
+                79.965
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.656,
+                56.856
+              ]
+            ],
+            "glyph_height_pt": 5.34,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.216,
+            68.805,
+            108.0,
+            80.947
+          ],
+          "status": [],
+          "size_pt": 5.989,
+          "start_size_pt": 5.989,
+          "min_size_pt": 4.791,
+          "tracking": 0.0,
+          "lines": [
+            "“기운 나라~!”"
+          ],
+          "line_boxes_pt": [
+            [
+              70.33,
+              69.98,
+              108.0,
+              75.78
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.544,
+            11.383,
+            166.056,
+            51.857
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.744,
+            11.383,
+            160.8,
+            51.857
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.74,
+              17.2,
+              137.84,
+              23.79
+            ],
+            [
+              12.74,
+              28.24,
+              140.18,
+              34.83
+            ],
+            [
+              12.74,
+              39.28,
+              61.64,
+              45.87
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.744,
+              16.963,
+              145.224,
+              45.283
+            ],
+            "lines_pt": [
+              [
+                17.203,
+                23.203
+              ],
+              [
+                28.003,
+                34.243
+              ],
+              [
+                39.283,
+                45.043
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.984,
+                145.224
+              ],
+              [
+                12.744,
+                126.264
+              ],
+              [
+                12.984,
+                74.424
+              ]
+            ],
+            "glyph_height_pt": 5.7,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            11.544,
+            11.383,
+            159.6,
+            51.857
+          ],
+          "status": [],
+          "size_pt": 6.393,
+          "start_size_pt": 6.393,
+          "min_size_pt": 5.114,
+          "tracking": 0.0,
+          "lines": [
+            "이 아이템을 얻은 순간, 다른 플레이어 한 명의",
+            "HP를 2 회복하고 (POW도 원래대로 되돌리고)",
+            "이 카드를 버린다."
+          ],
+          "line_boxes_pt": [
+            [
+              34.5,
+              39.45,
+              159.6,
+              46.04
+            ],
+            [
+              32.16,
+              28.41,
+              159.6,
+              35.0
+            ],
+            [
+              110.7,
+              17.37,
+              159.6,
+              23.96
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "스틱스의 영약\n죽음에 이른 영혼이 왕의 힘을 끌어당긴다\n이 아이템을 얻은 순간, 자신의 HP를 1로 만든다.\n그 후 한 번만 HP 감소를 막고,\n막은 뒤에 이 카드를 버린다.\n생명의 물방울\n“기운 나라~!”\n이 아이템을 얻은 순간, 다른 플레이어 한 명의\nHP를 2 회복하고 (POW도 원래대로 되돌리고)\n이 카드를 버린다.\n"
+    },
+    {
+      "page": 5,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.649,
+            151.27,
+            170.921,
+            171.507
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.949,
+              157.93,
+              114.989,
+              168.97
+            ],
+            "lines_pt": [
+              [
+                157.93,
+                168.97
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.949,
+                114.989
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.949,
+            151.27,
+            116.4,
+            171.507
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 11.288,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": -0.05,
+          "lines": [
+            "급소 노리기"
+          ],
+          "line_boxes_pt": [
+            [
+              67.95,
+              157.93,
+              116.32,
+              167.67
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.649,
+            172.013,
+            170.921,
+            184.155
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.669,
+              176.933,
+              131.309,
+              182.693
+            ],
+            "lines_pt": [
+              [
+                176.933,
+                182.693
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.669,
+                131.309
+              ]
+            ],
+            "glyph_height_pt": 4.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.669,
+            172.013,
+            132.48,
+            184.155
+          ],
+          "status": [],
+          "size_pt": 5.383,
+          "start_size_pt": 5.383,
+          "min_size_pt": 4.307,
+          "tracking": 0.0,
+          "lines": [
+            "“빗나갔다고 생각했냐?”"
+          ],
+          "line_boxes_pt": [
+            [
+              68.67,
+              176.93,
+              125.88,
+              182.2
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.513,
+            201.103,
+            165.607,
+            241.577
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              16.853,
+              205.963,
+              162.773,
+              234.283
+            ],
+            "lines_pt": [
+              [
+                206.203,
+                212.203
+              ],
+              [
+                217.243,
+                223.243
+              ],
+              [
+                228.043,
+                234.283
+              ]
+            ],
+            "line_x_pt": [
+              [
+                16.853,
+                114.773
+              ],
+              [
+                17.093,
+                118.853
+              ],
+              [
+                18.053,
+                162.773
+              ]
+            ],
+            "glyph_height_pt": 6.0,
+            "line_pitch_pt": 10.92
+          },
+          "draw_rect_pt": [
+            16.853,
+            201.103,
+            163.92,
+            241.577
+          ],
+          "status": [],
+          "size_pt": 6.729,
+          "start_size_pt": 6.729,
+          "min_size_pt": 5.383,
+          "tracking": 0.0,
+          "lines": [
+            "전투 중, 주사위 눈이 1·2일 때",
+            "주사위를 한 번 더 굴려 나온 수를 더한다.",
+            "(효과는 중복된다. 손 안에서 주사위를 잘 굴릴 것)"
+          ],
+          "line_boxes_pt": [
+            [
+              16.85,
+              206.2,
+              102.82,
+              213.13
+            ],
+            [
+              16.85,
+              217.12,
+              135.44,
+              224.05
+            ],
+            [
+              16.85,
+              228.04,
+              161.14,
+              234.97
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.199,
+            81.453,
+            112.471,
+            101.69
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.639,
+            81.453,
+            111.12,
+            101.69
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.64,
+              85.47,
+              111.0,
+              96.06
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.639,
+              85.473,
+              99.559,
+              96.513
+            ],
+            "lines_pt": [
+              [
+                85.473,
+                96.513
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.639,
+                99.559
+              ]
+            ],
+            "glyph_height_pt": 10.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.199,
+            81.453,
+            109.68,
+            101.69
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 12.132,
+          "start_size_pt": 12.232,
+          "min_size_pt": 9.785,
+          "tracking": -0.05,
+          "lines": [
+            "덜렁이 메이드 에이프런"
+          ],
+          "line_boxes_pt": [
+            [
+              6.32,
+              87.08,
+              109.68,
+              97.67
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.199,
+            68.805,
+            112.471,
+            80.947
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.399,
+            68.805,
+            110.16,
+            80.947
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.4,
+              71.09,
+              66.46,
+              76.12
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.399,
+              71.085,
+              88.279,
+              76.605
+            ],
+            "lines_pt": [
+              [
+                71.085,
+                76.605
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.399,
+                88.279
+              ]
+            ],
+            "glyph_height_pt": 4.62,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.199,
+            68.805,
+            108.96,
+            80.947
+          ],
+          "status": [],
+          "size_pt": 5.181,
+          "start_size_pt": 5.181,
+          "min_size_pt": 4.145,
+          "tracking": 0.0,
+          "lines": [
+            "“흐에엥! 부숴 버렸어요~”"
+          ],
+          "line_boxes_pt": [
+            [
+              49.9,
+              73.63,
+              108.96,
+              78.66
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.513,
+            11.383,
+            165.607,
+            51.857
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.713,
+            11.383,
+            162.0,
+            51.857
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.71,
+              20.56,
+              98.21,
+              26.66
+            ],
+            [
+              12.71,
+              31.84,
+              75.61,
+              37.94
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.713,
+              20.563,
+              102.713,
+              38.083
+            ],
+            "lines_pt": [
+              [
+                20.563,
+                26.563
+              ],
+              [
+                31.843,
+                38.083
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.713,
+                102.713
+              ],
+              [
+                13.193,
+                75.113
+              ]
+            ],
+            "glyph_height_pt": 5.52,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.513,
+            11.383,
+            160.8,
+            51.857
+          ],
+          "status": [],
+          "size_pt": 6.191,
+          "start_size_pt": 6.191,
+          "min_size_pt": 4.953,
+          "tracking": 0.0,
+          "lines": [
+            "전투 중, 주사위 눈이 1이었을 때",
+            "뒤집어서 6으로 만든다."
+          ],
+          "line_boxes_pt": [
+            [
+              75.3,
+              36.58,
+              160.8,
+              42.68
+            ],
+            [
+              97.9,
+              25.3,
+              160.8,
+              31.4
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "급소 노리기\n“빗나갔다고 생각했냐?”\n전투 중, 주사위 눈이 1·2일 때\n주사위를 한 번 더 굴려 나온 수를 더한다.\n(효과는 중복된다. 손 안에서 주사위를 잘 굴릴 것)\n덜렁이 메이드 에이프런\n“흐에엥! 부숴 버렸어요~”\n전투 중, 주사위 눈이 1이었을 때\n뒤집어서 6으로 만든다.\n"
+    },
+    {
+      "page": 6,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.736,
+            151.414,
+            171.152,
+            171.67
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.736,
+              155.554,
+              160.376,
+              166.114
+            ],
+            "lines_pt": [
+              [
+                155.554,
+                166.114
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.736,
+                160.376
+              ]
+            ],
+            "glyph_height_pt": 10.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.736,
+            151.414,
+            161.76,
+            171.67
+          ],
+          "status": [],
+          "size_pt": 12.232,
+          "start_size_pt": 12.232,
+          "min_size_pt": 9.785,
+          "tracking": 0.0,
+          "lines": [
+            "롱롱 사다리"
+          ],
+          "line_boxes_pt": [
+            [
+              67.74,
+              155.55,
+              123.21,
+              166.26
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.736,
+            172.176,
+            171.152,
+            184.33
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.976,
+              174.276,
+              162.776,
+              180.036
+            ],
+            "lines_pt": [
+              [
+                174.276,
+                179.796
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.976,
+                162.776
+              ]
+            ],
+            "glyph_height_pt": 4.62,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.976,
+            172.176,
+            164.16,
+            184.33
+          ],
+          "status": [],
+          "size_pt": 5.181,
+          "start_size_pt": 5.181,
+          "min_size_pt": 4.145,
+          "tracking": 0.0,
+          "lines": [
+            "“기믹 따위 언제 풀고 있냐고!”"
+          ],
+          "line_boxes_pt": [
+            [
+              67.98,
+              174.28,
+              135.61,
+              179.34
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.528,
+            201.294,
+            165.832,
+            241.806
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              16.328,
+              203.574,
+              138.008,
+              231.894
+            ],
+            "lines_pt": [
+              [
+                203.814,
+                210.054
+              ],
+              [
+                214.134,
+                220.614
+              ],
+              [
+                225.414,
+                231.894
+              ]
+            ],
+            "line_x_pt": [
+              [
+                16.328,
+                117.848
+              ],
+              [
+                16.328,
+                112.088
+              ],
+              [
+                16.568,
+                138.008
+              ]
+            ],
+            "glyph_height_pt": 6.0,
+            "line_pitch_pt": 10.8
+          },
+          "draw_rect_pt": [
+            16.328,
+            201.294,
+            139.2,
+            241.806
+          ],
+          "status": [],
+          "size_pt": 6.729,
+          "start_size_pt": 6.729,
+          "min_size_pt": 5.383,
+          "tracking": 0.0,
+          "lines": [
+            "던전 판정을 자동으로 성공할 수 있다.",
+            "단, [화염] 카드에 들어선 순간,",
+            "이 카드는 효과를 발휘하지 않고 버려진다."
+          ],
+          "line_boxes_pt": [
+            [
+              16.33,
+              203.81,
+              125.09,
+              210.61
+            ],
+            [
+              16.33,
+              214.61,
+              105.7,
+              221.41
+            ],
+            [
+              16.33,
+              225.41,
+              138.18,
+              232.21
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.208,
+            81.53,
+            112.624,
+            101.786
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            81.53,
+            110.4,
+            101.786
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              88.55,
+              38.88,
+              98.86
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              88.55,
+              62.128,
+              98.87
+            ],
+            "lines_pt": [
+              [
+                88.55,
+                98.87
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                62.128
+              ]
+            ],
+            "glyph_height_pt": 10.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            81.53,
+            108.96,
+            101.786
+          ],
+          "status": [],
+          "size_pt": 11.954,
+          "start_size_pt": 11.954,
+          "min_size_pt": 9.563,
+          "tracking": 0.0,
+          "lines": [
+            "수리검"
+          ],
+          "line_boxes_pt": [
+            [
+              77.73,
+              84.46,
+              108.96,
+              94.77
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.208,
+            68.87,
+            112.624,
+            81.024
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.408,
+            68.87,
+            110.4,
+            81.024
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.41,
+              73.61,
+              100.89,
+              78.77
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.408,
+              73.37,
+              105.808,
+              79.37
+            ],
+            "lines_pt": [
+              [
+                73.61,
+                79.37
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.408,
+                105.808
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            68.87,
+            109.2,
+            81.024
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "닌자가 던지면 악마의 미간마저 쪼갠다"
+          ],
+          "line_boxes_pt": [
+            [
+              15.72,
+              71.12,
+              109.2,
+              76.28
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.528,
+            11.394,
+            165.832,
+            51.906
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.728,
+            11.394,
+            161.28,
+            51.906
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.73,
+              25.67,
+              125.32,
+              32.14
+            ],
+            [
+              12.73,
+              36.47,
+              117.17,
+              42.94
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.728,
+              25.674,
+              144.008,
+              42.714
+            ],
+            "lines_pt": [
+              [
+                25.674,
+                31.914
+              ],
+              [
+                36.474,
+                42.714
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.728,
+                108.488
+              ],
+              [
+                13.208,
+                144.008
+              ]
+            ],
+            "glyph_height_pt": 5.85,
+            "line_pitch_pt": 10.8
+          },
+          "draw_rect_pt": [
+            11.528,
+            11.394,
+            160.08,
+            51.906
+          ],
+          "status": [],
+          "size_pt": 6.561,
+          "start_size_pt": 6.561,
+          "min_size_pt": 5.249,
+          "tracking": 0.0,
+          "lines": [
+            "원하는 전투 중, 판정에 +2를 할 수 있다.",
+            "수리검을 던졌다면 이 카드를 버린다."
+          ],
+          "line_boxes_pt": [
+            [
+              47.49,
+              31.16,
+              160.08,
+              37.63
+            ],
+            [
+              55.64,
+              20.36,
+              160.08,
+              26.83
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "롱롱 사다리\n“기믹 따위 언제 풀고 있냐고!”\n던전 판정을 자동으로 성공할 수 있다.\n단, [화염] 카드에 들어선 순간,\n이 카드는 효과를 발휘하지 않고 버려진다.\n수리검\n닌자가 던지면 악마의 미간마저 쪼갠다\n원하는 전투 중, 판정에 +2를 할 수 있다.\n수리검을 던졌다면 이 카드를 버린다.\n"
+    },
+    {
+      "page": 7,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.561,
+            150.84,
+            170.689,
+            171.019
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.201,
+              154.8,
+              145.201,
+              165.84
+            ],
+            "lines_pt": [
+              [
+                154.8,
+                165.6
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.201,
+                145.201
+              ]
+            ],
+            "glyph_height_pt": 10.68,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.201,
+            150.84,
+            146.64,
+            171.019
+          ],
+          "status": [],
+          "size_pt": 12.371,
+          "start_size_pt": 12.371,
+          "min_size_pt": 9.897,
+          "tracking": 0.0,
+          "lines": [
+            "악식가의 포크"
+          ],
+          "line_boxes_pt": [
+            [
+              67.2,
+              154.8,
+              134.08,
+              165.59
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.561,
+            171.523,
+            170.689,
+            183.631
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.921,
+              173.803,
+              128.641,
+              179.083
+            ],
+            "lines_pt": [
+              [
+                173.803,
+                179.083
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.921,
+                128.641
+              ]
+            ],
+            "glyph_height_pt": 4.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.921,
+            171.523,
+            129.84,
+            183.631
+          ],
+          "status": [],
+          "size_pt": 4.845,
+          "start_size_pt": 4.845,
+          "min_size_pt": 3.876,
+          "tracking": 0.0,
+          "lines": [
+            "“뭘 먹어도 맛있어!”"
+          ],
+          "line_boxes_pt": [
+            [
+              67.92,
+              173.8,
+              109.94,
+              178.54
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.497,
+            200.531,
+            165.383,
+            240.889
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              16.357,
+              210.491,
+              93.397,
+              228.491
+            ],
+            "lines_pt": [
+              [
+                210.491,
+                217.211
+              ],
+              [
+                222.011,
+                228.251
+              ]
+            ],
+            "line_x_pt": [
+              [
+                16.357,
+                93.397
+              ],
+              [
+                16.357,
+                68.197
+              ]
+            ],
+            "glyph_height_pt": 6.06,
+            "line_pitch_pt": 11.52
+          },
+          "draw_rect_pt": [
+            16.357,
+            200.531,
+            94.56,
+            240.889
+          ],
+          "status": [],
+          "size_pt": 6.796,
+          "start_size_pt": 6.796,
+          "min_size_pt": 5.437,
+          "tracking": -0.05,
+          "lines": [
+            "[독]이(가) 붙은 모든 판정에",
+            "자동으로 성공할 수 있다."
+          ],
+          "line_boxes_pt": [
+            [
+              16.36,
+              210.49,
+              94.24,
+              217.36
+            ],
+            [
+              16.36,
+              222.01,
+              85.42,
+              228.88
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.191,
+            81.221,
+            112.319,
+            101.4
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.631,
+            81.221,
+            110.4,
+            101.4
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.63,
+              87.82,
+              65.62,
+              99.07
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.631,
+              87.821,
+              66.671,
+              99.101
+            ],
+            "lines_pt": [
+              [
+                87.821,
+                99.101
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.631,
+                66.671
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            81.221,
+            108.96,
+            101.4
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "빙하의 부적"
+          ],
+          "line_boxes_pt": [
+            [
+              50.97,
+              83.55,
+              108.96,
+              94.8
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.191,
+            68.609,
+            112.319,
+            80.717
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.391,
+            68.609,
+            110.64,
+            80.717
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.39,
+              74.01,
+              110.05,
+              79.41
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.391,
+              74.009,
+              91.631,
+              79.769
+            ],
+            "lines_pt": [
+              [
+                74.009,
+                79.529
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.391,
+                91.631
+              ]
+            ],
+            "glyph_height_pt": 5.28,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            68.609,
+            109.44,
+            80.717
+          ],
+          "status": [],
+          "size_pt": 5.921,
+          "start_size_pt": 5.921,
+          "min_size_pt": 4.737,
+          "tracking": -0.02,
+          "lines": [
+            "화산의 맥동조차 백 년간 봉인한다고 한다"
+          ],
+          "line_boxes_pt": [
+            [
+              6.78,
+              69.92,
+              109.44,
+              75.32
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.497,
+            11.351,
+            165.383,
+            51.709
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.697,
+            11.351,
+            160.8,
+            51.709
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.7,
+              25.39,
+              99.51,
+              32.02
+            ],
+            [
+              12.7,
+              36.19,
+              83.63,
+              42.82
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.697,
+              25.151,
+              89.737,
+              42.191
+            ],
+            "lines_pt": [
+              [
+                25.391,
+                31.631
+              ],
+              [
+                36.191,
+                42.191
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.697,
+                89.737
+              ],
+              [
+                12.937,
+                64.537
+              ]
+            ],
+            "glyph_height_pt": 5.85,
+            "line_pitch_pt": 10.8
+          },
+          "draw_rect_pt": [
+            11.497,
+            11.351,
+            159.6,
+            51.709
+          ],
+          "status": [],
+          "size_pt": 6.561,
+          "start_size_pt": 6.561,
+          "min_size_pt": 5.249,
+          "tracking": 0.0,
+          "lines": [
+            "[화염]이(가) 붙은 모든 판정에",
+            "자동으로 성공할 수 있다."
+          ],
+          "line_boxes_pt": [
+            [
+              72.79,
+              31.04,
+              159.6,
+              37.67
+            ],
+            [
+              88.67,
+              20.24,
+              159.6,
+              26.87
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "악식가의 포크\n“뭘 먹어도 맛있어!”\n[독]이(가) 붙은 모든 판정에\n자동으로 성공할 수 있다.\n빙하의 부적\n화산의 맥동조차 백 년간 봉인한다고 한다\n[화염]이(가) 붙은 모든 판정에\n자동으로 성공할 수 있다.\n"
+    },
+    {
+      "page": 8,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.298,
+            150.983,
+            169.994,
+            171.181
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.278,
+              150.983,
+              146.438,
+              166.583
+            ],
+            "lines_pt": [
+              [
+                155.543,
+                166.343
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.278,
+                146.438
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.278,
+            150.983,
+            147.84,
+            171.181
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "신검 네코시온"
+          ],
+          "line_boxes_pt": [
+            [
+              66.28,
+              155.54,
+              133.91,
+              166.43
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.298,
+            171.686,
+            169.994,
+            183.805
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              65.798,
+              174.506,
+              165.158,
+              179.786
+            ],
+            "lines_pt": [
+              [
+                174.746,
+                179.786
+              ]
+            ],
+            "line_x_pt": [
+              [
+                65.798,
+                165.158
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            65.798,
+            171.686,
+            166.32,
+            183.805
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.302,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": -0.05,
+          "lines": [
+            "하늘의 뜻을 대변하여, 일섬이 세상을 치유한다"
+          ],
+          "line_boxes_pt": [
+            [
+              65.8,
+              174.75,
+              165.77,
+              179.97
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.45,
+            200.722,
+            164.71,
+            241.118
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              15.17,
+              212.422,
+              92.21,
+              230.182
+            ],
+            "lines_pt": [
+              [
+                212.422,
+                218.422
+              ],
+              [
+                223.462,
+                230.182
+              ]
+            ],
+            "line_x_pt": [
+              [
+                15.41,
+                92.21
+              ],
+              [
+                15.17,
+                70.13
+              ]
+            ],
+            "glyph_height_pt": 5.85,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            15.17,
+            200.722,
+            93.36,
+            241.118
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 6.311,
+          "start_size_pt": 6.561,
+          "min_size_pt": 5.249,
+          "tracking": -0.05,
+          "lines": [
+            "[마족]이(가) 붙은 모든 판정에",
+            "보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              15.17,
+              212.42,
+              93.31,
+              218.8
+            ],
+            [
+              15.17,
+              223.04,
+              59.38,
+              229.42
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.166,
+            81.299,
+            111.862,
+            101.497
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.606,
+            81.299,
+            109.2,
+            101.497
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.61,
+              88.26,
+              62.02,
+              98.57
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.606,
+              81.299,
+              86.566,
+              98.819
+            ],
+            "lines_pt": [
+              [
+                88.259,
+                98.819
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.606,
+                86.566
+              ]
+            ],
+            "glyph_height_pt": 10.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.166,
+            81.299,
+            107.76,
+            101.497
+          ],
+          "status": [],
+          "size_pt": 11.954,
+          "start_size_pt": 11.954,
+          "min_size_pt": 9.563,
+          "tracking": 0.0,
+          "lines": [
+            "드래곤 킬러"
+          ],
+          "line_boxes_pt": [
+            [
+              53.35,
+              84.23,
+              107.76,
+              94.54
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.166,
+            68.675,
+            111.862,
+            80.794
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.366,
+            68.675,
+            109.44,
+            80.794
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.37,
+              73.66,
+              108.25,
+              78.77
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.366,
+              73.655,
+              106.006,
+              78.935
+            ],
+            "lines_pt": [
+              [
+                73.655,
+                78.935
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.366,
+                106.006
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.166,
+            68.675,
+            108.24,
+            80.794
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": -0.04,
+          "lines": [
+            "용을 쓰러뜨리기 위해서만 벼려진 은빛 마검"
+          ],
+          "line_boxes_pt": [
+            [
+              7.36,
+              70.7,
+              108.24,
+              75.81
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.45,
+            11.362,
+            164.71,
+            51.758
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.65,
+            11.362,
+            160.08,
+            51.758
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.65,
+              25.22,
+              91.85,
+              31.75
+            ],
+            [
+              12.65,
+              36.74,
+              60.49,
+              43.27
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.65,
+              25.222,
+              89.93,
+              42.742
+            ],
+            "lines_pt": [
+              [
+                25.222,
+                31.702
+              ],
+              [
+                36.742,
+                42.502
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.89,
+                89.93
+              ],
+              [
+                12.65,
+                67.85
+              ]
+            ],
+            "glyph_height_pt": 5.76,
+            "line_pitch_pt": 11.52
+          },
+          "draw_rect_pt": [
+            11.45,
+            11.362,
+            158.88,
+            51.758
+          ],
+          "status": [],
+          "size_pt": 6.46,
+          "start_size_pt": 6.46,
+          "min_size_pt": 5.168,
+          "tracking": 0.0,
+          "lines": [
+            "[용]이(가) 붙은 모든 판정에",
+            "보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              79.68,
+              31.37,
+              158.88,
+              37.9
+            ],
+            [
+              111.04,
+              19.85,
+              158.88,
+              26.38
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "신검 네코시온\n하늘의 뜻을 대변하여, 일섬이 세상을 치유한다\n[마족]이(가) 붙은 모든 판정에\n보너스를 받는다.\n드래곤 킬러\n용을 쓰러뜨리기 위해서만 벼려진 은빛 마검\n[용]이(가) 붙은 모든 판정에\n보너스를 받는다.\n"
+    },
+    {
+      "page": 9,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.474,
+            151.701,
+            170.458,
+            171.995
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.274,
+              155.781,
+              156.034,
+              166.581
+            ],
+            "lines_pt": [
+              [
+                155.781,
+                166.581
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.274,
+                156.034
+              ]
+            ],
+            "glyph_height_pt": 10.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.274,
+            151.701,
+            157.2,
+            171.995
+          ],
+          "status": [],
+          "size_pt": 11.954,
+          "start_size_pt": 11.954,
+          "min_size_pt": 9.563,
+          "tracking": 0.0,
+          "lines": [
+            "스파이크 슈즈"
+          ],
+          "line_boxes_pt": [
+            [
+              66.27,
+              155.78,
+              130.9,
+              166.09
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.474,
+            172.502,
+            170.458,
+            184.679
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.994,
+              174.722,
+              145.234,
+              180.482
+            ],
+            "lines_pt": [
+              [
+                174.722,
+                180.482
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.994,
+                145.234
+              ]
+            ],
+            "glyph_height_pt": 4.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.994,
+            172.502,
+            146.64,
+            184.679
+          ],
+          "status": [],
+          "size_pt": 5.383,
+          "start_size_pt": 5.383,
+          "min_size_pt": 4.307,
+          "tracking": 0.0,
+          "lines": [
+            "“뭘 밟아도 괜찮아!”"
+          ],
+          "line_boxes_pt": [
+            [
+              66.99,
+              174.72,
+              113.69,
+              180.01
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.482,
+            201.676,
+            165.158,
+            242.264
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              15.382,
+              212.896,
+              115.942,
+              230.416
+            ],
+            "lines_pt": [
+              [
+                213.136,
+                219.136
+              ],
+              [
+                224.176,
+                230.416
+              ]
+            ],
+            "line_x_pt": [
+              [
+                15.382,
+                74.422
+              ],
+              [
+                15.382,
+                115.942
+              ]
+            ],
+            "glyph_height_pt": 5.97,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            15.382,
+            201.676,
+            117.12,
+            242.264
+          ],
+          "status": [],
+          "size_pt": 6.695,
+          "start_size_pt": 6.695,
+          "min_size_pt": 5.356,
+          "tracking": 0.0,
+          "lines": [
+            "[함정][화염]이(가) 붙은",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              15.38,
+              213.14,
+              87.2,
+              219.9
+            ],
+            [
+              15.38,
+              224.18,
+              100.79,
+              230.94
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.182,
+            81.685,
+            112.166,
+            101.979
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.622,
+            81.685,
+            109.44,
+            101.979
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.62,
+              87.92,
+              54.48,
+              99.08
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.622,
+              87.925,
+              54.662,
+              98.965
+            ],
+            "lines_pt": [
+              [
+                87.925,
+                98.965
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.622,
+                54.662
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.182,
+            81.685,
+            108.0,
+            101.979
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "강철 단검"
+          ],
+          "line_boxes_pt": [
+            [
+              61.14,
+              84.58,
+              108.0,
+              95.74
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.182,
+            69.001,
+            112.166,
+            81.178
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.622,
+            69.001,
+            109.68,
+            81.178
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.62,
+              73.62,
+              90.11,
+              78.78
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.622,
+              73.621,
+              93.542,
+              78.901
+            ],
+            "lines_pt": [
+              [
+                73.621,
+                78.901
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.622,
+                93.542
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.182,
+            69.001,
+            108.24,
+            81.178
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "흔해빠진 무기가 역사를 새겨 간다"
+          ],
+          "line_boxes_pt": [
+            [
+              25.75,
+              71.4,
+              108.24,
+              76.56
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.482,
+            11.416,
+            165.158,
+            52.004
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.682,
+            11.416,
+            160.08,
+            52.004
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.68,
+              26.0,
+              103.8,
+              32.62
+            ],
+            [
+              12.68,
+              37.28,
+              96.38,
+              43.9
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.682,
+              25.996,
+              106.282,
+              43.516
+            ],
+            "lines_pt": [
+              [
+                25.996,
+                32.476
+              ],
+              [
+                37.276,
+                43.276
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.922,
+                106.282
+              ],
+              [
+                12.682,
+                105.802
+              ]
+            ],
+            "glyph_height_pt": 5.85,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.482,
+            11.416,
+            158.88,
+            52.004
+          ],
+          "status": [],
+          "size_pt": 6.561,
+          "start_size_pt": 6.561,
+          "min_size_pt": 5.249,
+          "tracking": 0.0,
+          "lines": [
+            "[인간][몬스터]을(를) 상대로 한",
+            "전투 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              67.76,
+              30.8,
+              158.88,
+              37.42
+            ],
+            [
+              75.18,
+              19.52,
+              158.88,
+              26.14
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "스파이크 슈즈\n“뭘 밟아도 괜찮아!”\n[함정][화염]이(가) 붙은\n모든 판정에 보너스를 받는다.\n강철 단검\n흔해빠진 무기가 역사를 새겨 간다\n[인간][몬스터]을(를) 상대로 한\n전투 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 10,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.736,
+            150.265,
+            171.152,
+            170.368
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              69.176,
+              157.465,
+              143.336,
+              168.265
+            ],
+            "lines_pt": [
+              [
+                157.465,
+                168.265
+              ]
+            ],
+            "line_x_pt": [
+              [
+                69.176,
+                143.336
+              ]
+            ],
+            "glyph_height_pt": 10.44,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            69.176,
+            150.265,
+            144.48,
+            170.368
+          ],
+          "status": [],
+          "size_pt": 12.093,
+          "start_size_pt": 12.093,
+          "min_size_pt": 9.674,
+          "tracking": 0.0,
+          "lines": [
+            "레드 윕"
+          ],
+          "line_boxes_pt": [
+            [
+              69.18,
+              157.46,
+              102.95,
+              168.05
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.736,
+            170.87,
+            171.152,
+            182.932
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              69.176,
+              176.69,
+              152.696,
+              182.21
+            ],
+            "lines_pt": [
+              [
+                176.69,
+                182.21
+              ]
+            ],
+            "line_x_pt": [
+              [
+                69.176,
+                152.696
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            69.176,
+            170.87,
+            154.08,
+            182.932
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "왠지 텐션이 높아지는 채찍이다"
+          ],
+          "line_boxes_pt": [
+            [
+              69.18,
+              176.69,
+              144.79,
+              181.85
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.528,
+            199.768,
+            165.832,
+            239.972
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              18.248,
+              215.068,
+              111.608,
+              232.108
+            ],
+            "lines_pt": [
+              [
+                215.068,
+                221.308
+              ],
+              [
+                226.108,
+                232.108
+              ]
+            ],
+            "line_x_pt": [
+              [
+                18.488,
+                111.608
+              ],
+              [
+                18.248,
+                111.368
+              ]
+            ],
+            "glyph_height_pt": 5.82,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            18.248,
+            199.768,
+            112.8,
+            239.972
+          ],
+          "status": [],
+          "size_pt": 6.527,
+          "start_size_pt": 6.527,
+          "min_size_pt": 5.222,
+          "tracking": 0.0,
+          "lines": [
+            "[인간][몬스터]을(를) 상대로 한",
+            "전투 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              18.25,
+              215.07,
+              108.9,
+              221.66
+            ],
+            [
+              18.25,
+              226.11,
+              101.51,
+              232.7
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.208,
+            80.912,
+            112.624,
+            101.015
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            80.912,
+            112.08,
+            101.015
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              84.75,
+              54.5,
+              95.75
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              84.752,
+              65.488,
+              95.792
+            ],
+            "lines_pt": [
+              [
+                84.752,
+                95.792
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                65.488
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            80.912,
+            110.64,
+            101.015
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "안전 부적"
+          ],
+          "line_boxes_pt": [
+            [
+              63.79,
+              86.18,
+              110.64,
+              97.18
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.208,
+            68.348,
+            112.624,
+            80.41
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.408,
+            68.348,
+            111.36,
+            80.41
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.41,
+              70.81,
+              65.08,
+              75.77
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.408,
+              70.808,
+              91.648,
+              76.328
+            ],
+            "lines_pt": [
+              [
+                70.808,
+                76.328
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.408,
+                91.648
+              ]
+            ],
+            "glyph_height_pt": 4.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            68.348,
+            110.16,
+            80.41
+          ],
+          "status": [],
+          "size_pt": 5.114,
+          "start_size_pt": 5.114,
+          "min_size_pt": 4.091,
+          "tracking": 0.0,
+          "lines": [
+            "“기념품 가게에서 봤어요”"
+          ],
+          "line_boxes_pt": [
+            [
+              52.49,
+              72.99,
+              110.16,
+              77.95
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.528,
+            11.308,
+            165.832,
+            51.512
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.728,
+            11.308,
+            163.2,
+            51.512
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.73,
+              22.77,
+              79.02,
+              29.63
+            ],
+            [
+              12.73,
+              34.29,
+              99.43,
+              41.15
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.728,
+              22.768,
+              113.528,
+              40.768
+            ],
+            "lines_pt": [
+              [
+                22.768,
+                29.248
+              ],
+              [
+                34.288,
+                40.768
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.968,
+                72.008
+              ],
+              [
+                12.728,
+                113.528
+              ]
+            ],
+            "glyph_height_pt": 6.06,
+            "line_pitch_pt": 11.52
+          },
+          "draw_rect_pt": [
+            11.528,
+            11.308,
+            162.0,
+            51.512
+          ],
+          "status": [],
+          "size_pt": 6.796,
+          "start_size_pt": 6.796,
+          "min_size_pt": 5.437,
+          "tracking": 0.0,
+          "lines": [
+            "[함정][독]이(가) 붙은",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              95.71,
+              33.19,
+              162.0,
+              40.05
+            ],
+            [
+              75.3,
+              21.67,
+              162.0,
+              28.53
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "레드 윕\n왠지 텐션이 높아지는 채찍이다\n[인간][몬스터]을(를) 상대로 한\n전투 판정에 보너스를 받는다.\n안전 부적\n“기념품 가게에서 봤어요”\n[함정][독]이(가) 붙은\n모든 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 11,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.561,
+            151.127,
+            170.689,
+            171.344
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.161,
+              158.207,
+              157.921,
+              168.767
+            ],
+            "lines_pt": [
+              [
+                158.207,
+                168.767
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.161,
+                157.921
+              ]
+            ],
+            "glyph_height_pt": 10.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.161,
+            151.127,
+            159.36,
+            171.344
+          ],
+          "status": [],
+          "size_pt": 11.954,
+          "start_size_pt": 11.954,
+          "min_size_pt": 9.563,
+          "tracking": 0.0,
+          "lines": [
+            "쇼트 크로스보우"
+          ],
+          "line_boxes_pt": [
+            [
+              68.16,
+              158.21,
+              143.19,
+              168.28
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.561,
+            171.85,
+            170.689,
+            183.98
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.681,
+              176.65,
+              144.001,
+              182.41
+            ],
+            "lines_pt": [
+              [
+                176.65,
+                182.41
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.681,
+                144.001
+              ]
+            ],
+            "glyph_height_pt": 5.28,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.681,
+            171.85,
+            145.2,
+            183.98
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.221,
+          "start_size_pt": 5.921,
+          "min_size_pt": 4.737,
+          "tracking": -0.05,
+          "lines": [
+            "위력은 낮지만, 위협하기엔 충분하다"
+          ],
+          "line_boxes_pt": [
+            [
+              67.68,
+              176.65,
+              144.83,
+              181.82
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.497,
+            200.912,
+            165.383,
+            241.348
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              17.077,
+              214.832,
+              110.437,
+              232.352
+            ],
+            "lines_pt": [
+              [
+                214.832,
+                221.312
+              ],
+              [
+                226.112,
+                232.352
+              ]
+            ],
+            "line_x_pt": [
+              [
+                17.317,
+                110.437
+              ],
+              [
+                17.077,
+                110.197
+              ]
+            ],
+            "glyph_height_pt": 5.85,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            17.077,
+            200.912,
+            111.6,
+            241.348
+          ],
+          "status": [],
+          "size_pt": 6.561,
+          "start_size_pt": 6.561,
+          "min_size_pt": 5.249,
+          "tracking": 0.0,
+          "lines": [
+            "[인간][몬스터]을(를) 상대로 한",
+            "전투 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              17.08,
+              214.83,
+              108.2,
+              221.46
+            ],
+            [
+              17.08,
+              226.11,
+              100.77,
+              232.74
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.191,
+            81.376,
+            112.319,
+            101.593
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.631,
+            81.376,
+            111.36,
+            101.593
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.63,
+              85.82,
+              78.67,
+              96.98
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.631,
+              85.576,
+              76.751,
+              96.856
+            ],
+            "lines_pt": [
+              [
+                85.816,
+                96.856
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.631,
+                76.751
+              ]
+            ],
+            "glyph_height_pt": 10.98,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            81.376,
+            109.92,
+            101.593
+          ],
+          "status": [],
+          "size_pt": 12.718,
+          "start_size_pt": 12.718,
+          "min_size_pt": 10.175,
+          "tracking": 0.0,
+          "lines": [
+            "검은 가죽 망토"
+          ],
+          "line_boxes_pt": [
+            [
+              38.88,
+              85.99,
+              109.92,
+              97.15
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.191,
+            68.74,
+            112.319,
+            80.87
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.391,
+            68.74,
+            110.64,
+            80.87
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.39,
+              71.14,
+              88.41,
+              76.52
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.391,
+              71.14,
+              76.991,
+              76.9
+            ],
+            "lines_pt": [
+              [
+                71.14,
+                76.9
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.391,
+                76.991
+              ]
+            ],
+            "glyph_height_pt": 4.92,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            68.74,
+            109.44,
+            80.87
+          ],
+          "status": [],
+          "size_pt": 5.518,
+          "start_size_pt": 5.518,
+          "min_size_pt": 4.414,
+          "tracking": 0.0,
+          "lines": [
+            "“몸을 지키는 데는 이거면 충분해”"
+          ],
+          "line_boxes_pt": [
+            [
+              28.42,
+              73.09,
+              109.44,
+              78.47
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.497,
+            11.372,
+            165.383,
+            51.808
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.697,
+            11.372,
+            162.48,
+            51.808
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.7,
+              22.89,
+              78.0,
+              29.65
+            ],
+            [
+              12.7,
+              33.93,
+              98.11,
+              40.69
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.697,
+              22.652,
+              113.497,
+              40.412
+            ],
+            "lines_pt": [
+              [
+                22.892,
+                29.132
+              ],
+              [
+                33.932,
+                40.412
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.937,
+                71.977
+              ],
+              [
+                12.697,
+                113.497
+              ]
+            ],
+            "glyph_height_pt": 5.97,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            11.497,
+            11.372,
+            161.28,
+            51.808
+          ],
+          "status": [],
+          "size_pt": 6.695,
+          "start_size_pt": 6.695,
+          "min_size_pt": 5.356,
+          "tracking": 0.0,
+          "lines": [
+            "[함정][독]이(가) 붙은",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              95.98,
+              33.53,
+              161.28,
+              40.29
+            ],
+            [
+              75.87,
+              22.49,
+              161.28,
+              29.25
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "쇼트 크로스보우\n위력은 낮지만, 위협하기엔 충분하다\n[인간][몬스터]을(를) 상대로 한\n전투 판정에 보너스를 받는다.\n검은 가죽 망토\n“몸을 지키는 데는 이거면 충분해”\n[함정][독]이(가) 붙은\n모든 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 12,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.736,
+            150.409,
+            171.152,
+            170.531
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.696,
+              157.009,
+              136.856,
+              167.569
+            ],
+            "lines_pt": [
+              [
+                157.249,
+                167.569
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.696,
+                136.856
+              ]
+            ],
+            "glyph_height_pt": 10.2,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.696,
+            150.409,
+            138.24,
+            170.531
+          ],
+          "status": [],
+          "size_pt": 11.815,
+          "start_size_pt": 11.815,
+          "min_size_pt": 9.452,
+          "tracking": 0.0,
+          "lines": [
+            "핸드 액스"
+          ],
+          "line_boxes_pt": [
+            [
+              68.7,
+              157.25,
+              111.98,
+              167.5
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.736,
+            171.034,
+            171.152,
+            183.107
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.216,
+              175.714,
+              155.576,
+              181.474
+            ],
+            "lines_pt": [
+              [
+                175.954,
+                181.474
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.216,
+                155.576
+              ]
+            ],
+            "glyph_height_pt": 5.28,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.216,
+            171.034,
+            156.96,
+            183.107
+          ],
+          "status": [],
+          "size_pt": 5.921,
+          "start_size_pt": 5.921,
+          "min_size_pt": 4.737,
+          "tracking": 0.0,
+          "lines": [
+            "도끼만 있으면 뭐든지 잘 풀린다!"
+          ],
+          "line_boxes_pt": [
+            [
+              68.22,
+              175.95,
+              150.74,
+              181.31
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.528,
+            199.958,
+            165.832,
+            240.202
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              17.768,
+              215.078,
+              111.128,
+              232.358
+            ],
+            "lines_pt": [
+              [
+                215.078,
+                221.318
+              ],
+              [
+                226.118,
+                232.118
+              ]
+            ],
+            "line_x_pt": [
+              [
+                18.008,
+                111.128
+              ],
+              [
+                17.768,
+                110.888
+              ]
+            ],
+            "glyph_height_pt": 5.73,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            17.768,
+            199.958,
+            112.32,
+            240.202
+          ],
+          "status": [],
+          "size_pt": 6.426,
+          "start_size_pt": 6.426,
+          "min_size_pt": 5.141,
+          "tracking": 0.0,
+          "lines": [
+            "[인간][몬스터]을(를) 상대로 한",
+            "전투 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              17.77,
+              215.08,
+              107.02,
+              221.57
+            ],
+            [
+              17.77,
+              226.12,
+              99.75,
+              232.61
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.208,
+            80.989,
+            112.624,
+            101.111
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            80.989,
+            111.6,
+            101.111
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              85.43,
+              52.46,
+              96.19
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              85.429,
+              99.088,
+              96.709
+            ],
+            "lines_pt": [
+              [
+                85.429,
+                96.709
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                99.088
+              ]
+            ],
+            "glyph_height_pt": 10.56,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            80.989,
+            110.16,
+            101.111
+          ],
+          "status": [],
+          "size_pt": 12.232,
+          "start_size_pt": 12.232,
+          "min_size_pt": 9.785,
+          "tracking": 0.0,
+          "lines": [
+            "망원 고글"
+          ],
+          "line_boxes_pt": [
+            [
+              65.35,
+              85.91,
+              110.16,
+              96.67
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.208,
+            68.413,
+            112.624,
+            80.486
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            68.413,
+            111.12,
+            80.486
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              71.41,
+              105.61,
+              77.07
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              71.413,
+              100.528,
+              77.173
+            ],
+            "lines_pt": [
+              [
+                71.413,
+                76.933
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                100.528
+              ]
+            ],
+            "glyph_height_pt": 4.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            68.413,
+            109.68,
+            80.486
+          ],
+          "status": [],
+          "size_pt": 5.383,
+          "start_size_pt": 5.383,
+          "min_size_pt": 4.307,
+          "tracking": 0.0,
+          "lines": [
+            "“미리 보인다면, 피할 방법이 있는 법이지”"
+          ],
+          "line_boxes_pt": [
+            [
+              11.72,
+              71.83,
+              109.68,
+              77.49
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.528,
+            11.318,
+            165.832,
+            51.562
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.728,
+            11.318,
+            162.72,
+            51.562
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.73,
+              23.32,
+              84.91,
+              30.11
+            ],
+            [
+              12.73,
+              34.6,
+              98.57,
+              41.39
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.728,
+              23.318,
+              113.528,
+              41.078
+            ],
+            "lines_pt": [
+              [
+                23.318,
+                29.798
+              ],
+              [
+                34.598,
+                41.078
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.968,
+                72.008
+              ],
+              [
+                12.728,
+                113.528
+              ]
+            ],
+            "glyph_height_pt": 6.0,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.528,
+            11.318,
+            161.52,
+            51.562
+          ],
+          "status": [],
+          "size_pt": 6.729,
+          "start_size_pt": 6.729,
+          "min_size_pt": 5.383,
+          "tracking": 0.0,
+          "lines": [
+            "[함정][화염]이(가) 붙은",
+            "모든 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              89.34,
+              32.77,
+              161.52,
+              39.56
+            ],
+            [
+              75.68,
+              21.49,
+              161.52,
+              28.28
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "핸드 액스\n도끼만 있으면 뭐든지 잘 풀린다!\n[인간][몬스터]을(를) 상대로 한\n전투 판정에 보너스를 받는다.\n망원 고글\n“미리 보인다면, 피할 방법이 있는 법이지”\n[함정][화염]이(가) 붙은\n모든 판정에 보너스를 받는다.\n"
+    },
+    {
+      "page": 13,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.736,
+            150.552,
+            171.152,
+            170.693
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.216,
+              157.212,
+              158.456,
+              168.252
+            ],
+            "lines_pt": [
+              [
+                157.212,
+                168.252
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.216,
+                158.456
+              ]
+            ],
+            "glyph_height_pt": 10.32,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.216,
+            150.552,
+            159.6,
+            170.693
+          ],
+          "status": [],
+          "size_pt": 11.954,
+          "start_size_pt": 11.954,
+          "min_size_pt": 9.563,
+          "tracking": 0.0,
+          "lines": [
+            "마검 하베스타"
+          ],
+          "line_boxes_pt": [
+            [
+              68.22,
+              157.21,
+              132.84,
+              167.52
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.736,
+            171.197,
+            171.152,
+            183.281
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.736,
+              176.417,
+              167.096,
+              181.937
+            ],
+            "lines_pt": [
+              [
+                176.417,
+                181.937
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.736,
+                167.096
+              ]
+            ],
+            "glyph_height_pt": 5.28,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.736,
+            171.197,
+            168.48,
+            183.281
+          ],
+          "status": [],
+          "size_pt": 5.921,
+          "start_size_pt": 5.921,
+          "min_size_pt": 4.737,
+          "tracking": 0.0,
+          "lines": [
+            "초조해하는 검은 칼날, 제어할 수 없다"
+          ],
+          "line_boxes_pt": [
+            [
+              67.74,
+              176.42,
+              163.45,
+              182.25
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.528,
+            200.149,
+            165.832,
+            240.431
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              17.288,
+              208.369,
+              117.848,
+              236.209
+            ],
+            "lines_pt": [
+              [
+                208.369,
+                214.369
+              ],
+              [
+                219.409,
+                225.169
+              ],
+              [
+                230.209,
+                236.209
+              ]
+            ],
+            "line_x_pt": [
+              [
+                17.288,
+                117.848
+              ],
+              [
+                17.288,
+                91.448
+              ],
+              [
+                17.528,
+                64.088
+              ]
+            ],
+            "glyph_height_pt": 5.7,
+            "line_pitch_pt": 10.92
+          },
+          "draw_rect_pt": [
+            17.288,
+            200.149,
+            119.04,
+            240.431
+          ],
+          "status": [],
+          "size_pt": 6.393,
+          "start_size_pt": 6.393,
+          "min_size_pt": 5.114,
+          "tracking": 0.0,
+          "lines": [
+            "모든 판정에 보너스를 받는다.",
+            "단, 주사위 눈이 1·2이면",
+            "자동으로 실패한다."
+          ],
+          "line_boxes_pt": [
+            [
+              17.29,
+              208.37,
+              98.84,
+              214.67
+            ],
+            [
+              17.29,
+              219.29,
+              83.4,
+              225.59
+            ],
+            [
+              17.29,
+              230.21,
+              70.84,
+              236.51
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.208,
+            81.067,
+            112.624,
+            101.208
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.648,
+            81.067,
+            111.12,
+            101.208
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.65,
+              85.09,
+              77.0,
+              96.31
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.648,
+              85.087,
+              78.208,
+              96.127
+            ],
+            "lines_pt": [
+              [
+                85.087,
+                96.127
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.648,
+                78.208
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            81.067,
+            109.68,
+            101.208
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "깨어나는 야성"
+          ],
+          "line_boxes_pt": [
+            [
+              40.33,
+              85.97,
+              109.68,
+              97.19
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.208,
+            68.479,
+            112.624,
+            80.563
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.408,
+            68.479,
+            111.36,
+            80.563
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.41,
+              71.54,
+              66.44,
+              76.44
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.408,
+              71.299,
+              91.408,
+              76.339
+            ],
+            "lines_pt": [
+              [
+                71.539,
+                76.099
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.408,
+                91.408
+              ]
+            ],
+            "glyph_height_pt": 4.44,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.208,
+            68.479,
+            110.16,
+            80.563
+          ],
+          "status": [],
+          "size_pt": 4.979,
+          "start_size_pt": 4.979,
+          "min_size_pt": 3.984,
+          "tracking": 0.0,
+          "lines": [
+            "멍멍멍, 멍멍멍멍 멍오오옹!"
+          ],
+          "line_boxes_pt": [
+            [
+              51.13,
+              72.6,
+              110.16,
+              77.5
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.528,
+            11.329,
+            165.832,
+            51.611
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.728,
+            11.329,
+            162.48,
+            51.611
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.73,
+              16.67,
+              92.56,
+              22.83
+            ],
+            [
+              12.73,
+              27.59,
+              48.42,
+              33.75
+            ],
+            [
+              12.73,
+              38.51,
+              66.68,
+              44.67
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.728,
+              16.669,
+              113.528,
+              44.989
+            ],
+            "lines_pt": [
+              [
+                16.669,
+                22.189
+              ],
+              [
+                27.229,
+                33.229
+              ],
+              [
+                38.509,
+                44.989
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.728,
+                113.528
+              ],
+              [
+                12.968,
+                75.608
+              ],
+              [
+                12.968,
+                107.768
+              ]
+            ],
+            "glyph_height_pt": 5.58,
+            "line_pitch_pt": 10.92
+          },
+          "draw_rect_pt": [
+            11.528,
+            11.329,
+            161.28,
+            51.611
+          ],
+          "status": [],
+          "size_pt": 6.258,
+          "start_size_pt": 6.258,
+          "min_size_pt": 5.006,
+          "tracking": 0.0,
+          "lines": [
+            "모든 판정에 보너스를 받는다.",
+            "단, 동물 같은",
+            "말투로 말해야 한다."
+          ],
+          "line_boxes_pt": [
+            [
+              81.45,
+              40.11,
+              161.28,
+              46.27
+            ],
+            [
+              125.59,
+              29.19,
+              161.28,
+              35.35
+            ],
+            [
+              107.33,
+              18.27,
+              161.28,
+              24.43
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "마검 하베스타\n초조해하는 검은 칼날, 제어할 수 없다\n모든 판정에 보너스를 받는다.\n단, 주사위 눈이 1·2이면\n자동으로 실패한다.\n깨어나는 야성\n멍멍멍, 멍멍멍멍 멍오오옹!\n모든 판정에 보너스를 받는다.\n단, 동물 같은\n말투로 말해야 한다.\n"
+    },
+    {
+      "page": 14,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.649,
+            150.696,
+            170.921,
+            170.856
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.229,
+              155.076,
+              90.269,
+              165.876
+            ],
+            "lines_pt": [
+              [
+                155.076,
+                165.876
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.229,
+                90.269
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.229,
+            150.696,
+            91.68,
+            170.856
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "독침"
+          ],
+          "line_boxes_pt": [
+            [
+              67.23,
+              155.08,
+              89.02,
+              165.93
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.649,
+            171.36,
+            170.921,
+            183.456
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.229,
+              174.0,
+              149.069,
+              179.28
+            ],
+            "lines_pt": [
+              [
+                174.0,
+                179.04
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.229,
+                149.069
+              ]
+            ],
+            "glyph_height_pt": 4.92,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.229,
+            171.36,
+            150.24,
+            183.456
+          ],
+          "status": [],
+          "size_pt": 5.518,
+          "start_size_pt": 5.518,
+          "min_size_pt": 4.414,
+          "tracking": 0.0,
+          "lines": [
+            "암살 교단에 전해지는 불길한 암기"
+          ],
+          "line_boxes_pt": [
+            [
+              67.23,
+              174.0,
+              147.75,
+              178.99
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.513,
+            200.34,
+            165.607,
+            240.66
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              16.373,
+              211.2,
+              109.493,
+              228.96
+            ],
+            "lines_pt": [
+              [
+                211.2,
+                217.2
+              ],
+              [
+                222.24,
+                228.96
+              ]
+            ],
+            "line_x_pt": [
+              [
+                16.373,
+                73.013
+              ],
+              [
+                16.373,
+                109.493
+              ]
+            ],
+            "glyph_height_pt": 5.94,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            16.373,
+            200.34,
+            110.64,
+            240.66
+          ],
+          "status": [],
+          "size_pt": 6.662,
+          "start_size_pt": 6.662,
+          "min_size_pt": 5.329,
+          "tracking": 0.0,
+          "lines": [
+            "[인간]을(를) 상대로 한",
+            "전투 판정에 보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              16.37,
+              211.2,
+              83.46,
+              217.93
+            ],
+            [
+              16.37,
+              222.24,
+              101.35,
+              228.97
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.199,
+            81.144,
+            112.471,
+            101.304
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.639,
+            81.144,
+            110.4,
+            101.304
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.64,
+              87.92,
+              53.47,
+              98.81
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.639,
+              81.144,
+              78.199,
+              98.964
+            ],
+            "lines_pt": [
+              [
+                87.924,
+                98.964
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.639,
+                78.199
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.199,
+            81.144,
+            108.96,
+            101.304
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "은 밥그릇"
+          ],
+          "line_boxes_pt": [
+            [
+              63.13,
+              83.64,
+              108.96,
+              94.53
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.199,
+            68.544,
+            112.471,
+            80.64
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.399,
+            68.544,
+            110.64,
+            80.64
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.4,
+              73.82,
+              107.76,
+              79.01
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.399,
+              73.584,
+              94.279,
+              79.104
+            ],
+            "lines_pt": [
+              [
+                73.824,
+                79.104
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.399,
+                94.279
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.199,
+            68.544,
+            109.44,
+            80.64
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "역대 왕들이 독을 확인했던 성스러운 그릇"
+          ],
+          "line_boxes_pt": [
+            [
+              9.08,
+              70.17,
+              109.44,
+              75.36
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.513,
+            11.34,
+            165.607,
+            51.66
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.713,
+            11.34,
+            161.04,
+            51.66
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.71,
+              25.8,
+              109.78,
+              32.29
+            ],
+            [
+              12.71,
+              37.08,
+              60.3,
+              43.57
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.713,
+              25.56,
+              103.193,
+              42.84
+            ],
+            "lines_pt": [
+              [
+                25.8,
+                32.04
+              ],
+              [
+                37.08,
+                42.84
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.953,
+                103.193
+              ],
+              [
+                12.713,
+                67.913
+              ]
+            ],
+            "glyph_height_pt": 5.73,
+            "line_pitch_pt": 11.28
+          },
+          "draw_rect_pt": [
+            11.513,
+            11.34,
+            159.84,
+            51.66
+          ],
+          "status": [],
+          "size_pt": 6.426,
+          "start_size_pt": 6.426,
+          "min_size_pt": 5.141,
+          "tracking": 0.0,
+          "lines": [
+            "[독][마족]이(가) 붙은 모든 판정에",
+            "보너스를 받는다."
+          ],
+          "line_boxes_pt": [
+            [
+              62.77,
+              30.71,
+              159.84,
+              37.2
+            ],
+            [
+              112.25,
+              19.43,
+              159.84,
+              25.92
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "독침\n암살 교단에 전해지는 불길한 암기\n[인간]을(를) 상대로 한\n전투 판정에 보너스를 받는다.\n은 밥그릇\n역대 왕들이 독을 확인했던 성스러운 그릇\n[독][마족]이(가) 붙은 모든 판정에\n보너스를 받는다.\n"
+    },
+    {
+      "page": 15,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.824,
+            150.552,
+            171.384,
+            170.693
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              68.904,
+              150.552,
+              127.944,
+              167.772
+            ],
+            "lines_pt": [
+              [
+                156.972,
+                167.772
+              ]
+            ],
+            "line_x_pt": [
+              [
+                68.904,
+                127.944
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            68.904,
+            150.552,
+            129.36,
+            170.693
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "요정의 인도"
+          ],
+          "line_boxes_pt": [
+            [
+              68.9,
+              156.97,
+              125.64,
+              168.04
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.824,
+            171.197,
+            171.384,
+            183.281
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              69.624,
+              175.697,
+              152.424,
+              181.457
+            ],
+            "lines_pt": [
+              [
+                175.697,
+                181.457
+              ]
+            ],
+            "line_x_pt": [
+              [
+                69.624,
+                152.424
+              ]
+            ],
+            "glyph_height_pt": 4.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            69.624,
+            171.197,
+            153.84,
+            183.281
+          ],
+          "status": [],
+          "size_pt": 5.383,
+          "start_size_pt": 5.383,
+          "min_size_pt": 4.307,
+          "tracking": 0.0,
+          "lines": [
+            "“이쪽으로 가면 스위치가 있어!”"
+          ],
+          "line_boxes_pt": [
+            [
+              69.62,
+              175.7,
+              143.81,
+              180.96
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.544,
+            200.149,
+            166.056,
+            240.431
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              18.024,
+              201.889,
+              113.304,
+              238.849
+            ],
+            "lines_pt": [
+              [
+                201.889,
+                208.609
+              ],
+              [
+                212.209,
+                218.209
+              ],
+              [
+                222.049,
+                228.769
+              ],
+              [
+                232.609,
+                238.849
+              ]
+            ],
+            "line_x_pt": [
+              [
+                18.264,
+                108.744
+              ],
+              [
+                18.024,
+                92.424
+              ],
+              [
+                18.264,
+                113.304
+              ],
+              [
+                18.264,
+                85.944
+              ]
+            ],
+            "glyph_height_pt": 5.94,
+            "line_pitch_pt": 10.32
+          },
+          "draw_rect_pt": [
+            18.024,
+            200.149,
+            114.48,
+            240.431
+          ],
+          "status": [
+            "글자 축소"
+          ],
+          "size_pt": 5.912,
+          "start_size_pt": 6.662,
+          "min_size_pt": 5.329,
+          "tracking": -0.05,
+          "lines": [
+            "[독][화염]이(가) 붙은 모든 판정에",
+            "보너스를 받는다. 단,",
+            "[마족]을(를) 상대로 하면 요정이 도망쳐",
+            "이 카드는 버려진다."
+          ],
+          "line_boxes_pt": [
+            [
+              18.02,
+              201.89,
+              101.41,
+              207.98
+            ],
+            [
+              18.02,
+              211.05,
+              67.83,
+              217.14
+            ],
+            [
+              18.02,
+              220.21,
+              114.19,
+              226.29
+            ],
+            [
+              18.02,
+              229.36,
+              66.04,
+              235.45
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.216,
+            81.067,
+            112.776,
+            101.208
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.656,
+            81.067,
+            111.84,
+            101.208
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.66,
+              85.81,
+              65.65,
+              97.06
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.656,
+              85.807,
+              54.696,
+              96.847
+            ],
+            "lines_pt": [
+              [
+                85.807,
+                96.847
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.656,
+                54.696
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.216,
+            81.067,
+            110.4,
+            101.208
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "혁명의 불꽃"
+          ],
+          "line_boxes_pt": [
+            [
+              52.41,
+              85.22,
+              110.4,
+              96.47
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.216,
+            68.479,
+            112.776,
+            80.563
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.656,
+            68.479,
+            112.32,
+            80.563
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.66,
+              71.78,
+              111.86,
+              77.35
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.656,
+              71.539,
+              100.536,
+              77.059
+            ],
+            "lines_pt": [
+              [
+                71.779,
+                77.059
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.656,
+                100.536
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.216,
+            68.479,
+            110.88,
+            80.563
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": -0.04,
+          "lines": [
+            "부패를 정화하고, 새로운 세계의 싹을 틔우자!"
+          ],
+          "line_boxes_pt": [
+            [
+              6.68,
+              71.69,
+              110.88,
+              77.26
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.544,
+            11.329,
+            166.056,
+            51.611
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.744,
+            11.329,
+            162.48,
+            51.611
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.74,
+              16.67,
+              104.6,
+              23.06
+            ],
+            [
+              12.74,
+              27.71,
+              92.98,
+              34.1
+            ],
+            [
+              12.74,
+              38.75,
+              115.15,
+              45.14
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.744,
+              16.429,
+              113.304,
+              45.229
+            ],
+            "lines_pt": [
+              [
+                16.669,
+                22.669
+              ],
+              [
+                27.229,
+                33.949
+              ],
+              [
+                38.749,
+                44.989
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.744,
+                113.064
+              ],
+              [
+                12.744,
+                99.864
+              ],
+              [
+                12.744,
+                113.304
+              ]
+            ],
+            "glyph_height_pt": 5.64,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            11.544,
+            11.329,
+            161.28,
+            51.611
+          ],
+          "status": [],
+          "size_pt": 6.325,
+          "start_size_pt": 6.325,
+          "min_size_pt": 5.06,
+          "tracking": 0.0,
+          "lines": [
+            "[왕관]에게 전투를 걸 때 보너스를",
+            "받는다. 자신이 [화염] 카드에",
+            "있을 때, 이 보너스를 +4로 할 수 있다."
+          ],
+          "line_boxes_pt": [
+            [
+              69.42,
+              39.88,
+              161.28,
+              46.27
+            ],
+            [
+              81.04,
+              28.84,
+              161.28,
+              35.23
+            ],
+            [
+              58.87,
+              17.8,
+              161.28,
+              24.19
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "요정의 인도\n“이쪽으로 가면 스위치가 있어!”\n[독][화염]이(가) 붙은 모든 판정에\n보너스를 받는다. 단,\n[마족]을(를) 상대로 하면 요정이 도망쳐\n이 카드는 버려진다.\n혁명의 불꽃\n부패를 정화하고, 새로운 세계의 싹을 틔우자!\n[왕관]에게 전투를 걸 때 보너스를\n받는다. 자신이 [화염] 카드에\n있을 때, 이 보너스를 +4로 할 수 있다.\n"
+    },
+    {
+      "page": 16,
+      "regions": {
+        "아래_이름": {
+          "rect_pt": [
+            64.561,
+            150.983,
+            170.689,
+            171.181
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              67.201,
+              154.823,
+              111.841,
+              165.863
+            ],
+            "lines_pt": [
+              [
+                154.823,
+                165.863
+              ]
+            ],
+            "line_x_pt": [
+              [
+                67.201,
+                111.841
+              ]
+            ],
+            "glyph_height_pt": 11.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            67.201,
+            150.983,
+            113.28,
+            171.181
+          ],
+          "status": [],
+          "size_pt": 12.788,
+          "start_size_pt": 12.788,
+          "min_size_pt": 10.23,
+          "tracking": 0.0,
+          "lines": [
+            "나팔총"
+          ],
+          "line_boxes_pt": [
+            [
+              67.2,
+              154.82,
+              100.62,
+              166.2
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_설명": {
+          "rect_pt": [
+            64.561,
+            171.686,
+            170.689,
+            183.805
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              66.961,
+              174.266,
+              144.721,
+              179.546
+            ],
+            "lines_pt": [
+              [
+                174.266,
+                179.306
+              ]
+            ],
+            "line_x_pt": [
+              [
+                66.961,
+                144.721
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            66.961,
+            171.686,
+            146.16,
+            183.805
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "안 노려도 반반은 맞는다는 평판"
+          ],
+          "line_boxes_pt": [
+            [
+              66.96,
+              174.27,
+              143.95,
+              179.38
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "아래_효과": {
+          "rect_pt": [
+            11.497,
+            200.722,
+            165.383,
+            241.118
+          ],
+          "warnings": [],
+          "source_ink": {
+            "bbox_pt": [
+              15.877,
+              203.782,
+              109.957,
+              232.342
+            ],
+            "lines_pt": [
+              [
+                204.022,
+                209.542
+              ],
+              [
+                214.342,
+                220.582
+              ],
+              [
+                225.622,
+                232.102
+              ]
+            ],
+            "line_x_pt": [
+              [
+                15.877,
+                109.957
+              ],
+              [
+                16.117,
+                94.837
+              ],
+              [
+                16.117,
+                83.317
+              ]
+            ],
+            "glyph_height_pt": 5.76,
+            "line_pitch_pt": 10.8
+          },
+          "draw_rect_pt": [
+            15.877,
+            200.722,
+            111.12,
+            241.118
+          ],
+          "status": [],
+          "size_pt": 6.46,
+          "start_size_pt": 6.46,
+          "min_size_pt": 5.168,
+          "tracking": 0.0,
+          "lines": [
+            "전투 판정에서 보너스를 받는다.",
+            "단 주사위 눈이 1·3·5이면",
+            "판정에 자동으로 실패한다."
+          ],
+          "line_boxes_pt": [
+            [
+              15.88,
+              204.02,
+              104.57,
+              209.88
+            ],
+            [
+              15.88,
+              214.82,
+              86.3,
+              220.68
+            ],
+            [
+              15.88,
+              225.62,
+              90.42,
+              231.48
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_이름": {
+          "rect_pt": [
+            6.191,
+            81.299,
+            112.319,
+            101.497
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.631,
+            81.299,
+            110.4,
+            101.497
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.63,
+              88.02,
+              64.57,
+              99.06
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.631,
+              88.019,
+              88.751,
+              99.059
+            ],
+            "lines_pt": [
+              [
+                88.019,
+                99.059
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.631,
+                88.751
+              ]
+            ],
+            "glyph_height_pt": 10.8,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            81.299,
+            108.96,
+            101.497
+          ],
+          "status": [],
+          "size_pt": 12.51,
+          "start_size_pt": 12.51,
+          "min_size_pt": 10.008,
+          "tracking": 0.0,
+          "lines": [
+            "휴대용 폭탄"
+          ],
+          "line_boxes_pt": [
+            [
+              52.02,
+              83.74,
+              108.96,
+              94.78
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_설명": {
+          "rect_pt": [
+            6.191,
+            68.675,
+            112.319,
+            80.794
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            7.391,
+            68.675,
+            110.64,
+            80.794
+          ],
+          "frame_line_boxes_pt": [
+            [
+              7.39,
+              73.66,
+              97.36,
+              79.59
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              7.391,
+              73.655,
+              98.591,
+              79.175
+            ],
+            "lines_pt": [
+              [
+                73.655,
+                79.175
+              ]
+            ],
+            "line_x_pt": [
+              [
+                7.391,
+                98.591
+              ]
+            ],
+            "glyph_height_pt": 5.04,
+            "line_pitch_pt": null
+          },
+          "draw_rect_pt": [
+            6.191,
+            68.675,
+            109.44,
+            80.794
+          ],
+          "status": [],
+          "size_pt": 5.652,
+          "start_size_pt": 5.652,
+          "min_size_pt": 4.522,
+          "tracking": 0.0,
+          "lines": [
+            "“불이 붙었어? 빨리, 빨리 던져버려!”"
+          ],
+          "line_boxes_pt": [
+            [
+              19.47,
+              69.88,
+              109.44,
+              75.81
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        },
+        "위_효과": {
+          "rect_pt": [
+            11.497,
+            11.362,
+            165.383,
+            51.758
+          ],
+          "warnings": [],
+          "rotate": 180,
+          "frame_draw_rect_pt": [
+            12.697,
+            11.362,
+            161.28,
+            51.758
+          ],
+          "frame_line_boxes_pt": [
+            [
+              12.7,
+              17.78,
+              94.7,
+              24.31
+            ],
+            [
+              12.7,
+              28.82,
+              127.52,
+              35.35
+            ],
+            [
+              12.7,
+              39.86,
+              113.27,
+              46.39
+            ]
+          ],
+          "source_ink": {
+            "bbox_pt": [
+              12.697,
+              17.542,
+              129.817,
+              46.102
+            ],
+            "lines_pt": [
+              [
+                17.782,
+                23.782
+              ],
+              [
+                28.822,
+                35.302
+              ],
+              [
+                39.862,
+                46.102
+              ]
+            ],
+            "line_x_pt": [
+              [
+                12.697,
+                79.657
+              ],
+              [
+                12.937,
+                128.857
+              ],
+              [
+                12.937,
+                129.817
+              ]
+            ],
+            "glyph_height_pt": 6.0,
+            "line_pitch_pt": 11.04
+          },
+          "draw_rect_pt": [
+            11.497,
+            11.362,
+            160.08,
+            51.758
+          ],
+          "status": [],
+          "size_pt": 6.729,
+          "start_size_pt": 6.729,
+          "min_size_pt": 5.383,
+          "tracking": 0.0,
+          "lines": [
+            "원하는 판정에 +2할 수 있다.",
+            "단 [마족]을 가진 카드에는 효과가 없다.",
+            "폭탄을 던졌다면 이 카드를 버린다."
+          ],
+          "line_boxes_pt": [
+            [
+              78.08,
+              38.81,
+              160.08,
+              45.34
+            ],
+            [
+              45.26,
+              27.77,
+              160.08,
+              34.3
+            ],
+            [
+              59.51,
+              16.73,
+              160.08,
+              23.26
+            ]
+          ],
+          "overflow_text": "",
+          "errors": [],
+          "label_rect_pt": null,
+          "drawn": true
+        }
+      },
+      "extracted_text": "나팔총\n안 노려도 반반은 맞는다는 평판\n전투 판정에서 보너스를 받는다.\n단 주사위 눈이 1·3·5이면\n판정에 자동으로 실패한다.\n휴대용 폭탄\n“불이 붙었어? 빨리, 빨리 던져버려!”\n원하는 판정에 +2할 수 있다.\n단 [마족]을 가진 카드에는 효과가 없다.\n폭탄을 던졌다면 이 카드를 버린다.\n"
+    }
+  ]
+}

@@ -8,7 +8,8 @@ Translate text in cards
 ```
 CardTranslater/
 ├── .claude/agents/   # Claude Code subagent definitions
-│   ├── pdf-engine.md          # PDF 추출·글자 지우기·출력
+│   ├── pdf-engine.md          # PDF 영역·글자 지우기·출력
+│   ├── extract-translate.md   # Claude 원문 읽기·용어집·번역·아이콘 사전·검수 엑셀
 │   ├── korean-typesetter.md   # 한글·아이콘 배치, 서식 유지
 │   └── visual-qa.md           # 결과 이미지 검수 (읽기 전용)
 ├── app/                # 처리 엔진 (Python)

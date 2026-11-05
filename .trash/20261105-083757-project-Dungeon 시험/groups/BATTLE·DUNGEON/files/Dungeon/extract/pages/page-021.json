@@ -1,0 +1,81 @@
+{
+  "page": 21,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "이름": {
+      "source": "フロアイミテーター",
+      "uncertain": false,
+      "note": "사람이 이미지로 확인: フロアイミテーター",
+      "readings": [
+        {
+          "model": "claude-sonnet-5-5",
+          "source": "フロアイミテーター"
+        },
+        {
+          "model": "claude-opus-5-5",
+          "source": "フロアイミテーター"
+        }
+      ]
+    },
+    "본문": {
+      "source": "よく見ると、壁に目があって床には牙が……\n小部屋に見せかけた迷宮生物だ！",
+      "uncertain": false,
+      "note": ""
+    },
+    "태그": {
+      "source": [
+        "トラップ"
+      ],
+      "uncertain": false,
+      "note": "라벨 색으로 정함: #8f7146"
+    }
+  },
+  "usage": {
+    "input_tokens": 5,
+    "cache_creation_input_tokens": 5494,
+    "cache_read_input_tokens": 4597,
+    "output_tokens": 431,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 5494,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 3,
+        "output_tokens": 184,
+        "cache_read_input_tokens": 2919,
+        "cache_creation_input_tokens": 4253,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4253
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.026756,
+  "extracted_at": "2026-11-04 17:18:22",
+  "recheck": {
+    "model": "claude-opus-5-5",
+    "regions": [
+      "이름"
+    ],
+    "cost_usd": 0.0,
+    "cost_equiv_usd": 0.046022,
+    "at": "2026-11-04 17:19:55"
+  }
+}

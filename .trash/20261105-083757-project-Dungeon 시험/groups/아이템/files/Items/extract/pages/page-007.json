@@ -1,0 +1,75 @@
+{
+  "page": 7,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "아래_이름": {
+      "source": "悪食のフォーク",
+      "uncertain": false,
+      "note": ""
+    },
+    "아래_설명": {
+      "source": "「なに食べてもおいしい！」",
+      "uncertain": false,
+      "note": ""
+    },
+    "아래_효과": {
+      "source": "[毒]を持つすべての判定に\n自動で成功できる。",
+      "uncertain": false,
+      "note": ""
+    },
+    "위_이름": {
+      "source": "氷河の呪符",
+      "uncertain": false,
+      "note": ""
+    },
+    "위_설명": {
+      "source": "火山の脈動すらも百年封じるという",
+      "uncertain": false,
+      "note": ""
+    },
+    "위_효과": {
+      "source": "[炎]を持つすべての判定に\n自動で成功できる。",
+      "uncertain": false,
+      "note": ""
+    }
+  },
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 8490,
+    "cache_read_input_tokens": 3093,
+    "output_tokens": 1090,
+    "output_tokens_details": {
+      "thinking_tokens": 125
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 8490,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 427,
+        "cache_read_input_tokens": 3093,
+        "cache_creation_input_tokens": 5397,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 5397
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.045177,
+  "extracted_at": "2026-11-04 17:20:24"
+}

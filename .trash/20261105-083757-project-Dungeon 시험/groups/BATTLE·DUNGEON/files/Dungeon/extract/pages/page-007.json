@@ -1,0 +1,63 @@
+{
+  "page": 7,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "이름": {
+      "source": "レッサーデーモン",
+      "uncertain": false,
+      "note": ""
+    },
+    "본문": {
+      "source": "「アナタも堕落しちゃいなよ～[[heart]]\nみぃんな食べ放題だよぉ?」",
+      "uncertain": false,
+      "note": ""
+    },
+    "태그": {
+      "source": [
+        "魔",
+        "毒"
+      ],
+      "uncertain": false,
+      "note": "라벨 색으로 정함: #413a44, #89569a"
+    }
+  },
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 7172,
+    "cache_read_input_tokens": 2919,
+    "output_tokens": 397,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 7172,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 150,
+        "cache_read_input_tokens": 2919,
+        "cache_creation_input_tokens": 4253,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4253
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.032958,
+  "extracted_at": "2026-11-04 17:16:47"
+}

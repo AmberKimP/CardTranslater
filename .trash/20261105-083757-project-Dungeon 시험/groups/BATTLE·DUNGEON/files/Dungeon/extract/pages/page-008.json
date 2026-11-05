@@ -1,0 +1,81 @@
+{
+  "page": 8,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "이름": {
+      "source": "首狩りバニー",
+      "uncertain": false,
+      "note": ""
+    },
+    "본문": {
+      "source": "かわいいモフみと鋭すぎる牙を兼ね備えた\n界隈では有名なうさぎだ",
+      "uncertain": false,
+      "note": "claude-opus-5-5로 다시 읽어 같음",
+      "readings": [
+        {
+          "model": "claude-sonnet-5-5",
+          "source": "かわいいモフみと鋭すぎる牙を兼ね備えた\n界隈では有名なうさぎだ"
+        },
+        {
+          "model": "claude-opus-5-5",
+          "source": "かわいいモフみと鋭すぎる牙を兼ね備えた\n界隈では有名なうさぎだ"
+        }
+      ]
+    },
+    "태그": {
+      "source": [
+        "モンスター"
+      ],
+      "uncertain": false,
+      "note": "라벨 색으로 정함: #526353"
+    }
+  },
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 5490,
+    "cache_read_input_tokens": 4597,
+    "output_tokens": 432,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 5490,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 185,
+        "cache_read_input_tokens": 2919,
+        "cache_creation_input_tokens": 4249,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4249
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.026748,
+  "extracted_at": "2026-11-04 17:16:55",
+  "recheck": {
+    "model": "claude-opus-5-5",
+    "regions": [
+      "본문"
+    ],
+    "cost_usd": 0.0,
+    "cost_equiv_usd": 0.059736,
+    "at": "2026-11-04 17:19:36"
+  }
+}

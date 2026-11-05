@@ -1,0 +1,173 @@
+{
+  "_comment": "Items.pdf 아이템 카드(2~16쪽) 영역 템플릿. 좌표는 페이지 너비·높이 대비 비율. 카드 한 장에 아이템 2개: 아래 반쪽은 바로, 위 반쪽은 180도 거꾸로 인쇄됨. 위 영역은 아래 영역을 페이지 중심 둘레로 180도 돌린 자리이고 style.rotate=180으로 한글도 거꾸로 그린다. 1쪽(분홍 규칙 카드 '探索フェイズ')은 다른 카드 타입이라 이 템플릿에 넣지 않는다. 텍스트 레이어 없는 ScanSnap 스캔(300dpi)이라 글자 위치는 이미지에서 찾는다.",
+  "source_language": "ja",
+  "reference_page": 4,
+  "regions": [
+    {
+      "name": "아래_이름",
+      "rect": {
+        "x": 0.365,
+        "y": 0.598,
+        "w": 0.6,
+        "h": 0.08
+      },
+      "kind": "text",
+      "notes": "아이템 이름. 아주 굵은 장식 고딕. 왼쪽에 아이템 그림, 일부 카드는 이름 위에 왕관 아이콘. 이름 위 왕관 아이콘은 keep_ink_above_text로 남긴다",
+      "erase": {
+        "keep_ink_taller_than_pt": 16,
+        "keep_ink_above_text": true
+      },
+      "style": {
+        "weight": "black",
+        "color": "#35292e",
+        "align": "left",
+        "font": {
+          "family": "Bagel Fat One",
+          "file": "fonts/bagelfatone/BagelFatOne-Regular.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Black.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    },
+    {
+      "name": "아래_설명",
+      "rect": {
+        "x": 0.365,
+        "y": 0.68,
+        "w": 0.6,
+        "h": 0.048
+      },
+      "kind": "text",
+      "notes": "한 줄 설명(대사는 「」). 흰 바탕",
+      "erase": {
+        "keep_ink_taller_than_pt": 8
+      },
+      "style": {
+        "weight": "regular",
+        "color": "#1a1618",
+        "align": "left",
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    },
+    {
+      "name": "아래_효과",
+      "rect": {
+        "x": 0.065,
+        "y": 0.795,
+        "w": 0.87,
+        "h": 0.16
+      },
+      "kind": "text",
+      "notes": "효과 1~3줄, 회색 띠 위. 오른쪽 큰 +N 숫자는 지우지 않는다(keep_ink_taller_than_pt). 카드에 인쇄된 괄호 [4階層]는 번역에서도 보통 [ ] (아이콘은 [[단어]])",
+      "erase": {
+        "keep_ink_taller_than_pt": 9
+      },
+      "style": {
+        "weight": "regular",
+        "color": "#372e31",
+        "align": "left",
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    },
+    {
+      "name": "위_이름",
+      "rect": {
+        "x": 0.035,
+        "y": 0.322,
+        "w": 0.6,
+        "h": 0.08
+      },
+      "kind": "text",
+      "notes": "아래_이름을 180도 돌린 자리. 이름 위 왕관 아이콘은 keep_ink_above_text로 남긴다",
+      "erase": {
+        "keep_ink_taller_than_pt": 16,
+        "keep_ink_above_text": true
+      },
+      "style": {
+        "weight": "black",
+        "color": "#35292e",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Bagel Fat One",
+          "file": "fonts/bagelfatone/BagelFatOne-Regular.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Black.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    },
+    {
+      "name": "위_설명",
+      "rect": {
+        "x": 0.035,
+        "y": 0.272,
+        "w": 0.6,
+        "h": 0.048
+      },
+      "kind": "text",
+      "notes": "아래_설명을 180도 돌린 자리",
+      "erase": {
+        "keep_ink_taller_than_pt": 8
+      },
+      "style": {
+        "weight": "regular",
+        "color": "#1a1618",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    },
+    {
+      "name": "위_효과",
+      "rect": {
+        "x": 0.065,
+        "y": 0.045,
+        "w": 0.87,
+        "h": 0.16
+      },
+      "kind": "text",
+      "notes": "아래_효과를 180도 돌린 자리",
+      "erase": {
+        "keep_ink_taller_than_pt": 9
+      },
+      "style": {
+        "weight": "regular",
+        "color": "#372e31",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      }
+    }
+  ],
+  "keep_untouched": [
+    "아이템 그림",
+    "큰 +N 숫자",
+    "이름 옆 왕관 아이콘",
+    "회색 띠 모양"
+  ],
+  "protect_rects": []
+}

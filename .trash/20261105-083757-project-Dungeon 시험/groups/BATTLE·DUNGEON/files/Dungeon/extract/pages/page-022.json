@@ -1,0 +1,63 @@
+{
+  "page": 22,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "이름": {
+      "source": "竜の神殿跡",
+      "uncertain": false,
+      "note": ""
+    },
+    "본문": {
+      "source": "世界を燃やし尽くす竜のレリーフ。\n竜の眷属どもが巣くっている",
+      "uncertain": false,
+      "note": ""
+    },
+    "태그": {
+      "source": [
+        "竜",
+        "炎"
+      ],
+      "uncertain": false,
+      "note": "라벨 색으로 정함: #25447a, #9c2f3b"
+    }
+  },
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 5494,
+    "cache_read_input_tokens": 4597,
+    "output_tokens": 392,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 5494,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 145,
+        "cache_read_input_tokens": 2919,
+        "cache_creation_input_tokens": 4253,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4253
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.026364,
+  "extracted_at": "2026-11-04 17:18:29"
+}

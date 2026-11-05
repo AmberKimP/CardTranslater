@@ -1,0 +1,637 @@
+{
+  "schema": "cardtranslater.erase-page/2",
+  "source_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\source\\Items.pdf",
+  "source_page": 16,
+  "output_pdf": "cleared.pdf",
+  "output_page_index": 14,
+  "page_rect_pt": [
+    0.0,
+    0.0,
+    176.88,
+    252.48
+  ],
+  "mediabox": [
+    0.0,
+    0.0,
+    176.88,
+    252.48
+  ],
+  "cropbox": [
+    0.0,
+    0.0,
+    176.88,
+    252.48
+  ],
+  "background_image": {
+    "xref": 60,
+    "bbox_pt": [
+      0.0,
+      0.0,
+      176.88,
+      252.48
+    ],
+    "size_px": [
+      737,
+      1052
+    ],
+    "dpi": [
+      300.0,
+      300.0
+    ],
+    "stream_untouched": true,
+    "stream_sha256_source": "a36ef391b0b13995245a027e2dbaaf8042cca22abb0a0553c54188ae8e5080d6",
+    "stream_sha256_output": "a36ef391b0b13995245a027e2dbaaf8042cca22abb0a0553c54188ae8e5080d6",
+    "filter": "/DCTDecode",
+    "output_xref": 48
+  },
+  "patches": [
+    {
+      "bbox_pt": [
+        64.56,
+        152.16,
+        114.48,
+        168.48
+      ],
+      "bbox_px": [
+        269,
+        634,
+        477,
+        702
+      ],
+      "size_px": [
+        208,
+        68
+      ],
+      "xref": 217,
+      "region": "아래_이름",
+      "filter": "/FlateDecode",
+      "stream_bytes": 10811,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_bot_name.png"
+    },
+    {
+      "bbox_pt": [
+        64.32,
+        171.84,
+        147.36,
+        181.92
+      ],
+      "bbox_px": [
+        268,
+        716,
+        614,
+        758
+      ],
+      "size_px": [
+        346,
+        42
+      ],
+      "xref": 219,
+      "region": "아래_설명",
+      "filter": "/FlateDecode",
+      "stream_bytes": 10183,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_bot_flavor.png"
+    },
+    {
+      "bbox_pt": [
+        13.44,
+        201.36,
+        112.32,
+        234.72
+      ],
+      "bbox_px": [
+        56,
+        839,
+        468,
+        978
+      ],
+      "size_px": [
+        412,
+        139
+      ],
+      "xref": 221,
+      "region": "아래_효과",
+      "filter": "/FlateDecode",
+      "stream_bytes": 76835,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_bot_effect.png"
+    },
+    {
+      "bbox_pt": [
+        25.2,
+        81.12,
+        111.6,
+        97.44
+      ],
+      "bbox_px": [
+        105,
+        338,
+        465,
+        406
+      ],
+      "size_px": [
+        360,
+        68
+      ],
+      "xref": 223,
+      "region": "위_이름",
+      "filter": "/FlateDecode",
+      "stream_bytes": 19881,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_top_name.png"
+    },
+    {
+      "bbox_pt": [
+        15.6,
+        67.68,
+        111.84,
+        78.48
+      ],
+      "bbox_px": [
+        65,
+        282,
+        466,
+        327
+      ],
+      "size_px": [
+        401,
+        45
+      ],
+      "xref": 225,
+      "region": "위_설명",
+      "filter": "/FlateDecode",
+      "stream_bytes": 13645,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_top_flavor.png"
+    },
+    {
+      "bbox_pt": [
+        40.56,
+        14.64,
+        162.48,
+        48.0
+      ],
+      "bbox_px": [
+        169,
+        61,
+        677,
+        200
+      ],
+      "size_px": [
+        508,
+        139
+      ],
+      "xref": 227,
+      "region": "위_효과",
+      "filter": "/FlateDecode",
+      "stream_bytes": 91920,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_seam600_top_effect.png"
+    }
+  ],
+  "clean": {
+    "threshold": 14.0,
+    "paper_noise_sigma": 1.46,
+    "crop_px": [
+      16,
+      24,
+      712,
+      1013
+    ]
+  },
+  "removed_inline_images_pt": [],
+  "regions": [
+    {
+      "name": "아래_이름",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.365,
+        "y": 0.598,
+        "w": 0.6,
+        "h": 0.08
+      },
+      "rect_pt": [
+        64.561,
+        150.983,
+        170.689,
+        171.181
+      ],
+      "work_rect_pt": [
+        65.76,
+        153.36,
+        113.28,
+        167.28
+      ],
+      "style_defaults": {
+        "weight": "black",
+        "color": "#35292e",
+        "align": "left",
+        "font": {
+          "family": "Bagel Fat One",
+          "file": "fonts/bagelfatone/BagelFatOne-Regular.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Black.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        65.76,
+        153.36,
+        113.28,
+        167.28
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        274,
+        639,
+        472,
+        697
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 9817,
+        "inpaint_px": 0,
+        "mask_ratio": 0.8548,
+        "background_change_ratio": 0.0,
+        "strong_px_outside_text_layer_ratio": 0.6219,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_bot_name.png"
+    },
+    {
+      "name": "아래_설명",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.365,
+        "y": 0.68,
+        "w": 0.6,
+        "h": 0.048
+      },
+      "rect_pt": [
+        64.561,
+        171.686,
+        170.689,
+        183.805
+      ],
+      "work_rect_pt": [
+        65.52,
+        173.04,
+        146.16,
+        180.72
+      ],
+      "style_defaults": {
+        "weight": "regular",
+        "color": "#1a1618",
+        "align": "left",
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        65.52,
+        173.04,
+        146.16,
+        180.72
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        273,
+        721,
+        609,
+        753
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 8375,
+        "inpaint_px": 0,
+        "mask_ratio": 0.7789,
+        "background_change_ratio": 0.0,
+        "strong_px_outside_text_layer_ratio": 0.3757,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_bot_flavor.png"
+    },
+    {
+      "name": "아래_효과",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.065,
+        "y": 0.795,
+        "w": 0.87,
+        "h": 0.16
+      },
+      "rect_pt": [
+        11.497,
+        200.722,
+        165.383,
+        241.118
+      ],
+      "work_rect_pt": [
+        14.64,
+        202.56,
+        111.12,
+        233.52
+      ],
+      "style_defaults": {
+        "weight": "regular",
+        "color": "#372e31",
+        "align": "left",
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        14.64,
+        202.56,
+        111.12,
+        233.52
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        61,
+        844,
+        463,
+        973
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 35319,
+        "inpaint_px": 0,
+        "mask_ratio": 0.6811,
+        "background_change_ratio": 0.0014,
+        "strong_px_outside_text_layer_ratio": 0.239,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_bot_effect.png"
+    },
+    {
+      "name": "위_이름",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.035,
+        "y": 0.322,
+        "w": 0.6,
+        "h": 0.08
+      },
+      "rect_pt": [
+        6.191,
+        81.299,
+        112.319,
+        101.497
+      ],
+      "work_rect_pt": [
+        26.4,
+        82.32,
+        110.4,
+        96.24
+      ],
+      "style_defaults": {
+        "weight": "black",
+        "color": "#35292e",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Bagel Fat One",
+          "file": "fonts/bagelfatone/BagelFatOne-Regular.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Black.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        26.4,
+        82.32,
+        110.4,
+        96.24
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        110,
+        343,
+        460,
+        401
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 16560,
+        "inpaint_px": 0,
+        "mask_ratio": 0.8158,
+        "background_change_ratio": 0.0,
+        "strong_px_outside_text_layer_ratio": 0.6054,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_top_name.png"
+    },
+    {
+      "name": "위_설명",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.035,
+        "y": 0.272,
+        "w": 0.6,
+        "h": 0.048
+      },
+      "rect_pt": [
+        6.191,
+        68.675,
+        112.319,
+        80.794
+      ],
+      "work_rect_pt": [
+        16.8,
+        68.88,
+        110.64,
+        77.28
+      ],
+      "style_defaults": {
+        "weight": "regular",
+        "color": "#1a1618",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        16.8,
+        68.88,
+        110.64,
+        77.28
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        70,
+        287,
+        461,
+        322
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 9191,
+        "inpaint_px": 0,
+        "mask_ratio": 0.6716,
+        "background_change_ratio": 0.0,
+        "strong_px_outside_text_layer_ratio": 0.2966,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_top_flavor.png"
+    },
+    {
+      "name": "위_효과",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.065,
+        "y": 0.045,
+        "w": 0.87,
+        "h": 0.16
+      },
+      "rect_pt": [
+        11.497,
+        11.362,
+        165.383,
+        51.758
+      ],
+      "work_rect_pt": [
+        41.76,
+        15.84,
+        161.28,
+        46.8
+      ],
+      "style_defaults": {
+        "weight": "regular",
+        "color": "#372e31",
+        "align": "left",
+        "rotate": 180,
+        "font": {
+          "family": "Gothic A1 Medium",
+          "file": "fonts/gothica1/GothicA1-Medium.ttf",
+          "bold_file": "fonts/gothica1/GothicA1-Bold.ttf",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+          "chosen": "사용자 선택 2026-11-04 (추천 1순위, F28 획 굵기 비교)"
+        }
+      },
+      "text_layer": {
+        "present": false,
+        "spans": [],
+        "size_pt": null,
+        "color": null,
+        "union_bbox_pt": null
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": [
+        41.76,
+        15.84,
+        161.28,
+        46.8
+      ],
+      "warnings": [],
+      "work_rect_px": [
+        174,
+        66,
+        672,
+        195
+      ],
+      "kept_large_ink_px": 0,
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 0,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 45148,
+        "inpaint_px": 0,
+        "mask_ratio": 0.7028,
+        "background_change_ratio": 0.0019,
+        "strong_px_outside_text_layer_ratio": 0.2562,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_top_effect.png"
+    }
+  ],
+  "warnings": [],
+  "verify": {
+    "outside_patches_changed_px_at_image_grid": 0,
+    "outside_patches_max_diff": 0,
+    "single_page_pdf_bytes": {
+      "source": 82714,
+      "output": 308097
+    }
+  },
+  "compare_card_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\아이템\\files\\Items\\.cleared-20261104-155939\\compare\\p016_card.png"
+}

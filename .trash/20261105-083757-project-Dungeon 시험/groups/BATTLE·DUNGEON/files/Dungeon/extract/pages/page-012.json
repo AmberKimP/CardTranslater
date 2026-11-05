@@ -1,0 +1,63 @@
+{
+  "page": 12,
+  "engine": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "batch": false,
+  "regions": {
+    "이름": {
+      "source": "邪神ハム・スタ",
+      "uncertain": false,
+      "note": ""
+    },
+    "본문": {
+      "source": "永久のぐるぐる車輪を司る、恐るべき神的生物",
+      "uncertain": false,
+      "note": ""
+    },
+    "태그": {
+      "source": [
+        "魔",
+        "毒"
+      ],
+      "uncertain": false,
+      "note": "라벨 색으로 정함: #403a43, #89569a"
+    }
+  },
+  "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 5490,
+    "cache_read_input_tokens": 4597,
+    "output_tokens": 383,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 5490,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 136,
+        "cache_read_input_tokens": 2919,
+        "cache_creation_input_tokens": 4249,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 4249
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd": 0.0,
+  "cost_equiv_usd": 0.026258,
+  "extracted_at": "2026-11-04 17:17:19"
+}

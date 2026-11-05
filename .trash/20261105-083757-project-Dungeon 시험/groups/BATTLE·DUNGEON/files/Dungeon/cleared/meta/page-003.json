@@ -1,0 +1,446 @@
+{
+  "schema": "cardtranslater.erase-page/2",
+  "source_pdf": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\source\\Dungeon.pdf",
+  "source_page": 3,
+  "output_pdf": "cleared.pdf",
+  "output_page_index": 2,
+  "page_rect_pt": [
+    0.0,
+    0.0,
+    251.76,
+    177.36
+  ],
+  "mediabox": [
+    0.0,
+    0.0,
+    252.0,
+    178.08
+  ],
+  "cropbox": [
+    0.0,
+    0.24,
+    251.76,
+    177.6
+  ],
+  "background_image": {
+    "xref": 316,
+    "bbox_pt": [
+      0.0,
+      -0.24,
+      252.0,
+      177.84
+    ],
+    "size_px": [
+      1050,
+      742
+    ],
+    "dpi": [
+      300.0,
+      300.0
+    ],
+    "stream_untouched": true,
+    "stream_sha256_source": "3b531efe2fedfa225b3889e6dfa14aa8583ef277366c4d60388e4d19638fe8fb",
+    "stream_sha256_output": "3b531efe2fedfa225b3889e6dfa14aa8583ef277366c4d60388e4d19638fe8fb",
+    "filter": "/DCTDecode",
+    "output_xref": 66
+  },
+  "patches": [
+    {
+      "bbox_pt": [
+        22.56,
+        109.68,
+        144.72,
+        123.36
+      ],
+      "bbox_px": [
+        94,
+        458,
+        603,
+        515
+      ],
+      "size_px": [
+        509,
+        57
+      ],
+      "xref": 88,
+      "region": "태그",
+      "filter": "/FlateDecode",
+      "stream_bytes": 51744,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_seam600_tag.png"
+    },
+    {
+      "bbox_pt": [
+        22.56,
+        119.52,
+        189.12,
+        144.24
+      ],
+      "bbox_px": [
+        94,
+        499,
+        788,
+        602
+      ],
+      "size_px": [
+        694,
+        103
+      ],
+      "xref": 90,
+      "region": "이름",
+      "filter": "/FlateDecode",
+      "stream_bytes": 85361,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_seam600_name.png"
+    },
+    {
+      "bbox_pt": [
+        25.68,
+        145.68,
+        189.12,
+        167.28
+      ],
+      "bbox_px": [
+        107,
+        608,
+        788,
+        698
+      ],
+      "size_px": [
+        681,
+        90
+      ],
+      "xref": 92,
+      "region": "본문",
+      "filter": "/FlateDecode",
+      "stream_bytes": 47978,
+      "seam_png_600dpi": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_seam600_body.png"
+    }
+  ],
+  "clean": {
+    "threshold": 14.0,
+    "paper_noise_sigma": 1.62,
+    "crop_px": [
+      56,
+      416,
+      823,
+      733
+    ]
+  },
+  "removed_inline_images_pt": [],
+  "regions": [
+    {
+      "name": "태그",
+      "kind": "tag_pills",
+      "rect_ratio": {
+        "x": 0.095,
+        "y": 0.626,
+        "w": 0.475,
+        "h": 0.062
+      },
+      "rect_pt": [
+        23.917,
+        111.027,
+        143.503,
+        122.024
+      ],
+      "work_rect_pt": [
+        23.917,
+        111.027,
+        143.503,
+        122.024
+      ],
+      "style_defaults": {
+        "weight": "black",
+        "color": "#ffffff",
+        "align": "center",
+        "font": {
+          "family": "Noto Sans KR",
+          "file": "fonts/notosanskr/NotoSansKR-Black.ttf",
+          "chosen": "기본값(사용자 미지정)"
+        }
+      },
+      "text_layer": {
+        "present": true,
+        "spans": [
+          {
+            "bbox_pt": [
+              26.64,
+              112.53,
+              61.201,
+              120.88
+            ],
+            "size_pt": 8.35,
+            "color": "#000000",
+            "font": "Fd1983",
+            "origin_pt": [
+              26.64,
+              119.21
+            ],
+            "chars": 4
+          }
+        ],
+        "size_pt": 8.35,
+        "color": "#000000",
+        "union_bbox_pt": [
+          26.64,
+          112.53,
+          61.201,
+          120.88
+        ]
+      },
+      "tag_labels": [
+        {
+          "bbox_pt": [
+            27.12,
+            111.36,
+            60.96,
+            119.28
+          ],
+          "bbox_px": [
+            113.0,
+            465.0,
+            254.0,
+            498.0
+          ],
+          "radius_pt": 3.96,
+          "radius_px": 16.5,
+          "color": "#3f3942",
+          "color_text_layer": "#000000",
+          "in_text_layer": true,
+          "coverage": 0.826
+        },
+        {
+          "bbox_pt": [
+            64.08,
+            111.36,
+            97.68,
+            119.04
+          ],
+          "bbox_px": [
+            267.0,
+            465.0,
+            407.0,
+            497.0
+          ],
+          "radius_pt": 3.84,
+          "radius_px": 16.0,
+          "color": "#506351",
+          "color_text_layer": null,
+          "in_text_layer": false,
+          "coverage": 0.395
+        }
+      ],
+      "inline_images_pt": [],
+      "image_text_box_pt": null,
+      "warnings": [
+        "span [26.9, 120.9, 189.7, 140.3] 이 영역에 4%만 걸쳐 지우지 않음"
+      ],
+      "work_rect_px": [
+        99,
+        463,
+        598,
+        510
+      ],
+      "missing_from_text_layer": true,
+      "image_text_detected": true,
+      "erase": {
+        "redacted_spans": 1,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 18728,
+        "inpaint_px": 0,
+        "mask_ratio": 0.7985,
+        "background_change_ratio": 0.0066,
+        "strong_px_outside_text_layer_ratio": 0.2164,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_tag.png"
+    },
+    {
+      "name": "이름",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.095,
+        "y": 0.688,
+        "w": 0.663,
+        "h": 0.118
+      },
+      "rect_pt": [
+        23.917,
+        122.024,
+        190.834,
+        142.952
+      ],
+      "work_rect_pt": [
+        23.917,
+        120.869,
+        187.813,
+        142.952
+      ],
+      "style_defaults": {
+        "weight": "black",
+        "color": "#08070b",
+        "align": "left",
+        "font_family": "sans",
+        "font": {
+          "family": "Jua",
+          "file": "fonts/jua/Jua-Regular.ttf",
+          "chosen": "사용자 선택 2026-11-04",
+          "fallback_file": "fonts/notosanskr/NotoSansKR-Black.ttf"
+        }
+      },
+      "text_layer": {
+        "present": true,
+        "spans": [
+          {
+            "bbox_pt": [
+              26.89,
+              120.869,
+              189.729,
+              140.34
+            ],
+            "size_pt": 17.75,
+            "color": "#08070b",
+            "font": "Fd2242",
+            "origin_pt": [
+              26.89,
+              138.53
+            ],
+            "chars": 14
+          }
+        ],
+        "size_pt": 17.75,
+        "color": "#08070b",
+        "union_bbox_pt": [
+          26.89,
+          120.869,
+          189.729,
+          140.34
+        ]
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": null,
+      "warnings": [
+        "span [26.9, 120.9, 189.7, 140.3] 이 영역에 94%만 걸침 (전부 지움)"
+      ],
+      "work_rect_px": [
+        99,
+        504,
+        783,
+        597
+      ],
+      "missing_from_text_layer": false,
+      "image_text_detected": false,
+      "erase": {
+        "redacted_spans": 1,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 40006,
+        "inpaint_px": 0,
+        "mask_ratio": 0.6289,
+        "background_change_ratio": 0.0009,
+        "strong_px_outside_text_layer_ratio": 0.0,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_name.png"
+    },
+    {
+      "name": "본문",
+      "kind": "text",
+      "rect_ratio": {
+        "x": 0.107,
+        "y": 0.829,
+        "w": 0.639,
+        "h": 0.107
+      },
+      "rect_pt": [
+        26.938,
+        147.031,
+        187.813,
+        166.009
+      ],
+      "work_rect_pt": [
+        26.938,
+        147.031,
+        187.813,
+        166.009
+      ],
+      "style_defaults": {
+        "weight": "regular",
+        "color": "#2b292a",
+        "align": "left",
+        "font_family": "sans",
+        "font": {
+          "family": "Gaegu Bold",
+          "file": "fonts/gaegu/Gaegu-Bold.ttf",
+          "chosen": "사용자 선택 2026-11-04"
+        },
+        "tracking": -0.08,
+        "_tracking_comment": "개구 Bold는 원문보다 글자 사이가 넓어 기본 자간을 -8%로 둠 (2026-11-04 사용자 요청). 넘치면 여기서 -5%까지 더 좁힘"
+      },
+      "text_layer": {
+        "present": true,
+        "spans": [
+          {
+            "bbox_pt": [
+              30.48,
+              150.016,
+              163.965,
+              155.687
+            ],
+            "size_pt": 5.5,
+            "color": "#262526",
+            "font": "Fd1058",
+            "origin_pt": [
+              30.48,
+              155.28
+            ],
+            "chars": 25
+          }
+        ],
+        "size_pt": 5.5,
+        "color": "#262526",
+        "union_bbox_pt": [
+          30.48,
+          150.016,
+          163.965,
+          155.687
+        ]
+      },
+      "tag_labels": null,
+      "inline_images_pt": [],
+      "image_text_box_pt": null,
+      "warnings": [],
+      "work_rect_px": [
+        112,
+        613,
+        783,
+        693
+      ],
+      "missing_from_text_layer": false,
+      "image_text_detected": false,
+      "erase": {
+        "redacted_spans": 1,
+        "removed_inline_images": 0,
+        "method": "flat_gradient",
+        "flat_px": 12201,
+        "inpaint_px": 0,
+        "mask_ratio": 0.2273,
+        "background_change_ratio": 0.0,
+        "strong_px_outside_text_layer_ratio": 0.0,
+        "flags": []
+      },
+      "compare_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_body.png"
+    }
+  ],
+  "warnings": [],
+  "verify": {
+    "outside_patches_changed_px_at_image_grid": 0,
+    "outside_patches_max_diff": 0,
+    "single_page_pdf_bytes": {
+      "source": 151154,
+      "output": 249862
+    }
+  },
+  "compare_card_png": "C:\\Users\\aloer\\Documents\\VibeCoding\\CardTranslater\\projects\\Dungeon 시험\\groups\\BATTLE·DUNGEON\\files\\Dungeon\\.cleared-20261104-155911\\compare\\p003_card.png"
+}
