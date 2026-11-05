@@ -116,3 +116,26 @@ def test_bracketed_words_always_glossary_candidates():
     c = local_candidates([Source("k", "본문", "text", "この精鋭には「召喚石」「<c1>魔冠</c1>」\n[[coin]] [炎] ［人族］")])
     assert c["召喚石"] and c["魔冠"] and c["炎"] == "분류어·태그" and c["人族"] == "분류어·태그"
     assert not any("coin" in k for k in c)
+
+
+def test_compose_layout_region_upside_down_region():
+    """180도 영역: 줄 자리는 페이지에서 잰 것을 돌린 틀로 옮겨 쓰고, 글자는 거꾸로 그린다."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    lay = _layout()
+    rect = pymupdf.Rect(10, 10, 170, 100)
+    sx, sy = rect.x0 + rect.x1, rect.y0 + rect.y1
+    # 페이지에서 본 모습 = 돌린 것 (원래 줄 자리를 중심 둘레로 180도)
+    page_lay = {"lines": [{**ln, "bbox_pt": [sx - ln["bbox_pt"][2], sy - ln["bbox_pt"][3], sx - ln["bbox_pt"][0],
+                                             sy - ln["bbox_pt"][1]],
+                           "align": {"left": "right"}.get(ln["align"], ln["align"])} for ln in lay["lines"]],
+                "dividers_pt": [[sx - d[2], sy - d[3], sx - d[0], sy - d[1]] for d in lay["dividers_pt"]]}
+    rec = compose_layout_region(page, rect, "첫 줄 한글\n둘째 줄\n+2 보너스\n아래 문구", {"rotate": 180}, page_lay)
+    assert rec["rotate"] == 180 and rec["line_modes"] == ["slot"] * 4 and not rec["overflow_text"]
+    for b, y in zip(rec["line_boxes_pt"], (20, 32, 44, 80)):  # 틀 좌표에서는 원래 줄 자리
+        assert abs((b[1] + b[3]) / 2 - (y + 4)) < 2.5
+    words = [w for w in page.get_text("words") if w[4] == "아래"]
+    assert words and words[0][1] < 50  # 틀의 아래 줄 = 페이지 위쪽
+    spans = [s for b in page.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+    assert any(abs(l_["dir"][0] + 1) < 1e-3 for b in page.get_text("dict")["blocks"] for l_ in b.get("lines", []))
+    assert spans

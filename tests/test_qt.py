@@ -903,7 +903,7 @@ def test_region_editor_enter_in_name_keeps_zoom_and_help_folds(qapp, tmp_path, m
     assert ed.view.auto_fit is False  # ‘화면에 맞춤’이 눌리지 않는다
     # 도움말: 낮은 화면(900 미만)에서는 접힌 채 시작, 버튼으로 펼침·접힘, 툴팁에 전체 문장
     low = ed.screen().availableGeometry().height() < 900
-    assert ed.help_btn.isChecked() != low and ed.help_btn.text() == "단축키 도움말"
+    assert ed.help_btn.isChecked() != low and ed.help_btn.text() == "단축키 도움말 (F1)"
     assert "Ctrl+휠" in ed.help_btn.toolTip()
     ed.help_btn.setChecked(False)
     assert ed.help_label.isHidden()
@@ -1397,3 +1397,95 @@ def test_step_failures_use_plain_error_boxes(qapp, tmp_path, monkeypatch):
     _fail(win.project, "PermissionError: [WinError 32] 다른 프로세스가 파일을 사용 중\nTraceback ...")
     title, why, todo, detail = got[-1]
     assert title == "작업을 끝내지 못했습니다" and "닫고" in todo and "WinError 32" in detail
+
+
+def test_region_editor_per_card_copy_rest_reset_and_sync_by_name(qapp, tmp_path, monkeypatch):
+    """카드마다 영역: 나머지 카드에 복사(빈 카드만/모두) · 초기화(이 카드/모두) · 설정은 같은 이름 영역에 함께."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt import region_editor as re_mod
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    ed.per_card.setChecked(True)
+    fname = Path(g["files"][0]["dir"]).name
+    ed._cards()[f"{fname}/3"] = {"regions": [{"name": "다른", "kind": "text",
+                                              "rect": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.1}}], "protect_rects": []}
+    answers = iter([0, 1])  # 처음: 빈 카드에만, 다음: 모두 덮어쓰기
+    monkeypatch.setattr(re_mod, "ask_choice", lambda *a, **k: next(answers))
+    ed.copy_to_rest()
+    assert ed._cards()[f"{fname}/2"]["regions"][0]["name"] == "이름"
+    assert ed._cards()[f"{fname}/3"]["regions"][0]["name"] == "다른"  # 영역 있던 카드는 그대로
+    ed.copy_to_rest()
+    assert ed._cards()[f"{fname}/3"]["regions"][0]["name"] == "이름"
+    # 설정은 같은 이름 영역에 함께 (위치는 카드마다)
+    ed._cards()[f"{fname}/2"]["regions"][0]["rect"] = {"x": 0.2, "y": 0.6, "w": 0.3, "h": 0.1}
+    ed.items()[0].setSelected(True)
+    ed.f_rotate.setChecked(True)
+    ed.f_name.setText("위 효과")
+    ed._from_form()
+    r2 = ed._cards()[f"{fname}/2"]["regions"][0]
+    assert r2["name"] == "위 효과" and r2["style"]["rotate"] == 180 and r2["rect"]["y"] == 0.6
+    assert "적용했습니다" in ed.status.text()
+    # 초기화: 이 카드만 -> 모든 카드
+    answers2 = iter([0, 1])
+    monkeypatch.setattr(re_mod, "ask_choice", lambda *a, **k: next(answers2))
+    ed.reset_regions()
+    assert ed.items() == [] and f"{fname}/2" in ed._cards()
+    ed.reset_regions()
+    ed._stash_card()
+    assert not any(v.get("regions") for v in ed._cards().values())
+    ed.dirty = False
+
+
+def test_region_editor_shortcuts_and_fit_without_scrollbars(qapp, tmp_path):
+    from PySide6.QtGui import QKeyEvent
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}},
+        {"name": "본문", "rect": {"x": 0.1, "y": 0.5, "w": 0.6, "h": 0.2}}]})
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.resize(900, 600)
+    ed.show()
+    qapp.processEvents()
+    v = ed.view
+    # 화면에 맞춤: 카드 전체가 보이고 스크롤 막대 없음
+    vis = v.mapToScene(v.viewport().rect()).boundingRect()
+    assert vis.contains(ed.scene.page_rect)
+    assert not v.verticalScrollBar().isVisible() and not v.horizontalScrollBar().isVisible()
+
+    def key(k, mods=Qt.KeyboardModifier.NoModifier):
+        v.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, k, mods))
+
+    key(Qt.Key.Key_T)
+    assert ed.scene.add_kind == "text"
+    key(Qt.Key.Key_T)
+    assert ed.scene.add_kind is None
+    key(Qt.Key.Key_End)
+    assert ed.page_spin.value() == 3
+    key(Qt.Key.Key_Home)
+    assert ed.page_spin.value() == 1
+    ed._key_action("next_region")
+    assert ed.selected().name == "이름"
+    ed._key_action("next_region")
+    assert ed.selected().name == "본문"
+    key(Qt.Key.Key_R)
+    assert ed.selected().data["style"]["rotate"] == 180
+    ed.duplicate_selected()
+    assert [i.name for i in ed.items()] == ["이름", "본문", "본문2"]
+    ed.scene.clearSelection()
+    ed.copy_regions()  # 고른 것 없으면 이 카드 전부
+    assert len(ed._clip) == 3
+    ed.paste_regions()
+    assert len(ed.items()) == 6 and len({i.name for i in ed.items()}) == 6  # 이름은 겹치지 않게
+    ed.dirty = False
+    ed.close()

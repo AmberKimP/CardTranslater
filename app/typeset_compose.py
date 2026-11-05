@@ -168,7 +168,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         # ---- 이름·본문
         text = entry.get("ko")
         layout = reg.get("text_layout") or {}
-        if layout.get("lines") and text and not int(style_d.get("rotate", 0)) % 360:
+        if layout.get("lines") and text and int(style_d.get("rotate", 0)) % 360 in (0, 180):
             # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
             rec.update(source_ink={"layout_lines": len(layout["lines"])}, draw_rect_pt=[round(v, 3) for v in rect])
             r_ = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
@@ -265,9 +265,11 @@ def assign_lines(ko_lines: list[str], counts: list[int]) -> list[list[str]]:
     return out
 
 
-def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], **kw) -> TextStyle:
+def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pivot=None, **kw) -> TextStyle:
     """원문 줄 모양(색·테두리·굵기·정렬·다른 색 낱말)을 따른 서식. 영역 서식에 직접 적은 값이 먼저다."""
     st = TextStyle.from_region_style(style_d, base_dir, ink_height_pt=ln["glyph_h_pt"], **kw)
+    if pivot is not None:
+        st.rotate, st.pivot = 180, pivot
     if "color" not in style_d:
         st.color = ln["color"]
     if "align" not in style_d:
@@ -293,6 +295,24 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     - 묶음 안 줄 수가 원문과 다르면 그 묶음 안에서 줄바꿈해 맞춘다
     """
     rect = pymupdf.Rect(rect)
+    pivot = None
+    if int(style_d.get("rotate", 0)) % 360 == 180:
+        # 거꾸로 인쇄된 영역: 줄 모양을 ‘돌린 틀’ 좌표로 옮겨 배치하고, 그릴 때만 돌린다 (typeset의 rotate·pivot)
+        pivot = ((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+        sx, sy = rect.x0 + rect.x1, rect.y0 + rect.y1
+
+        def flip(b):
+            return [sx - b[2], sy - b[3], sx - b[0], sy - b[1]]
+
+        flipped = []
+        for ln in layout["lines"]:
+            f = {**ln, "bbox_pt": flip(ln["bbox_pt"]),
+                 "align": {"left": "right", "right": "left"}.get(ln.get("align", "left"), ln.get("align", "left")),
+                 "accents": [{**a, "x_pt": sorted([[sx - v, sx - u] for u, v in a.get("x_pt", [])])}
+                             for a in ln.get("accents") or []]}
+            flipped.append(f)
+        flipped.sort(key=lambda ln: ln["bbox_pt"][1])
+        layout = {**layout, "lines": flipped, "dividers_pt": [flip(d) for d in layout.get("dividers_pt") or []]}
     lines_all = layout["lines"]
     secs = layout_sections(layout, rect)
     ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
@@ -336,7 +356,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             for ln, ko in zip(src, kos):
                 b = ln["bbox_pt"]
                 gh = ln["glyph_h_pt"]
-                st = _line_style(style_d, base_dir, ln, region_accents)
+                st = _line_style(style_d, base_dir, ln, region_accents, pivot)
                 pad = 0.5 * gh
                 cy = (b[1] + b[3]) / 2
                 top = cy - gh / 2
@@ -357,7 +377,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             ln0["align"] = max(set(aligns), key=aligns.count)
             pitch = (float(np.median([src[i + 1]["bbox_pt"][1] - src[i]["bbox_pt"][1] for i in range(len(src) - 1)]))
                      if len(src) > 1 else None)
-            st = _line_style(style_d, base_dir, ln0, region_accents, line_pitch_pt=pitch)
+            st = _line_style(style_d, base_dir, ln0, region_accents, pivot, line_pitch_pt=pitch)
             gh = ln0["glyph_h_pt"]
             top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
             bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)
@@ -398,7 +418,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         "lines": [t for r, _ in results for t in r.lines],
         "line_boxes_pt": [[round(v, 2) for v in b] for r, _ in results for b in r.line_boxes],
         "overflow_text": "\n".join(r.overflow_text for r, _ in results if r.overflow_text),
-        "errors": errors, "label_rect_pt": None, "drawn": True,
+        "errors": errors, "label_rect_pt": None, "drawn": True, "rotate": 180 if pivot else 0,
         "warnings": [errors_note] if errors_note else [],
     }
 
