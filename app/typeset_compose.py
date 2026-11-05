@@ -225,6 +225,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
 # ---------------------------------------------------------------- 그림 카드: 원문 줄 자리에 한 줄씩
 SLOT_MIN_RATIO = 0.7
+LAYOUT_ICON_SCALE = 1.3  # 줄 자리 배치에서 사전 기본 크기(1.1) 아이콘의 크기 (한글 글자 높이 대비)
 _WORDY = re.compile(r"[가-힣A-Za-z]")  # 글자가 있는 줄 (기호·숫자·아이콘만 있는 줄은 크기를 정하지 않는다)  # 줄 자리에 넣을 때 원문 글자 높이의 70%까지 줄인다
 
 
@@ -296,6 +297,9 @@ def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pi
     tags = {f"c{i + 1}": c for i, c in enumerate(accents)}
     st.tag_colors = {**tags, **(style_d.get("tag_colors") or {})}
     st.min_ratio = min(st.min_ratio, SLOT_MIN_RATIO)
+    # 그림 카드의 글 속 아이콘은 보통 글자보다 크다: 사전의 기본 크기(1.1)를 그대로 둔 아이콘은 1.3으로
+    st.icon_scale = max(st.icon_scale, LAYOUT_ICON_SCALE)
+    st.icon_scales = {k: (LAYOUT_ICON_SCALE if abs(v - 1.1) < 1e-6 else v) for k, v in (st.icon_scales or {}).items()}
     return st
 
 
@@ -380,6 +384,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         src = sec["lines"]
         if len(kos) == len(src):
             for ln, ko in zip(src, kos):
+                if ln.get("keep"):  # 아이콘·숫자만 있는 줄: 원문 그대로 남겼다 (지우지도 그리지도 않음)
+                    continue
                 b = ln["bbox_pt"]
                 gh = ln["glyph_h_pt"]
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot)

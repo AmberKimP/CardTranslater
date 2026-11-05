@@ -272,3 +272,18 @@ def test_locate_banner_edge_and_dot_do_not_glue_glyph_to_icon():
     box, why = icons.locate(img, "가나다라마[[?]]+2", 0)
     assert box is not None, why
     assert 455 < box[0] <= 495 and 595 <= box[2] <= 606, box  # 앞 글자(마, 오른쪽 끝 450)가 섞이지 않은 아이콘만
+
+
+def test_tiles_differing_only_in_digit_are_different_icons():
+    import cv2
+
+    def tile(d):
+        img = np.full((90, 70, 4), 0, np.uint8)
+        cv2.rectangle(img, (2, 2), (67, 87), (150, 150, 140, 255), -1)
+        cv2.rectangle(img, (2, 2), (67, 87), (90, 90, 80, 255), 1)
+        cv2.putText(img, d, (18, 68), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (40, 40, 40, 255), 6)
+        return img
+
+    a, b, a2 = icons.shape_pair(tile("1")), icons.shape_pair(tile("2")), icons.shape_pair(tile("1"))
+    assert icons.same_icon(a, a2) > 0.95
+    assert icons.same_icon(a, b) == 0.0

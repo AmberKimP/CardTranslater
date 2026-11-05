@@ -28,7 +28,8 @@ PLACEHOLDER_RE = re.compile(r"\[\[\?\]\]")
 TOKEN_RE = re.compile(r"\[\[([^\[\]]*)\]\]")
 NAME_RE = re.compile(r"^[a-z0-9_]+$")
 CROP_DPI = 600
-SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아이콘
+SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아이콘 후보
+SAME_DETAIL = 0.90  # 그리고 64칸으로 자세히 본 상관계수도 이 이상 (숫자만 다른 타일 1·2를 가른다)
 MAX_COLOR_DIST = 80.0  # 평균 색 거리(0~441)가 이보다 크면 다른 아이콘 (빨간 하트·파란 하트)
 DEFAULT_SCALE = 1.1
 NOT_ICON = "아이콘 아님"
@@ -448,6 +449,20 @@ def shape_of(rgba: np.ndarray, n: int = 32) -> Shape:
     return Shape(small, w / max(h, 1), color.astype(np.float32))
 
 
+def shape_pair(rgba: np.ndarray) -> tuple[Shape, Shape]:
+    """(대강 모양 32칸, 자세한 모양 64칸)."""
+    return shape_of(rgba), shape_of(rgba, 64)
+
+
+def same_icon(a: tuple[Shape, Shape], b: tuple[Shape, Shape]) -> float:
+    """같은 아이콘이면 대강 모양 상관계수, 아니면 0. 자세히 봐도 같아야 같은 아이콘이다
+    (테두리·바탕이 같고 안의 숫자만 다른 타일은 대강 모양이 0.9쯤 나온다)."""
+    s = similarity(a[0], b[0])
+    if s < SAME_SHAPE or similarity(a[1], b[1]) < SAME_DETAIL:
+        return 0.0
+    return s
+
+
 def similarity(a: Shape, b: Shape) -> float:
     """0~1. 모양 상관계수. 가로세로 비나 색이 많이 다르면 0."""
     if max(a.aspect, b.aspect) / max(min(a.aspect, b.aspect), 1e-6) > 1.3:
@@ -513,6 +528,60 @@ def apply_to_extract(file_dir: Path, page: int, region: str, mapping: dict[int, 
         if note:
             r["icon_note"] = note
         f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def icon_uses(info) -> dict[str, int]:
+    """게임 원문에 쓰인 아이콘 이름별 횟수 ([[이름]], 뺀 쪽은 세지 않음)."""
+    from app.extract import load_extracted
+    from app.workspace import game_file_dirs, included_pages
+
+    out: dict[str, int] = {}
+    for fd in game_file_dirs(info):
+        inc = set(included_pages(fd, limited=False))
+        for pno, regs in load_extracted(fd).items():
+            if pno not in inc:
+                continue
+            for v in regs.values():
+                src = v.get("source")
+                for t in (src if isinstance(src, list) else [src or ""]):
+                    for m in TOKEN_RE.finditer(t or ""):
+                        out[m.group(1)] = out.get(m.group(1), 0) + 1
+    return out
+
+
+def reset_icon(info, name: str) -> int:
+    """아이콘을 다시 정하게: 게임 원문의 [[name]]을 [[?]]로 되돌리고 사전에서 뺀다. 되돌린 곳 수.
+    (다른 아이콘이 잘못 같은 이름으로 묶였을 때. 다시 ‘아이콘 이름’을 누르면 새로 묶어 이름을 정한다.)"""
+    from app.workspace import game_file_dirs
+
+    tok = f"[[{name}]]"
+    n = 0
+    for fd in game_file_dirs(info):
+        base = Path(fd) / "extract"
+        for f in list(base.glob("pages/page-*.json")) + list(base.glob("page-*.json")):
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            changed = False
+            for r in (rec.get("regions") or {}).values():
+                src = r.get("source")
+                if isinstance(src, str) and tok in src:
+                    k = src.count(tok)
+                    r["source"] = src.replace(tok, PLACEHOLDER)
+                    r["icon_note"] = f"아이콘 다시 정하기 ([[{name}]] 되돌림)"
+                    changed = True
+                    if f.parent.name == "pages":
+                        n += k
+            if changed:
+                tmp = f.with_suffix(".tmp")
+                tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(f)
+    d = load_dictionary(info)
+    e = d["icons"].pop(name, None)
+    save_dictionary(info, d)
+    if e and e.get("file"):
+        png = icons_dir(info) / e["file"]
+        if png.exists():
+            png.rename(png.with_name(f"_reset_{png.name}"))  # 지우지 않고 이름만 바꿔 둔다
+    return n
 
 
 # ---------------------------------------------------------------- 찾기 (scan)
@@ -586,7 +655,7 @@ def scan(info, work: Path) -> ScanResult:
     for name, e in d["icons"].items():
         p = icons_dir(info) / e.get("file", f"{name}.png")
         if p.exists():
-            known[name] = shape_of(load_png(p))
+            known[name] = shape_pair(load_png(p))
     res = ScanResult()
     n = 0
     for fd in game_file_dirs(info):
@@ -618,9 +687,9 @@ def scan(info, work: Path) -> ScanResult:
                         png = work / "crops" / f"{oc.id}.png"
                         save_png(rgba, png)
                         oc.png = str(png)
-                        sh = shape_of(rgba)
+                        sh = shape_pair(rgba)
                         if known:
-                            name, s = max(((nm, similarity(sh, ks)) for nm, ks in known.items()), key=lambda t: t[1])
+                            name, s = max(((nm, same_icon(sh, ks)) for nm, ks in known.items()), key=lambda t: t[1])
                             if s >= SAME_SHAPE:
                                 oc.match, oc.score = name, s
                     if oc.match:
@@ -641,14 +710,14 @@ def scan(info, work: Path) -> ScanResult:
 
 
 def _group(res: ScanResult) -> None:
-    shapes = {o.id: shape_of(load_png(Path(o.png))) for o in res.occurrences if o.png}
+    shapes = {o.id: shape_pair(load_png(Path(o.png))) for o in res.occurrences if o.png}
     reps: list[tuple[str, str]] = []  # (묶음, 대표 occurrence id)
     for o in res.occurrences:
         if not o.png:
             o.group = f"위치 못 찾음 {o.id}"
             res.groups[o.group] = {"rep": "", "count": 1}
             continue
-        g = next((g for g, rid in reps if similarity(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
+        g = next((g for g, rid in reps if same_icon(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
         if g is None:
             g = f"g{len(reps) + 1:02d}"
             reps.append((g, o.id))

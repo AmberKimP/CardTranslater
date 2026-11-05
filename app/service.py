@@ -172,14 +172,21 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> E
     from app.workspace import file_settings
 
     card_modes = file_settings(project.root).get("erase_modes", {})  # 카드별 지우기 방식 {쪽: {영역: 방식}}
+    try:  # 읽은 원문: 지울 줄을 원문 줄에 맞춘다 (원문에 없는 작은 줄·아이콘만 있는 줄은 남긴다)
+        from app.extract import load_extracted
+
+        extracted = load_extracted(project.root)
+    except Exception:  # noqa: BLE001 - 원문이 없어도 지우기는 한다
+        extracted = {}
     page_metas = []
     results = []
     for i, pno in enumerate(pages):
         if cancel:
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
+        srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
         r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno,
-                       modes=card_modes.get(str(pno)))
+                       modes=card_modes.get(str(pno)), sources=srcs)
         page_metas.append({
             "schema": SCHEMA,
             "source_pdf": str(src_path),
@@ -1436,6 +1443,48 @@ def icon_review(project_dir: Path | str) -> dict | None:
                                  for o in members],
                        "reason": members[0].reason if members and not gi.get("rep") else ""})
     return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
+
+
+def icon_dictionary(project_dir: Path | str) -> list[dict]:
+    """게임 아이콘 사전: [{"name", "image", "ko", "meaning", "scale", "uses"}] (이름 순)."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    d = icons.load_dictionary(info)["icons"]
+    uses = icons.icon_uses(info)
+    out = []
+    for name, e in sorted(d.items()):
+        png = icons.icons_dir(info) / e.get("file", f"{name}.png")
+        out.append({"name": name, "image": str(png) if png.exists() else None, "ko": e.get("ko", ""),
+                    "meaning": e.get("meaning", ""), "scale": float(e.get("scale", icons.DEFAULT_SCALE)),
+                    "uses": uses.get(name, 0)})
+    return out
+
+
+def update_icon_dictionary(project_dir: Path | str, rows: list[dict]) -> dict:
+    """사전 고치기. rows: [{"name", "ko", "meaning", "scale", "reset"}].
+    reset이면 그 아이콘을 원문에서 [[?]]로 되돌리고 사전에서 뺀다 (다시 ‘아이콘 이름’으로 정한다).
+    돌려줌 {"updated": [이름], "reset": {이름: 되돌린 곳 수}}."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    d = icons.load_dictionary(info)
+    out = {"updated": [], "reset": {}}
+    for r in rows:
+        name = r["name"]
+        e = d["icons"].get(name)
+        if e is None or r.get("reset"):
+            continue
+        new = {"ko": r.get("ko", e.get("ko", "")), "meaning": r.get("meaning", e.get("meaning", "")),
+               "scale": float(r.get("scale") or e.get("scale", icons.DEFAULT_SCALE))}
+        if any(e.get(k) != v for k, v in new.items()):
+            e.update(new)
+            out["updated"].append(name)
+    icons.save_dictionary(info, d)
+    for r in rows:
+        if r.get("reset"):
+            out["reset"][r["name"]] = icons.reset_icon(info, r["name"])
+    return out
 
 
 def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult:

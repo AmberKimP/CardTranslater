@@ -482,6 +482,69 @@ class SourceReviewDialog(QDialog):
             self.table.setCurrentCell(r, 0)
 
 
+# ================================================================ 아이콘 사전 (새로 정할 것이 없을 때)
+class IconDictionaryDialog(QDialog):
+    """게임 아이콘 사전을 보여 주고 한국어 이름·뜻·표시 크기를 고친다.
+    ‘다시 정하기’를 고르면 그 아이콘을 원문에서 [[?]]로 되돌린다 (다른 아이콘이 같은 이름으로 잘못 묶였을 때)."""
+
+    COLS = ["그림", "이름", "한국어 이름", "뜻(원문)", "표시 크기", "쓰인 곳", "다시 정하기"]
+
+    def __init__(self, rows: list[dict], intro: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("아이콘 사전")
+        fit_to_screen(self, 900, 560)
+        self._rows = rows
+        lab = QLabel(intro)
+        lab.setWordWrap(True)
+        self.table = QTableWidget(len(rows), len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.scales: list[QDoubleSpinBox] = []
+        self.resets: list[QCheckBox] = []
+        for i, r in enumerate(rows):
+            img = QTableWidgetItem()
+            if r.get("image"):
+                pm = QPixmap(r["image"])
+                if not pm.isNull():
+                    img.setData(Qt.ItemDataRole.DecorationRole, pm.scaledToHeight(40, Qt.TransformationMode.SmoothTransformation))
+            img.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(i, 0, img)
+            name = QTableWidgetItem(r["name"])
+            name.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            self.table.setItem(i, 1, name)
+            self.table.setItem(i, 2, QTableWidgetItem(r.get("ko", "")))
+            self.table.setItem(i, 3, QTableWidgetItem(r.get("meaning", "")))
+            sp = QDoubleSpinBox()
+            sp.setRange(0.5, 4.0)
+            sp.setSingleStep(0.1)
+            sp.setValue(float(r.get("scale") or 1.1))
+            sp.setToolTip("한글 글자 높이 대비 아이콘 높이")
+            self.table.setCellWidget(i, 4, sp)
+            self.scales.append(sp)
+            uses = QTableWidgetItem(f"{r.get('uses', 0)}곳")
+            uses.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(i, 5, uses)
+            cb = QCheckBox()
+            cb.setToolTip("원문의 이 아이콘을 [[?]]로 되돌리고 사전에서 뺍니다. 다시 찾아 새로 묶고 이름을 정합니다")
+            self.table.setCellWidget(i, 6, cb)
+            self.resets.append(cb)
+            self.table.setRowHeight(i, 48)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("저장")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(lab)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(bb)
+
+    def rows(self) -> list[dict]:
+        return [{"name": r["name"], "ko": self.table.item(i, 2).text().strip(),
+                 "meaning": self.table.item(i, 3).text().strip(), "scale": self.scales[i].value(),
+                 "reset": self.resets[i].isChecked()} for i, r in enumerate(self._rows)]
+
+
 # ================================================================ 아이콘 이름
 class IconReviewDialog(QDialog):
     """새로 찾은 아이콘 묶음의 이름·뜻·한국어 이름을 정한다 (엑셀 대신).
@@ -759,7 +822,22 @@ class StepActions:
     def _icons_found(self, r):
         msg = ("사전과 같아 바로 바꿈: " + ", ".join(f"[[{n}]] {c}곳" for n, c in r.auto.items())) if r.auto else ""
         if r.state == "done":
-            QMessageBox.information(self.page, "아이콘", (msg + "\n" if msg else "") + "이름을 정할 아이콘이 없습니다.")
+            # 새로 정할 아이콘이 없어도 사전을 보여 준다 (이름·크기 고치기, 잘못 묶인 아이콘 다시 정하기)
+            rows = service.icon_dictionary(self.pdir)
+            if not rows:
+                QMessageBox.information(self.page, "아이콘", (msg + "\n" if msg else "") + "원문에 아이콘이 없습니다.")
+                return
+            dlg = IconDictionaryDialog(rows, (msg + "\n" if msg else "") + "새로 이름을 정할 아이콘은 없습니다. "
+                                       "아래는 이 게임의 아이콘 사전입니다.", self.page)
+            if dlg.exec():
+                res = service.update_icon_dictionary(self.pdir, dlg.rows())
+                if res["reset"]:
+                    if QMessageBox.question(
+                            self.page, "아이콘 다시 정하기",
+                            "되돌린 아이콘: " + ", ".join(f"[[{n}]] {c}곳" for n, c in res["reset"].items())
+                            + "\n지금 다시 찾아 이름을 정할까요?") == QMessageBox.StandardButton.Yes:
+                        self.icons()
+                self.page.refresh()
             return
         self._open_icon_review(service.icon_review(self.pdir))
 

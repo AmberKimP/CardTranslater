@@ -42,8 +42,9 @@ DONE_BG = "#D9EAD3"
 # 단계 버튼: (키, 글자, 하는 일, 아직 못 쓸 때 이유)
 STEP_INFO = {
     "extract": ("① 글자 추출", "카드 이미지에서 원문 글자를 읽습니다", "먼저 파일을 넣고 영역을 지정하세요"),
-    "review": ("② 원문 확인", "읽은 원문을 카드 그림과 비교해 고칩니다", "먼저 ① 글자 추출을 하세요"),
-    "icons": ("③ 아이콘 이름", "원문 속 아이콘에 이름을 붙입니다", "먼저 ① 글자 추출을 하세요"),
+    "icons": ("② 아이콘 이름", "원문 속 아이콘에 이름을 붙입니다 (원문 확인에서 아이콘이 이름으로 보이게 먼저)",
+              "먼저 ① 글자 추출을 하세요"),
+    "review": ("③ 원문 확인", "읽은 원문을 카드 그림과 비교해 고칩니다", "먼저 ① 글자 추출을 하세요"),
     "finish": ("④ 추출 완료 → 용어집", "용어 후보를 모아 용어집 엑셀을 만듭니다", "먼저 ① 글자 추출을 하세요"),
     "glossary": ("⑤ 용어집 가져오기", "엑셀에서 고친 용어집을 가져와 확정합니다",
                  "먼저 ④ 추출 완료로 용어집 엑셀을 만드세요"),
@@ -271,8 +272,8 @@ class ProjectPage(QWidget):
         self.step_fns = {}
         for key, fn in (
                 ("extract", self.steps.extract),
-                ("review", self.steps.review_sources),
                 ("icons", self.steps.icons),
+                ("review", self.steps.review_sources),
                 ("finish", self.steps.finish),
                 ("glossary", self.steps.import_glossary),
                 ("translate", self.steps.translate)):
@@ -291,8 +292,8 @@ class ProjectPage(QWidget):
         outs.addStretch(1)
         self.scope_label = QLabel("작업 대상: 전체")
         self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
-        self.scope_label.setToolTip("아래 목록에서 고른 항목. 작업·결과 버튼(①②⑥⑦⑧·결과 보기·시험 실행)은 이 범위에 대해 합니다.\n"
-                                    "③ 아이콘 이름 · ④ 용어집 · ⑤ 용어집 가져오기는 프로젝트(게임) 전체에 대해 합니다.")
+        self.scope_label.setToolTip("아래 목록에서 고른 항목. 작업·결과 버튼(①③⑥⑦⑧·결과 보기·시험 실행)은 이 범위에 대해 합니다.\n"
+                                    "② 아이콘 이름 · ④ 용어집 · ⑤ 용어집 가져오기는 프로젝트(게임) 전체에 대해 합니다.")
         outs.addWidget(self.scope_label)
         self.setStyleSheet(STEP_QSS)
         # 파일이 없을 때 표 자리에 보이는 안내

@@ -204,3 +204,27 @@ def test_compose_layout_flags_lines_erased_but_not_read():
     rec = compose_layout_region(page, (10, 10, 170, 100), "첫 줄\n둘째 줄\n아래 문구", {}, _layout(),
                                 source_text="一行目\n二行目\n下の文")  # 원문 3줄, 지운 줄 4줄 (coin +2 줄을 못 읽음)
     assert STATUS_MISSING_LINE in rec["status"]
+
+
+def test_label_pill_text_is_text_and_icon_only_and_extra_lines_are_kept():
+    """빨간 라벨 띠 안 흰 글자는 지울 글자(띠는 남김). 원문에 맞춰: 작은 카드 번호 줄·아이콘만 있는 줄은 남긴다."""
+    img = _paper(h=260)
+    cv2.putText(img, "A-001", (290, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (40, 40, 40), 1, cv2.LINE_AA)  # 카드 번호
+    cv2.rectangle(img, (110, 40), (250, 76), (98, 90, 187), -1)  # 빨간 라벨 띠 (RGB)
+    cv2.putText(img, "LABEL", (128, 69), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (250, 250, 250), 2, cv2.LINE_AA)
+    cv2.putText(img, "4", (120, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (60, 80, 140), 4, cv2.LINE_AA)
+    cv2.rectangle(img, (160, 100), (210, 145), (90, 60, 40), -1)  # 아이콘
+    cv2.putText(img, "TEXT LINE", (60, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (40, 40, 40), 3, cv2.LINE_AA)
+    box = (20, 10, 340, 250)
+    tm = erase_text.text_mask(img, box)
+    white = (img.min(axis=2) > 240)
+    white[:, :110] = white[:, 251:] = False
+    white[:40] = white[77:] = False
+    assert tm.mask[white].mean() > 0.8  # 라벨 안 흰 글자는 지운다
+    assert not tm.dividers  # 두꺼운 라벨은 구분선이 아니다
+    lay = erase_text.text_layout(img, tm, box)
+    lay = erase_text.match_source_lines(tm, lay, "LABEL\n4[[coin]]\nTEXT LINE")
+    assert len(lay["lines"]) == 3 and lay["lines"][1].get("keep")
+    assert not tm.mask[12:26, 285:340].any()  # 원문에 없는 카드 번호는 남김
+    assert not tm.mask[110:142, 115:145].any()  # 아이콘만 있는 줄의 숫자도 남김
+    assert erase_text.is_icon_line("4[[coin]] [[tile]]") and not erase_text.is_icon_line("迷宮[[x]]")

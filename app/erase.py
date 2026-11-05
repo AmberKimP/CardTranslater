@@ -1013,9 +1013,11 @@ def uses_text_mask(reg: Region, has_text_layer: bool) -> bool:
 
 
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
-               params: CleanParams | None = None, modes: dict | None = None) -> PageErase:
+               params: CleanParams | None = None, modes: dict | None = None,
+               sources: dict | None = None) -> PageErase:
     """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다.
-    modes: 이 카드만 다르게 지울 영역 {영역 이름: 방식} (영역 설정 erase.mode보다 우선)."""
+    modes: 이 카드만 다르게 지울 영역 {영역 이름: 방식} (영역 설정 erase.mode보다 우선).
+    sources: 읽은 원문 {영역 이름: 글}. 그림 카드에서 지울 줄을 원문 줄에 맞춘다."""
     import pymupdf
 
     warnings: list[str] = []
@@ -1233,6 +1235,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
         prot = protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
         tm = erase_text.text_mask(sub, lb, prot)
+        lay = erase_text.text_layout(sub, tm, lb)
+        src = (sources or {}).get(name)
+        if isinstance(src, str) and src.strip():
+            lay = erase_text.match_source_lines(tm, lay, src)
         filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
         new_img[oy0:oy1, ox0:ox1] = filled
         res.mask[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] |= changed
@@ -1246,7 +1252,6 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             "few_text": bool(float(tm.core[lb[1]:lb[3], lb[0]:lb[2]].mean()) < 0.01),
         }
         # 원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt
-        lay = erase_text.text_layout(sub, tm, lb)
         ppx = bg.pt_per_px
 
         def _pt(bx, _ox=ox0, _oy=oy0):

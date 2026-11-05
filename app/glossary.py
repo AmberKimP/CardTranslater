@@ -414,7 +414,7 @@ def export_review(info: ProjectInfo, terms: list[Term], out: Path) -> Path:
     ws.freeze_panes = "B2"
     edit = PatternFill("solid", fgColor="FFF8DC")
     done = PatternFill("solid", fgColor="D9EAD3")
-    no_verdict = PatternFill("solid", fgColor="F4B183")  # 주황: 결론 못 낸 원문에서만 나온 용어
+    no_verdict = PatternFill("solid", fgColor="FF7C80")  # 빨강(심각): 결론 못 낸 원문에서만 나온 용어
     unsure = PatternFill("solid", fgColor="FFE066")  # 노랑: 확인 필요 원문에서만 나온 용어
     to_check = PatternFill("solid", fgColor="D9D2E9")  # 보라: 번역이 갈릴 수 있어 사람이 골라야 하는 용어
     for i, t in enumerate(terms, start=2):
@@ -453,7 +453,10 @@ def export_review(info: ProjectInfo, terms: list[Term], out: Path) -> Path:
     for k, v in [("종류", "용어집 검증"), ("게임", info.game), ("프로젝트", info.name),
                  ("용어집 버전", load_glossary(info).get("version", 0)),
                  ("내보낸 시각", time.strftime("%Y-%m-%d %H:%M:%S")),
-                 ("안내", "B열(번역)을 확인·수정하세요. 비워 두면 용어로 쓰지 않습니다. 맨 아래 빈 행에 용어를 더할 수 있습니다.")]:
+                 ("안내", "B열(번역)을 확인·수정하세요. 비워 두면 용어로 쓰지 않습니다. 맨 아래 빈 행에 용어를 더할 수 있습니다."),
+                 ("색", "빨강 = 꼭 볼 것 (두 번 읽어도 결론 못 낸 원문에서만 나온 용어: 용어 자체가 틀렸을 수 있음) · "
+                        "노랑 = 읽기가 불확실한 원문에서 나온 용어 · 보라 = 번역이 갈릴 수 있어 골라야 함 · "
+                        "연두 = 이미 확정 · 크림 = 고칠 칸")]:
         info_ws.append([k, v])
     info_ws.column_dimensions["A"].width = 12
     info_ws.column_dimensions["B"].width = 80

@@ -93,6 +93,20 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     k = int(max(31, min(81, bh * 0.6))) | 1  # 글자 획보다 넓은 창
     med = np.dstack([cv2.medianBlur(np.ascontiguousarray(img[..., c]), k) for c in range(3)]).astype(np.float32)
     D = np.abs(I - med).max(axis=2)
+    # 색 라벨 띠(가로로 길고 속이 찬 덩어리) 안은 띠 색을 배경으로 본다: 넓은 창의 중앙값은 종이색이라
+    # 띠 위 흰 글자가 배경과 다르게 보이지 않는다
+    for pol in (1, -1):
+        sl = ((D > STRONG) & (np.sign(_lum(I) - _lum(med)) == pol)).astype(np.uint8)
+        n_, lab_, st_, _c = cv2.connectedComponentsWithStats(sl, connectivity=8)
+        for i in range(1, n_):
+            x, y, w, h, a_ = (int(v) for v in st_[i])
+            if w > 0.25 * bw and w > 3 * h and h < 0.2 * bh and a_ >= 0.45 * w * h and h >= 12:
+                comp = lab_ == i
+                fill = np.median(I[comp], axis=0)
+                inside = np.zeros((H, W), bool)
+                inside[y:y + h, x:x + w] = True
+                med[inside] = fill
+    D = np.abs(I - med).max(axis=2)
     lum, lmed = _lum(I), _lum(med)
     inbox = np.zeros((H, W), bool)
     inbox[max(0, y0):y1, max(0, x0):x1] = True
@@ -113,9 +127,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             if a < 6:
                 continue
             if not busy and w > 0.25 * bw and w > 4 * h and h < 0.15 * bh and a >= 0.45 * w * h:  # 종이 위 가로 구분선 (그림 위의 긴 'ー'는 글자)
-                lines.append((y + h / 2, h))
-                if x0 <= x + w / 2 <= x1 and y0 <= y + h / 2 <= y1:
-                    dividers.append((x, y, x + w, y + h))
+                lines.append((y + h / 2, h, (x, y, x + w, y + h)))
                 continue
             if w > 0.6 * bw or h > 0.8 * bh:  # 테두리·큰 그림
                 continue
@@ -123,10 +135,19 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             if (comp & ~inbox).sum() / a > 0.03:  # 상자 밖으로 이어지는 그림·선
                 continue
             cands.append((comp, I[comp].mean(axis=0), a, max(w, h)))
+    # 가로로 긴 덩어리 중 글자보다 두꺼운 것은 구분선이 아니라 색 라벨(예: 빨간 ‘プレイ時効果’ 띠): 라벨은 남기고
+    # 안의 글자는 글자로 본다. 진짜 구분선은 글자 획 굵기쯤으로 가늘다
+    sizes0 = [c[3] for c in cands if c[2] >= 30]
+    glyph0 = float(np.percentile(sizes0, 75)) if sizes0 else 0.0
+    lines = [ln for ln in lines if not glyph0 or ln[1] <= max(4.0, 0.35 * glyph0)]
+    for _cy, _h, (lx0, ly0, lx1, ly1) in lines:
+        if x0 <= (lx0 + lx1) / 2 <= x1 and y0 <= (ly0 + ly1) / 2 <= y1:
+            dividers.append((lx0, ly0, lx1, ly1))
+
     def on_line(c):
         ys, xs = np.nonzero(c[0])
         cy, ch = (ys.min() + ys.max()) / 2, ys.max() - ys.min() + 1
-        return any(abs(cy - ly) <= max(3.0, lh) and ch <= 4 * lh + 6 for ly, lh in lines)
+        return any(abs(cy - ly) <= max(3.0, lh) and ch <= 4 * lh + 6 for ly, lh, _b in lines)
 
     cands = [c for c in cands if not on_line(c)]  # 구분선 위의 작은 장식
     sizes = [c[3] for c in cands if c[2] >= 30]
@@ -140,8 +161,25 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         lum2 = np.where(near, lmed, lum)  # 글자 근처는 배경값으로 바꿔 놓고 바쁜 곳을 잰다
         busy_map = _local_std(lum2) > 2.5 * texture + 8
         busy_map = cv2.dilate(busy_map.astype(np.uint8), _disk(10)).astype(bool)
+        def on_label(c) -> bool:
+            """색 라벨 위 글자: 둘레가 한 색으로 고르고(종이색 아님) 글자와 대비가 크다."""
+            ring = cv2.dilate(c[0].astype(np.uint8), _disk(5)).astype(bool) & ~cv2.dilate(
+                c[0].astype(np.uint8), _disk(1)).astype(bool)
+            if ring.sum() < 15:
+                return False
+            rp = I[ring]
+            med = np.median(rp, axis=0)
+            if paper0 is not None and float(np.abs(med - paper0).max()) < 40:
+                return False  # 둘레가 종이색이면 라벨이 아니다 (종이 위 글자는 원래 규칙대로)
+            return (float((np.abs(rp - med).max(axis=1) < 30).mean()) >= 0.75
+                    and float(np.abs(med - c[1]).max()) >= 90)
+
+        paper0 = np.median(I[sel], axis=0) if sel.sum() > 50 else None
         kept, dropped = [], []
         for c in cands:
+            if on_label(c):
+                kept.append((c, False))
+                continue
             ys, xs = np.nonzero(c[0])
             touch = xs.min() <= x0 + 2 or ys.min() <= y0 + 2 or xs.max() >= x1 - 3 or ys.max() >= y1 - 3
             ov = (c[0] & busy_map).sum() / c[2]
@@ -164,7 +202,9 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             ring = cv2.dilate(c[0].astype(np.uint8), _disk(6)).astype(bool) & free
             if ring.sum() < 15:
                 return True
-            return float((np.abs(I[ring] - paper).max(axis=1) < 45).mean()) >= 0.5
+            if float((np.abs(I[ring] - paper).max(axis=1) < 45).mean()) >= 0.5:
+                return True
+            return on_label(c)  # 색 라벨 위 글자 (유리 조각은 둘레가 여러 색이라 빠진다)
 
         kept = [c for c in kept if on_paper(c)]
         dropped = [(c, t) for c, t in dropped if on_paper(c)]
@@ -448,3 +488,54 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
         else:
             ln["align"] = "left"
     return {"lines": lines, "dividers": divs}
+
+
+_WORD = __import__("re").compile(r"[ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ가-힣]")
+_TOKEN = __import__("re").compile(r"\[\[[^\[\]]*\]\]|</?(?:b|i|c\d+)>")
+
+
+def is_icon_line(text: str) -> bool:
+    """아이콘·숫자·기호만 있는 줄 (예: ‘4[[coin]] [[tile]]’). 번역해도 같으므로 원문 그대로 둔다."""
+    return not _WORD.search(_TOKEN.sub("", text))
+
+
+def match_source_lines(tm: TextMask, lay: dict, source: str) -> dict:
+    """찾은 줄을 읽은 원문 줄에 맞춘다. tm.mask를 고친다(남길 줄은 지우지 않음).
+
+    - 원문보다 줄이 많으면 가장 작은 글자 줄(카드 번호 ‘A-001’ 같은 것)부터 원문에 없는 줄로 보고 남긴다
+    - 아이콘·숫자만 있는 원문 줄은 그 자리를 지우지 않고 keep=True로 표시 (한글 넣기도 그리지 않는다)
+    """
+    src = [t for t in source.split("\n") if t.strip()]
+    lines = list(lay.get("lines") or [])
+    if not src or not lines:
+        return lay
+    extra = []
+    while len(lines) - len(extra) > len(src):
+        extra.append(min((ln for ln in lines if ln not in extra), key=lambda ln: ln["glyph_h"]))
+    kept = [ln for ln in lines if ln not in extra]
+    restore = list(extra)
+    if len(kept) == len(src):
+        for ln, t in zip(kept, src):
+            if is_icon_line(t):
+                ln["keep"] = True
+                restore.append(ln)
+    H, W = tm.mask.shape
+    if len(kept) == len(src):
+        # 원문 줄과 맞으면: 지울 줄(아이콘만 있는 줄 빼고) 둘레 밖의 지울 픽셀은 원문에 없는 것(작은 카드 번호 등)이라 남긴다
+        allowed = np.zeros_like(tm.mask)
+        for ln in kept:
+            if ln.get("keep"):
+                continue
+            x0, y0, x1, y1 = ln["bbox"]
+            pad = int(max(4, 0.5 * ln["glyph_h"]))
+            allowed[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)] = True
+        tm.mask &= allowed
+    for ln in restore:
+        x0, y0, x1, y1 = ln["bbox"]
+        pad = int(max(3, 0.35 * ln["glyph_h"]))
+        tm.mask[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)] = False
+    out = dict(lay)
+    out["lines"] = kept
+    if extra:
+        tm.notes.append(f"원문에 없는 줄 {len(extra)}개는 지우지 않음")
+    return out

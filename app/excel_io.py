@@ -216,7 +216,11 @@ def read_human_edits(xlsx_path: Path) -> dict:
     return out
 
 
-GAME_KIND = "번역 검수(게임)"  # 게임 하나에 엑셀 하나, 그룹마다 시트 (정보 시트의 ‘종류’)
+GAME_KIND = "번역 검수(게임)"
+SERIOUS_COLOR = "FF7C80"  # 빨강: 꼭 고쳐야 하는 칸 (의심만 가는 칸은 노랑·주황 그대로)
+SERIOUS_STATUS = ("빈 영역", "원문 글자 남음", "아이콘 불일치")
+COLOR_LEGEND = ("색: 빨강 = 꼭 고칠 것 (번역 없음·일본어 남음·아이콘 불일치·두 번 읽어도 결론 못 냄) · "
+                "노랑 = 확인해 볼 것 (읽기 불확실·용어 불일치) · 연두 = 두 번 읽어 맞음 · 크림 = 고칠 칸")  # 게임 하나에 엑셀 하나, 그룹마다 시트 (정보 시트의 ‘종류’)
 GAME_INFO_HEAD = ["시트", "프로젝트", "그룹", "원본 파일", "원본 sha256", "쪽"]
 
 
@@ -249,7 +253,8 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
 
     edit_fill = PatternFill("solid", fgColor="FFF8DC")
     unsure_fill = PatternFill("solid", fgColor="FFE066")
-    no_verdict_fill = PatternFill("solid", fgColor="F4B183")  # 두 번 읽어도 결론 못 낸 칸 (주황)
+    no_verdict_fill = PatternFill("solid", fgColor=SERIOUS_COLOR)  # 두 번 읽어도 결론 못 낸 칸 (심각: 빨강)
+    serious_fill = PatternFill("solid", fgColor=SERIOUS_COLOR)
     checked_fill = PatternFill("solid", fgColor="D9EAD3")  # 두 번 확인해 맞은 칸 (연두)
 
     src_doc = pymupdf.open(project.source_pdf)
@@ -289,6 +294,14 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
             for h in ("원문", "번역", "글자 크기", "메모"):
                 ws.cell(row, COL[h]).protection = Protection(locked=False)
             ws.cell(row, COL["번역"]).fill = edit_fill
+            # 상태: 심각(빨강) — 번역 없음·원문 글자 남음·아이콘 불일치·결론 못 냄 / 의심(노랑) — 확인 필요·용어 불일치
+            serious = [x for x in status if x in SERIOUS_STATUS] + (["결론 못 냄"] if verdict == "결론 못 냄" else [])
+            if serious:
+                ws.cell(row, COL["상태"]).fill = serious_fill
+                if not vals["번역"]:
+                    ws.cell(row, COL["번역"]).fill = serious_fill
+            elif status:
+                ws.cell(row, COL["상태"]).fill = unsure_fill
             if unsure:  # 추출이 불확실한 칸은 노란색 (PRD 2장)
                 ws.cell(row, COL["원문"]).fill = unsure_fill
             if verdict == "결론 못 냄":
@@ -402,7 +415,7 @@ def export_game(game: str, entries: list[dict], out_path: Path, keep: dict | Non
     _font_sheet(wb, font_groups)
     info = wb.create_sheet(INFO)
     for k_, v in [("종류", GAME_KIND), ("게임", game), ("내보낸 시각", time.strftime("%Y-%m-%d %H:%M:%S")),
-                  ("앱 버전", APP_VERSION), ("확인할 아이콘", n_icon_check)]:
+                  ("앱 버전", APP_VERSION), ("확인할 아이콘", n_icon_check), ("색", COLOR_LEGEND)]:
         info.append([k_, v])
     info.append([])
     info.append(GAME_INFO_HEAD)
