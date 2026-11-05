@@ -10,7 +10,7 @@ import datetime as _dt
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -19,10 +19,15 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import ask_choice, fit_to_screen, set_ok_text
+from app.qt.dialogs import ask_choice, fit_to_screen, set_ok_text, show_error, show_failure, show_problem
 
-MODE_LABELS = [("double-check", "두 번 확인 (Sonnet으로 읽고 불확실한 칸만 Opus로 다시) — 추천"),
-               ("opus", "Opus만 사용")]
+MODE_LABELS = [("double-check", "꼼꼼히 (추천) — 보통 읽기 뒤, 애매한 칸만 정밀 읽기로 한 번 더"),
+               ("opus", "처음부터 정밀 읽기 (느리고 사용량이 많음)")]
+# 화면에 모델 이름 대신 쓰는 말 (service가 주는 Sonnet·Opus, 엔진 메모의 모델 ID)
+READER_NAMES = {"sonnet": "보통 읽기", "opus": "정밀 읽기", "haiku": "빠른 읽기"}
+# service의 칸 상태 이름을 화면용으로 (색·걸러 보기는 원래 이름으로 한다)
+LABEL_TEXT = {"결론 못 냄": "다시 봐야 함"}
+JA_FONTS = ["Yu Gothic UI", "Meiryo"]  # 원문(일본어) 칸 글꼴: 차례로, 없으면 기본 글꼴
 ENGINE_LABELS = [("claude-code", "Claude 구독 (Claude Code)"), ("api", "API 키 (사용한 만큼 요금)")]  # 로그인 창과 같은 말
 LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3"}
 
@@ -37,6 +42,35 @@ def state_label(s: str) -> str:
     return STATE_LABEL.get(s, s)
 
 
+def label_text(label: str) -> str:
+    return LABEL_TEXT.get(label, label)
+
+
+def reader_name(model: str) -> str:
+    """Sonnet·claude-opus-5-5 같은 모델 이름을 ‘보통 읽기’·‘정밀 읽기’로."""
+    low = (model or "").lower()
+    return next((v for k, v in READER_NAMES.items() if k in low), model)
+
+
+def plain_note(note: str) -> str:
+    """엔진 메모 속 모델 ID·‘두 모델’ 같은 말을 쉬운 말로."""
+    import re
+
+    note = re.sub(r"claude-[a-z0-9.\-]+", lambda m: reader_name(m.group(0)), note or "")
+    note = re.sub(r"\b(Sonnet|Opus|Haiku)\b", lambda m: reader_name(m.group(0)), note)
+    return note.replace("두 모델이 다르게 읽음", "두 번 읽은 결과가 다름")
+
+
+def source_font(base: QFont, bigger: int = 2) -> QFont:
+    """일본어 원문을 알아보기 쉬운 글꼴 (Yu Gothic UI → Meiryo → 기본)."""
+    f = QFont(base)
+    have = set(QFontDatabase.families())
+    f.setFamilies([x for x in JA_FONTS if x in have] + [base.family()])
+    if f.pointSize() > 0:
+        f.setPointSize(f.pointSize() + bigger)
+    return f
+
+
 def _ask_list(parent, title: str, intro: str, items: list[str], question: str) -> bool:
     box = QMessageBox(parent)
     box.setWindowTitle(title)
@@ -49,8 +83,13 @@ def _ask_list(parent, title: str, intro: str, items: list[str], question: str) -
     return box.exec() == QMessageBox.StandardButton.Yes
 
 
-def _fail(parent, msg: str):
-    QMessageBox.critical(parent, "오류", msg[:3000])
+def _fail(parent, msg: str, title: str = "작업을 끝내지 못했습니다"):
+    """작업 스레드에서 예외가 난 경우: 왜 → 무엇을 하면 되는지, 원문은 ‘자세히 보기’에."""
+    show_failure(parent, title, msg)
+
+
+def _fail_as(parent, title: str):
+    return lambda m: _fail(parent, m, title)
 
 
 # ================================================================ 추출
@@ -78,7 +117,7 @@ class ExtractDialog(QDialog):
             self.engine.addItem(t + ("" if st[k] else " — 사용할 수 없음"), k)
         self.engine.setCurrentIndex(max(0, self.engine.findData(service.get_settings().engine)))
         # 시험 모드: 파일마다 앞 X장만 (번역·검수·지우기·한글 넣기도 그 카드만). 프로젝트에 저장된다
-        self.limit_on = QCheckBox("시험: 파일마다 앞에서부터")
+        self.limit_on = QCheckBox("켜기: 파일마다 앞에서부터")
         self.limit_n = QSpinBox()
         self.limit_n.setRange(1, 9999)
         self.limit_n.setSuffix("장만")
@@ -101,9 +140,9 @@ class ExtractDialog(QDialog):
         note.setStyleSheet("color: #666")
         form = QFormLayout()
         form.addRow("그룹", self.group)
-        form.addRow("모드", mode_box)
-        form.addRow("엔진", self.engine)
-        form.addRow("장수", limit_box)
+        form.addRow("읽는 방식", mode_box)
+        form.addRow("로그인 방식", self.engine)
+        form.addRow("시험으로 몇 장만", limit_box)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.button(QDialogButtonBox.StandardButton.Ok).setText("추출 시작")
         bb.accepted.connect(self.accept)
@@ -122,7 +161,8 @@ class ExtractDialog(QDialog):
 
     def accept(self):
         if not service.engine_status()[self.engine.currentData()]:
-            QMessageBox.warning(self, "로그인 방식을 쓸 수 없음", service.engine_status()["message"])
+            show_error(self, "이 로그인 방식은 지금 쓸 수 없습니다", service.engine_status()["message"],
+                       "다른 로그인 방식을 고르거나, ‘파일 > 로그인 방식’에서 로그인한 뒤 다시 하세요.")
             return
         super().accept()
 
@@ -144,7 +184,7 @@ class SourceReviewDialog(QDialog):
         self.file = QComboBox()
         for f in files:
             self.file.addItem(f["key"], str(f["dir"]))
-        self.only = QCheckBox("확인할 칸만 보기 (결론 못 냄·확인 필요·아직 읽지 않음)")
+        self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·확인 필요·아직 읽지 않음)")
         self.only.setChecked(only_check)
         self.count = QLabel()
         top = QHBoxLayout()
@@ -160,6 +200,7 @@ class SourceReviewDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.currentCellChanged.connect(self._on_cell_changed)
+        self._src_font = source_font(self.table.font(), 1)
         self.image = QLabel()
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image.setMinimumHeight(160)
@@ -168,8 +209,10 @@ class SourceReviewDialog(QDialog):
         scroll.setWidgetResizable(True)
         self.info = QLabel()
         self.info.setWordWrap(True)
+        self.info.setFont(source_font(self.info.font(), 1))
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.edit = QPlainTextEdit()
+        self.edit.setFont(source_font(self.edit.font(), 3))
         self.edit.setPlaceholderText("원문 (줄바꿈 그대로. 태그 칸은 한 줄에 하나. 아이콘은 [[이름]])")
         self.save_btn = QPushButton("고친 원문 저장")
         self.save_btn.setToolTip("Ctrl+S")
@@ -314,7 +357,7 @@ class SourceReviewDialog(QDialog):
                 src = c["source"]
                 text = "\n".join(src) if isinstance(src, list) else (src or "")
                 unread = c["label"] == self.UNREAD
-                vals = [str(c["page"]), c["region"], c["label"],
+                vals = [str(c["page"]), c["region"], label_text(c["label"]),
                         "(아직 추출하지 않음 — ① 글자 추출)" if unread and not text else text.replace("\n", " / ")]
                 for j, v in enumerate(vals):
                     it = QTableWidgetItem(v)
@@ -323,6 +366,8 @@ class SourceReviewDialog(QDialog):
                         it.setBackground(QColor(color))
                     if unread:
                         it.setForeground(QColor("#888"))
+                    if j == 3:
+                        it.setFont(self._src_font)
                     self.table.setItem(i, j, it)
             self.table.resizeColumnsToContents()
             if row is None:
@@ -360,12 +405,12 @@ class SourceReviewDialog(QDialog):
         if pm.width() > room:  # 오른쪽 칸 너비에 맞춘다
             pm = pm.scaledToWidth(room, Qt.TransformationMode.SmoothTransformation)
         self.image.setPixmap(pm)
-        lines = [f"{c['page']}쪽 · {c['region']} · {c['label']}"]
+        lines = [f"{c['page']}쪽 · {c['region']} · {label_text(c['label'])}"]
         for rd in c["readings"]:
             s = rd["source"]
-            lines.append(f"{rd['model']}: {' / '.join(s) if isinstance(s, list) else s}")
+            lines.append(f"{reader_name(rd['model'])}: {' / '.join(s) if isinstance(s, list) else s}")
         if c["note"]:
-            lines.append(c["note"])
+            lines.append(plain_note(c["note"]))
         self.info.setText("\n".join(lines))
         src = c["source"]
         self.edit.setPlainText("\n".join(src) if isinstance(src, list) else (src or ""))
@@ -559,11 +604,11 @@ class IconReviewDialog(QDialog):
         try:
             rows = self.rows()
         except ValueError as e:
-            QMessageBox.warning(self, "확정할 수 없음", str(e))
+            show_problem(self, "아이콘 이름을 확정하지 못했습니다", str(e), "표시된 줄의 이름을 고친 뒤 다시 누르세요.")
             return
         r = service.confirm_icons(self.project_dir, rows)
         if r.state != "confirmed":
-            QMessageBox.warning(self, "확정할 수 없음", "\n".join(r.blocking))
+            show_problem(self, "아이콘 이름을 확정하지 못했습니다", "\n".join(r.blocking), "이름을 고친 뒤 다시 누르세요.")
             return
         self.result = r
         super().accept()
@@ -584,8 +629,8 @@ class StepActions:
     def _engine(self) -> str | None:
         eng = service.get_settings().engine
         if not service.engine_status()[eng]:
-            QMessageBox.warning(self.page, "로그인 방식을 쓸 수 없음",
-                                service.engine_status()["message"] + "\n‘파일 > 로그인 방식’에서 바꿀 수 있습니다.")
+            show_error(self.page, "Claude에 연결할 수 없습니다", service.engine_status()["message"],
+                       "‘파일 > 로그인 방식’에서 로그인하거나 다른 방식을 고른 뒤 다시 하세요.")
             return None
         return eng
 
@@ -602,7 +647,7 @@ class StepActions:
         job = worker.Job(service.extract_project, self.pdir, group, mode=mode, engine=engine)
         worker.run_with_dialog(self.page, "글자 추출", job,
                                lambda r: self._extract_done(r, (group, mode, engine)),
-                               lambda m: _fail(self.page, m))
+                               _fail_as(self.page, "글자 추출을 끝내지 못했습니다"))
 
     def _extract_done(self, r, args):
         self.page.refresh()
@@ -627,7 +672,13 @@ class StepActions:
                 self.resume_timer.start(ms)
                 self.page.win.statusBar().showMessage(f"추출을 {r.retry_after} 이후 자동으로 이어 합니다")
             return
-        QMessageBox.warning(self.page, f"글자 추출 — {state_label(r.state)}", (r.reason or "") + "\n\n" + "\n".join(lines))
+        if r.state == "cancelled":
+            QMessageBox.information(self.page, "글자 추출을 멈췄습니다",
+                                    "읽은 카드는 저장했습니다. ‘① 글자 추출’을 다시 누르면 남은 카드부터 이어서 읽습니다.\n\n"
+                                    + "\n".join(lines))
+            return
+        show_problem(self.page, f"글자 추출을 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
+                     retry_after=r.retry_after, detail="\n".join(lines))
 
     # ---- 원문 확인
     def review_sources(self, only_check: bool = True):
@@ -647,7 +698,7 @@ class StepActions:
             return
         job = worker.Job(service.find_icons, self.pdir, engine=eng, with_progress=False)
         worker.run_with_dialog(self.page, "아이콘 찾는 중 (이름 제안 포함)", job, self._icons_found,
-                               lambda m: _fail(self.page, m), cancellable=False)
+                               _fail_as(self.page, "아이콘을 찾지 못했습니다"), cancellable=False)
 
     def _icons_found(self, r):
         msg = ("사전과 같아 바로 바꿈: " + ", ".join(f"[[{n}]] {c}곳" for n, c in r.auto.items())) if r.auto else ""
@@ -672,7 +723,7 @@ class StepActions:
         if not accept and self.page.ov.get("status") in ("glossary_confirmed", "translating", "translated"):
             ver = self.page.ov.get("glossary_version")
             r = ask_choice(self.page, "용어집 다시 만들기",
-                           f"용어집이 이미 확정되었습니다{f' (v{ver})' if ver else ''}.",
+                           f"용어집이 이미 확정되었습니다{f' ({ver}번째 확정본)' if ver else ''}.",
                            [("다시 만들기", "destructive"), ("취소", "reject")], default=1,
                            informative="다시 만들면 상태가 ‘용어집 검증 중’으로 돌아가고, 용어집 엑셀을 다시 가져와야 "
                                        "번역·한글 넣기를 할 수 있습니다.\n확정된 용어는 그대로 남고 새 용어만 후보로 나옵니다.")
@@ -683,7 +734,7 @@ class StepActions:
             return
         job = worker.Job(service.finish_extraction, self.pdir, accept_issues=accept, engine=eng, with_progress=False)
         worker.run_with_dialog(self.page, "용어 후보를 만드는 중 (몇 분 걸릴 수 있음)", job, self._finish_done,
-                               lambda m: _fail(self.page, m), cancellable=False)
+                               _fail_as(self.page, "용어집 엑셀을 만들지 못했습니다"), cancellable=False)
 
     def _finish_done(self, r):
         self.page.refresh()
@@ -698,8 +749,8 @@ class StepActions:
                 self.finish(accept=True)
             return
         if r.state in ("blocked", "paused"):
-            QMessageBox.warning(self.page, f"용어집 — {state_label(r.state)}", (r.reason or "") +
-                                (f"\n{r.retry_after} 이후 다시 하세요." if r.retry_after else ""))
+            show_problem(self.page, f"용어집 엑셀을 만들지 못했습니다 ({state_label(r.state)})", r.reason or "",
+                         retry_after=r.retry_after)
             return
         box = QMessageBox(self.page)
         box.setWindowTitle("용어집 검증")
@@ -722,7 +773,8 @@ class StepActions:
                 return
         r = service.import_glossary(self.pdir, path, accept_issues=accept)
         if r.state == "blocked":
-            QMessageBox.warning(self.page, "가져올 수 없음", "\n".join(r.blocking + r.issues))
+            show_problem(self.page, "용어집을 가져오지 못했습니다", "\n".join(r.blocking + r.issues),
+                         "엑셀에서 이 내용을 고치고 저장한 뒤 ‘⑤ 용어집 가져오기’를 다시 누르세요.")
             return
         if r.state == "needs_confirmation":
             if _ask_list(self.page, "용어집 확인", "아래 항목을 확인하세요.", r.issues, "이대로 확정할까요?"):
@@ -742,21 +794,27 @@ class StepActions:
         box = QMessageBox(self.page)
         box.setWindowTitle("번역")
         box.setText("확정 용어집을 기준으로 모든 파일의 원문을 번역합니다. 이미 번역한 칸은 다시 하지 않습니다.")
-        sonnet = box.addButton("Sonnet (추천)", QMessageBox.ButtonRole.AcceptRole)
-        opus = box.addButton("Opus", QMessageBox.ButtonRole.AcceptRole)
+        box.setInformativeText("보통 번역으로 충분합니다. 정밀 번역은 느리고 사용량이 많습니다.")
+        sonnet = box.addButton("보통 번역 (추천)", QMessageBox.ButtonRole.AcceptRole)
+        opus = box.addButton("정밀 번역", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         model = {sonnet: "sonnet", opus: "opus"}.get(box.clickedButton())
         if not model:
             return
         job = worker.Job(service.translate_project, self.pdir, model=model, engine=eng)
-        worker.run_with_dialog(self.page, "번역", job, self._translate_done, lambda m: _fail(self.page, m))
+        worker.run_with_dialog(self.page, "번역", job, self._translate_done, _fail_as(self.page, "번역을 끝내지 못했습니다"))
 
     def _translate_done(self, r):
+        """번역이 끝나면 검수 엑셀까지 이어서 만든다 (따로 누르는 단계 없음)."""
         self.page.refresh()
+        if r.state == "cancelled":
+            QMessageBox.information(self.page, "번역을 멈췄습니다",
+                                    "번역한 칸은 저장했습니다. ‘⑥ 번역 · 검수 엑셀’을 다시 누르면 남은 칸부터 이어서 합니다.")
+            return
         if r.state != "done":
-            QMessageBox.warning(self.page, f"번역 — {state_label(r.state)}", (r.reason or "")
-                                + (f"\n{r.retry_after} 이후 다시 하면 이어 갑니다." if r.retry_after else ""))
+            show_problem(self.page, f"번역을 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
+                         retry_after=r.retry_after)
             return
         issues = []
         if r.term_mismatch:
@@ -765,21 +823,32 @@ class StepActions:
             issues.append(f"아이콘 불일치 {len(r.icon_mismatch)}칸")
         if r.leftover:
             issues.append(f"일본어가 남은 번역 {len(r.leftover)}칸")
-        if QMessageBox.question(self.page, "번역 끝",
-                                f"서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
-                                f"이미 번역됨 {r.cached}.\n" + ("확인: " + ", ".join(issues) + "\n" if issues else "")
-                                + "\n파일마다 번역 검수 엑셀을 만들까요? (사람이 고친 칸은 그대로 둡니다)") \
-                == QMessageBox.StandardButton.Yes:
-            self.export_excel()
+        self._translate_summary = (f"서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
+                                   f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else ""))
+        self.export_excel()
 
     def export_excel(self):
         job = worker.Job(service.export_project_excel, self.pdir, force=True, with_progress=False)
         worker.run_with_dialog(self.page, "번역 검수 엑셀 만드는 중", job, self._excel_done,
-                               lambda m: _fail(self.page, m), cancellable=False)
+                               _fail_as(self.page, "검수 엑셀을 만들지 못했습니다"), cancellable=False)
 
     def _excel_done(self, paths):
+        from app.qt.main import open_path
+
         self.page.refresh()
-        QMessageBox.information(self.page, "번역 검수 엑셀",
-                                "만들었습니다 (게임에 하나, 그룹마다 시트):\n" + "\n".join(str(p) for p in paths)
-                                + "\n\n같은 게임의 다른 프로젝트도 이 엑셀에 함께 들어 있습니다. "
-                                  "홈 화면의 ‘게임 폴더 열기’로 열 수 있습니다.")
+        head = getattr(self, "_translate_summary", "")
+        self._translate_summary = ""
+        box = QMessageBox(self.page)
+        box.setWindowTitle("번역 · 검수 엑셀")
+        box.setText((head + "\n\n" if head else "")
+                    + "검수 엑셀을 만들었습니다 (게임에 하나, 그룹마다 시트, 사람이 고친 칸은 그대로):\n"
+                    + "\n".join(str(p) for p in paths)
+                    + "\n\n같은 게임의 다른 프로젝트도 이 엑셀에 함께 들어 있습니다.")
+        openx = box.addButton("엑셀 열기", QMessageBox.ButtonRole.AcceptRole)
+        openf = box.addButton("폴더 열기", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if paths and box.clickedButton() is openx:
+            open_path(Path(paths[0]).resolve())
+        elif paths and box.clickedButton() is openf:
+            open_path(Path(paths[0]).resolve().parent)

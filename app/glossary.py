@@ -42,6 +42,8 @@ HEADERS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 _BRACKET = re.compile(r"(?<!\[)\[([^\[\]\n]{1,24})\](?!\])")  # 카드에 인쇄된 [炎]·[人族] (아이콘 [[x]]는 제외)
 _ICON = re.compile(r"\[\[[a-z0-9_]+\]\]")
+# 「召喚石」·『魔冠』·［炎］처럼 괄호로 묶어 인쇄한 말은 무조건 용어 후보 (2026-11-05 사용자 요청)
+_QUOTED = re.compile(r"「([^「」\n]{1,40})」|『([^『』\n]{1,40})』|［([^［］\n]{1,24})］")
 _ICON_TOKEN = re.compile(r"\[\[[^\[\]]*\]\]")  # [[coin]]·[[?]] 등 모든 아이콘 자리표시
 
 
@@ -147,8 +149,12 @@ class Term:
                 "note": self.note, "count": self.count}
 
 
+_FMT_TAG = re.compile(r"</?(?:b|i|c\d+)>")
+
+
 def _texts(s: Source) -> list[str]:
-    return s.text if isinstance(s.text, list) else [s.text]
+    """원문 글자 (서식 태그 <b><i><cN>는 빼고: 용어는 태그와 상관없다)."""
+    return [_FMT_TAG.sub("", t) for t in (s.text if isinstance(s.text, list) else [s.text])]
 
 
 _RANK = {"": 0, "확인 필요": 1, "결론 못 냄": 2}
@@ -203,7 +209,8 @@ def count_and_examples(term: str, sources: list[Source], variants: list[str] = (
 
 
 def local_candidates(sources: list[Source]) -> dict[str, str]:
-    """코드로 확실히 뽑는 후보: 태그 라벨 글자, 카드에 대괄호로 인쇄된 분류어. {용어: 분류}"""
+    """코드로 확실히 뽑는 후보: 태그 라벨 글자, 카드에 [ ]·「 」로 묶어 인쇄된 말. {용어: 분류}
+    괄호 안 말은 모델이 고르지 않아도 무조건 넣는다."""
     out: dict[str, str] = {}
     for s in sources:
         if s.kind == "tag_pills":
@@ -211,7 +218,12 @@ def local_candidates(sources: list[Source]) -> dict[str, str]:
                 out.setdefault(t, "분류어·태그")
         else:
             for t in _texts(s):
-                for m in _BRACKET.finditer(_ICON.sub("", t)):
+                plain = _ICON_TOKEN.sub("", re.sub(r"</?(?:b|i|c\d+)>", "", t))
+                for m in _QUOTED.finditer(plain):
+                    w = next(g for g in m.groups() if g is not None).strip()
+                    if w:
+                        out.setdefault(w, "분류어·태그" if m.group(3) else "문구" if is_phrase(w) else "키워드·능력")
+                for m in _BRACKET.finditer(plain):
                     w = m.group(1).strip()
                     if w and not re.fullmatch(r"\d+.*", w):  # [4階層] 같은 숫자로 시작하는 것은 '階層'만
                         out.setdefault(w, "분류어·태그")
@@ -336,7 +348,7 @@ def find_candidates(info: ProjectInfo, sources: list[Source], client, model: str
             c, ex = count_and_examples(w, sources)
             terms[w] = Term(w, category=cat, count=c, examples=ex)
     for item in data.get("terms", []):
-        w = item["term"].strip()
+        w = re.sub(r"</?(?:b|i|c\d+)>", "", item["term"]).strip()  # 서식 태그는 용어가 아니다
         if not w or is_icon_term(w):
             continue
         if w in terms:

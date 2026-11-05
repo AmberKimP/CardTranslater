@@ -78,6 +78,7 @@ class TextStyle:
     tracking: float = 0.0  # 영역 기본 자간 (글자 크기 대비, 예: -0.06). 맞추기는 여기서 -max_tracking까지 더 좁힌다
     max_tracking: float = 0.05
     italic: bool = False  # 영역 기본 서식이 기울임
+    bold: bool = False  # 영역(줄) 기본 서식이 굵게 (원문 줄 모양에서)
     fallback_file: str | None = None  # 주 글꼴에 없는 글자(♥, … 등)를 그릴 글꼴. 굵게는 이웃 굵기 파일을 찾는다
     bold_file: str | None = None  # <b>용 글꼴. 없으면 이웃 굵기 파일 -> 없으면 가짜 굵게(획 덧그리기)
     fake_bold_width: float = 0.05  # 가짜 굵게 획 두께 (글자 크기 대비, 외곽선 경로에서만 사용)
@@ -164,7 +165,7 @@ class FontMeasurer:
 
     def file_for(self, fmt: Fmt) -> tuple[str, bool]:
         """(글꼴 파일, 가짜 굵게 여부)"""
-        if fmt.bold:
+        if fmt.bold or self.style.bold:
             bf = self.style.bold_file or _bold_variant(self.style.font_file)
             if bf:
                 return bf, False
@@ -176,7 +177,7 @@ class FontMeasurer:
         ff, fake = self.file_for(fmt)
         fb = self.style.fallback_file
         if fb and not _font(ff).has_glyph(ord(ch)) and Path(fb).exists():
-            if fmt.bold:
+            if fmt.bold or self.style.bold:
                 bv = _bold_variant(fb)
                 if bv:
                     return bv, False
@@ -344,12 +345,19 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
             if i + 1 < len(atoms) and atoms[i + 1].kind == "space":
                 s += " "
             if style.stroke_color and style.stroke_width:
-                kw: dict = dict(fontname=_font_name(page, ff), fontsize=size, render_mode=2,
-                                color=hex_to_rgb01(style.stroke_color), fill=hex_to_rgb01(color),
-                                border_width=style.stroke_width + (style.fake_bold_width if fake_bold else 0))
+                # 외곽선은 글자 바깥으로: 두꺼운 획(외곽선 색)을 먼저 그리고 그 위에 글자를 채운다
+                fb_w = style.fake_bold_width if fake_bold else 0
+                base: dict = dict(fontname=_font_name(page, ff), fontsize=size)
                 if rot:
-                    kw["morph"] = rot
-                page.insert_text(pymupdf.Point(x, baseline), s, **kw)
+                    base["morph"] = rot
+                sc = hex_to_rgb01(style.stroke_color)
+                page.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=sc, fill=sc,
+                                 border_width=2 * style.stroke_width + fb_w, **base)
+                if fake_bold:
+                    page.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=hex_to_rgb01(color),
+                                     fill=hex_to_rgb01(color), border_width=fb_w, **base)
+                else:
+                    page.insert_text(pymupdf.Point(x, baseline), s, render_mode=0, color=hex_to_rgb01(color), **base)
             else:
                 key = (color, fake_bold, italic)
                 if cur is None or cur[0] != key:

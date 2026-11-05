@@ -64,6 +64,10 @@ Rules:
 - Region kind "tag_pills": colored rounded labels with short words. Output one label per line, left to right.
 - A small picture inside a sentence (an icon standing for a word) is written [[?]] at its position.
   Decorative art, large numbers like +2 outside the text lines, and small icons above a title are not text: skip them.
+- Word formatting: when a word or phrase inside a line looks different from the rest of that line, wrap it:
+  <b>..</b> bolder, <i>..</i> slanted, <c1>..</c1> a different color (<c2> for a second different color, in
+  order of first appearance on the card). Do not tag a whole line or a whole region: only the words that
+  differ from their line. If nothing differs, use no tags.
 - If the region has no text, return an empty string.
 - Set uncertain=true when any character is hard to read or you are guessing, and say which in note.
   Otherwise uncertain=false and note is an empty string."""

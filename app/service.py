@@ -648,6 +648,7 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
         except (Paused, CardError, NotAvailable, Exception) as e:  # noqa: BLE001 - 제안 없이도 검증은 할 수 있다
             note = f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
     xlsx = icons.export_review(info, res, info.game_dir / "아이콘_검증.xlsx")  # 아이콘 검증은 게임 단위
+    _retire_legacy(info, ["아이콘_검증.xlsx"])
     return IconScanResult("icons_review", xlsx, res.auto, len(res.groups), len(res.occurrences),
                           sum(1 for o in res.occurrences if not o.png), note)
 
@@ -741,6 +742,7 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
     except (CardError, NotAvailable) as e:
         return GlossaryReviewResult("blocked", issues=issues, reason=str(e))
     out = glossary.export_review(info, terms, info.game_dir / "용어집_검증.xlsx")
+    _retire_legacy(info, ["용어집_검증.xlsx"])
     for p_ in workspace.game_projects(info):  # 같은 게임의 프로젝트가 함께 용어집 검증 단계로
         if p_.dir == info.dir or p_.status in ("extracting", "glossary_review"):
             workspace.set_status(p_, "glossary_review")
@@ -867,7 +869,28 @@ def export_project_excel(project_dir: Path | str, force: bool = False) -> list[P
             pages = workspace.included_pages(fd)
             if pages:
                 entries.append({"project_name": p_.name, "group": group_of(proj), "project": proj, "pages": pages})
-    return [export_game(info.game, entries, out, keep=keep)]
+    path = export_game(info.game, entries, out, keep=keep)
+    _retire_legacy(info, [], per_file=True)
+    return [path]
+
+
+def _retire_legacy(info, names: list[str], per_file: bool = False) -> list[Path]:
+    """게임 폴더로 옮겨 간 검증·검수 엑셀의 예전 사본(프로젝트 폴더, 파일 폴더)을 휴지통(.trash)으로.
+    폴더를 열었을 때 옛 엑셀을 고치는 일이 없게 한다. 열려 있어 못 옮기면 그대로 둔다."""
+    from app import workspace
+
+    moved = []
+    for p_ in workspace.game_projects(info):
+        olds = [p_.dir / n for n in names]
+        if per_file:
+            olds += [fd / "번역_검수.xlsx" for fd in workspace.file_dirs(p_)]
+        for old in olds:
+            if old.exists():
+                try:
+                    moved.append(_to_trash(old, workspace.data_root(p_), f"{p_.name}-{old.parent.name}-{old.name}"))
+                except OSError:
+                    pass
+    return moved
 
 
 # ---------------------------------------------------------------- 7·8단계를 프로젝트 단위로 (모든 그룹·파일)
@@ -962,7 +985,7 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
     for fd in workspace.file_dirs(info, group):
         key = workspace.file_key(fd)
         if not (fd / "cleared").exists():
-            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑧ 글자 지우기)"})
+            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑦ 글자 지우기)"})
             out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
             continue
         xlsx = review_xlsx_for(fd)
@@ -1071,7 +1094,31 @@ def project_overview(project_dir: Path | str) -> dict:
             "status_label": STATUS_LABEL.get(info.status, info.status),
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
             "card_limit": workspace.card_limit(info),
-            "next_step": _next_step(info, groups)}
+            "next_step": _next_step(info, groups), "next_key": _next_key(info, groups)}
+
+
+def _next_key(info, groups: list[dict]) -> str:
+    """다음에 누를 단계 버튼 키 (화면의 ‘다음 할 일’ 버튼). _next_step 문장과 같은 순서로 판단한다.
+    add | regions | extract | finish | glossary | translate | erase | compose | results"""
+    if not groups or not any(g["files"] for g in groups):
+        return "add"
+    if any(not g["has_regions"] for g in groups):
+        return "regions"
+    if info.status == "extracting":
+        if any(f["no_regions"] for g in groups if g.get("per_card") for f in g["files"]):
+            return "regions"
+        left = [f for g in groups for f in g["files"] if f["extracted"] < f["included"]]
+        return "extract" if left else "finish"
+    if info.status == "glossary_review":
+        return "glossary"
+    if info.status in ("glossary_confirmed", "translating"):
+        return "translate"
+    files = [f for g in groups for f in g["files"]]
+    if not all(f["erased"] for f in files):
+        return "erase"
+    if not all(f["composed"] for f in files):
+        return "compose"
+    return "results"
 
 
 def _next_step(info, groups: list[dict]) -> str:
@@ -1090,7 +1137,7 @@ def _next_step(info, groups: list[dict]) -> str:
     if info.status == "glossary_review":
         return "용어집 검증 엑셀을 고쳐서 가져오세요"
     if info.status in ("glossary_confirmed", "translating"):
-        return "번역을 시작하세요"
+        return "번역을 시작하세요 (끝나면 검수 엑셀까지 만듭니다)"
     files = [f for g in groups for f in g["files"]]
     if not all(f["erased"] for f in files):
         return "글자를 지우세요"

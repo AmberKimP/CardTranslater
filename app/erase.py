@@ -1223,12 +1223,13 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     from app import erase_text
 
     text_mask_meta: dict[str, dict] = {}
+    layout_meta: dict[str, dict] = {}
     for name, mode in mask_regions.items():
         b = work_px[name]
         mg = 24
         ox0, oy0 = max(0, b[0] - mg), max(0, b[1] - mg)
         ox1, oy1 = min(size[0], b[2] + mg), min(size[1], b[3] + mg)
-        sub = new_img[oy0:oy1, ox0:ox1]
+        sub = new_img[oy0:oy1, ox0:ox1].copy()  # 채우기 전 원문 픽셀 (줄 모양을 잴 때도 쓴다)
         lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
         prot = protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
         tm = erase_text.text_mask(sub, lb, prot)
@@ -1241,6 +1242,25 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             "mode": mode, "used": used, "background": erase_text.background_kind(sub, tm),
             "mask_ratio": round(float(changed.sum()) / wa, 4), "texture": round(tm.texture, 2),
             "needs_choice": mode == "auto" and tm.busy, "notes": tm.notes,
+        }
+        # 원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt
+        lay = erase_text.text_layout(sub, tm, lb)
+        ppx = bg.pt_per_px
+
+        def _pt(bx, _ox=ox0, _oy=oy0):
+            q = to_pt((bx[0] + _ox, bx[1] + _oy, bx[2] + _ox, bx[3] + _oy))
+            return [round(v, 3) for v in q]
+
+        layout_meta[name] = {
+            "lines": [{**{k: v for k, v in ln.items() if k not in ("bbox", "glyph_h", "stroke_px", "accents")},
+                       "bbox_pt": _pt(ln["bbox"]), "glyph_h_pt": round(ln["glyph_h"] * ppx, 3),
+                       "stroke_pt": round(ln["stroke_px"] * ppx, 3),
+                       "accents": [{"color": a_["color"],
+                                    "x_pt": [[_pt((u, ln["bbox"][1], v, ln["bbox"][3]))[0],
+                                              _pt((u, ln["bbox"][1], v, ln["bbox"][3]))[2]] for u, v in a_["x"]]}
+                                   for a_ in ln["accents"]]}
+                      for ln in lay["lines"]],
+            "dividers_pt": [_pt(d) for d in lay["dividers"]],
         }
 
     # ---- 4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,
@@ -1307,6 +1327,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         if m_["name"] in text_mask_meta:
             tmm = text_mask_meta[m_["name"]]
             method = f"text_mask:{tmm['used']}"
+            m_["text_layout"] = layout_meta.get(m_["name"])
             if tmm["needs_choice"]:
                 flags.append("그림 배경: 지우기 방식 확인")
         m_["erase"] = {

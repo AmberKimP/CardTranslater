@@ -327,8 +327,13 @@ def test_source_review_dialog_edits_unresolved_cell(qapp, tmp_path):
     files = service.project_overview(info.dir)["groups"][0]["files"]
     dlg = SourceReviewDialog(files)
     # 확인할 칸: 1쪽 이름(결론 못 냄) + 3쪽 두 칸(읽지 않음)
-    assert dlg.table.rowCount() == 3 and dlg.table.item(0, 2).text() == "결론 못 냄"
-    assert "Opus: 盗掘フェレット" in dlg.info.text() and dlg.image.pixmap() is not None
+    # 화면에는 쉬운 말: ‘결론 못 냄’ → ‘다시 봐야 함’, 모델 이름 대신 ‘보통 읽기’·‘정밀 읽기’
+    assert dlg.table.rowCount() == 3 and dlg.table.item(0, 2).text() == "다시 봐야 함"
+    assert "정밀 읽기: 盗掘フェレット" in dlg.info.text() and dlg.image.pixmap() is not None
+    assert not any(w in dlg.info.text() for w in ("Opus", "Sonnet", "claude-"))
+    # 원문 칸은 일본어가 잘 보이는 글꼴 (있으면 Yu Gothic UI → Meiryo, 없으면 기본)
+    fams = dlg.edit.font().families()
+    assert fams[-1] and all(f in ("Yu Gothic UI", "Meiryo") for f in fams[:-1])
     dlg.edit.setPlainText("盗掘フェレット")
     dlg.save_current()
     assert dlg.table.rowCount() == 2 and dlg.saved == 1  # 고친 칸은 확인 목록에서 빠진다
@@ -364,7 +369,7 @@ def test_project_step_buttons_follow_status(qapp, tmp_path):
     win.open_project(info.dir)
     on = {k: b.isEnabled() for k, b in win.project.step_buttons.items()}
     assert on == {"extract": True, "review": True, "icons": True, "finish": True, "glossary": False,
-                  "translate": False, "excel": False, "erase": True, "compose": False, "results": False,
+                  "translate": False, "erase": True, "compose": False, "results": False,
                   "test": False}
     workspace.set_status(workspace.load_project_info(info.dir), "glossary_confirmed")
     win.project.refresh()
@@ -989,7 +994,8 @@ def test_finish_asks_before_redoing_confirmed_glossary(qapp, tmp_path, monkeypat
 
     monkeypatch.setattr(steps, "ask_choice", answer(1))  # 취소
     act.finish()
-    assert started == [] and asked["title"] == "용어집 다시 만들기" and "v6" in asked["text"]
+    assert started == [] and asked["title"] == "용어집 다시 만들기" and "6번째 확정본" in asked["text"]
+    assert "v6" not in asked["text"]
     assert asked["buttons"] == ["다시 만들기", "취소"] and "용어집 검증 중" in asked["more"]
     monkeypatch.setattr(steps, "ask_choice", answer(0))
     act.finish()
@@ -1011,6 +1017,9 @@ def test_screens_do_not_show_developer_words(qapp, tmp_path, monkeypatch):
     shown = []
     for name in ("information", "warning", "critical"):
         monkeypatch.setattr(QMessageBox, name, staticmethod(lambda p, title, text, *a, **k: shown.append((title, text))))
+    # 오류 창(show_error)은 QMessageBox를 만들어 exec한다: 제목·본문·할 일·자세히를 모두 모은다
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(
+        (self.windowTitle(), "\n".join([self.text(), self.informativeText(), self.detailedText()]))))
     info, fd = _translated_project(tmp_path)
     win = MainWindow(root=tmp_path)
     win.open_project(info.dir)
@@ -1247,3 +1256,144 @@ def test_exclude_dialog_send_to_group(qapp, tmp_path, monkeypatch):
     assert e.moved and workspace.included_pages(fd) == [1, 3]
     names = [x["name"] for x in service.list_groups(info.dir)]
     assert "정예" in names
+
+
+# ================================================================ 쉬운 화면: 다음 할 일 버튼·단계 표시·빈 화면·오류 안내
+def _boxes(monkeypatch):
+    """show_error가 띄우는 창을 모은다: (제목, 본문, 할 일, 자세히)."""
+    from PySide6.QtWidgets import QMessageBox
+
+    got = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: got.append(
+        (self.windowTitle(), self.text(), self.informativeText(), self.detailedText())))
+    return got
+
+
+def test_home_has_no_path_and_shows_empty_guide(qapp, tmp_path):
+    from PySide6.QtWidgets import QLabel
+
+    from app.qt.main import MainWindow
+
+    win = MainWindow(root=tmp_path)
+    assert win.home.body.currentWidget() is win.home.empty and "새 프로젝트" in win.home.empty.text()
+    assert not any(str(tmp_path) in w.text() for w in win.home.findChildren(QLabel))  # 데이터 폴더 경로를 보이지 않는다
+    _project(tmp_path)
+    win.home.refresh()
+    assert win.home.body.currentWidget() is win.home.tree
+
+
+def test_next_button_runs_next_step_and_steps_show_progress(qapp, tmp_path, monkeypatch):
+    from app.qt.main import MainWindow
+
+    # 빈 프로젝트: 표 대신 안내, 큰 버튼은 ‘파일 넣기’
+    info, _ = workspace.create_project("빈", "G", root=tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    assert page.body.currentWidget() is page.empty and page.next_btn.text() == "▶ 파일 넣기"
+    called = []
+    monkeypatch.setattr(page, "add_files", lambda: called.append("add"))
+    page.do_next()
+    assert called == ["add"]
+    # 영역 없는 그룹: ‘영역 지정’ 버튼이 그 그룹을 연다. 꺼진 단계 버튼은 이유를 툴팁으로
+    info = _project(tmp_path)
+    win.open_project(info.dir)
+    assert page.body.currentWidget() is page.tree and page.next_btn.text() == "▶ 영역 지정"
+    assert "영역을 지정하세요" in page.next.text()
+    monkeypatch.setattr(page, "_open_editor", lambda g: called.append(g["name"]))
+    page.do_next()
+    assert called[-1] == "카드"
+    b = page.step_buttons["review"]
+    assert not b.isEnabled() and "먼저 ① 글자 추출" in b.toolTip()
+    # 추출 중: ① 글자 추출이 ‘지금’, 큰 버튼도 같은 동작
+    info2, _fd = _project_with_extract(tmp_path / "x")
+    win2 = MainWindow(root=tmp_path / "x")
+    win2.open_project(info2.dir)
+    p2 = win2.project
+    assert p2.ov["next_key"] == "extract" and p2.step_buttons["extract"].property("step") == "now"
+    assert p2.next_btn.text() == "▶ ① 글자 추출"
+    monkeypatch.setitem(p2.step_fns, "extract", lambda: called.append("extract"))
+    p2.do_next()
+    assert called[-1] == "extract"
+    # 파일 표: 쉬운 표기
+    fi = p2.tree.topLevelItem(0).child(0)
+    assert fi.text(3) == "2/3장" and fi.text(4) == "—" and fi.text(5) == "—" and fi.text(2) == "—"
+
+
+def test_translated_project_marks_done_steps(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    st = page.step_states()
+    assert st["translate"] == "done" and st["erase"] == "done" and st["compose"] == "done"
+    assert st["results"] == "now" and page.next_btn.text() == "▶ 결과 보기"
+    b = page.step_buttons["translate"]
+    assert b.text().endswith("✓") and b.property("step") == "done" and "끝난 단계" in b.toolTip()
+    fi = page.tree.topLevelItem(0).child(0)
+    assert fi.text(4) == "완료" and fi.text(5) == "완료"
+    assert "v" not in page.sub.text()  # 용어집 버전은 ‘N번째 확정본’으로
+
+
+def test_card_limit_banner_and_turn_off(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    service.set_card_limit(info.dir, 2)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    assert not page.banner.isHidden() and "앞 2장만" in page.banner_text.text()
+    assert "(시험)" in page.tree.topLevelItem(0).child(0).text(3)
+    page.turn_off_card_limit()
+    assert page.banner.isHidden() and service.project_overview(info.dir)["card_limit"] is None
+
+
+def test_error_boxes_say_why_and_what_to_do(qapp, monkeypatch):
+    from app.qt.dialogs import UNKNOWN_TODO, explain_error, show_failure, show_problem
+
+    got = _boxes(monkeypatch)
+    # 파일이 열려 있음: 쉬운 안내, 원문은 ‘자세히 보기’
+    raw = "[Errno 13] Permission denied: 'C:/x/검수.xlsx'\n\nTraceback (most recent call last):\n  File ..."
+    show_failure(None, "검수 엑셀을 만들지 못했습니다", raw)
+    title, why, todo, detail = got[-1]
+    assert title == "검수 엑셀을 만들지 못했습니다" and "열려 있어" in why and "닫고" in todo
+    assert "Permission denied" not in why + todo and "Traceback" in detail and "Permission denied" in detail
+    # 사용 한도로 멈춤: 언제 다시 하면 되는지
+    show_problem(None, "번역을 끝내지 못했습니다", "rate limit (429)", retry_after="2026-11-05 14:30:00")
+    _t, why, todo, detail = got[-1]
+    assert "사용 한도" in why and "2026-11-05 14:30:00 이후" in todo and "rate limit" in detail
+    # 로그인 문제
+    assert "로그인 방식" in explain_error("NotAvailable: Claude Code에 로그인되어 있지 않습니다")[1]
+    # 모르는 오류: 다시 해 보고 ‘자세히 보기’ 내용을 알려 달라고
+    show_failure(None, "글자 지우기를 끝내지 못했습니다", "ZeroDivisionError: division by zero\nTraceback ...")
+    _t, why, todo, detail = got[-1]
+    assert todo == UNKNOWN_TODO and "ZeroDivisionError" not in why and "ZeroDivisionError" in detail
+    # 엔진이 쓴 이유가 여러 줄이면 첫 줄 + 나머지 건수
+    show_problem(None, "용어집을 가져오지 못했습니다", "炎: 번역이 비어 있음\n氷: 번역이 비어 있음", "엑셀을 고치세요.")
+    _t, why, todo, detail = got[-1]
+    assert why.startswith("炎: 번역이 비어 있음") and "외 1건" in why and "氷" in detail and todo == "엑셀을 고치세요."
+
+
+def test_step_failures_use_plain_error_boxes(qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.qt.main import MainWindow
+
+    got = _boxes(monkeypatch)
+    info = _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    act = win.project.steps
+    act._translate_done(SimpleNamespace(state="paused", reason="사용 한도에 걸림", retry_after="2026-11-05 14:30:00"))
+    title, why, todo, _d = got[-1]
+    assert title.startswith("번역을 끝내지 못했습니다") and "사용 한도" in why and "14:30:00 이후" in todo
+    from app.qt.steps import _fail
+
+    _fail(win.project, "PermissionError: [WinError 32] 다른 프로세스가 파일을 사용 중\nTraceback ...")
+    title, why, todo, detail = got[-1]
+    assert title == "작업을 끝내지 못했습니다" and "닫고" in todo and "WinError 32" in detail

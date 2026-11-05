@@ -22,7 +22,7 @@ import pymupdf
 from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
-from app.typeset import ROOT, TextStyle, finalize, typeset_region, typeset_tags
+from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)"
@@ -167,6 +167,15 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
         # ---- 이름·본문
         text = entry.get("ko")
+        layout = reg.get("text_layout") or {}
+        if layout.get("lines") and text and not int(style_d.get("rotate", 0)) % 360:
+            # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
+            rec.update(source_ink={"layout_lines": len(layout["lines"])}, draw_rect_pt=[round(v, 3) for v in rect])
+            r_ = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
+            rec["warnings"] += r_.pop("warnings")
+            rec.update(r_)
+            out[name] = rec
+            continue
         rot = int(style_d.get("rotate", 0)) % 360
         mrect = _clip_x1(rect | work if work else rect, work) & src_page.rect
         keep_pt = (region_erase or {}).get(name, {}).get("keep_ink_taller_than_pt")
@@ -200,6 +209,198 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         rec.update(source_ink=ink.to_dict(), draw_rect_pt=[round(v, 3) for v in draw_rect], **rd)
         out[name] = rec
     return out
+
+
+# ---------------------------------------------------------------- 그림 카드: 원문 줄 자리에 한 줄씩
+SLOT_MIN_RATIO = 0.7  # 줄 자리에 넣을 때 원문 글자 높이의 70%까지 줄인다
+
+
+def _rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _hex_rgb(c) -> str:
+    c = [int(round(float(v))) for v in c]
+    return "#%02x%02x%02x" % tuple(max(0, min(255, v)) for v in c)
+
+
+def _merge_cuts(dividers: list) -> list[float]:
+    """구분선(좌우 두 토막일 수 있음)의 세로 가운데 목록."""
+    cuts: list[float] = []
+    for y in sorted((d[1] + d[3]) / 2 for d in dividers):
+        if not cuts or y - cuts[-1] > 2.0:
+            cuts.append(y)
+    return cuts
+
+
+def layout_sections(layout: dict, rect) -> list[dict]:
+    """원문 줄을 구분선으로 나눈 묶음: [{"lines": [...], "y0": 위, "y1": 아래}]."""
+    rect = pymupdf.Rect(rect)
+    cuts = _merge_cuts(layout.get("dividers_pt") or [])
+    bounds = [rect.y0] + cuts + [rect.y1]
+    out = []
+    for k in range(len(bounds) - 1):
+        lines = [ln for ln in layout["lines"] if bounds[k] <= (ln["bbox_pt"][1] + ln["bbox_pt"][3]) / 2 < bounds[k + 1]]
+        if lines:
+            out.append({"lines": lines, "y0": bounds[k], "y1": bounds[k + 1]})
+    return out
+
+
+def assign_lines(ko_lines: list[str], counts: list[int]) -> list[list[str]]:
+    """번역 줄을 묶음에 나눈다. 수가 같으면 그대로, 다르면 아래 묶음부터 원문 줄 수만큼 주고 남는 것은 맨 위 묶음에."""
+    if sum(counts) == len(ko_lines):
+        out, i = [], 0
+        for c in counts:
+            out.append(ko_lines[i:i + c])
+            i += c
+        return out
+    out = [[] for _ in counts]
+    end = len(ko_lines)
+    for k in range(len(counts) - 1, 0, -1):
+        take = max(0, min(counts[k], end - k))  # 위 묶음마다 적어도 한 줄은 남긴다
+        out[k] = ko_lines[end - take:end]
+        end -= take
+    out[0] = ko_lines[:end]
+    return out
+
+
+def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], **kw) -> TextStyle:
+    """원문 줄 모양(색·테두리·굵기·정렬·다른 색 낱말)을 따른 서식. 영역 서식에 직접 적은 값이 먼저다."""
+    st = TextStyle.from_region_style(style_d, base_dir, ink_height_pt=ln["glyph_h_pt"], **kw)
+    if "color" not in style_d:
+        st.color = ln["color"]
+    if "align" not in style_d:
+        st.align = ln.get("align", "left")
+    st.bold = bool(style_d.get("bold", ln.get("bold", False)))
+    if ln.get("stroke_color") and not style_d.get("stroke_color") and ln.get("stroke_pt"):
+        st.stroke_color = ln["stroke_color"]
+        st.stroke_width = ln["stroke_pt"] / max(st.start_size(), 1e-3)
+    accents = [a["color"] for a in ln.get("accents") or []]
+    accents += [c for c in region_accents if c not in accents]
+    tags = {f"c{i + 1}": c for i, c in enumerate(accents)}
+    st.tag_colors = {**tags, **(style_d.get("tag_colors") or {})}
+    st.min_ratio = min(st.min_ratio, SLOT_MIN_RATIO)
+    return st
+
+
+def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
+                          base_dir: Path = ROOT, source_text: str | None = None) -> dict:
+    """원문 줄 모양(지우기 때 잰 text_layout)대로 한글을 넣는다.
+
+    - 원문 줄 자리마다 번역 한 줄: 같은 높이·색·테두리·굵기·정렬 (줄 수가 같을 때)
+    - 구분선(-◆-) 위아래는 따로: 번역 줄을 묶음별로 나눠 선을 넘지 않는다
+    - 묶음 안 줄 수가 원문과 다르면 그 묶음 안에서 줄바꿈해 맞춘다
+    """
+    rect = pymupdf.Rect(rect)
+    lines_all = layout["lines"]
+    secs = layout_sections(layout, rect)
+    ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
+    parts = assign_lines(ko_lines, [len(s["lines"]) for s in secs])
+    region_accents: list[str] = []
+    for ln in lines_all:
+        for a in ln.get("accents") or []:
+            if a["color"] not in region_accents:
+                region_accents.append(a["color"])
+    # 같은 서식 줄(색이 가깝고 글자 높이가 비슷)은 한 묶음: 색은 하나로, 크기는 가장 작게 맞은 줄에 맞춘다
+    groups: list[list[dict]] = []
+    for ln in lines_all:
+        c = np.array(_rgb(ln["color"]))
+        for g in groups:
+            g0 = g[0]
+            if (np.abs(np.array(_rgb(g0["color"])) - c).max() < 70 and bool(g0.get("stroke_color")) == bool(ln.get("stroke_color"))
+                    and abs(ln["glyph_h_pt"] - g0["glyph_h_pt"]) <= 0.25 * max(ln["glyph_h_pt"], g0["glyph_h_pt"])):
+                g.append(ln)
+                break
+        else:
+            groups.append([ln])
+    gid = {}
+    for k, g in enumerate(groups):
+        col = _hex_rgb(np.median([_rgb(x["color"]) for x in g], axis=0))
+        gh = float(np.median([x["glyph_h_pt"] for x in g]))
+        for x in g:
+            gid[id(x)] = (k, col, gh)
+    lines_all = [{**ln, "color": gid[id(ln)][1], "glyph_h_pt": gid[id(ln)][2], "_g": gid[id(ln)][0]} for ln in lines_all]
+    layout = {**layout, "lines": lines_all}
+    secs = layout_sections(layout, rect)
+    parts = assign_lines(ko_lines, [len(s["lines"]) for s in secs])
+    right = max(ln["bbox_pt"][2] for ln in lines_all)
+    left = min(ln["bbox_pt"][0] for ln in lines_all)
+    results: list[tuple[TypesetResult, str]] = []
+    slots = []  # (줄 모양, 번역, 사각형, 서식, 위)
+    for sec, kos in zip(secs, parts):
+        if not kos:
+            continue
+        src = sec["lines"]
+        if len(kos) == len(src):
+            for ln, ko in zip(src, kos):
+                b = ln["bbox_pt"]
+                gh = ln["glyph_h_pt"]
+                st = _line_style(style_d, base_dir, ln, region_accents)
+                pad = 0.5 * gh
+                cy = (b[1] + b[3]) / 2
+                top = cy - gh / 2
+                if st.align == "center":
+                    cx = (b[0] + b[2]) / 2
+                    hw = max(min(cx - rect.x0, rect.x1 - cx), (b[2] - b[0]) / 2)
+                    hw = min(hw, max(cx - left, right - cx) + pad)
+                    r = pymupdf.Rect(cx - hw, top, cx + hw, top + 1.6 * gh)
+                elif st.align == "right":
+                    r = pymupdf.Rect(max(rect.x0, left - pad), top, b[2], top + 1.6 * gh)
+                else:
+                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + 1.6 * gh)
+                slots.append((ln, ko, r, st, top))
+        else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
+            ln0 = dict(src[0])
+            ln0["glyph_h_pt"] = float(np.median([ln["glyph_h_pt"] for ln in src]))
+            aligns = [ln.get("align", "left") for ln in src]
+            ln0["align"] = max(set(aligns), key=aligns.count)
+            pitch = (float(np.median([src[i + 1]["bbox_pt"][1] - src[i]["bbox_pt"][1] for i in range(len(src) - 1)]))
+                     if len(src) > 1 else None)
+            st = _line_style(style_d, base_dir, ln0, region_accents, line_pitch_pt=pitch)
+            gh = ln0["glyph_h_pt"]
+            top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
+            bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)
+            x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
+            r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + 1.6 * gh))
+            results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
+    # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
+    fit_size: dict[int, float] = {}
+    for ln, ko, r, st, top in slots:
+        d = typeset_region(page, r, ko, st, top_anchor=top, draw=False)
+        if d.size:
+            fit_size[ln["_g"]] = min(fit_size.get(ln["_g"], d.size), d.size)
+    for ln, ko, r, st, top in slots:
+        size = fit_size.get(ln["_g"])
+        if size:
+            start = st.start_size()
+            st.fixed_size_pt = size
+            res = typeset_region(page, r, ko, st, top_anchor=top)
+            res.start_size = start
+            if size < start - 1e-6 and "글자 축소" not in res.status:
+                res.status = ["글자 축소"] + res.status
+        else:
+            res = typeset_region(page, r, ko, st, top_anchor=top)
+        results.append((res, "slot"))
+    status = sorted({s for r, _ in results for s in r.status})
+    sizes = [r.size for r, _ in results if r.size]
+    errors = [e for r, _ in results for e in r.errors]
+    if ko_lines and len(ko_lines) != len(lines_all):
+        errors_note = f"번역 {len(ko_lines)}줄, 원문 {len(lines_all)}줄: 묶음 안에서 줄바꿈"
+    else:
+        errors_note = ""
+    return {
+        "layout": "lines", "sections": len(secs), "line_modes": [m for _, m in results],
+        "status": status, "size_pt": round(float(np.median(sizes)), 3) if sizes else None,
+        "start_size_pt": round(float(np.median([r.start_size for r, _ in results if r.start_size])), 3) if sizes else None,
+        "min_size_pt": round(min(r.min_size for r, _ in results if r.min_size), 3) if sizes else None,
+        "tracking": round(min((r.tracking for r, _ in results), default=0.0), 3),
+        "lines": [t for r, _ in results for t in r.lines],
+        "line_boxes_pt": [[round(v, 2) for v in b] for r, _ in results for b in r.line_boxes],
+        "overflow_text": "\n".join(r.overflow_text for r, _ in results if r.overflow_text),
+        "errors": errors, "label_rect_pt": None, "drawn": True,
+        "warnings": [errors_note] if errors_note else [],
+    }
 
 
 # ---------------------------------------------------------------- 실행

@@ -64,6 +64,90 @@ def fit_to_screen(w, width: int, height: int, margin: float = 0.92, maximize_bel
         w.setWindowState(w.windowState() | Qt.WindowState.WindowMaximized)
 
 
+# ---------------------------------------------------------------- 오류 창: 왜 → 무엇을 하면 되는지
+UNKNOWN_TODO = "다시 해 보고, 계속되면 ‘자세히 보기’ 내용을 알려 주세요."
+
+# (찾을 낱말들, 왜, 무엇을 하면 되는지). 위에서부터 먼저 맞는 것을 쓴다.
+_CAUSES = [
+    (("PermissionError", "Permission denied", "Errno 13", "WinError 32", "WinError 5", "다른 프로세스",
+      "being used by another process", "액세스가 거부"),
+     "파일이 다른 프로그램(엑셀·PDF 보기 등)에서 열려 있어 쓸 수 없습니다.",
+     "이 프로젝트의 엑셀·PDF 파일을 닫고 다시 하세요."),
+    (("NotAvailable", "로그인되어 있지 않", "인증 오류", "claude 명령", "API 키", "api key", "authentication",
+      "invalid x-api-key", "error code: 401"),
+     "Claude에 연결하지 못했습니다 (로그인이 풀렸거나, Claude 프로그램이나 API 키를 찾지 못함).",
+     "‘파일 > 로그인 방식’에서 로그인을 확인한 뒤 다시 하세요."),
+    (("사용 한도", "한도", "rate limit", "rate_limit", "usage limit", "error code: 429", "overloaded", "error code: 529"),
+     "Claude 사용 한도에 걸렸습니다.",
+     "잠시 뒤 다시 누르면 이미 끝낸 곳 다음부터 이어서 합니다."),
+    (("ConnectionError", "connection error", "timed out", "Timeout", "연결이 끊", "연결할 수 없"),
+     "인터넷 연결이 끊겼거나 응답이 너무 늦습니다.",
+     "연결을 확인하고 다시 하세요. 이미 끝낸 부분은 다시 하지 않습니다."),
+    (("FileNotFoundError", "No such file", "찾을 수 없", "찾지 못했"),
+     "필요한 파일을 찾지 못했습니다 (옮겼거나 지웠을 수 있음).",
+     "프로젝트 화면에서 ‘새로 고침’을 누른 뒤 다시 하세요. 계속되면 ‘파일 넣기’로 파일을 다시 넣으세요."),
+    (("영역 없음", "영역이 없", "영역을 지정"),
+     "영역을 지정하지 않은 그룹이나 카드가 있습니다.",
+     "‘영역 지정’에서 영역을 그린 뒤 다시 하세요."),
+]
+
+
+def explain_error(text: str) -> tuple[str, str] | None:
+    """흔한 오류 원인을 쉬운 말로: (왜, 무엇을 하면 되는지). 모르는 오류면 None."""
+    t = text or ""
+    low = t.lower()
+    for keys, why, todo in _CAUSES:
+        if any(k.lower() in low for k in keys):
+            return why, todo
+    return None
+
+
+def show_error(parent, title: str, why: str, todo: str = "", detail: str | None = None,
+               warn: bool = True) -> QMessageBox:
+    """오류·경고 창. 제목=무엇이 안 됐는지, 본문=왜, 아래=무엇을 하면 되는지, 원문 메시지는 ‘자세히 보기’에."""
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setIcon(QMessageBox.Icon.Warning if warn else QMessageBox.Icon.Critical)
+    box.setText(why)
+    if todo:
+        box.setInformativeText(todo)
+    if detail and detail.strip() and detail.strip() != why.strip():
+        box.setDetailedText(detail.strip()[:6000])
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.exec()
+    return box
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    line = next((x.strip() for x in (text or "").splitlines() if x.strip()), "")
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
+def show_failure(parent, title: str, message: str) -> QMessageBox:
+    """작업 중 예외가 난 경우 (worker 실패 콜백). 원인을 알아보면 쉬운 안내, 아니면 ‘자세히 보기’를 알려 달라고."""
+    known = explain_error(message)
+    if known:
+        return show_error(parent, title, known[0], known[1], message)
+    return show_error(parent, title, "예상하지 못한 문제가 생겼습니다.", UNKNOWN_TODO, message, warn=False)
+
+
+def show_problem(parent, title: str, reason: str, todo: str = "", retry_after: str | None = None,
+                 detail: str | None = None) -> QMessageBox:
+    """엔진이 ‘할 수 없음·멈춤·실패’ 상태와 이유를 돌려준 경우. reason은 엔진이 쓴 한국어 이유."""
+    full = "\n\n".join(x for x in ((reason or "").strip(), (detail or "").strip()) if x)
+    if retry_after:
+        return show_error(parent, title, "Claude 사용 한도에 걸려 멈췄습니다.",
+                          f"{retry_after} 이후 다시 누르면 멈춘 곳부터 이어서 합니다.", full)
+    known = explain_error(reason or "")
+    if known:
+        return show_error(parent, title, known[0], todo or known[1], full)
+    why = _first_line(reason) or "작업을 마치지 못했습니다."
+    more = len([x for x in (reason or "").splitlines() if x.strip()]) - 1
+    if more > 0:
+        why += f"\n(외 {more}건 — ‘자세히 보기’에 모두 있습니다)"
+    return show_error(parent, title, why, todo or UNKNOWN_TODO, full)
+
+
 def ask_choice(parent, title: str, text: str, buttons: list[tuple[str, str]], default: int | None = None,
                informative: str = "") -> int | None:
     """동작 이름 버튼으로 묻는다. buttons: [(문구, 'accept'|'destructive'|'reject')]. 누른 버튼 번호, 닫으면 None."""
@@ -133,15 +217,17 @@ class NewProjectDialog(QDialog):
     def accept(self):
         name, game = self.name.text().strip(), self.game.currentText().strip()
         if not name or not game:
-            QMessageBox.warning(self, "입력 필요", "프로젝트 이름과 게임을 넣으세요")
+            show_error(self, "프로젝트를 만들 수 없습니다", "프로젝트 이름이나 게임 이름이 비어 있습니다.",
+                       "두 칸을 모두 채운 뒤 ‘만들기’를 누르세요.")
             return
         try:
             info, _new = service.new_project(name, game, self.lang.currentData(), root=self.root)
         except FileExistsError:
-            QMessageBox.warning(self, "이미 있음", f"같은 이름의 프로젝트가 있습니다: {name}")
+            show_error(self, "프로젝트를 만들 수 없습니다", f"같은 이름의 프로젝트(‘{name}’)가 이미 있습니다.",
+                       "다른 이름을 넣으세요.")
             return
         except ValueError as e:
-            QMessageBox.warning(self, "쓸 수 없는 이름", str(e))
+            show_problem(self, "프로젝트를 만들 수 없습니다", str(e), "이름에서 쓸 수 없는 글자를 빼고 다시 넣으세요.")
             return
         self.created = info.dir
         super().accept()
@@ -299,7 +385,8 @@ class AddFilesDialog(QDialog):
         try:
             png, info = service.image_preview(path, cols, rows)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "미리 볼 수 없음", str(e))
+            show_problem(self, "자를 자리를 미리 볼 수 없습니다", str(e),
+                         "그림 파일이 열리는지 확인하고, 가로·세로 장수를 바꿔 다시 해 보세요.")
             return
         dlg = QDialog(self)
         dlg.setWindowTitle(f"자를 자리 — {Path(path).name}")
@@ -323,12 +410,14 @@ class AddFilesDialog(QDialog):
     def accept(self):
         files = self.all_files()
         if not files:
-            QMessageBox.warning(self, "파일 없음", "PDF나 이미지를 고르세요")
+            show_error(self, "넣을 파일이 없습니다", "아직 고른 파일이 없습니다.",
+                       "‘파일 고르기…’로 카드 PDF나 그림(JPG·PNG)을 고르세요.")
             return
         new = self.r_new.isChecked()
         group = self.new_name.text().strip() if new else self.group_combo.currentData()
         if not group:
-            QMessageBox.warning(self, "그룹 이름", "새 그룹 이름을 넣으세요")
+            show_error(self, "새 그룹 이름이 비어 있습니다", "새 그룹을 만들려면 이름이 필요합니다.",
+                       "‘새 그룹 만들기’ 옆 칸에 이름을 넣으세요 (예: 아이템 카드).")
             return
         regions_from = (self.copy_from.currentData() or None) if new else None
         pdfs = [f for f in files if Path(f).suffix.lower() == ".pdf"]
@@ -356,7 +445,7 @@ class AddFilesDialog(QDialog):
                 if ri.file_dir:
                     warnings.insert(0, f"이미지 {len(imgs)}장 → 카드 {ri.pages}장 ({ri.file_dir.name})")
         except (FileExistsError, KeyError, ValueError, OSError) as e:
-            QMessageBox.warning(self, "넣을 수 없음", str(e).strip("'"))
+            show_problem(self, "파일을 넣지 못했습니다", str(e).strip("'"))
             return
         self.result_info = {"group": group, "added": added, "skipped": skipped, "has_regions": has_regions,
                             "warnings": warnings}
@@ -427,7 +516,8 @@ class ExcludePagesDialog(QDialog):
     def send_to_group(self):
         pages = self.checked()
         if not pages:
-            QMessageBox.warning(self, "보낼 쪽", "다른 그룹으로 보낼 쪽을 체크하세요")
+            show_error(self, "보낼 쪽이 없습니다", "다른 그룹으로 보낼 쪽을 아직 고르지 않았습니다.",
+                       "그림 옆 칸을 체크한 뒤 다시 누르세요.")
             return
         group, new = self.target.currentData(), False
         if group is None:
@@ -439,7 +529,7 @@ class ExcludePagesDialog(QDialog):
         try:
             service.move_pages_to_group(self.file_dir, pages, group, new_group=new)
         except (ValueError, FileExistsError) as e:
-            QMessageBox.warning(self, "보낼 수 없음", str(e))
+            show_problem(self, "쪽을 다른 그룹으로 보내지 못했습니다", str(e))
             return
         self.moved = True
         QMessageBox.information(self, "보냄", f"{len(pages)}쪽을 ‘{group}’ 그룹으로 보냈습니다. 이 그룹에서는 빠집니다."
@@ -464,7 +554,7 @@ class SettingsDialog(QDialog):
         info = QLabel(service.engine_status()["message"] + "\n(Claude 구독 / API 키는 파일 > 로그인 방식에서 바꿉니다)")
         info.setStyleSheet("color: #666")
         form = QFormLayout()
-        form.addRow("데이터 폴더 (games·projects)", row)
+        form.addRow("데이터 폴더", row)
         form.addRow("로그인 방식", info)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "저장")
@@ -485,7 +575,7 @@ class SettingsDialog(QDialog):
         try:
             d.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            QMessageBox.warning(self, "폴더를 만들 수 없음", str(e))
+            show_problem(self, "데이터 폴더를 쓸 수 없습니다", str(e), "다른 폴더를 고르거나, 쓸 수 있는 폴더인지 확인하세요.")
             return
         service.save_settings(d, self.engine)
         super().accept()

@@ -13,9 +13,14 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import fit_to_screen
+from app.qt.dialogs import fit_to_screen, show_error, show_failure, show_problem
 
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
+STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자"}  # 엔진 상태 낱말을 화면용으로
+
+
+def status_text(st: list[str]) -> str:
+    return ", ".join(STATUS_TEXT.get(x, x) for x in st)
 
 
 def _open(p: Path):
@@ -36,7 +41,7 @@ class ResultViewer(QDialog):
         self.run = QComboBox()
         for name, d in runs:
             self.run.addItem(name, str(d))
-        self.only = QCheckBox("문제 있는 쪽만 (넘침·아이콘 오류·글리프 없음 등)")
+        self.only = QCheckBox("문제 있는 쪽만 (넘침·아이콘 오류·글꼴에 없는 글자 등)")
         self.info = QLabel()
         pdf_btn = QPushButton("PDF 열기")
         pdf_btn.clicked.connect(self.open_pdf)
@@ -116,7 +121,7 @@ class ResultViewer(QDialog):
         self.items = [p for p in allp if self.problems(p["status"])] if self.only.isChecked() else allp
         self.pages.clear()
         for p in self.items:
-            it = QListWidgetItem(f"{p['page']}쪽" + (f" · {', '.join(p['status'])}" if p["status"] else ""))
+            it = QListWidgetItem(f"{p['page']}쪽" + (f" · {status_text(p['status'])}" if p["status"] else ""))
             if self.problems(p["status"]):
                 it.setBackground(QColor("#F4B183"))
             elif p["status"]:
@@ -184,7 +189,7 @@ class ResultViewer(QDialog):
         fd = self.file_dir()
         self._erase_info = service.card_erase_info(fd, p["page"]) if fd else {}
         for r in p["regions"]:
-            text = f"{r['name']}" + (f" · {', '.join(r['status'])}" if r["status"] else "")
+            text = f"{r['name']}" + (f" · {status_text(r['status'])}" if r["status"] else "")
             ei = self._erase_info.get(r["name"]) or {}
             if ei.get("mode"):
                 text += f" · 지우기: {dict(service.ERASE_MODES)[ei['mode']]}"
@@ -232,7 +237,7 @@ class ResultViewer(QDialog):
 
         def done(res):
             if res.state != "done":
-                QMessageBox.warning(self, "다시 하기", res.error or "\n".join(res.blocking) or res.state)
+                show_problem(self, "이 카드를 다시 만들지 못했습니다", res.error or "\n".join(res.blocking) or res.state)
             row = next((i for i, it in enumerate(self.items) if it["page"] == page), 0)
             self.reload()
             self.pages.setCurrentRow(min(row, max(0, len(self.items) - 1)))
@@ -242,7 +247,7 @@ class ResultViewer(QDialog):
 
         job = worker.Job(service.redo_file, fd)
         worker.run_with_dialog(self, "다시 지우고 한글 넣기", job, done,
-                               lambda m: QMessageBox.warning(self, "다시 하기", m))
+                               lambda m: show_failure(self, "이 카드를 다시 만들지 못했습니다", m))
 
     def _show_region(self):
         self._sync_erase()
@@ -289,7 +294,8 @@ class TestRunDialog(QDialog):
 
     def accept(self):
         if not self.pages.text().strip():
-            QMessageBox.warning(self, "쪽", "시험할 쪽을 넣으세요 (예: 2-4)")
+            show_error(self, "시험할 쪽이 비어 있습니다", "어느 쪽을 시험할지 정하지 않았습니다.",
+                       "‘쪽’ 칸에 쪽 번호를 넣으세요 (예: 2-4 또는 3,7,9).")
             return
         super().accept()
 
@@ -298,7 +304,7 @@ class TestRunDialog(QDialog):
 
 
 class OutputActions:
-    """프로젝트 화면의 ⑧ 지우기 · ⑨ 한글 넣기 · 결과 보기 · 시험 실행."""
+    """프로젝트 화면의 ⑦ 지우기 · ⑧ 한글 넣기 · 결과 보기 · 시험 실행."""
 
     def __init__(self, page):
         self.page = page
@@ -328,7 +334,7 @@ class OutputActions:
             redo = box.clickedButton() is again
         job = worker.Job(service.erase_project, self.pdir, redo=redo)
         worker.run_with_dialog(self.page, "글자 지우기", job, self._erase_done,
-                               lambda m: QMessageBox.critical(self.page, "오류", m[:3000]))
+                               lambda m: show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m))
 
     def _erase_done(self, r):
         from app.qt.steps import state_label
@@ -336,14 +342,17 @@ class OutputActions:
         self.page.refresh()
         lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                  else f" — {f.get('reason', '')}") for f in r.files]
-        (QMessageBox.information if r.state == "done" else QMessageBox.warning)(
-            self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
+        if r.state in ("done", "skipped"):
+            QMessageBox.information(self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
+        else:
+            show_problem(self.page, f"글자 지우기를 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
+                         detail="\n".join(lines))
 
     # ---- 한글 넣기
     def compose(self, accept: bool = False):
         job = worker.Job(service.compose_project, self.pdir, accept_issues=accept)
         worker.run_with_dialog(self.page, "한글 넣기", job, self._compose_done,
-                               lambda m: QMessageBox.critical(self.page, "오류", m[:3000]))
+                               lambda m: show_failure(self.page, "한글 넣기를 끝내지 못했습니다", m))
 
     def _compose_done(self, r):
         from app.qt.steps import _ask_list, state_label
@@ -388,10 +397,10 @@ class OutputActions:
         fd, pages = dlg.choice()
         job = worker.Job(service.test_run, fd, pages)
         worker.run_with_dialog(self.page, "시험 실행", job, self._test_done,
-                               lambda m: QMessageBox.critical(self.page, "오류", m[:3000]))
+                               lambda m: show_failure(self.page, "시험 실행을 끝내지 못했습니다", m))
 
     def _test_done(self, r):
         if r.state != "done":
-            QMessageBox.warning(self.page, "시험 실행", r.reason)
+            show_problem(self.page, "시험 실행을 끝내지 못했습니다", r.reason or "")
             return
         ResultViewer([(f"시험: {r.run_dir.name}", r.run_dir)], self.page, title="시험 실행 결과").exec()

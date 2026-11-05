@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
-from app.qt.dialogs import ask_choice, fit_to_screen
+from app.qt.dialogs import ask_choice, fit_to_screen, show_problem
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
 ALIGN_LABELS = [("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
@@ -1065,7 +1065,7 @@ class RegionEditor(QDialog):
     def save(self) -> bool:
         problems = service.save_region_template(self.group_dir, self.to_template())
         if problems:
-            QMessageBox.warning(self, "저장할 수 없음", "\n".join(problems))
+            show_problem(self, "영역을 저장하지 못했습니다", "\n".join(problems), "표시된 영역을 고친 뒤 다시 저장하세요.")
             return False
         self.template = service.load_region_template(self.group_dir)
         if self.is_per_card():
@@ -1073,7 +1073,7 @@ class RegionEditor(QDialog):
         self.dirty = False
         self._update_title()
         self._update_card_info()
-        self.status.setText(f"저장함: {self.group_dir / 'regions.json'}")
+        self.status.setText("영역을 저장했습니다")
         self.saved.emit()
         return True
 

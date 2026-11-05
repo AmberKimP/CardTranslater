@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
+from app.qt.dialogs import show_error, show_failure, show_problem
 
 
 class LoginDialog(QDialog):
@@ -129,13 +130,14 @@ class LoginDialog(QDialog):
     def check_claude(self):
         job = worker.Job(service.claude_login_status, check=True, with_progress=False)
         worker.run_with_dialog(self, "Claude 로그인 확인 중", job, self._refresh_claude,
-                               lambda m: QMessageBox.warning(self, "확인 실패", m[:1500]), cancellable=False)
+                               lambda m: show_failure(self, "로그인을 확인하지 못했습니다", m), cancellable=False)
 
     def open_claude_login(self):
         try:
             service.launch_claude_login()
         except OSError as e:
-            QMessageBox.warning(self, "열 수 없음", str(e))
+            show_problem(self, "로그인 창을 열지 못했습니다", str(e),
+                         "Claude Code가 설치되어 있는지 확인하세요. 아니면 ‘API 키 사용’을 고르세요.")
             return
         self.claude_status.setText("○ 새 창에서 /login 으로 로그인한 뒤 ‘로그인 확인’을 누르세요")
 
@@ -146,11 +148,15 @@ class LoginDialog(QDialog):
             return
         job = worker.Job(service.set_api_key, key, with_progress=False)
         worker.run_with_dialog(self, "API 키 확인 중", job, self._key_saved,
-                               lambda m: QMessageBox.warning(self, "확인 실패", m[:1500]), cancellable=False)
+                               lambda m: show_failure(self, "API 키를 확인하지 못했습니다", m), cancellable=False)
 
     def _key_saved(self, r):
         ok, msg = r
-        (QMessageBox.information if ok else QMessageBox.warning)(self, "API 키", msg)
+        if ok:
+            QMessageBox.information(self, "API 키", msg)
+        else:
+            show_problem(self, "API 키를 저장하지 못했습니다", msg,
+                         "키를 처음부터 끝까지 다시 복사해 붙여 넣고 ‘확인하고 저장’을 누르세요.")
         if ok:
             self.key.clear()
         self._refresh_api()
@@ -165,7 +171,8 @@ class LoginDialog(QDialog):
     def accept(self):
         eng = self.engine()
         if eng == "api" and not self._api["has_key"]:
-            QMessageBox.warning(self, "API 키 필요", "API 키를 넣고 ‘확인하고 저장’을 누르세요")
+            show_error(self, "API 키가 없습니다", "‘API 키 사용’을 골랐지만 저장한 키가 없습니다.",
+                       "키를 붙여 넣고 ‘확인하고 저장’을 누르세요. 아니면 ‘Claude로 로그인’을 고르세요.")
             return
         if eng == "claude-code" and not self._claude["installed"]:
             if QMessageBox.question(self, "Claude Code 없음",

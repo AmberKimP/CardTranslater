@@ -38,6 +38,7 @@ MODE_LABELS = {
 STRONG = 60.0  # 배경과 이만큼(RGB 최대 채널) 다르면 글자 후보
 WEAK = 30.0  # 글자에 붙은 테두리·그림자로 넓힐 때의 기준
 COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
+BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자
 
 
 def _disk(r: int) -> np.ndarray:
@@ -62,6 +63,7 @@ class TextMask:
     texture: float  # 상자 배경의 국소 표준편차 중앙값
     glyph_px: float = 0.0  # 글자 크기 추정 (px)
     notes: list[str] = field(default_factory=list)
+    dividers: list[tuple[int, int, int, int]] = field(default_factory=list)  # 남긴 가로 구분선 (x0,y0,x1,y1)
 
 
 def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None) -> TextMask:
@@ -84,6 +86,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
 
     cands = []  # (덩어리, 평균색, 넓이, 큰 변)
     lines = []  # 가로 구분선의 (세로 중심, 두께): 선 사이의 장식(◆)도 남긴다
+    dividers = []
     for pol in (1, -1):
         strong = (strong_all & (np.sign(lum - lmed) == pol)).astype(np.uint8)
         n, lab, st, _ = cv2.connectedComponentsWithStats(strong, connectivity=8)
@@ -91,10 +94,12 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             x, y, w, h, a = (int(v) for v in st[i])
             if a < 6:
                 continue
-            if w > 0.6 * bw or h > 0.8 * bh:  # 테두리·큰 그림
-                continue
-            if not busy and w > 0.25 * bw and w > 4 * h:  # 종이 위 가로 구분선 (그림 위의 긴 'ー'는 글자)
+            if not busy and w > 0.25 * bw and w > 4 * h and h < 0.15 * bh and a >= 0.45 * w * h:  # 종이 위 가로 구분선 (그림 위의 긴 'ー'는 글자)
                 lines.append((y + h / 2, h))
+                if x0 <= x + w / 2 <= x1 and y0 <= y + h / 2 <= y1:
+                    dividers.append((x, y, x + w, y + h))
+                continue
+            if w > 0.6 * bw or h > 0.8 * bh:  # 테두리·큰 그림
                 continue
             comp = lab == i
             if (comp & ~inbox).sum() / a > 0.03:  # 상자 밖으로 이어지는 그림·선
@@ -123,7 +128,14 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             touch = xs.min() <= x0 + 2 or ys.min() <= y0 + 2 or xs.max() >= x1 - 3 or ys.max() >= y1 - 3
             ov = (c[0] & busy_map).sum() / c[2]
             (dropped if ov > 0.3 or (touch and ov > 0.05) else kept).append((c, touch))
-        kept = [c for c, _t in kept]
+        # 글자보다 길고 속이 빈 가는 곡선(패널 테두리 조각)은 글자가 아니다
+        def thin_edge(c, _t) -> bool:
+            ys, xs = np.nonzero(c[0])
+            w, h = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+            return bool(glyph) and max(w, h) > 1.5 * glyph and c[2] < 0.25 * w * h
+
+        kept = [c for c, t in kept if not thin_edge(c, t)]
+        dropped = [(c, t) for c, t in dropped if not thin_edge(c, t)]
         # 종이 위 글자는 둘레가 종이색이다. 둘레가 그림(유리 조각·테두리)인 조각은 빼다
         paper = np.median(I[sel], axis=0) if sel.sum() > 50 else None
         free = ~cv2.dilate(strong_all.astype(np.uint8), _disk(2)).astype(bool) & inbox
@@ -191,7 +203,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     grown = cv2.dilate(grown.astype(np.uint8), _disk(3 if busy else 1)).astype(bool) & inbox
     if protect is not None:
         grown &= ~protect
-    return TextMask(grown, keep, busy, texture, glyph, notes)
+    return TextMask(grown, keep, busy, texture, glyph, notes, dividers)
 
 
 def background_kind(img: np.ndarray, tm: TextMask) -> str:
@@ -263,3 +275,143 @@ def fill_text(img: np.ndarray, tm: TextMask, mode: str = "auto",
     out = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     out[~m] = img[~m]
     return out, used, m
+
+
+# ---------------------------------------------------------------- 원문 줄 모양 (한글 넣기용)
+def _hex(c) -> str:
+    c = np.clip(np.rint(np.asarray(c, np.float32)), 0, 255).astype(int)
+    return "#%02x%02x%02x" % tuple(c)
+
+
+def _bands(rows: np.ndarray, gap: int) -> list[list[int]]:
+    out: list[list[int]] = []
+    for i in np.nonzero(rows)[0]:
+        if out and i - out[-1][1] <= gap + 1:
+            out[-1][1] = int(i)
+        else:
+            out.append([int(i), int(i)])
+    return out
+
+
+def _seg_height(m: np.ndarray) -> float | None:
+    """빈 세로줄로 나뉜 조각의 높이 중 큰 쪽(75%) = 대표 글자 높이 (작은 ー・、 를 피함)."""
+    rows_all = np.nonzero(m.any(1))[0]
+    if not len(rows_all):
+        return None
+    bh = rows_all[-1] - rows_all[0] + 1
+    cols = m.any(0)
+    hs, i, n = [], 0, len(cols)
+    while i < n:
+        if cols[i]:
+            j = i
+            while j < n and cols[j]:
+                j += 1
+            r = np.nonzero(m[:, i:j].any(1))[0]
+            if j - i >= 0.25 * bh:
+                hs.append(r[-1] - r[0] + 1)
+            i = j
+        else:
+            i += 1
+    return float(np.percentile(hs, 75)) if hs else float(bh)
+
+
+def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -> dict:
+    """지운 글자의 줄 모양: 줄마다 위치·대표 글자 높이·글자색·테두리색·굵기·정렬, 다른 색 낱말, 구분선.
+
+    좌표는 img 픽셀. 한글 넣기가 원문 줄 자리·서식을 그대로 따르게 지우기 때 함께 기록한다.
+    """
+    x0, y0, x1, y1 = box
+    bw = max(1, x1 - x0)
+    I = img.astype(np.float32)
+    inbox = np.zeros(tm.core.shape, bool)
+    inbox[max(0, y0):y1, max(0, x0):x1] = True
+    core = tm.core & inbox
+    divs = [list(map(int, d)) for d in tm.dividers]
+    if not core.any():
+        return {"lines": [], "dividers": divs}
+    glyph = tm.glyph_px or 10.0
+    rows = core.sum(1)
+    bands = _bands(rows >= max(1, 0.04 * rows.max()), max(2, int(glyph * 0.12)))  # 작은 티끌이 줄을 잇지 않게
+    hmax = max(b - a + 1 for a, b in bands)
+    bands = [b for b in bands if b[1] - b[0] + 1 >= 0.25 * hmax]
+    bg_px = I[inbox & ~tm.mask]
+    bg = np.median(bg_px, axis=0) if len(bg_px) > 20 else None
+    lines = []
+    for a, b in bands:
+        sub = np.zeros_like(core)
+        sub[a:b + 1] = core[a:b + 1]
+        ys, xs = np.nonzero(sub)
+        # 글자색: 덩어리마다 색을 재서, 가장 넓은 색 = 줄 기본색, 그와 다른 색 = 강조 낱말
+        n, lab, st, _ = cv2.connectedComponentsWithStats(sub.astype(np.uint8), connectivity=8)
+        comps = []
+        for i in range(1, n):
+            cm = lab == i
+            e = cv2.erode(cm.astype(np.uint8), _disk(1)).astype(bool)
+            col = np.median(I[e] if e.sum() >= 4 else I[cm], axis=0)
+            comps.append((col, int(st[i, 4]), int(st[i, 0]), int(st[i, 0] + st[i, 2])))
+        groups: list[dict] = []
+        for col, area, cx0, cx1 in sorted(comps, key=lambda c: -c[1]):
+            for g in groups:
+                if np.abs(g["color"] - col).max() < COLOR_TOL:
+                    g["area"] += area
+                    g["x"].append((cx0, cx1))
+                    break
+            else:
+                groups.append({"color": col, "area": area, "x": [(cx0, cx1)]})
+        groups.sort(key=lambda g: -g["area"])
+        tot = sum(g["area"] for g in groups) or 1
+        main = groups[0]["color"]
+        accents = [g for g in groups[1:] if g["area"] / tot >= 0.04 and np.abs(g["color"] - main).max() >= 80
+                   and (bg is None or np.abs(g["color"] - bg).max() >= 60)]  # 코인 속 흰 곳 같은 배경색은 빼다
+        accents.sort(key=lambda g: min(x for x, _ in g["x"]))
+        gh = _seg_height(sub[a:b + 1]) or float(b - a + 1)
+        # 테두리: 글자 바로 바깥 고리가 고른 색이고 글자색·배경색과 많이 다르면 외곽선이 있는 글자
+        stroke, stroke_px = None, 0.0
+        r = max(2, int(round(gh * 0.1)))
+        ring = cv2.dilate(sub.astype(np.uint8), _disk(r)).astype(bool) & ~sub & inbox
+        if ring.sum() >= 30:
+            rp = I[ring]
+            rmed = np.median(rp, axis=0)
+            coherent = float((np.abs(rp - rmed).max(axis=1) < COLOR_TOL).mean())
+            far_fill = np.abs(rmed - main).max() >= 90
+            far_bg = bg is None or tm.busy or np.abs(rmed - bg).max() >= 70
+            if coherent >= 0.55 and far_fill and far_bg:
+                stroke = rmed
+                near = (np.abs(I - rmed).max(axis=2) < COLOR_TOL) & ~sub
+                dist = cv2.distanceTransform((~sub).astype(np.uint8), cv2.DIST_L2, 3)
+                d = dist[near & (dist <= 4 * r) & inbox]
+                stroke_px = float(np.median(d)) if len(d) else float(r)
+        # 굵기: 획 두께(2 x 넓이 / 둘레) / 글자 높이
+        cnts, _ = cv2.findContours(sub.astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+        per = sum(cv2.arcLength(c, True) for c in cnts) or 1.0
+        weight = 2.0 * float(sub.sum()) / per / max(gh, 1.0)
+        # 줄 폭: 글자에서 멀리 떨어진 작은 티끌(테두리 옆 점)은 빼고 잰다
+        big = [(c[2], c[3]) for c in comps if c[1] >= 0.05 * gh * gh]
+        lx0, lx1 = (min(u for u, _ in big), max(v for _, v in big)) if big else (int(xs.min()), int(xs.max()) + 1)
+        for _col, area, u, v in comps:
+            if (u >= lx1 and u - lx1 <= gh) or (v <= lx0 and lx0 - v <= gh):
+                lx0, lx1 = min(lx0, u), max(lx1, v)
+        lines.append({
+            "bbox": [int(lx0), int(a), int(lx1), int(b) + 1],
+            "glyph_h": round(gh, 2),
+            "color": _hex(main),
+            "accents": [{"color": _hex(g["color"]), "x": [[int(u), int(v)] for u, v in sorted(g["x"])]}
+                        for g in accents],
+            "stroke_color": _hex(stroke) if stroke is not None else None,
+            "stroke_px": round(stroke_px, 2),
+            "weight": round(weight, 3),
+            "bold": weight >= BOLD_WEIGHT,
+        })
+    # 정렬: 줄 가운데가 상자 가운데에 가깝고 왼쪽 끝이 다른 줄보다 들어가 있으면 가운데 정렬
+    cx = (x0 + x1) / 2
+    lmin = min(ln["bbox"][0] for ln in lines)
+    for ln in lines:
+        left, _t, right, _b = ln["bbox"]
+        mid = (left + right) / 2
+        if abs(mid - cx) <= 0.06 * bw and (left - lmin > 0.04 * bw or len(lines) == 1):
+            ln["align"] = "center"
+        elif right >= x1 - 0.04 * bw and left - lmin > 0.15 * bw:
+            ln["align"] = "right"
+        else:
+            ln["align"] = "left"
+    return {"lines": lines, "dividers": divs}
