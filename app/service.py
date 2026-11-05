@@ -1498,6 +1498,7 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult
         return IconImportResult("blocked", blocking=["아이콘 찾기 결과가 없습니다"])
     xl = [{"묶음": r["group"], "이름": r.get("name", ""), "뜻(원문)": r.get("meaning", ""),
            "한국어 이름": r.get("ko", ""), "처리": icons.NOT_ICON if r.get("not_icon") else "",
+           "글자": r.get("text", ""),
            "표시 크기": r.get("scale") or icons.DEFAULT_SCALE} for r in rows]
     r = icons.import_rows(info, xl, work)
     if r.blocking:

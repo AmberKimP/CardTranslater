@@ -1694,3 +1694,16 @@ def test_project_names_unique_per_game_and_new_project_dialog_defaults(qapp, tmp
     assert dlg.name.text() == "내 프로젝트"  # 사람이 넣은 이름은 그대로
     dlg2 = NewProjectDialog(tmp_path, game="게임B")
     assert dlg2.name.text() == ""
+
+
+def test_extract_summary_counts_cards_not_files(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    n = sum(f["included"] for f in page.scoped_files())
+    s = page.steps.extract_summary()
+    assert f"카드 {n}장" in s and "파일" in s
+    win.close()

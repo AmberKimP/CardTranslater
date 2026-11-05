@@ -96,9 +96,12 @@ def _fail_as(parent, title: str):
 class ExtractDialog(QDialog):
     """추출할 그룹·모드·엔진 고르기."""
 
-    def __init__(self, groups: list[str], parent=None, card_limit: int | None = None):
+    def __init__(self, groups: list[str], parent=None, card_limit: int | None = None, summary: str = ""):
         super().__init__(parent)
         self.setWindowTitle("글자 추출")
+        self.summary = QLabel(summary)
+        self.summary.setWordWrap(True)
+        self.summary.setVisible(bool(summary))
         self.group = QComboBox()
         self.group.addItem("모든 그룹", None)
         for g in groups:
@@ -151,6 +154,7 @@ class ExtractDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.addWidget(self.summary)
         lay.addLayout(form)
         lay.addWidget(note)
         lay.addWidget(bb)
@@ -604,7 +608,8 @@ class IconReviewDialog(QDialog):
             self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
         self.table.resizeColumnToContents(1)
         known = QLabel("왼쪽 번호가 줄 번호입니다. ‘같은 아이콘’에서 다른 줄이나 사전 아이콘을 고르면 하나로 합칩니다 "
-                       "(따로 묶인 같은 아이콘·잘못 잘린 조각). 정말 아이콘이 아니면 ‘아이콘 아님’(원문에서 뺌).\n"
+                       "(따로 묶인 같은 아이콘·잘못 잘린 조각). 아이콘이 아니라 글자면 ‘아이콘 아님’을 고르고 ‘뜻’ 칸에 그 글자를 적으세요 "
+                       "(그 글자로 바꿉니다. 비우면 원문에서 뺌).\n"
                        "사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
         known.setWordWrap(True)
         known.setStyleSheet("color: #666")
@@ -620,8 +625,16 @@ class IconReviewDialog(QDialog):
     def _sync_row(self, r: int):
         _g, name, meaning, ko, not_icon, scale, same = self.widgets[r]
         merged = same.currentData() is not None
-        for w in (name, meaning, ko, scale):
+        for w in (name, ko, scale):
             w.setEnabled(not merged and not not_icon.isChecked())
+        # 아이콘 아님: ‘뜻’ 칸에 그 자리 글자를 적는다 (적으면 [[?]]를 그 글자로, 비우면 뺀다)
+        meaning.setEnabled(not merged)
+        if not_icon.isChecked():
+            meaning.setPlaceholderText("그 자리 글자 (예: 最). 비우면 원문에서 뺌")
+            meaning.setToolTip("아이콘이 아니라 글자를 잘못 읽은 것이면 여기에 그 글자를 적으세요")
+        else:
+            meaning.setPlaceholderText("")
+            meaning.setToolTip("")
         same.setEnabled(not not_icon.isChecked())
         not_icon.setEnabled(not merged)
 
@@ -695,8 +708,10 @@ class IconReviewDialog(QDialog):
             target = same.currentData()
             src = self.widgets[target[1]] if target and target[0] == "row" else None
             out.append({"group": g, "name": "" if ni.isChecked() else resolve(i),
-                        "meaning": (src[2] if src else m).text().strip(), "ko": (src[3] if src else k).text().strip(),
-                        "not_icon": ni.isChecked(), "scale": (src[5] if src else sc).value()})
+                        "meaning": "" if ni.isChecked() else (src[2] if src else m).text().strip(),
+                        "ko": (src[3] if src else k).text().strip(),
+                        "not_icon": ni.isChecked(), "text": m.text().strip() if ni.isChecked() else "",
+                        "scale": (src[5] if src else sc).value()})
         return out
 
     def accept(self):
@@ -751,11 +766,19 @@ class StepActions:
             return dirs
         return False
 
+    def extract_summary(self) -> str:
+        """읽을 범위를 ‘파일 N개 = 카드 M장’으로 보여 준다. 이미지 한 장을 배열로 자르면 파일 수보다 카드가 많다."""
+        fs = self.page.scoped_files()
+        cards = sum(f.get("included", 0) for f in fs)
+        left = sum(max(0, f.get("included", 0) - f.get("extracted", 0)) for f in fs)
+        return (f"읽을 곳: 파일 {len(fs)}개 = 카드 {cards}장 (아직 안 읽은 카드 {left}장)\n"
+                "카드는 PDF의 쪽, 또는 배열(가로×세로)로 자른 이미지 한 칸입니다.")
+
     def extract(self):
         files = self.ask_scope("글자 추출")
         if files is False:
             return
-        dlg = ExtractDialog([], self.page, self.page.ov.get("card_limit"))
+        dlg = ExtractDialog([], self.page, self.page.ov.get("card_limit"), self.extract_summary())
         if not dlg.exec():
             return
         service.set_card_limit(self.pdir, dlg.card_limit())

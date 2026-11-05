@@ -29,6 +29,7 @@ TOKEN_RE = re.compile(r"\[\[([^\[\]]*)\]\]")
 NAME_RE = re.compile(r"^[a-z0-9_]+$")
 CROP_DPI = 600
 SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아이콘 후보
+SAME_GRAY = 0.82  # 밝기 무늬 상관이 이 이상이면 같은 아이콘 (같은 타일 2: 0.83~0.91, 타일 1·2: 0.78 이하)
 SAME_DETAIL = 0.90  # 그리고 64칸으로 자세히 본 상관계수도 이 이상 (숫자만 다른 타일 1·2를 가른다)
 MAX_COLOR_DIST = 80.0  # 평균 색 거리(0~441)가 이보다 크면 다른 아이콘 (빨간 하트·파란 하트)
 DEFAULT_SCALE = 1.1
@@ -154,6 +155,63 @@ def _bands_from(comps: list[tuple[int, int, int, int, int]],
     return [(a, b) for a, b in bands if b - a >= hmed * 0.5]
 
 
+def _merge_rows(items, overlap: float = 0.3) -> list[list[int]]:
+    """덩어리를 세로로 겹치는 것끼리 띠 [y0, y1]로 묶는다."""
+    bands: list[list[int]] = []
+    for x, y, w, h, _a in sorted(items, key=lambda c: c[1]):
+        if bands and y < bands[-1][1] - min(h, bands[-1][1] - bands[-1][0]) * overlap:
+            bands[-1][1] = max(bands[-1][1], y + h)
+        else:
+            bands.append([y, y + h])
+    return bands
+
+
+def _bands_text_first(comps: list[tuple[int, int, int, int, int]],
+                rules: list[tuple[int, int]] = ()) -> list[tuple[int, int]]:
+    """덩어리들을 세로로 겹치는 것끼리 묶어 줄 띠 (y0, y1)로. 구분선 높이에 걸친 띠는 뺀다.
+
+    줄은 글자 크기 덩어리로만 정한다: 글자보다 큰 아이콘(줄 사이에 걸쳐 두 줄을 붙이거나, 아주 큰 아이콘 줄이
+    다른 줄을 ‘가는 줄’로 보이게 함)과 탁점·점 같은 작은 덩어리는 줄을 만들지 않는다.
+    아이콘만 있는 줄은 따로 더한다."""
+    if not comps:
+        return []
+    big_area = [c for c in comps if c[4] >= 30] or comps
+    hs = sorted(c[3] for c in big_area)
+    med = hs[len(hs) // 2]
+    text = [c for c in comps if med * 0.5 <= c[3] <= med * 1.6]  # 글자 크기
+    tall = [c for c in comps if c[3] > med * 1.6]  # 아이콘 등
+    bands = _merge_rows(text)
+    # 아이콘만 있는 줄: 어느 글자 줄에도 가운데가 들지 않는 큰 덩어리
+    lone = [c for c in tall if not any(b0 <= c[1] + c[3] / 2 <= b1 for b0, b1 in bands)]
+    for b0, b1 in _merge_rows(lone):
+        bands.append([b0, b1])
+    bands.sort()
+    # 겹치는 띠 정리 (아이콘 줄이 글자 줄과 겹치면 하나로)
+    merged: list[list[int]] = []
+    for b0, b1 in bands:
+        if merged and b0 < merged[-1][1]:  # 조금이라도 겹치면 한 줄
+            merged[-1][1] = max(merged[-1][1], b1)
+        else:
+            merged.append([b0, b1])
+    bands = [b for b in merged if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
+    if not bands:
+        return []
+    # 잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다
+    dens = []
+    for y0, y1 in bands:
+        cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
+        if not cs:
+            dens.append(0.0)
+            continue
+        x0, x1 = min(c[0] for c in cs), max(c[0] + c[2] for c in cs)
+        dens.append(sum(c[4] for c in cs) / max(1, (x1 - x0) * (y1 - y0)))
+    if len(bands) > 1 and max(dens) > 0:
+        bands = [b for b, d in zip(bands, dens) if d >= 0.06 or d >= 0.4 * max(dens)]
+    # 띠 테두리 같은 가는 줄: 보통 줄 높이(중앙값)의 35% 미만
+    hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
+    return [(a_, b_) for a_, b_ in bands if b_ - a_ >= hmed * 0.35]
+
+
 def _bands(ink: np.ndarray) -> list[tuple[int, int]]:
     """잉크가 있는 가로 줄 띠 (y0, y1)."""
     comps, rules = _text_components(ink)
@@ -221,50 +279,63 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     em_guess = img.shape[0] / max(1, len(lines)) * 0.6
     ink = _ink(img, em_guess)
     all_comps, rules = _text_components(ink)
-    bands = _bands_from(all_comps, rules)
-    if not bands:
-        return None, "영역에서 글자를 찾지 못함"
-    if len(bands) == len(lines):
-        band_i = line_no
-    else:  # 줄 수가 다르면(추출이 줄을 빠뜨림·장식 줄) 줄 길이가 가장 잘 맞는 짝을 고른다
-        band_i = _match_line(lines, line_no, bands, all_comps)
-        if band_i is None:
-            return None, f"줄 수가 다름 (원문 {len(lines)}줄, 이미지 {len(bands)}줄)"
-    y0, y1 = bands[band_i]
-    band_h = y1 - y0
-    em = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]  # 보통 글자 줄 높이
-    comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
-    if not comps:
-        return None, "그 줄에 잉크가 없음"
-    seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
-    cells = _glyph_cells(comps, em, (y0, y1))
-    if len(cells) != len(seq):
-        # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
-        # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
-        alt = _glyph_cells(_line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
-        if len(alt) == len(seq):
-            cells = [(c[0], max(0, c[1] - 2), c[2], c[3] + 2) for c in alt]
-    if not cells:
-        return None, "그 줄에서 글자 칸을 찾지 못함"
-    k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
-    tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
-    if len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
-        box = cells[tok_pos]
-    else:  # 다르면 위치 비율로 가장 가까운 칸 (아이콘 크기만)
-        lx0, lx1 = cells[0][0], cells[-1][2]
-        units = [1.1 if t == "\u25a0" else _units(t) for t in seq]
-        unit = (lx1 - lx0) / max(sum(units), 1e-6)
-        expect = lx0 + (sum(units[:tok_pos]) + units[tok_pos] / 2) * unit
-        reach = max(unit, em) * 1.6
-        cand = [c for c in cells if (c[3] - c[1]) >= em * 0.45 and abs((c[0] + c[2]) / 2 - expect) <= reach]
-        if not cand:
-            return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
-        # 가깝고 큰 칸(아이콘은 보통 글자보다 크다)을 고른다
-        box = max(cand, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]) * float(np.exp(-abs((c[0] + c[2]) / 2 - expect) / reach)))
-    bx0, by0, bx1, by1 = box
-    if not (em * 0.35 <= bx1 - bx0 <= em * 3.0) or by1 - by0 > em * 2.5 or by1 - by0 < em * 0.3:
-        return None, "찾은 덩어리 크기가 아이콘 같지 않음"
-    return (int(bx0), int(by0), int(bx1), int(by1)), ""
+    # 줄 띠를 두 가지로 잡아 본다: 보통 방법 -> 안 되면 글자 크기 덩어리로만 (큰 아이콘이 줄을 가리거나 붙인 경우)
+    def _try(bands):
+        if not bands:
+            return None, "영역에서 글자를 찾지 못함"
+        if len(bands) == len(lines):
+            band_i = line_no
+        else:  # 줄 수가 다르면(추출이 줄을 빠뜨림·장식 줄) 줄 길이가 가장 잘 맞는 짝을 고른다
+            band_i = _match_line(lines, line_no, bands, all_comps)
+            if band_i is None:
+                return None, f"줄 수가 다름 (원문 {len(lines)}줄, 이미지 {len(bands)}줄)"
+        y0, y1 = bands[band_i]
+        band_h = y1 - y0
+        em = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]  # 보통 글자 줄 높이
+        comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
+        if not comps:
+            return None, "그 줄에 잉크가 없음"
+        seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
+        cells = _glyph_cells(comps, em, (y0, y1))
+        if len(cells) != len(seq):
+            # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
+            # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
+            alt = _glyph_cells(_line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
+            if len(alt) == len(seq):
+                cells = [(c[0], max(0, c[1] - 2), c[2], c[3] + 2) for c in alt]
+        if not cells:
+            return None, "그 줄에서 글자 칸을 찾지 못함"
+        k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
+        tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
+        if len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
+            box = cells[tok_pos]
+        else:  # 다르면 위치 비율로 가장 가까운 칸 (아이콘 크기만)
+            lx0, lx1 = cells[0][0], cells[-1][2]
+            units = [1.1 if t == "\u25a0" else _units(t) for t in seq]
+            unit = (lx1 - lx0) / max(sum(units), 1e-6)
+            expect = lx0 + (sum(units[:tok_pos]) + units[tok_pos] / 2) * unit
+            reach = max(unit, em) * 1.6
+            cand = [c for c in cells if (c[3] - c[1]) >= em * 0.45 and abs((c[0] + c[2]) / 2 - expect) <= reach]
+            if not cand:
+                return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
+            # 가깝고 큰 칸(아이콘은 보통 글자보다 크다)을 고른다
+            box = max(cand, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]) * float(np.exp(-abs((c[0] + c[2]) / 2 - expect) / reach)))
+        bx0, by0, bx1, by1 = box
+        # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
+        by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
+        box = (bx0, by0, bx1, by1)
+        if (not (em * 0.35 <= bx1 - bx0 <= em * 3.0) or by1 - by0 > em * 2.5 or by1 - by0 < em * 0.3
+                or bx1 - bx0 < 0.45 * (by1 - by0)  # 세로로 가늘고 긴 것은 배경 그림 조각
+                or bx1 - bx0 > 2.4 * (by1 - by0)  # 가로로 긴 것은 라벨 띠
+                or float(ink[int(by0):int(by1), int(bx0):int(bx1)].mean()) < 0.15):  # 드문드문한 선 = 그림
+            return None, "찾은 덩어리 크기가 아이콘 같지 않음"
+        return (int(bx0), int(by0), int(bx1), int(by1)), ""
+
+    first = _try(_bands_from(all_comps, rules))
+    if first[0] is not None:
+        return first
+    second = _try(_bands_text_first(all_comps, rules))
+    return second if second[0] is not None else first
 
 
 def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[tuple[int, int, int, int]]:
@@ -449,18 +520,45 @@ def shape_of(rgba: np.ndarray, n: int = 32) -> Shape:
     return Shape(small, w / max(h, 1), color.astype(np.float32))
 
 
-def shape_pair(rgba: np.ndarray) -> tuple[Shape, Shape]:
-    """(대강 모양 32칸, 자세한 모양 64칸)."""
-    return shape_of(rgba), shape_of(rgba, 64)
+def gray_feature(rgba: np.ndarray, n: int = 24) -> np.ndarray:
+    """밝기 무늬(바탕 회색 위 흰 숫자 같은 것까지): 모양만 남겨 n×n으로 줄이고 평균 0·크기 1로 맞춘 벡터."""
+    import cv2
+
+    al = rgba[:, :, 3] > 80
+    ys, xs = np.nonzero(al)
+    a = rgba[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if len(xs) else rgba
+    g = (a[:, :, :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)) / 255.0
+    g = cv2.resize(g, (n, n), interpolation=cv2.INTER_AREA).ravel()
+    g = g - g.mean()
+    nrm = float(np.linalg.norm(g))
+    return g / nrm if nrm > 0 else g
 
 
-def same_icon(a: tuple[Shape, Shape], b: tuple[Shape, Shape]) -> float:
-    """같은 아이콘이면 대강 모양 상관계수, 아니면 0. 자세히 봐도 같아야 같은 아이콘이다
-    (테두리·바탕이 같고 안의 숫자만 다른 타일은 대강 모양이 0.9쯤 나온다)."""
-    s = similarity(a[0], b[0])
-    if s < SAME_SHAPE or similarity(a[1], b[1]) < SAME_DETAIL:
+def shape_pair(rgba: np.ndarray):
+    """(대강 모양 32칸, 자세한 모양 64칸, 밝기 무늬)."""
+    return shape_of(rgba), shape_of(rgba, 64), gray_feature(rgba)
+
+
+def _comparable(a: Shape, b: Shape) -> bool:
+    if max(a.aspect, b.aspect) / max(min(a.aspect, b.aspect), 1e-6) > 1.3:
+        return False
+    return float(np.linalg.norm(a.color - b.color)) <= MAX_COLOR_DIST
+
+
+def same_icon(a, b) -> float:
+    """같은 아이콘이면 0보다 큰 점수, 아니면 0.
+    - 밝기 무늬가 아주 비슷하면(크기·인쇄 상태가 달라 진한 선이 달라 보여도) 같은 아이콘
+    - 아니면 진한 선 모양이 대강·자세히 모두 같고 밝기 무늬도 어느 정도 같아야 한다
+      (테두리·바탕이 같고 안의 숫자만 다른 타일 1·2, 같은 나무 상자의 동전·칼은 여기서 갈린다)"""
+    if not _comparable(a[0], b[0]):
         return 0.0
-    return s
+    gray = float(a[2] @ b[2]) if len(a) > 2 and len(b) > 2 else 0.0
+    s = similarity(a[0], b[0])
+    if gray >= SAME_GRAY:
+        return max(s, gray)
+    if s >= SAME_SHAPE and similarity(a[1], b[1]) >= SAME_DETAIL and gray >= 0.7:
+        return s
+    return 0.0
 
 
 def similarity(a: Shape, b: Shape) -> float:
@@ -497,7 +595,7 @@ def token_status(name: str, dictionary: dict, auto_note: str = "") -> tuple[str,
 
 # ---------------------------------------------------------------- 원문 안 토큰 바꾸기
 def replace_placeholders(text: str, mapping: dict[int, str]) -> str:
-    """text 안 i번째 ``[[?]]``를 mapping[i]로 ('' = 빼기, 이름 = [[이름]]). 없는 번호는 그대로."""
+    """text 안 i번째 ``[[?]]``를 mapping[i]로 ('' = 빼기, 이름 = [[이름]], '=글자' = 그 글자로). 없는 번호는 그대로."""
     i = -1
 
     def sub(m):
@@ -506,6 +604,8 @@ def replace_placeholders(text: str, mapping: dict[int, str]) -> str:
         if i not in mapping:
             return m.group(0)
         name = mapping[i]
+        if name.startswith("="):  # 아이콘이 아니라 글자였다 (모델이 글자를 아이콘으로 읽음)
+            return name[1:]
         return f"[[{name}]]" if name else ""
 
     out = PLACEHOLDER_RE.sub(sub, text)
@@ -898,7 +998,8 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
             out.blocking.append(f"모르는 묶음: {g} (다른 프로젝트·이전 검증 엑셀?)")
             continue
         if str(row.get("처리") or "").strip() == NOT_ICON:
-            decision[g] = ""
+            text = str(row.get("글자") or "").strip()
+            decision[g] = f"={text}" if text else ""  # 글자를 적으면 그 글자로, 비우면 뺀다
             continue
         name = str(row.get("이름") or "").strip()
         if not name:
