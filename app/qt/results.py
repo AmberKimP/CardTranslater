@@ -47,6 +47,9 @@ class ResultViewer(QDialog):
         pdf_btn.clicked.connect(self.open_pdf)
         folder_btn = QPushButton("폴더 열기")
         folder_btn.clicked.connect(lambda: _open(self.run_dir()))
+        self.sheet_btn = QPushButton("원래 배열 이미지")
+        self.sheet_btn.setToolTip("배열 이미지로 넣은 카드를 원래 시트 크기·배열로 다시 합친 이미지 (원본 해상도)")
+        self.sheet_btn.clicked.connect(self.open_sheets)
         top = QHBoxLayout()
         top.addWidget(QLabel("파일"))
         top.addWidget(self.run)
@@ -54,6 +57,7 @@ class ResultViewer(QDialog):
         top.addStretch(1)
         top.addWidget(self.info)
         top.addWidget(pdf_btn)
+        top.addWidget(self.sheet_btn)
         top.addWidget(folder_btn)
         self.pages = QListWidget()
         self.pages.setMaximumWidth(230)
@@ -115,6 +119,7 @@ class ResultViewer(QDialog):
         return [s for s in st if s not in OK_STATUS]
 
     def reload(self):
+        self.sheet_btn.setVisible(bool(self.sheet_images()))  # 배열 이미지로 넣은 파일만
         allp = service.result_pages(self.run_dir())
         n_bad = sum(1 for p in allp if self.problems(p["status"]))
         self.info.setText(f"{len(allp)}쪽, 문제 있는 쪽 {n_bad}")
@@ -259,6 +264,16 @@ class ResultViewer(QDialog):
         elif r < len(p["regions"]):
             self._set_image(p["regions"][r]["png"])
 
+    def sheet_images(self) -> list[Path]:
+        d = self.run_dir()
+        return sorted(p for p in (d / "images").glob("*") if p.suffix.lower() in (".png", ".jpg")) if d else []
+
+    def open_sheets(self):
+        """시트가 하나면 그 이미지를, 여럿이면 폴더를 연다 (사진 보기 프로그램에서 원본 해상도로 확대)."""
+        imgs = self.sheet_images()
+        if imgs:
+            _open(imgs[0] if len(imgs) == 1 else imgs[0].parent)
+
     def open_pdf(self):
         d = self.run_dir()
         pdf = next((d / n for n in ("translated.pdf", "composed.pdf") if (d / n).exists()), None)
@@ -366,8 +381,8 @@ class OutputActions:
             dlg = FontPlanDialog(plans, self.page)
             if not dlg.exec():
                 return
-            for file_dir, regions, cards in dlg.choices():
-                service.save_font_choices(file_dir, regions, cards)
+            for c in dlg.choices():
+                service.save_font_choices(c["file_dir"], c["regions"], c["cards"], c["sentences"])
         self._run_compose(False)
 
     def _run_compose(self, accept: bool):

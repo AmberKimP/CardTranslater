@@ -236,22 +236,28 @@ def sheet_output_name(layout: dict, frames_in_file: int = 1) -> str:
 
 
 def compose_sheets(layouts: list[dict], images_dir: Path | str, cards_pdf: Path | str, page_numbers: list[int],
-                   out_dir: Path | str) -> list[Path]:
+                   out_dir: Path | str, extra: list[tuple[Path, list[int]]] | None = None) -> list[Path]:
     """한글을 넣은 카드(쪽)를 원본 시트 이미지의 같은 자리에 다시 붙여, 원래 크기·배열의 이미지로 저장한다.
 
     layouts: 시트마다 {"file", "frame", "size", "dpi", "boxes"} (이미지 순서·카드 순서 = PDF 쪽 순서).
     cards_pdf의 i번째 쪽이 원래 PDF의 page_numbers[i]쪽이다. 그 안에 없는 쪽(뺀 쪽)은 원본 그대로 둔다.
-    카드 사이 틈과 바깥 여백도 원본 그대로다."""
+    카드 사이 틈과 바깥 여백도 원본 그대로다.
+    extra: [(다른 결과 PDF, 쪽 번호들)] — 같은 시트의 카드를 다른 그룹에서 넣은 결과도 함께 붙인다
+    (cards_pdf에 있는 쪽이 먼저)."""
     import pymupdf
     from PIL import Image
 
     images_dir, out_dir = Path(images_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    where = {p: i for i, p in enumerate(page_numbers)}
     frames: dict[str, int] = {}
     for lay in layouts:
         frames[lay["file"]] = frames.get(lay["file"], 0) + 1
-    doc = pymupdf.open(cards_pdf)
+    docs = []
+    where: dict[int, tuple] = {}
+    for pdf, pages in reversed([(Path(cards_pdf), page_numbers)] + list(extra or [])):
+        d_ = pymupdf.open(pdf)
+        docs.append(d_)
+        where.update({p: (d_, i) for i, p in enumerate(pages)})
     outs, page_no = [], 0
     try:
         for lay in layouts:
@@ -260,11 +266,11 @@ def compose_sheets(layouts: list[dict], images_dir: Path | str, cards_pdf: Path 
                 raise ValueError(f"{lay['file']}: 원본 이미지 크기가 넣을 때와 다릅니다 {sheet.size} ≠ {tuple(lay['size'])}")
             for (x0, y0, x1, y1) in lay["boxes"]:
                 page_no += 1
-                idx = where.get(page_no)
-                if idx is None:
+                hit = where.get(page_no)
+                if hit is None:
                     continue
                 bw, bh = x1 - x0, y1 - y0
-                pg = doc[idx]
+                pg = hit[0][hit[1]]
                 mat = pymupdf.Matrix(bw / pg.rect.width, bh / pg.rect.height)
                 pix = pg.get_pixmap(matrix=mat, alpha=False)
                 card = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -279,5 +285,6 @@ def compose_sheets(layouts: list[dict], images_dir: Path | str, cards_pdf: Path 
                 sheet.save(out, format="PNG", optimize=True, dpi=dpi)
             outs.append(out)
     finally:
-        doc.close()
+        for d_ in docs:
+            d_.close()
     return outs

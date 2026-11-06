@@ -564,6 +564,12 @@ class RegionEditor(QDialog):
         for cb in (self.f_font, self.f_kind, self.f_align):  # 긴 항목이 오른쪽 칸 폭을 늘리지 않게
             cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             cb.setMinimumContentsLength(12)
+        self.f_font_mode = QComboBox()
+        self.f_font_mode.addItem("한 칸 모두 같은 글꼴", "cell")
+        self.f_font_mode.addItem("문장마다 글꼴 지정", "sentence")
+        self.f_font_mode.setToolTip("한글 넣기 전 글꼴 창에서 글꼴을 고르는 단위\n"
+                                    "한 칸 모두 같은 글꼴: 카드의 이 칸 전체를 한 글꼴로 (기본)\n"
+                                    "문장마다 글꼴 지정: 칸 안의 문장마다 다른 글꼴을 고를 수 있음")
         self.f_keep_tall = QDoubleSpinBox()
         self.f_keep_tall.setRange(0, 200)
         self.f_keep_tall.setDecimals(1)
@@ -589,6 +595,7 @@ class RegionEditor(QDialog):
         form.addRow("정렬", self.f_align)
         form.addRow("글자 색", crow)
         form.addRow("한글 글꼴", self.f_font)
+        form.addRow("글꼴 단위", self.f_font_mode)
         form.addRow("글자 지우기", self.f_erase_mode)
         form.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
         form.addRow("", self.f_keep_above)
@@ -623,7 +630,7 @@ class RegionEditor(QDialog):
         for w in (self.f_name,):
             w.textEdited.connect(self._from_form)
         self.f_name.returnPressed.connect(self.view.setFocus)  # Enter: 카드 화면으로 (화살표로 바로 옮기기)
-        for w in (self.f_kind, self.f_align, self.f_font, self.f_erase_mode):
+        for w in (self.f_kind, self.f_align, self.f_font, self.f_font_mode, self.f_erase_mode):
             w.currentIndexChanged.connect(self._from_form)
         for w in (self.f_x, self.f_y, self.f_w, self.f_h, self.f_keep_tall):
             w.valueChanged.connect(self._from_form)
@@ -1274,6 +1281,7 @@ class RegionEditor(QDialog):
                 self.f_font.addItem(f"{(st.get('font') or {}).get('family') or Path(ff).stem} (목록 밖)", ff)
                 idx = self.f_font.count() - 1
             self.f_font.setCurrentIndex(max(0, idx))
+            self.f_font_mode.setCurrentIndex(max(0, self.f_font_mode.findData(st.get("font_mode") or "cell")))
             self.f_erase_mode.setCurrentIndex(max(0, self.f_erase_mode.findData(er.get("mode") or "auto")))
             self.f_keep_tall.setValue(float(er.get("keep_ink_taller_than_pt") or 0))
             self.f_keep_above.setChecked(bool(er.get("keep_ink_above_text")))
@@ -1282,6 +1290,7 @@ class RegionEditor(QDialog):
             for w in (self.f_rotate, self.f_align, self.f_color, self.f_font, self.f_keep_tall, self.f_keep_above):
                 w.setEnabled(not prot)
             self.f_erase_mode.setEnabled(it.kind == "text")
+            self.f_font_mode.setEnabled(it.kind == "text")  # 태그 라벨은 라벨마다 짧은 글이라 칸 단위만
             self.f_ocr_exclude.setEnabled(prot)
             self.f_ocr_exclude.setChecked(bool(it.data.get("ocr_exclude")) and prot)
         finally:
@@ -1331,6 +1340,10 @@ class RegionEditor(QDialog):
             st["font"] = font
         elif not ff:
             st.pop("font", None)
+        if self.f_font_mode.currentData() == "sentence" and it.kind == "text":
+            st["font_mode"] = "sentence"
+        else:
+            st.pop("font_mode", None)  # 기본(한 칸 모두 같은 글꼴)은 적지 않는다
         er = d.setdefault("erase", {})
         mode = self.f_erase_mode.currentData()
         if mode and mode != "auto" and it.kind == "text":

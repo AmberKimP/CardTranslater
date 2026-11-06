@@ -22,6 +22,7 @@ import pymupdf
 from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
+from app.typeset_layout import wrap_sentence_fonts
 from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
 
@@ -93,6 +94,9 @@ def _rot_rect(r, pivot) -> pymupdf.Rect:
     return pymupdf.Rect(2 * px - r.x1, 2 * py - r.y1, 2 * px - r.x0, 2 * py - r.y0)
 
 
+STATUS_FONT_MISSING = "글꼴 없음"  # 고른 글꼴 파일이 없어 영역 글꼴로 넣음
+
+
 def safe_name(name: str, idx: int) -> str:
     """파일 이름용 영역 이름 (ASCII)."""
     return SAFE.get(name) or f"r{idx}"
@@ -104,12 +108,14 @@ STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많�
 
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
                  base_dir: Path = ROOT, styles: dict | None = None,
-                 region_erase: dict | None = None, fonts: dict | None = None) -> dict:
+                 region_erase: dict | None = None, fonts: dict | None = None,
+                 sentence_fonts: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
     서식만 바꿔 합성할 수 있게, 있으면 지우기 때 저장한 style_defaults보다 우선한다.
     fonts: {영역 이름: 글꼴 파일} — 한글 넣기 전에 고른 글꼴(fonts.json). 영역 서식의 글꼴보다 우선한다.
+    sentence_fonts: {영역 이름: {문장 번호: 글꼴 파일}} — ‘문장마다 글꼴’ 영역(style.font_mode="sentence")에서만 쓴다.
     """
     card = card or {}
     out: dict = {}
@@ -117,6 +123,9 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         name = reg["name"]
         style_d = (styles or {}).get(name) or reg.get("style_defaults") or {}
         chosen = (fonts or {}).get(name)
+        missing = None
+        if chosen and not (Path(chosen) if Path(chosen).is_absolute() else Path(base_dir) / chosen).is_file():
+            missing, chosen = chosen, None  # 글꼴을 지웠거나 다른 PC의 경로: 영역 글꼴로 넣고 알린다
         if chosen:  # 고른 글꼴: 굵게용 파일은 그 글꼴의 이웃 굵기에서 다시 찾는다
             style_d = {**style_d, "font": {**(style_d.get("font") or {}), "file": chosen, "bold_file": None}}
         entry = card.get(name) or {}
@@ -126,6 +135,9 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         rec: dict = {"rect_pt": [round(v, 3) for v in rect], "warnings": []}
         if chosen:
             rec["font_file"] = chosen
+        if missing:
+            rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음: {missing}")
+            rec["font_missing"] = missing
 
         if reg.get("kind") == "tag_pills":
             labels = [{"bbox_pt": l["bbox_pt"], "color": l["color"], "radius_pt": l.get("radius_pt")}
@@ -177,6 +189,19 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
         # ---- 이름·본문
         text = entry.get("ko")
+        sent = (sentence_fonts or {}).get(name)
+        if sent and text and style_d.get("font_mode") == "sentence":
+            ok = {}
+            for k, f in sent.items():
+                if (Path(f) if Path(f).is_absolute() else Path(base_dir) / f).is_file():
+                    ok[int(k)] = f
+                else:
+                    rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음 ({int(k) + 1}번째 문장): {f}")
+                    rec["font_missing"] = f
+            if ok:
+                text, tag_fonts = wrap_sentence_fonts(text, ok)
+                style_d = {**style_d, "tag_fonts": {**(style_d.get("tag_fonts") or {}), **tag_fonts}}
+                rec["sentence_fonts"] = {str(k): v for k, v in sorted(ok.items())}
         layout = reg.get("text_layout") or {}
         if layout.get("lines") and text and int(style_d.get("rotate", 0)) % 360 in (0, 180):
             # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
@@ -572,7 +597,10 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
             cancel.check()
         _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
         rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
-                           font_plan.overrides_for_page(font_data, pno))
+                           font_plan.overrides_for_page(font_data, pno), font_plan.sentences_for_page(font_data, pno))
+        for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
+            if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
+                r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)

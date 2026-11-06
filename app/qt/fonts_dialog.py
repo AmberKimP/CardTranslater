@@ -59,7 +59,7 @@ class AddFontDialog(QDialog):
         self.sample = QLabel("가나다라 한글 글꼴 견본 ABC 123")
         self.sample.setMinimumHeight(60)
         self.sample.setStyleSheet("background: white; border: 1px solid #ccc; padding: 6px")
-        note = QLabel(f"PC에 설치된 글꼴 중 한글이 있고 PDF에 넣어도 되는 글꼴 {len(fonts)}개 (.ttc 글꼴 모음은 빠짐)")
+        note = QLabel(f"PC에 설치된 글꼴 중 한글이 있고 PDF에 넣어도 되는 글꼴 {len(fonts)}개")
         note.setStyleSheet("color: #666")
         note.setWordWrap(True)
         b_file = QPushButton("파일에서 찾기…")
@@ -93,7 +93,7 @@ class AddFontDialog(QDialog):
             self.sample.setFont(QFont(fam, 18))
 
     def _from_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "글꼴 파일", "", "글꼴 (*.ttf *.otf)")
+        path, _ = QFileDialog.getOpenFileName(self, "글꼴 파일", "", "글꼴 (*.ttf *.otf *.ttc)")
         if not path:
             return
         info = service.font_file_info(path)
@@ -167,13 +167,15 @@ class FontPlanDialog(QDialog):
         self._build()
 
     # ---- 목록
-    def _options(self, pi: int, name: str, card: bool) -> list[tuple[str, str, str]]:
-        """콤보 항목 [(보이는 글, 파일, 설명)]. 구분선은 ("", "-", "")."""
+    def _options(self, pi: int, name: str, level: str) -> list[tuple[str, str, str]]:
+        """콤보 항목 [(보이는 글, 파일, 설명)]. 구분선은 ("", "-", ""). level: region | card | sentence."""
         plan = self.plans[pi]
         reg = next(r for r in plan["regions"] if r["name"] == name)
         out: list[tuple[str, str, str]] = []
-        if card:
+        if level == "card":
             out.append(("(항목과 같음)", SAME, "이 항목에서 고른 글꼴을 씁니다"))
+        elif level == "sentence":
+            out.append(("(카드와 같음)", SAME, "이 카드에서 고른 글꼴을 씁니다"))
         seen = set()
         for i, r in enumerate(reg["recommended"]):
             mark = "★ " if i == 0 else "    "
@@ -196,28 +198,31 @@ class FontPlanDialog(QDialog):
         out.append(("글꼴 추가…", ADD, "PC에 설치된 다른 글꼴이나 글꼴 파일을 추가합니다"))
         return out
 
-    def _fill(self, combo: QComboBox, pi: int, name: str, card: bool, selected: str | None):
+    def _fill(self, combo: QComboBox, pi: int, name: str, level: str, selected: str | None):
         combo.blockSignals(True)
         combo.clear()
-        for text, file, tip in self._options(pi, name, card):
+        for text, file, tip in self._options(pi, name, level):
             if file == "-":
                 combo.insertSeparator(combo.count())
                 continue
             combo.addItem(text, file)
             combo.setItemData(combo.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
-        idx = combo.findData(selected if selected is not None else (SAME if card else None))
+        idx = combo.findData(selected if selected is not None else (SAME if level != "region" else None))
         combo.setCurrentIndex(max(idx, 0))
         combo.setProperty("prev", combo.currentData())
         combo.blockSignals(False)
 
-    def _combo(self, item: QTreeWidgetItem, pi: int, name: str, card: bool, selected: str | None) -> QComboBox:
+    def _combo(self, item: QTreeWidgetItem, pi: int, name: str, level: str, selected: str | None) -> QComboBox:
         cb = QComboBox()
-        cb.setProperty("meta", (pi, name, card))
-        self._fill(cb, pi, name, card, selected)
+        cb.setProperty("meta", (pi, name, level))
+        self._fill(cb, pi, name, level, selected)
         cb.currentIndexChanged.connect(lambda _i, c=cb, it=item: self._changed(c, it))
         self.tree.setItemWidget(item, 1, cb)
-        self.combos.append((cb, "card" if card else "region"))
+        self.combos.append((cb, level))
         return cb
+
+    def _reg(self, pi: int, name: str) -> dict:
+        return next(r for r in self.plans[pi]["regions"] if r["name"] == name)
 
     def _build(self):
         many = len(self.plans) > 1
@@ -229,14 +234,25 @@ class FontPlanDialog(QDialog):
                 parent.setExpanded(True)
             for reg in plan["regions"]:
                 first = next((c["text"] for c in reg["cards"] if c["text"]), "")
-                it = QTreeWidgetItem([reg["name"], "", first[:60]])
+                label = reg["name"] + ("  (문장마다)" if reg.get("font_mode") == "sentence" else "")
+                it = QTreeWidgetItem([label, "", first[:60]])
                 it.setData(0, ROLE_KIND, ("region", pi, reg["name"]))
                 it.setToolTip(2, first)
+                tips = []
+                orig = next((r.get("original_style") for r in reg["recommended"] if r.get("original_style")), None)
+                if orig:
+                    tips.append(f"원문 글씨 (Claude 판단): {orig}")
+                if reg.get("font_mode") == "sentence":
+                    tips.append("문장마다 글꼴을 고를 수 있는 항목입니다 (카드를 펼치면 문장 목록)")
+                if tips:
+                    it.setToolTip(0, "\n".join(tips))
                 parent.addChild(it)
                 if reg["cards"]:
                     it.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
-                self._combo(it, pi, reg["name"], False, reg["selected"])
-                if any(c["selected"] for c in reg["cards"]):  # 카드별로 고른 것이 있으면 펼쳐 보인다
+                self._combo(it, pi, reg["name"], "region", reg["selected"])
+                picked = any(c["selected"] or any(x["selected"] for x in c.get("sentences") or [])
+                             for c in reg["cards"])
+                if picked:  # 카드·문장별로 고른 것이 있으면 펼쳐 보인다
                     it.setExpanded(True)
         top = self.tree.topLevelItem(0)
         if top is not None:
@@ -244,16 +260,30 @@ class FontPlanDialog(QDialog):
 
     def _expand(self, item: QTreeWidgetItem):
         kind = item.data(0, ROLE_KIND)
-        if not kind or kind[0] != "region" or item.childCount():
+        if not kind or item.childCount():
             return
-        _k, pi, name = kind
-        reg = next(r for r in self.plans[pi]["regions"] if r["name"] == name)
-        for c in reg["cards"]:
-            ch = QTreeWidgetItem([f"{c['page']}쪽", "", c["text"][:80] or "(번역 없음)"])
-            ch.setData(0, ROLE_KIND, ("card", pi, name, c["page"]))
-            ch.setToolTip(2, c["text"])
-            item.addChild(ch)
-            self._combo(ch, pi, name, True, c["selected"] or SAME)
+        if kind[0] == "region":
+            _k, pi, name = kind
+            reg = self._reg(pi, name)
+            for c in reg["cards"]:
+                ch = QTreeWidgetItem([f"{c['page']}쪽", "", c["text"][:80] or "(번역 없음)"])
+                ch.setData(0, ROLE_KIND, ("card", pi, name, c["page"]))
+                ch.setToolTip(2, c["text"])
+                item.addChild(ch)
+                self._combo(ch, pi, name, "card", c["selected"] or SAME)
+                if c.get("sentences"):
+                    ch.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+                    if any(x["selected"] for x in c["sentences"]):
+                        ch.setExpanded(True)
+        elif kind[0] == "card":
+            _k, pi, name, page = kind
+            card = next(c for c in self._reg(pi, name)["cards"] if c["page"] == page)
+            for x in card.get("sentences") or []:
+                ch = QTreeWidgetItem([f"문장 {x['idx'] + 1}", "", x["text"][:80]])
+                ch.setData(0, ROLE_KIND, ("sentence", pi, name, page, x["idx"]))
+                ch.setToolTip(2, x["text"])
+                item.addChild(ch)
+                self._combo(ch, pi, name, "sentence", x["selected"] or SAME)
 
     # ---- 고르기
     def _changed(self, combo: QComboBox, item: QTreeWidgetItem):
@@ -267,9 +297,9 @@ class FontPlanDialog(QDialog):
             if all(a["file"] != new["file"] for a in self.added):
                 self.added.append(new)
             for cb, _kind in self.combos:  # 모든 목록에 추가하고, 이 줄은 새 글꼴로
-                pi, name, card = cb.property("meta")
+                pi, name, level = cb.property("meta")
                 keep = new["file"] if cb is combo else cb.currentData()
-                self._fill(cb, pi, name, card, keep)
+                self._fill(cb, pi, name, level, keep)
         combo.setProperty("prev", combo.currentData())
         self.tree.setCurrentItem(item)
         self._preview()
@@ -285,7 +315,12 @@ class FontPlanDialog(QDialog):
         dlg = AddFontDialog(fonts, self)
         if not dlg.exec() or not dlg.chosen:
             return None
-        return {"file": dlg.chosen["file"], "label": dlg.chosen["label"]}
+        try:
+            file = service.prepare_font(dlg.chosen["file"])  # 글꼴 모음(.ttc)이면 그 글꼴만 .ttf로 꺼낸다
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "글꼴을 쓸 수 없습니다", str(e), "다른 글꼴을 고르세요.")
+            return None
+        return {"file": file, "label": dlg.chosen["label"]}
 
     def _row_font(self, item: QTreeWidgetItem) -> str | None:
         cb = self.tree.itemWidget(item, 1)
@@ -309,21 +344,25 @@ class FontPlanDialog(QDialog):
         cb = self.tree.itemWidget(item, 1)
         note = cb.currentText().strip() if cb else ""
         if cb is not None and cb.currentData() == SAME and item.parent() is not None:
-            pcb = self.tree.itemWidget(item.parent(), 1)
-            note = "항목과 같음: " + (pcb.currentText().strip().lstrip("★ ") if pcb else "")
+            f = self._row_font(item)
+            note = "위와 같음: " + (service.font_label(f) if f else "")
         self.sample_note.setText(note)
 
     # ---- 결과
-    def choices(self) -> list[tuple[str, dict, dict]]:
-        """[(파일 폴더, {영역: 글꼴}, {쪽: {영역: 글꼴}})]. 펼치지 않은 항목의 카드별 선택은 예전 것을 그대로 둔다."""
+    def choices(self) -> list[dict]:
+        """파일마다 {"file_dir", "regions": {영역: 글꼴}, "cards": {쪽: {영역: 글꼴}},
+        "sentences": {쪽: {영역: {문장 번호: 글꼴}}}}. 펼치지 않은 줄의 카드·문장별 선택은 예전 것을 그대로 둔다."""
         out = []
-        for pi, plan in enumerate(self.plans):
-            regions, cards = {}, {}
-            for reg in plan["regions"]:  # 펼치지 않은 항목: 예전 카드별 선택 유지
+        for plan in self.plans:
+            cards, sents = {}, {}
+            for reg in plan["regions"]:
                 for c in reg["cards"]:
                     if c["selected"]:
                         cards.setdefault(c["page"], {})[reg["name"]] = c["selected"]
-            out.append((plan["file_dir"], regions, cards))
+                    for x in c.get("sentences") or []:
+                        if x["selected"]:
+                            sents.setdefault(c["page"], {}).setdefault(reg["name"], {})[x["idx"]] = x["selected"]
+            out.append({"file_dir": plan["file_dir"], "regions": {}, "cards": cards, "sentences": sents})
         it = self.tree.invisibleRootItem()
         stack = [it.child(i) for i in range(it.childCount())]
         while stack:
@@ -334,13 +373,25 @@ class FontPlanDialog(QDialog):
             if not kind or cb is None:
                 continue
             f = cb.currentData()
+            keep = f not in (SAME, ADD, None)
             if kind[0] == "region":
-                out[kind[1]][1][kind[2]] = f
-            else:
+                out[kind[1]]["regions"][kind[2]] = f
+            elif kind[0] == "card":
                 _k, pi, name, page = kind
-                regs = out[pi][2].setdefault(page, {})
-                if f in (SAME, ADD, None):
-                    regs.pop(name, None)
-                else:
+                regs = out[pi]["cards"].setdefault(page, {})
+                if keep:
                     regs[name] = f
-        return [(fd, regions, {pg: r for pg, r in cards.items() if r}) for fd, regions, cards in out]
+                else:
+                    regs.pop(name, None)
+            else:
+                _k, pi, name, page, idx = kind
+                regs = out[pi]["sentences"].setdefault(page, {}).setdefault(name, {})
+                if keep:
+                    regs[idx] = f
+                else:
+                    regs.pop(idx, None)
+        for o in out:
+            o["cards"] = {pg: r for pg, r in o["cards"].items() if r}
+            o["sentences"] = {pg: {n: v for n, v in r.items() if v} for pg, r in o["sentences"].items()}
+            o["sentences"] = {pg: r for pg, r in o["sentences"].items() if r}
+        return out

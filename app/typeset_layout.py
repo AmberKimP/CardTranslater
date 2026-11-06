@@ -37,7 +37,8 @@ NO_LINE_START = set(".,!?;:)]}>%" "、。，．！？；：）］｝〉》」』
 #: 줄 끝에 올 수 없는 문자 (여는 부호)
 NO_LINE_END = set("([{<" "（［｛〈《「『【〔〘〖‘“")
 
-TAG_RE = re.compile(r"<(/?)(b|i|c\d+)>")
+# f1, f2 ...: 문장 단위 글꼴 (한글 넣기 직전에 앱이 붙이는 내부 태그. 엑셀·번역문에는 없다)
+TAG_RE = re.compile(r"<(/?)(b|i|c\d+|f\d+)>")
 TAG_LIKE_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9]*>")
 # 아이콘 자리: [[단어]] (이중 대괄호). 한 겹 [ ]는 카드에 인쇄된 괄호라서 그냥 글자다 (PRD 4장)
 ICON_RE = re.compile(r"\[\[([a-z0-9_]+)\]\]")
@@ -49,6 +50,7 @@ class Fmt:
     bold: bool = False
     italic: bool = False
     color_tag: str | None = None  # "c1", "c2" ... 실제 색은 style.tag_colors
+    font_tag: str | None = None  # "f1", "f2" ... 실제 글꼴 파일은 style.tag_fonts (문장 단위 글꼴)
 
 
 @dataclass
@@ -72,12 +74,23 @@ def parse_markup(text: str) -> tuple[list[Span], list[str]]:
             errors.append(f"모르는 태그 {m.group(0)}")
     spans: list[Span] = []
     stack: list[str] = []
+    font: str | None = None  # 글꼴 태그는 다른 태그와 엇갈려도 된다 (문장 경계가 <b> 안에 있을 수 있음)
     pos = 0
     if not errors:
         for m in TAG_RE.finditer(text):
             if m.start() > pos:
-                spans.append(Span(text[pos:m.start()], _fmt_from_stack(stack)))
+                spans.append(Span(text[pos:m.start()], _fmt_from_stack(stack, font)))
             closing, name = m.group(1) == "/", m.group(2)
+            if name.startswith("f"):
+                if closing and font != name:
+                    errors.append(f"짝이 맞지 않는 닫는 태그 </{name}>")
+                    break
+                if not closing and font is not None:
+                    errors.append(f"글꼴 태그 <{name}> 중첩")
+                    break
+                font = None if closing else name
+                pos = m.end()
+                continue
             if closing:
                 if not stack or stack[-1] != name:
                     errors.append(f"짝이 맞지 않는 닫는 태그 </{name}>")
@@ -91,21 +104,98 @@ def parse_markup(text: str) -> tuple[list[Span], list[str]]:
             pos = m.end()
         else:
             if pos < len(text):
-                spans.append(Span(text[pos:], _fmt_from_stack(stack)))
-            if stack:
-                errors.append("닫히지 않은 태그 " + ", ".join(f"<{s}>" for s in stack))
+                spans.append(Span(text[pos:], _fmt_from_stack(stack, font)))
+            if stack or font:
+                errors.append("닫히지 않은 태그 " + ", ".join(f"<{s}>" for s in stack + ([font] if font else [])))
     if errors:
         return [Span(strip_tags(text), Fmt())], errors
     return [s for s in spans if s.text], errors
 
 
-def _fmt_from_stack(stack: list[str]) -> Fmt:
+def _fmt_from_stack(stack: list[str], font: str | None = None) -> Fmt:
     colors = [s for s in stack if s.startswith("c")]
-    return Fmt(bold="b" in stack, italic="i" in stack, color_tag=colors[-1] if colors else None)
+    return Fmt(bold="b" in stack, italic="i" in stack, color_tag=colors[-1] if colors else None, font_tag=font)
 
 
 def tag_counts(text: str) -> Counter:
-    return Counter(m.group(2) for m in TAG_RE.finditer(text) if m.group(1) == "")
+    """원문과 비교할 태그 수 (앱이 붙이는 글꼴 태그 fN은 세지 않는다)."""
+    return Counter(m.group(2) for m in TAG_RE.finditer(text) if m.group(1) == "" and not m.group(2).startswith("f"))
+
+
+# ---------------------------------------------------------------- 문장 나누기 (문장 단위 글꼴)
+SENTENCE_END = set(".!?。！？…")
+SENTENCE_CLOSE = set("\"'”’」』)）]")
+
+
+def sentence_spans(text: str) -> list[tuple[int, int]]:
+    """번역문(태그·아이콘 포함)을 문장으로 나눈 (시작, 끝) 위치. 끝은 포함하지 않는다.
+    문장 끝: 마침표·물음표·느낌표·말줄임표(뒤의 닫는 따옴표·괄호까지) 다음에 빈칸·줄바꿈이 오거나 글이 끝날 때,
+    또는 빈 줄. 태그와 [[아이콘]] 안은 나누지 않는다."""
+    spans: list[tuple[int, int]] = []
+    n = len(text)
+    start = None
+    i = 0
+    last_end = 0  # 마지막으로 본 글자(공백 아닌) 다음 위치
+
+    def close(at):
+        nonlocal start
+        if start is not None and at > start:
+            spans.append((start, at))
+        start = None
+
+    while i < n:
+        m = TAG_LIKE_RE.match(text, i) or ICON_RE.match(text, i)
+        if m:
+            if start is None and not m.group(0).startswith("</"):
+                start = i
+            i = m.end()
+            last_end = i
+            continue
+        ch = text[i]
+        if ch == "\n" and text[i + 1:i + 2] == "\n":  # 빈 줄
+            close(last_end)
+            i += 2
+            continue
+        if ch.isspace():
+            i += 1
+            continue
+        if start is None:
+            start = i
+        i += 1
+        last_end = i
+        if ch in SENTENCE_END:
+            while i < n and (text[i] in SENTENCE_END or text[i] in SENTENCE_CLOSE):
+                i += 1
+            while i < n and (mt := TAG_LIKE_RE.match(text, i)) and mt.group(0).startswith("</"):
+                i = mt.end()  # 문장 끝에서 닫히는 태그는 그 문장에
+            last_end = i
+            if i >= n or text[i].isspace():
+                close(i)
+    close(last_end)
+    return spans
+
+
+def sentences(text: str) -> list[str]:
+    """문장마다 태그를 뺀 글 (화면 표시용)."""
+    return [re.sub(r"\s+", " ", strip_tags(text[a:b])).strip() for a, b in sentence_spans(text or "")]
+
+
+def wrap_sentence_fonts(text: str, fonts: dict) -> tuple[str, dict]:
+    """문장마다 고른 글꼴을 내부 태그 <fN>…</fN>로 감싼다. fonts: {문장 번호(0부터): 글꼴 파일}.
+    줄바꿈에서는 태그를 닫았다 다시 연다 (줄마다 따로 배치하는 그림 카드에서도 짝이 맞게).
+    돌려줌: (태그를 붙인 글, {"f1": 글꼴 파일, ...})."""
+    keys: dict[str, str] = {}
+    out, pos = [], 0
+    for idx, (a, b) in enumerate(sentence_spans(text or "")):
+        f = fonts.get(idx) if idx in fonts else fonts.get(str(idx))
+        if not f:
+            continue
+        key = keys.setdefault(f, f"f{len(keys) + 1}")
+        body = text[a:b].replace("\n", f"</{key}>\n<{key}>")
+        out.append(text[pos:a] + f"<{key}>" + body + f"</{key}>")
+        pos = b
+    out.append(text[pos:])
+    return "".join(out), {v: k for k, v in keys.items()}
 
 
 def check_tags(target: str, source: str | None = None) -> list[str]:

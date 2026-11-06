@@ -1062,23 +1062,68 @@ def image_sheet_layouts(file_dir: Path | str) -> list[dict]:
     return out
 
 
-def _attach_sheet_images(file_dir: Path, final_dir: Path, res: ComposeResult, progress: ProgressFn) -> None:
-    """배열 이미지로 넣은 파일이면 translated/ 결과를 원래 시트 크기·배열의 이미지로도 저장한다 (translated/images/)."""
+def sheet_family(file_dir: Path | str) -> tuple[Path | None, list[Path]]:
+    """같은 이미지 시트에서 나온 파일 폴더들: (이미지로 넣은 원래 파일, [다른 그룹으로 옮긴 쪽의 파일들 포함 전부]).
+    쪽을 다른 그룹으로 옮기면(workspace.move_pages) 그 그룹에 같은 이름의 파일이 생기고 file.json의
+    pages_in_groups로 서로 이어진다. 이미지로 넣지 않은 파일이면 (None, [file_dir])."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    info = workspace.project_of(fd)
+    members = [fd]
+    if info is not None:
+        todo = [fd]
+        while todo:
+            d = todo.pop()
+            for g in (workspace.file_settings(d).get("pages_in_groups") or {}):
+                try:
+                    other = workspace.group_dir(info, g) / "files" / d.name
+                except Exception:  # noqa: BLE001 - 지운 그룹
+                    continue
+                if other.exists() and all(other.resolve() != m.resolve() for m in members):
+                    members.append(other)
+                    todo.append(other)
+    owner = next((m for m in members if workspace.file_settings(m).get("from_images")), None)
+    return owner, members
+
+
+def _attach_sheet_images(file_dir: Path, final_dir: Path, res, progress: ProgressFn,
+                         pdf_name: str = "translated.pdf", test: bool = False) -> None:
+    """배열 이미지로 넣은 파일이면 한글 넣기 결과를 원래 시트 크기·배열의 이미지로도 저장한다 (결과 폴더/images/).
+    같은 시트의 카드를 다른 그룹에서도 넣었으면(쪽 옮기기) 그 결과도 함께 붙이고, 그 그룹의 결과 폴더에도 같은
+    시트를 쓴다. 시험 실행(test)은 그 실행의 쪽만 붙이고 시험 폴더에만 쓴다."""
     import logging
 
     from app import images
 
     try:
-        layouts = image_sheet_layouts(file_dir)
+        owner, members = sheet_family(file_dir)
+        layouts = image_sheet_layouts(owner) if owner else []
         if not layouts:
             return
         progress(ProgressEvent("render", 0, 1, "원래 배열 이미지로 합치는 중"))
         rep = json.loads((final_dir / "report.json").read_text(encoding="utf-8"))
-        res.sheet_images = images.compose_sheets(layouts, Path(file_dir) / "source" / "images",
-                                                 final_dir / "translated.pdf", rep["pages"], final_dir / "images")
+        extra, others = [], []
+        if not test:
+            for m in members:
+                if m.resolve() == Path(file_dir).resolve():
+                    continue
+                t = m / "translated"
+                if (t / "translated.pdf").exists() and (t / "report.json").exists():
+                    extra.append((t / "translated.pdf", json.loads((t / "report.json").read_text(encoding="utf-8"))["pages"]))
+                    others.append(t)
+        outs = images.compose_sheets(layouts, owner / "source" / "images", final_dir / pdf_name, rep["pages"],
+                                     final_dir / "images", extra=extra)
+        for t in others:  # 다른 그룹의 결과에도 같은 시트를
+            (t / "images").mkdir(exist_ok=True)
+            for o in outs:
+                shutil.copyfile(o, t / "images" / o.name)
+        if hasattr(res, "sheet_images"):
+            res.sheet_images = outs
     except Exception as e:  # noqa: BLE001 - 한글 넣기 결과(PDF)는 그대로 둔다
         logging.getLogger("cardtranslater.compose").exception("시트 이미지 합치기 실패: %s", file_dir)
-        res.sheet_error = f"원래 배열 이미지로 합치지 못했습니다: {e}"
+        if hasattr(res, "sheet_error"):
+            res.sheet_error = f"원래 배열 이미지로 합치지 못했습니다: {e}"
 
 
 def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResult:
@@ -1325,11 +1370,20 @@ def font_plans(project_dir: Path | str, group: str | None = None, files: list | 
     return out
 
 
-def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = None) -> Path:
-    """글꼴 창에서 고른 것: regions {영역: 글꼴 파일}, cards {쪽: {영역: 글꼴 파일}} (영역 기본과 다를 때만)."""
+def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = None,
+                      sentences: dict | None = None) -> Path:
+    """글꼴 창에서 고른 것: regions {영역: 글꼴 파일}, cards {쪽: {영역: 글꼴 파일}} (영역 기본과 다를 때만),
+    sentences {쪽: {영역: {문장 번호: 글꼴 파일}}} (‘문장마다 글꼴’ 영역)."""
     from app import font_plan
 
-    return font_plan.save(Path(file_dir), regions, cards)
+    return font_plan.save(Path(file_dir), regions, cards, sentences)
+
+
+def font_label(file: str) -> str:
+    """글꼴 파일의 보이는 이름."""
+    from app import font_plan
+
+    return font_plan.label_for(file)
 
 
 def font_path(file: str) -> Path:
@@ -1352,14 +1406,35 @@ def installed_fonts(refresh: bool = False) -> list[dict]:
     return _INSTALLED_FONTS
 
 
-def font_file_info(path: Path | str) -> dict:
-    """사용자가 고른 글꼴 파일 검사: {"ok", "file", "label", "reason"}."""
+def font_cache_dir() -> Path:
+    """글꼴 모음(.ttc)에서 꺼낸 글꼴을 두는 곳."""
+    import os
+
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "CardTranslater" / "fonts"
+
+
+def prepare_font(file: str) -> str:
+    """고른 글꼴을 한글 넣기에 쓸 수 있는 파일로: 글꼴 모음의 한 글꼴('모음.ttc#2')이면 .ttf로 꺼낸 경로."""
     from app import font_match
 
-    info = font_match.font_info(path)
+    return str(font_match.extract_face(file, font_cache_dir()))
+
+
+def font_file_info(path: Path | str) -> dict:
+    """사용자가 고른 글꼴 파일 검사: {"ok", "file", "label", "reason"}.
+    글꼴 모음(.ttc)이면 한글이 있고 PDF에 넣어도 되는 첫 글꼴을 고른다."""
+    from app import font_match
+
+    if Path(str(path)).suffix.lower() in (".ttc", ".otc") and "#" not in str(path):
+        fs = font_match.faces(path)
+        good = [f for f in fs if f["hangul"] and f["embeddable"]]
+        info = (good or fs or [None])[0]
+    else:
+        info = font_match.font_info(path)
     if info is None:
         return {"ok": False, "file": str(path), "label": Path(path).name,
-                "reason": "읽을 수 없는 글꼴입니다 (.ttf·.otf만 쓸 수 있습니다. .ttc 글꼴 모음은 안 됩니다)"}
+                "reason": "읽을 수 없는 글꼴입니다 (.ttf·.otf·.ttc 글꼴 파일을 고르세요)"}
     if not info["hangul"]:
         return {"ok": False, **info, "reason": "한글 글자가 없는 글꼴입니다"}
     if not info["embeddable"]:
@@ -1761,6 +1836,7 @@ def test_run(file_dir: Path | str, pages: str, *, out_root: Path | str | None = 
     run_dir, _code = run_compose(project.root, er.output_dir, pages, run_dir, cards=cards, translation_source=source,
                                  out_name="composed.pdf", progress=progress or _noop, cancel=cancel)
     rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    _attach_sheet_images(fd, run_dir, None, progress or _noop, pdf_name="composed.pdf", test=True)  # 시험한 쪽만
     return TestRunResult("done", run_dir, er.output_dir, page_list, rep.get("status_summary", {}))
 
 

@@ -2,7 +2,8 @@
 
 파일 폴더의 fonts.json:
     {"regions": {영역: 글꼴 파일},              # 영역 기본 글꼴 (사용자가 고른 것)
-     "cards": {"쪽": {영역: 글꼴 파일}},        # 카드(쪽)×영역 단위로 따로 고른 글꼴 (문장 단위)
+     "cards": {"쪽": {영역: 글꼴 파일}},        # 카드(쪽)×영역 단위로 따로 고른 글꼴
+     "sentences": {"쪽": {영역: {"문장 번호": 글꼴 파일}}},  # ‘문장마다 글꼴’ 영역에서 문장마다 고른 글꼴
      "recommended": {영역: [{"file", "reason", "by"}]},  # 추천 (by: claude | shape), 1번째가 기본값
      "recommended_sig": "...",                 # 추천을 만든 지우기 결과 (바뀌면 다시 추천)
      "updated": "YYYY-MM-DD HH:MM"}
@@ -40,8 +41,9 @@ def load(file_dir: Path | str) -> dict:
         return {}
 
 
-def save(file_dir: Path | str, regions: dict, cards: dict | None = None) -> Path:
-    """고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다)."""
+def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentences: dict | None = None) -> Path:
+    """고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다).
+    sentences: {쪽: {영역: {문장 번호: 파일}}} (None이면 예전 것을 그대로 둔다)."""
     p = Path(file_dir) / FILE_NAME
     data = load(file_dir)
     data["regions"] = {k: v for k, v in regions.items() if v}
@@ -51,12 +53,37 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None) -> Path
         if regs:
             clean[str(page)] = regs
     data["cards"] = clean
+    if sentences is not None:
+        sc = {}
+        for page, regs in sentences.items():
+            regs = {k: {str(i): f for i, f in v.items() if f} for k, v in regs.items()}
+            regs = {k: v for k, v in regs.items() if v}
+            if regs:
+                sc[str(page)] = regs
+        data["sentences"] = sc
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(p)
     log.info("글꼴 저장: %s 영역 %d개, 카드별 %d쪽", p, len(data["regions"]), len(clean))
     return p
+
+
+def sentences_for_page(data: dict, page: int) -> dict:
+    """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}."""
+    regs = (data.get("sentences") or {}).get(str(page)) or {}
+    return {k: {int(i): f for i, f in v.items()} for k, v in regs.items()}
+
+
+def region_font_modes(file_dir: Path) -> dict:
+    """{영역: "cell" | "sentence"} — 영역 설정(style.font_mode). 기본은 한 칸 모두 같은 글꼴(cell)."""
+    from app.project import load_project
+
+    try:
+        regs = load_project(Path(file_dir)).template.regions
+    except Exception:  # noqa: BLE001
+        return {}
+    return {r.name: ((r.style or {}).get("font_mode") or "cell") for r in regs}
 
 
 def overrides_for_page(data: dict, page: int) -> dict:
@@ -113,6 +140,10 @@ def project_used_fonts(file_dir: Path | str) -> list[str]:
         for regs in (data.get("cards") or {}).values():
             for f in regs.values():
                 add(f)
+        for regs in (data.get("sentences") or {}).values():
+            for v in regs.values():
+                for f in v.values():
+                    add(f)
     for rj in (root.glob("groups/*/regions.json") if root else []):
         try:
             t = json.loads(rj.read_text(encoding="utf-8"))
@@ -261,9 +292,10 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
             note = f"Claude 추천을 받지 못해 글자 모양 값으로만 추천했습니다 ({str(e)[:80]})"
     elif client is None:
         note = "글자 모양 값으로만 추천했습니다 (Claude에 연결되어 있지 않음)"
+    styles = {c["file"]: c.get("style", "") for c in cands}
     out = {}
     for name in names:
-        rec = [{**p, "by": "claude"} for p in picked.get(name, [])]
+        rec = order_by_category([{**p, "by": "claude"} for p in picked.get(name, [])], styles)
         for c in shape.get(name, []):
             if len(rec) >= MAX_RECOMMENDED:
                 break
@@ -276,10 +308,36 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
     return out, note
 
 
+CATEGORY_WORDS = {"sans": ("고딕", "산세리프", "sans", "gothic", "돋움"), "serif": ("명조", "세리프", "serif", "mincho", "바탕")}
+
+
+def order_by_category(picks: list[dict], styles: dict) -> list[dict]:
+    """Claude가 원문을 고딕이라고 했는데 명조 견본을 고르는 등 계열이 어긋난 추천은 뒤로 보낸다
+    (견본 줄 번호를 잘못 본 경우). 원문 판단은 1순위 항목의 original_style에 있다."""
+    if not picks:
+        return picks
+    desc = (picks[0].get("original_style") or "").lower()
+    cat = None
+    if any(w in desc for w in CATEGORY_WORDS["sans"]) and not any(w in desc for w in ("명조", "mincho")):
+        cat = "sans"
+    elif any(w in desc for w in CATEGORY_WORDS["serif"]):
+        cat = "serif"
+    if cat is None:
+        return picks
+    other = "serif" if cat == "sans" else "sans"
+    keep = [p for p in picks if styles.get(p["file"]) != other]
+    moved = [p for p in picks if styles.get(p["file"]) == other]
+    out = keep + moved
+    if out and out[0] is not picks[0]:
+        out[0] = {**out[0], "original_style": picks[0].get("original_style")}
+    return out
+
+
 def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh: bool = False,
           cancel=None, say=None) -> dict:
     """창에 보여 줄 한 파일의 글꼴 계획.
-    {"file_dir", "regions": [{"name", "kind", "recommended": [...], "selected", "cards": [{"page", "text", "selected"}]}],
+    {"file_dir", "regions": [{"name", "kind", "font_mode", "recommended": [...], "selected",
+                              "cards": [{"page", "text", "selected", "sentences": [{"idx", "text", "selected"}]}]}],
      "used": [파일...], "note"}"""
     fd = Path(file_dir)
     data = load(fd)
@@ -301,7 +359,12 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
         for r in m["regions"]:
             if r["name"] not in [n for n, _k in names]:
                 names.append((r["name"], r.get("kind", "text")))
+    from app.typeset_layout import sentences as split_sentences
+
+    modes = region_font_modes(fd)
+    raw = texts
     for name, kind in names:
+        mode = "sentence" if modes.get(name) == "sentence" and kind == "text" else "cell"
         rec = [{**r, "label": label_for(r["file"])} for r in (data["recommended"].get(name) or [])]
         sel = (data.get("regions") or {}).get(name) or (rec[0]["file"] if rec else None)
         cards = []
@@ -309,9 +372,15 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
             if not any(r["name"] == name for r in m["regions"]):
                 continue
             pg = m["_page"]
-            cards.append({"page": pg, "text": plain(texts.get(pg, {}).get(name, "")),
-                          "selected": ((data.get("cards") or {}).get(str(pg)) or {}).get(name)})
-        regions.append({"name": name, "kind": kind, "recommended": rec, "selected": sel, "cards": cards})
+            card = {"page": pg, "text": plain(texts.get(pg, {}).get(name, "")),
+                    "selected": ((data.get("cards") or {}).get(str(pg)) or {}).get(name), "sentences": []}
+            if mode == "sentence":
+                chosen = sentences_for_page(data, pg).get(name, {})
+                card["sentences"] = [{"idx": i, "text": t, "selected": chosen.get(i)}
+                                     for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
+            cards.append(card)
+        regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
+                        "cards": cards})
     used = [f for f in project_used_fonts(fd)]
     return {"file_dir": str(fd), "regions": regions, "used": [{"file": f, "label": label_for(f)} for f in used],
             "note": note}

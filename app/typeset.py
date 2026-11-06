@@ -84,6 +84,7 @@ class TextStyle:
     fake_bold_width: float = 0.05  # 가짜 굵게 획 두께 (글자 크기 대비, 외곽선 경로에서만 사용)
     italic_angle: float = 12.0
     tag_colors: dict = field(default_factory=dict)  # {"c1": "#aa0000"}
+    tag_fonts: dict = field(default_factory=dict)  # {"f1": 글꼴 파일} 문장 단위 글꼴 (<f1>…</f1>)
     stroke_color: str | None = None  # 외곽선 (원문에 있을 때만)
     stroke_width: float = 0.0  # 글자 크기 대비
     icons_dir: str | None = None
@@ -116,6 +117,9 @@ class TextStyle:
         if font.get("bold_file"):
             bp = Path(font["bold_file"])
             kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
+        if style.get("tag_fonts"):
+            kw["tag_fonts"] = {k: str(Path(v) if Path(v).is_absolute() else Path(base_dir) / v)
+                               for k, v in style["tag_fonts"].items()}
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
                   "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales"):
             if k in style:
@@ -165,6 +169,12 @@ class FontMeasurer:
 
     def file_for(self, fmt: Fmt) -> tuple[str, bool]:
         """(글꼴 파일, 가짜 굵게 여부)"""
+        tagged = self.style.tag_fonts.get(fmt.font_tag) if fmt.font_tag else None
+        if tagged:  # 문장 단위 글꼴: 굵게는 그 글꼴의 이웃 굵기
+            if fmt.bold or self.style.bold:
+                bv = _bold_variant(tagged)
+                return (bv, False) if bv else (tagged, True)
+            return tagged, False
         if fmt.bold or self.style.bold:
             bf = self.style.bold_file or _bold_variant(self.style.font_file)
             if bf:
@@ -381,6 +391,9 @@ def _prepare(text, style: TextStyle, source_text, m: FontMeasurer):
     unknown_colors = sorted({a.fmt.color_tag for a in atoms if a.fmt.color_tag and a.fmt.color_tag not in style.tag_colors})
     if unknown_colors:
         errors.append("색이 정해지지 않은 태그 " + ", ".join(unknown_colors))
+    unknown_fonts = sorted({a.fmt.font_tag for a in atoms if a.fmt.font_tag and a.fmt.font_tag not in style.tag_fonts})
+    if unknown_fonts:
+        errors.append("글꼴이 정해지지 않은 태그 " + ", ".join(unknown_fonts))
     if errors:
         status.append(STATUS_TAG_MISMATCH)
     unnamed = [t for t in _ANY_ICON.findall(text) if not _ICON_NAME.match(t)]

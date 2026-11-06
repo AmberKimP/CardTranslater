@@ -190,8 +190,8 @@ def rank_fonts(sources: list[dict], candidates: list[dict], sample: str = KO_SAM
         if not f:
             continue
         score, parts = _distance(src, f)
-        if small and c.get("style") in ("handwriting", "display"):
-            score += 1.0
+        if c.get("style") in ("handwriting", "display"):
+            score += 1.5 if small else 0.6  # 모양 값만으로는 손글씨·장식 느낌을 알 수 없다: 흔한 고딕·명조를 앞에
         if c.get("style") == "serif" and src["contrast"] < SERIF_CONTRAST:
             score += 1.0  # 스캔 번짐으로 고딕도 획 굵기 변화가 커 보인다: 아주 크지 않으면 명조를 앞에 두지 않는다
         out.append({**c, "score": round(score, 3), "reason": _reason(parts, src, f)})
@@ -208,16 +208,43 @@ def _font_dirs() -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
+def split_face(file: str | Path) -> tuple[Path, int | None]:
+    """'모음.ttc#2' -> (모음.ttc, 2). 모음이 아니면 (파일, None)."""
+    s = str(file)
+    if "#" in s:
+        a, b = s.rsplit("#", 1)
+        if b.isdigit():
+            return Path(a), int(b)
+    return Path(s), None
+
+
+def face_count(path: Path | str) -> int:
+    """.ttc·.otc 글꼴 모음 안의 글꼴 수 (모음이 아니면 1)."""
+    p = Path(path)
+    if p.suffix.lower() not in (".ttc", ".otc"):
+        return 1
+    try:
+        from fontTools.ttLib import TTCollection
+
+        with TTCollection(str(p), lazy=True) as c:
+            return len(c.fonts)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def font_info(path: Path | str) -> dict | None:
     """글꼴 파일 하나: {"file", "family", "style", "hangul", "embeddable"}. 읽을 수 없으면 None.
-    .ttc(글꼴 모음)는 지금 한글 넣기에서 쓸 수 없어 None."""
+    글꼴 모음(.ttc)의 한 글꼴은 '모음.ttc#번호'로 가리킨다 (번호 없이 주면 0번)."""
     from fontTools.ttLib import TTFont
 
-    p = Path(path)
-    if p.suffix.lower() not in (".ttf", ".otf"):
+    p, face = split_face(path)
+    ext = p.suffix.lower()
+    if ext in (".ttc", ".otc"):
+        face = face or 0
+    elif ext not in (".ttf", ".otf") or face is not None:
         return None
     try:
-        f = TTFont(str(p), lazy=True, fontNumber=0)
+        f = TTFont(str(p), lazy=True, fontNumber=face or 0)
         name = f["name"]
         fam = name.getBestFamilyName() or p.stem
         sub = name.getBestSubFamilyName() or ""
@@ -229,8 +256,39 @@ def font_info(path: Path | str) -> dict | None:
     hangul = all(cp in cmap for cp in (0xAC00, 0xD55C, 0xAE00))  # 가 한 글
     restricted = bool(fs_type & 0x0002) and not (fs_type & 0x000C)  # 내장 금지 (미리보기·편집 허용이 아니면)
     label = fam + (f" {sub}" if sub and sub.lower() not in ("regular", "normal") else "")
-    return {"file": str(p), "family": fam, "style": sub, "label": label, "hangul": hangul,
-            "embeddable": not restricted}
+    return {"file": str(p) if face is None else f"{p}#{face}", "family": fam, "style": sub, "label": label,
+            "hangul": hangul, "embeddable": not restricted}
+
+
+def faces(path: Path | str) -> list[dict]:
+    """파일 안의 글꼴들 (모음이면 글꼴마다, 아니면 하나)."""
+    p = Path(path)
+    n = face_count(p)
+    if p.suffix.lower() in (".ttc", ".otc"):
+        return [i for i in (font_info(f"{p}#{k}") for k in range(n)) if i]
+    i = font_info(p)
+    return [i] if i else []
+
+
+def extract_face(file: str | Path, cache_dir: Path) -> Path:
+    """글꼴 모음의 한 글꼴을 .ttf로 꺼내 cache_dir에 둔다 (한글 넣기는 단독 글꼴 파일만 쓴다). 꺼낸 파일 경로.
+    모음이 아니면 그대로 돌려준다."""
+    from fontTools.ttLib import TTCollection
+
+    p, face = split_face(file)
+    if face is None:
+        return p
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out = cache_dir / f"{p.stem}_{face}.ttf"
+    if out.exists() and out.stat().st_mtime >= p.stat().st_mtime:
+        return out
+    with TTCollection(str(p)) as c:
+        font = c.fonts[face]
+        tmp = out.with_suffix(".tmp")
+        font.save(str(tmp))
+    tmp.replace(out)
+    log.info("글꼴 모음에서 꺼냄: %s -> %s", file, out)
+    return out
 
 
 def installed_fonts(hangul_only: bool = True) -> list[dict]:
@@ -238,14 +296,14 @@ def installed_fonts(hangul_only: bool = True) -> list[dict]:
     out, seen = [], set()
     for d in _font_dirs():
         for p in sorted(d.iterdir()):
-            info = font_info(p)
-            if not info or (hangul_only and not info["hangul"]) or not info["embeddable"]:
-                continue
-            key = info["label"].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(info)
+            for info in faces(p):
+                if (hangul_only and not info["hangul"]) or not info["embeddable"]:
+                    continue
+                key = info["label"].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(info)
     out.sort(key=lambda x: x["label"].lower())
     return out
 
@@ -253,8 +311,12 @@ def installed_fonts(hangul_only: bool = True) -> list[dict]:
 # ---------------------------------------------------------------- Claude가 보고 고르기 (F28 3단계)
 PICK_SYSTEM = """You help choose Korean fonts for translating board game cards.
 For each region you get: a crop of the ORIGINAL card text (Japanese or English) and a sheet of numbered
-Korean samples, one candidate font per row. Rank the candidates by how close their overall impression is to the
-original lettering: sans vs serif, stroke weight, roundness, handwritten or decorative feel, genre mood.
+Korean samples, one candidate font per row.
+Step 1: describe the original lettering in `original_style`: its category (gothic/sans, mincho/serif, rounded,
+handwriting, brush, decorative) and weight (light, regular, medium, bold, black). Ignore scan blur and paper texture:
+a gothic printed on a scanned card is still a gothic.
+Step 2: rank the candidates. Same category first, then the closest weight, then roundness and mood.
+Only pick a handwriting or decorative font when the original itself is handwriting or decorative.
 Readability matters: do not prefer a thin or highly decorative font for small body text.
 Return the best 3 candidate numbers per region, best first, each with a short reason in Korean (under 30 chars)."""
 
@@ -262,10 +324,11 @@ Return the best 3 candidate numbers per region, best first, each with a short re
 def _pick_schema() -> dict:
     return {"type": "object", "properties": {"regions": {"type": "array", "items": {
         "type": "object",
-        "properties": {"region": {"type": "string"}, "ranked": {"type": "array", "items": {
+        "properties": {"region": {"type": "string"}, "original_style": {"type": "string"},
+                       "ranked": {"type": "array", "items": {
             "type": "object", "properties": {"id": {"type": "integer"}, "reason": {"type": "string"}},
             "required": ["id", "reason"], "additionalProperties": False}}},
-        "required": ["region", "ranked"], "additionalProperties": False}}},
+        "required": ["region", "original_style", "ranked"], "additionalProperties": False}}},
         "required": ["regions"], "additionalProperties": False}
 
 
@@ -321,6 +384,8 @@ def ask_claude_pick(client, model: str, regions: list[dict], work_dir: Path) -> 
             if 0 <= i < len(r["candidates"]) and all(p["file"] != r["candidates"][i]["file"] for p in picks):
                 picks.append({"file": r["candidates"][i]["file"], "reason": str(k.get("reason", ""))[:60]})
         if picks:
+            if item.get("original_style"):
+                picks[0]["original_style"] = str(item["original_style"])[:60]
             out[r["name"]] = picks
     log.info("Claude 글꼴 추천: %s", {k: [Path(p["file"]).name for p in v] for k, v in out.items()})
     return out
