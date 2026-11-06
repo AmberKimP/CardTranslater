@@ -5,6 +5,8 @@ service 함수의 progress 콜백(ProgressEvent)과 CancelToken을 그대로 쓴
 
 from __future__ import annotations
 
+import logging
+import time
 import traceback
 from typing import Callable
 
@@ -12,6 +14,8 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
 from app import service
+
+log = logging.getLogger("cardtranslater.job")
 
 
 class JobSignals(QObject):
@@ -34,21 +38,46 @@ class Job(QRunnable):
         self.setAutoDelete(False)
 
     def run(self) -> None:
+        name = getattr(self.fn, "__name__", str(self.fn))
+        t0 = time.monotonic()
+        log.info("작업 시작: %s %s", name, _describe(self.args, self.kwargs))
+        last = [""]
+
+        def progress(ev):
+            msg = getattr(ev, "message", "") or getattr(ev, "stage", "")
+            if msg and msg != last[0]:  # 같은 문구가 계속 오면 한 번만
+                last[0] = msg
+                log.debug("  %s: [%s %s/%s] %s", name, ev.stage, ev.done, ev.total, msg)
+            self.signals.progress.emit(ev)
+
         try:
             kw = dict(self.kwargs)
             if self.with_progress:
-                kw.update(progress=self.signals.progress.emit, cancel=self.token)
+                kw.update(progress=progress, cancel=self.token)
             result = self.fn(*self.args, **kw)
         except service.Cancelled:
+            log.info("작업 취소: %s (%.1f초)", name, time.monotonic() - t0)
             self.signals.cancelled.emit()
             return
         except Exception as e:  # noqa: BLE001 - 화면에 보여 준다
+            log.error("작업 실패: %s (%.1f초)", name, time.monotonic() - t0, exc_info=True)
             self.signals.failed.emit(f"{e}\n\n{traceback.format_exc(limit=3)}")
             return
+        log.info("작업 끝: %s (%.1f초) → %s", name, time.monotonic() - t0, _brief(result))
         self.signals.done.emit(result)
 
     def cancel(self) -> None:
         self.token.cancel()
+
+
+def _brief(x, limit: int = 300) -> str:
+    s = repr(x)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _describe(args, kwargs) -> str:
+    parts = [_brief(a, 120) for a in args] + [f"{k}={_brief(v, 120)}" for k, v in kwargs.items()]
+    return "(" + ", ".join(parts) + ")"
 
 
 _running: set[Job] = set()  # 끝나기 전에 가비지 컬렉션되지 않게

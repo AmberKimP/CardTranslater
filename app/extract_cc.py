@@ -47,9 +47,24 @@ class CCReply:
 
 def _run_subprocess(args: list[str], cwd: Path, timeout: float, input_text: str | None = None) -> tuple[int, str, str]:
     """input_text: 긴 지시문은 명령줄 대신 표준 입력으로 (Windows 명령줄 길이 제한 ≈ 32K자)."""
+    import logging
+
+    from app.applog import shorten
+
+    lg = logging.getLogger("cardtranslater.claude")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # 창 프로그램(exe)에서 콘솔 창이 깜빡이지 않게
-    p = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout, input=input_text, creationflags=flags)
+    t0 = time.monotonic()
+    lg.info("claude 실행: %s (입력 %d자)", shorten(args), len(input_text or ""))
+    try:
+        p = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, input=input_text, creationflags=flags)
+    except Exception:
+        lg.exception("claude 실행 실패 (%.1f초)", time.monotonic() - t0)
+        raise
+    ok = p.returncode == 0
+    lg.log(logging.INFO if ok else logging.WARNING, "claude 끝: 코드 %s, %.1f초, 출력 %d자%s", p.returncode,
+           time.monotonic() - t0, len(p.stdout or ""),
+           "" if ok else f"\n  stdout 끝: {(p.stdout or '')[-1500:]}\n  stderr 끝: {(p.stderr or '')[-1500:]}")
     return p.returncode, p.stdout, p.stderr
 
 

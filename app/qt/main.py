@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt.dialogs import (
-    AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog, install_korean, show_problem,
+    AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog, install_korean, show_error, show_problem,
 )
 from app.qt.region_editor import RegionEditor
 from app.qt.results import OutputActions
@@ -665,6 +665,13 @@ class MainWindow(QMainWindow):
         quit_ = QAction("끝내기", self)
         quit_.triggered.connect(self.close)
         menu.addAction(quit_)
+        help_ = self.menuBar().addMenu("도움말")
+        act = QAction("로그 묶어서 저장… (문제 보고용)", self)
+        act.triggered.connect(self.save_logs)
+        help_.addAction(act)
+        act = QAction("로그 폴더 열기", self)
+        act.triggered.connect(self.open_log_folder)
+        help_.addAction(act)
         st = service.engine_status()
         self.statusBar().showMessage(st["message"])
         self.show_home()
@@ -691,6 +698,29 @@ class MainWindow(QMainWindow):
 
         if ask_login(self, first_run=False):
             self.statusBar().showMessage(service.engine_status()["message"])
+
+    def save_logs(self):
+        import time
+
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        name = f"CardTranslater-로그-{time.strftime('%Y%m%d-%H%M')}.zip"
+        default = str(Path.home() / "Desktop" / name)
+        path, _ = QFileDialog.getSaveFileName(self, "로그 묶어서 저장", default, "ZIP 파일 (*.zip)")
+        if not path:
+            return
+        try:
+            out = service.export_logs(Path(path))
+        except OSError as e:
+            show_error(self, "로그를 저장하지 못했습니다", str(e), "다른 폴더를 골라 다시 저장하세요.")
+            return
+        QMessageBox.information(self, "로그 저장", f"저장했습니다:\n{out}\n\n이 파일을 보내 주세요. "
+                                "(API 키는 가려져 있습니다. 카드 이미지·원문은 들어 있지 않습니다)")
+
+    def open_log_folder(self):
+        from app.qt.dialogs import open_log_folder
+
+        open_log_folder(self)
 
     def open_settings(self):
         if SettingsDialog(self).exec():
@@ -730,6 +760,7 @@ def main(argv: list[str] | None = None) -> int:
     if "--smoke" in args:  # exe 점검: 프로젝트를 열고 몇 쪽 시험 실행, 화면 캡처 (프로젝트 결과는 바뀌지 않음)
         return _smoke(Path(args[args.index("--smoke") + 1]), Path(args[args.index("--smoke") + 2]),
                       args[args.index("--smoke") + 3] if len(args) > args.index("--smoke") + 3 else "1")
+    _start_log()
     if "--no-login" not in args:  # 시작할 때 로그인 방식 고르기 (Claude 구독 / API 키)
         from app.qt.login import ask_login
 
@@ -739,6 +770,14 @@ def main(argv: list[str] | None = None) -> int:
     win.resume_last()
     win.show()
     return app.exec()
+
+
+def _start_log() -> None:
+    """동작 로그 시작 (도움말 > 로그 묶어서 저장). 로그를 못 열어도 프로그램은 계속 쓴다."""
+    try:
+        service.start_logging()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _smoke(project_dir: Path, out: Path, pages: str) -> int:

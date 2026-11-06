@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ NODE_DIST = "https://nodejs.org/dist"
 CLAUDE_PACKAGE = "@anthropic-ai/claude-code"
 _EXE_IN_PKG = Path("node_modules") / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+log = logging.getLogger("cardtranslater.setup")
 
 
 class SetupError(Exception):
@@ -165,6 +167,7 @@ def install_node(progress, cancel=None, fetch=_fetch, download=_download) -> Pat
     """공식 zip을 받아 SHA256을 확인하고 tools/node에 푼다. node.exe 경로를 돌려준다."""
     ver = latest_node_lts(fetch)
     name = f"node-{ver}-win-{_node_arch()}"
+    log.info("Node.js 받기: %s", name)
     sums = fetch(f"{NODE_DIST}/{ver}/SHASUMS256.txt").decode("utf-8", "replace")
     want = next((ln.split()[0] for ln in sums.splitlines() if ln.strip().endswith(f"{name}.zip")), None)
     if not want:
@@ -197,8 +200,11 @@ def install_node(progress, cancel=None, fetch=_fetch, download=_download) -> Pat
 
 # ---------------------------------------------------------------- Claude Code
 def _run(args: list[str], cwd: Path | None, timeout: float, env: dict | None = None) -> tuple[int, str, str]:
+    log.info("실행: %s", " ".join(str(a) for a in args))
     p = subprocess.run(args, cwd=str(cwd) if cwd else None, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=timeout, env=env, creationflags=_NO_WINDOW)
+    log.log(logging.INFO if p.returncode == 0 else logging.WARNING, "  코드 %s%s", p.returncode,
+            "" if p.returncode == 0 else f"\n  stdout 끝: {p.stdout[-1500:]}\n  stderr 끝: {p.stderr[-1500:]}")
     return p.returncode, p.stdout, p.stderr
 
 
@@ -210,14 +216,17 @@ def install_claude_code(progress: Callable | None = None, cancel=None, run=None,
     run = run or _run
     existing = find_claude()
     if existing:
+        log.info("Claude Code가 이미 있음: %s", existing)
         return existing
     if sys.platform != "win32":
         raise SetupError("자동 설치는 Windows에서만 됩니다 — https://code.claude.com/docs 를 보고 설치하세요")
 
     say("node", 0, 0, "Node.js 확인 중…")
     node = find_node(run)
+    log.info("Node.js: %s", node or "없음 → 내려받기")
     if node is None:
         node = node_installer(say, cancel)
+        log.info("Node.js 설치함: %s", node)
     if cancel is not None:
         cancel.check()
     npm = _npm_cli(node)
@@ -244,5 +253,6 @@ def install_claude_code(progress: Callable | None = None, cancel=None, run=None,
     code, out, err = run([str(exe), "--version"], prefix, 60, env)
     if code != 0:
         raise SetupError(f"Claude Code를 설치했지만 실행되지 않습니다: {(err or out).strip()[:200]}")
+    log.info("Claude Code 설치 완료: %s (%s)", exe, out.strip())
     say("done", 1, 1, f"Claude Code 설치 완료 ({out.strip()})")
     return str(exe)

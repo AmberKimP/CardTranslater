@@ -351,6 +351,26 @@ class OutputActions:
 
     # ---- 한글 넣기
     def compose(self, accept: bool = False):
+        """한글 넣기. 처음 누르면 먼저 글꼴 고르기 창을 띄운다 (엑셀 확인 뒤 다시 부를 때는 묻지 않음)."""
+        if accept:
+            self._run_compose(True)
+            return
+        job = worker.Job(service.font_plans, self.pdir, files=self.page.scope()[1])
+        worker.run_with_dialog(self.page, "글꼴 추천 받는 중", job, self._fonts_ready,
+                               lambda m: show_failure(self.page, "글꼴 추천을 받지 못했습니다", m))
+
+    def _fonts_ready(self, plans):
+        from app.qt.fonts_dialog import FontPlanDialog
+
+        if plans:  # 지운 결과가 없는 파일만 있으면 글꼴 창 없이 (한글 넣기가 이유를 알려 준다)
+            dlg = FontPlanDialog(plans, self.page)
+            if not dlg.exec():
+                return
+            for file_dir, regions, cards in dlg.choices():
+                service.save_font_choices(file_dir, regions, cards)
+        self._run_compose(False)
+
+    def _run_compose(self, accept: bool):
         job = worker.Job(service.compose_project, self.pdir, accept_issues=accept, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "한글 넣기", job, self._compose_done,
                                lambda m: show_failure(self.page, "한글 넣기를 끝내지 못했습니다", m))
@@ -370,6 +390,10 @@ class OutputActions:
             summ = ", ".join(f"{k} {v}" for k, v in (f.get("summary") or {}).items())
             lines.append(f"{f['file']}: {state_label(f['state'])} ({f.get('from', '')})" + (f" — {summ}" if summ else "")
                          + (f" — {'; '.join(f.get('blocking') or [])}" if f.get("blocking") else ""))
+            if f.get("sheet_images"):
+                lines.append(f"    원래 배열 이미지 {len(f['sheet_images'])}장: {Path(f['sheet_images'][0]).parent}")
+            if f.get("sheet_error"):
+                lines.append(f"    {f['sheet_error']}")
         box = QMessageBox(self.page)
         box.setWindowTitle("한글 넣기")
         box.setText("\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))

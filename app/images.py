@@ -35,6 +35,12 @@ class SheetCut:
     dpi: float = DEFAULT_DPI
     gutters_found: bool = True  # False면 틈을 못 찾아 같은 간격으로 나눔
     warnings: list[str] = field(default_factory=list)
+    frame: int = 0  # 여러 쪽 TIFF의 몇 번째 쪽
+
+    def layout(self) -> dict:
+        """file.json에 남길 배치 (결과를 원래 시트로 다시 합칠 때 쓴다)."""
+        return {"file": Path(self.source).name, "frame": self.frame, "size": list(self.size), "dpi": self.dpi,
+                "boxes": [list(b) for b in self.boxes]}
 
 
 def load_images(path: Path | str) -> list:
@@ -116,7 +122,7 @@ def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) ->
     im = load_images(path)[frame]
     rgb = np.asarray(im)
     h, w = rgb.shape[:2]
-    cut = SheetCut(str(path), (w, h), [], image_dpi(path))
+    cut = SheetCut(str(path), (w, h), [], image_dpi(path), frame=frame)
     if cols < 1 or rows < 1:
         raise ValueError("가로·세로 장수는 1 이상")
     if cols == 1 and rows == 1:
@@ -219,3 +225,59 @@ def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, r
     n = doc.page_count
     doc.close()
     return ImagePdfResult(out_pdf, n, sheets, warnings)
+
+
+def sheet_output_name(layout: dict, frames_in_file: int = 1) -> str:
+    """합친 시트 이미지 파일 이름: 원본 이름 그대로 (JPG는 JPG, 나머지는 PNG). 여러 쪽 TIFF는 _쪽번호."""
+    p = Path(layout["file"])
+    ext = ".jpg" if p.suffix.lower() in (".jpg", ".jpeg") else ".png"
+    tail = f"_{layout.get('frame', 0) + 1}" if frames_in_file > 1 else ""
+    return f"{p.stem}{tail}{ext}"
+
+
+def compose_sheets(layouts: list[dict], images_dir: Path | str, cards_pdf: Path | str, page_numbers: list[int],
+                   out_dir: Path | str) -> list[Path]:
+    """한글을 넣은 카드(쪽)를 원본 시트 이미지의 같은 자리에 다시 붙여, 원래 크기·배열의 이미지로 저장한다.
+
+    layouts: 시트마다 {"file", "frame", "size", "dpi", "boxes"} (이미지 순서·카드 순서 = PDF 쪽 순서).
+    cards_pdf의 i번째 쪽이 원래 PDF의 page_numbers[i]쪽이다. 그 안에 없는 쪽(뺀 쪽)은 원본 그대로 둔다.
+    카드 사이 틈과 바깥 여백도 원본 그대로다."""
+    import pymupdf
+    from PIL import Image
+
+    images_dir, out_dir = Path(images_dir), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    where = {p: i for i, p in enumerate(page_numbers)}
+    frames: dict[str, int] = {}
+    for lay in layouts:
+        frames[lay["file"]] = frames.get(lay["file"], 0) + 1
+    doc = pymupdf.open(cards_pdf)
+    outs, page_no = [], 0
+    try:
+        for lay in layouts:
+            sheet = load_images(images_dir / lay["file"])[lay.get("frame", 0)].copy()
+            if list(sheet.size) != list(lay["size"]):
+                raise ValueError(f"{lay['file']}: 원본 이미지 크기가 넣을 때와 다릅니다 {sheet.size} ≠ {tuple(lay['size'])}")
+            for (x0, y0, x1, y1) in lay["boxes"]:
+                page_no += 1
+                idx = where.get(page_no)
+                if idx is None:
+                    continue
+                bw, bh = x1 - x0, y1 - y0
+                pg = doc[idx]
+                mat = pymupdf.Matrix(bw / pg.rect.width, bh / pg.rect.height)
+                pix = pg.get_pixmap(matrix=mat, alpha=False)
+                card = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                if card.size != (bw, bh):  # 반올림으로 1px 차이
+                    card = card.resize((bw, bh), Image.Resampling.LANCZOS)
+                sheet.paste(card, (x0, y0))
+            out = out_dir / sheet_output_name(lay, frames[lay["file"]])
+            dpi = (float(lay.get("dpi") or DEFAULT_DPI),) * 2
+            if out.suffix == ".jpg":
+                sheet.save(out, format="JPEG", quality=95, subsampling=0, dpi=dpi)
+            else:
+                sheet.save(out, format="PNG", optimize=True, dpi=dpi)
+            outs.append(out)
+    finally:
+        doc.close()
+    return outs

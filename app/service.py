@@ -94,6 +94,8 @@ class ComposeResult:
     status_summary: dict[str, list[str]] = field(default_factory=dict)  # 글자 축소·넘침 등 -> 칸 key
     rows: int = 0
     error: str | None = None
+    sheet_images: list[Path] = field(default_factory=list)  # 배열 이미지로 넣었으면 원래 배열로 다시 합친 이미지
+    sheet_error: str | None = None  # 합치지 못한 이유 (한글 넣기 결과는 그대로 쓸 수 있다)
 
 
 # ---------------------------------------------------------------- 폴더
@@ -416,8 +418,11 @@ def compose(project_dir: Path | str, *, excel: Path | str | None = None, cleared
         _discard(run_dir, final_dir)
         raise
     _commit(run_dir, final_dir)
+    res = ComposeResult("done", final_dir, issues=issues, status_summary=summary, rows=rows)
+    if not test:
+        _attach_sheet_images(project.root, final_dir, res, progress)
     progress(ProgressEvent("done", 1, 1, "한글 넣기 완료"))
-    return ComposeResult("done", final_dir, issues=issues, status_summary=summary, rows=rows)
+    return res
 
 
 # ---------------------------------------------------------------- 3단계: 글자 추출 (Claude 비전)
@@ -1028,13 +1033,52 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
             src = "초벌 번역"
         rec = {"file": key, "state": r.state, "from": src, "issues": r.issues, "blocking": r.blocking,
                "summary": {k: len(v) for k, v in r.status_summary.items()},
-               "dir": str(r.output_dir) if r.output_dir else None}
+               "dir": str(r.output_dir) if r.output_dir else None,
+               "sheet_images": [str(p) for p in r.sheet_images], "sheet_error": r.sheet_error}
         out.files.append(rec)
         if r.state in ("blocked", "failed"):
             out.state, out.reason = r.state, f"{key}: {(r.blocking or [r.error or ''])[0]}"
         elif r.state == "needs_confirmation" and out.state == "done":
             out.state, out.reason = "needs_confirmation", f"{key}: 엑셀에 확인할 항목이 있습니다"
     return out
+
+
+def image_sheet_layouts(file_dir: Path | str) -> list[dict]:
+    """이미지로 넣은 파일이면 시트마다 카드 자리 [{"file", "frame", "size", "dpi", "boxes"}], 아니면 [].
+    예전에 넣어 배치가 남아 있지 않으면 원본 이미지 사본(source/images/)을 같은 가로×세로로 다시 잘라 구한다."""
+    from app import images, workspace
+
+    fd = Path(file_dir)
+    fi = workspace.file_settings(fd).get("from_images")
+    if not fi:
+        return []
+    if fi.get("sheets"):
+        return fi["sheets"]
+    out = []
+    for name in fi.get("files", []):
+        src = fd / "source" / "images" / name
+        for frame in range(len(images.load_images(src))):
+            out.append(images.cut_sheet(src, fi.get("cols", 1), fi.get("rows", 1), frame=frame).layout())
+    return out
+
+
+def _attach_sheet_images(file_dir: Path, final_dir: Path, res: ComposeResult, progress: ProgressFn) -> None:
+    """배열 이미지로 넣은 파일이면 translated/ 결과를 원래 시트 크기·배열의 이미지로도 저장한다 (translated/images/)."""
+    import logging
+
+    from app import images
+
+    try:
+        layouts = image_sheet_layouts(file_dir)
+        if not layouts:
+            return
+        progress(ProgressEvent("render", 0, 1, "원래 배열 이미지로 합치는 중"))
+        rep = json.loads((final_dir / "report.json").read_text(encoding="utf-8"))
+        res.sheet_images = images.compose_sheets(layouts, Path(file_dir) / "source" / "images",
+                                                 final_dir / "translated.pdf", rep["pages"], final_dir / "images")
+    except Exception as e:  # noqa: BLE001 - 한글 넣기 결과(PDF)는 그대로 둔다
+        logging.getLogger("cardtranslater.compose").exception("시트 이미지 합치기 실패: %s", file_dir)
+        res.sheet_error = f"원래 배열 이미지로 합치지 못했습니다: {e}"
 
 
 def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResult:
@@ -1055,7 +1099,9 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResul
         _discard(run_dir, final_dir)
         raise
     _commit(run_dir, final_dir)
-    return ComposeResult("done", final_dir, status_summary=rep["status_summary"])
+    res = ComposeResult("done", final_dir, status_summary=rep["status_summary"])
+    _attach_sheet_images(fd, final_dir, res, progress or _noop)
+    return res
 
 
 # ================================================================ 화면용 (PySide6 등)
@@ -1237,6 +1283,88 @@ def font_choices() -> list[dict]:
             out.append({"label": f"{family} — {fam.get('ko_name', '')}", "family": family,
                         "file": f"fonts/{fam['dir']}/{f.name}", "style": fam.get("style", "")})
     return out
+
+
+# ---------------------------------------------------------------- 한글 넣기 전 글꼴 고르기
+FONT_PICK_MODEL = "claude-sonnet-5-5"  # 원문과 견본을 보고 비슷한 글꼴 고르기
+
+
+def font_plans(project_dir: Path | str, group: str | None = None, files: list | None = None,
+               refresh: bool = False, progress: ProgressFn = _noop,
+               cancel: CancelToken | None = None) -> list[dict]:
+    """한글 넣기 직전 글꼴 창에 보여 줄 계획 (지운 결과가 있는 파일마다 app.font_plan.build).
+    추천은 처음 한 번만 만들고 fonts.json에 남긴다 (refresh=True면 다시). Claude를 쓸 수 없으면 글자 모양 값으로만."""
+    from app import font_plan, workspace
+    from app.extract import make_client
+    from app.extract_cc import ClaudeCodeClient
+
+    info = workspace.load_project_info(project_dir)
+    dirs = [fd for fd in scoped_file_dirs(info, group, files) if (fd / "cleared" / "cleared.pdf").exists()]
+    client = None
+    need = refresh or any(not font_plan.load(fd).get("recommended") for fd in dirs)
+    if need:
+        eng = get_settings().engine
+        try:
+            if engine_status()[eng]:
+                client = ClaudeCodeClient() if eng == "claude-code" else make_client()
+        except Exception:  # noqa: BLE001 - 추천만 못 받는다
+            client = None
+    out = []
+    for i, fd in enumerate(dirs):
+        if cancel:
+            cancel.check()
+        key = workspace.file_key(fd)
+
+        def say(done, total, msg, _i=i, _key=key):
+            progress(ProgressEvent("fonts", _i, len(dirs), f"{_key}: {msg}"))
+
+        plan = font_plan.build(fd, client, FONT_PICK_MODEL, refresh=refresh, cancel=cancel, say=say)
+        plan["file"] = key
+        out.append(plan)
+    progress(ProgressEvent("done", len(dirs), len(dirs), "글꼴 추천 완료"))
+    return out
+
+
+def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = None) -> Path:
+    """글꼴 창에서 고른 것: regions {영역: 글꼴 파일}, cards {쪽: {영역: 글꼴 파일}} (영역 기본과 다를 때만)."""
+    from app import font_plan
+
+    return font_plan.save(Path(file_dir), regions, cards)
+
+
+def font_path(file: str) -> Path:
+    """글꼴 파일의 실제 경로 (fonts/... 상대 경로는 앱 폴더 기준)."""
+    from app import font_plan
+
+    return font_plan.resolve(file)
+
+
+_INSTALLED_FONTS: list[dict] | None = None
+
+
+def installed_fonts(refresh: bool = False) -> list[dict]:
+    """PC에 설치된 글꼴 중 한글이 있고 PDF에 넣어도 되는 것 [{"file", "label", "family"}] (처음 한 번 몇 초)."""
+    global _INSTALLED_FONTS
+    from app import font_match
+
+    if _INSTALLED_FONTS is None or refresh:
+        _INSTALLED_FONTS = font_match.installed_fonts()
+    return _INSTALLED_FONTS
+
+
+def font_file_info(path: Path | str) -> dict:
+    """사용자가 고른 글꼴 파일 검사: {"ok", "file", "label", "reason"}."""
+    from app import font_match
+
+    info = font_match.font_info(path)
+    if info is None:
+        return {"ok": False, "file": str(path), "label": Path(path).name,
+                "reason": "읽을 수 없는 글꼴입니다 (.ttf·.otf만 쓸 수 있습니다. .ttc 글꼴 모음은 안 됩니다)"}
+    if not info["hangul"]:
+        return {"ok": False, **info, "reason": "한글 글자가 없는 글꼴입니다"}
+    if not info["embeddable"]:
+        return {"ok": False, **info, "reason": "PDF에 넣는 것이 허락되지 않은 글꼴입니다 (글꼴 라이선스)"}
+    return {"ok": True, **info, "reason": ""}
 
 
 def load_region_template(group_dir: Path | str) -> dict:
@@ -1851,6 +1979,30 @@ def install_claude_code(progress: ProgressFn = _noop, cancel: CancelToken | None
     return claude_setup.install_claude_code(say, cancel)
 
 
+def start_logging() -> Path:
+    """동작 로그를 열고 시작 정보(버전·Windows·데이터 폴더·엔진·Claude Code 위치)를 남긴다. 로그 파일 경로."""
+    from app import applog
+
+    path = applog.setup()
+    applog.log_startup({"data_dir": str(data_dir()), "engine": engine_status(), "claude": find_claude()})
+    return path
+
+
+def log_folder() -> Path:
+    """동작 로그 폴더 (테스트하는 사람이 보내 줄 파일)."""
+    from app import applog
+
+    return Path(applog._state["file"]).parent if applog._state.get("file") else applog.log_dir()
+
+
+def export_logs(dest: Path) -> Path:
+    """로그 파일과 환경 정보(버전·Windows·엔진·Claude Code 위치)를 zip 하나로 묶는다. API 키는 가린다."""
+    from app import applog
+
+    extra = {"data_dir": str(data_dir()), "engine": engine_status(), "claude": find_claude()}
+    return applog.export(Path(dest), extra)
+
+
 def set_engine(engine: str) -> None:
     """로그인 방식(엔진)만 바꾼다: claude-code(Claude 구독) | api(API 키)."""
     from app import settings
@@ -1908,6 +2060,7 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     for f in imgs:  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
         shutil.copyfile(f, keep / f.name)
     settings = workspace.file_settings(fd)
-    settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows}
+    settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows,
+                               "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])

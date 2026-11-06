@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import show_error, show_failure, show_problem
+from app.qt.dialogs import open_log_folder, show_error, show_failure, show_problem
 
 
 # 시작 화면 그림 (exe에서는 assets/가 함께 묶인다: packaging/build.py)
@@ -104,7 +104,12 @@ class LoginDialog(QDialog):
         self.start.clicked.connect(self.accept)
         quit_ = QPushButton("끝내기" if first_run else "취소")
         quit_.clicked.connect(self.reject)
+        self.b_log = QPushButton("로그 폴더 열기")
+        self.b_log.setFlat(True)
+        self.b_log.setToolTip("문제가 생기면 이 폴더의 파일을 보내 주세요")
+        self.b_log.clicked.connect(lambda: open_log_folder(self))
         brow = QHBoxLayout()
+        brow.addWidget(self.b_log)
         brow.addStretch(1)
         brow.addWidget(self.start)
         brow.addWidget(quit_)

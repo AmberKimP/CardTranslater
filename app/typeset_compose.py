@@ -104,22 +104,28 @@ STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많�
 
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
                  base_dir: Path = ROOT, styles: dict | None = None,
-                 region_erase: dict | None = None) -> dict:
+                 region_erase: dict | None = None, fonts: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
     서식만 바꿔 합성할 수 있게, 있으면 지우기 때 저장한 style_defaults보다 우선한다.
+    fonts: {영역 이름: 글꼴 파일} — 한글 넣기 전에 고른 글꼴(fonts.json). 영역 서식의 글꼴보다 우선한다.
     """
     card = card or {}
     out: dict = {}
     for reg in meta["regions"]:
         name = reg["name"]
         style_d = (styles or {}).get(name) or reg.get("style_defaults") or {}
+        chosen = (fonts or {}).get(name)
+        if chosen:  # 고른 글꼴: 굵게용 파일은 그 글꼴의 이웃 굵기에서 다시 찾는다
+            style_d = {**style_d, "font": {**(style_d.get("font") or {}), "file": chosen, "bold_file": None}}
         entry = card.get(name) or {}
         rect = pymupdf.Rect(reg["rect_pt"])
         work = pymupdf.Rect(reg["work_rect_pt"]) if reg.get("work_rect_pt") else None
         tl = reg.get("text_layer") or {}
         rec: dict = {"rect_pt": [round(v, 3) for v in rect], "warnings": []}
+        if chosen:
+            rec["font_file"] = chosen
 
         if reg.get("kind") == "tag_pills":
             labels = [{"bbox_pt": l["bbox_pt"], "color": l["color"], "radius_pt": l.get("radius_pt")}
@@ -551,6 +557,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     if icon_style:
         styles = {n: {**icon_style, **(s or {})} for n, s in styles.items()}
     region_erase = {r.name: r.erase for r in project.template.regions}
+    from app import font_plan
+
+    font_data = font_plan.load(project_dir)  # 한글 넣기 전에 고른 글꼴 (영역 기본 + 카드별)
 
     out_doc = pymupdf.open()
     for pno in pages:
@@ -562,7 +571,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         if cancel:
             cancel.check()
         _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
-        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase)
+        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
+                           font_plan.overrides_for_page(font_data, pno))
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)

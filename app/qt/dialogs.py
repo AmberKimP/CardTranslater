@@ -105,6 +105,10 @@ def explain_error(text: str) -> tuple[str, str] | None:
 def show_error(parent, title: str, why: str, todo: str = "", detail: str | None = None,
                warn: bool = True) -> QMessageBox:
     """오류·경고 창. 제목=무엇이 안 됐는지, 본문=왜, 아래=무엇을 하면 되는지, 원문 메시지는 ‘자세히 보기’에."""
+    import logging
+
+    logging.getLogger("cardtranslater.ui").warning("오류 창: %s | %s | %s%s", title, why, todo,
+                                                   f"\n  자세히: {detail.strip()[:4000]}" if detail else "")
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setIcon(QMessageBox.Icon.Warning if warn else QMessageBox.Icon.Critical)
@@ -548,6 +552,21 @@ class ExcludePagesDialog(QDialog):
         super().accept()
 
 
+def open_log_folder(parent=None) -> Path:
+    """로그 폴더를 탐색기로 연다 (없으면 만든다). 연 폴더 경로."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    folder = service.log_folder()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        show_error(parent, "로그 폴더를 열지 못했습니다", str(e))
+        return folder
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+    return folder
+
+
 class SettingsDialog(QDialog):
     """데이터 폴더와 기본 엔진."""
 
@@ -564,9 +583,18 @@ class SettingsDialog(QDialog):
         self.engine = s.engine
         info = QLabel(service.engine_status()["message"] + "\n(Claude 구독 / API 키는 파일 > 로그인 방식에서 바꿉니다)")
         info.setStyleSheet("color: #666")
+        self.log_path = QLineEdit(str(service.log_folder()))
+        self.log_path.setReadOnly(True)
+        self.log_path.setToolTip("문제가 생기면 이 폴더의 파일(또는 도움말 > 로그 묶어서 저장)을 보내 주세요")
+        self.b_log = QPushButton("폴더 열기")
+        self.b_log.clicked.connect(lambda: open_log_folder(self))
+        lrow = QHBoxLayout()
+        lrow.addWidget(self.log_path)
+        lrow.addWidget(self.b_log)
         form = QFormLayout()
         form.addRow("데이터 폴더", row)
         form.addRow("로그인 방식", info)
+        form.addRow("로그 폴더", lrow)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
@@ -574,7 +602,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(bb)
-        self.resize(640, 160)
+        self.resize(640, 190)
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "데이터 폴더", self.dir.text())

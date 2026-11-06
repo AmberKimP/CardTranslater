@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,10 +47,17 @@ def build() -> Path:
     fonts = work / "fonts_stage"
     n = stage_fonts(fonts)
     print(f"[build] 글꼴 {n}개 파일")
+    info = work / "build_info.json"  # 로그에 남길 버전 (app/applog.build_info)
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    info.write_text(json.dumps({"version": time.strftime("1.0.%Y%m%d"), "built": time.strftime("%Y-%m-%d %H:%M"),
+                                "commit": commit.stdout.strip() + ("+수정" if dirty else "")}, ensure_ascii=False),
+                    encoding="utf-8")
     args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,
             "--distpath", str(work / "dist"), "--workpath", str(work / "pyi"), "--specpath", str(work),
             "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts",
-            "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets"]  # 로그인 화면 그림
+            "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets",  # 로그인 화면 그림
+            "--add-data", f"{info}{os.pathsep}."]
     for m in EXCLUDE:
         args += ["--exclude-module", m]
     args.append(str(ROOT / "packaging" / "launch.py"))

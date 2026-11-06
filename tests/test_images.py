@@ -98,7 +98,10 @@ def test_add_images_to_group_and_erase(tmp_path):
     assert (r.file_dir / "source" / "시트.pdf").exists()
     assert sorted(p.name for p in (r.file_dir / "source" / "images").iterdir()) == ["sheet1.png", "sheet2.png"]
     meta = json.loads((r.file_dir / "file.json").read_text(encoding="utf-8"))
-    assert meta["from_images"] == {"files": ["sheet1.png", "sheet2.png"], "cols": 3, "rows": 2}
+    fi = meta["from_images"]
+    assert {k: fi[k] for k in ("files", "cols", "rows")} == {"files": ["sheet1.png", "sheet2.png"], "cols": 3, "rows": 2}
+    assert [sh["file"] for sh in fi["sheets"]] == ["sheet1.png", "sheet2.png"]
+    assert [tuple(b) for b in fi["sheets"][0]["boxes"]] == images.cut_sheet(tmp_path / "in" / "sheet1.png", 3, 2).boxes
     g = next(g for g in service.project_overview(info.dir)["groups"] if g["name"] == "이미지 카드")
     assert g["files"][0]["pages"] == 12
     # 이미지에서 온 쪽도 PDF와 같은 흐름: 영역을 정하면 지우기가 된다
@@ -158,3 +161,88 @@ def test_cut_sheet_white_edged_cards_on_gray_scan_background(tmp_path):
     cut = images.cut_sheet(tmp_path / "scan.jpg", 3, 2)
     assert cut.gutters_found
     assert max(abs(a - b) for bx, tb in zip(cut.boxes, truth) for a, b in zip(bx, tb)) <= 3
+
+
+# ---------------------------------------------------------------- 결과를 원래 배열로 다시 합치기
+def _cards_pdf(path: Path, colors: list[tuple[int, int, int]], size_pt=(91.2, 103.2)) -> Path:
+    """쪽마다 한 색으로 칠한 PDF (한글 넣기 결과 대신)."""
+    doc = pymupdf.open()
+    for c in colors:
+        pg = doc.new_page(width=size_pt[0], height=size_pt[1])
+        pg.draw_rect(pg.rect, color=None, fill=[v / 255 for v in c])
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_compose_sheets_keeps_size_layout_and_untouched_cards(tmp_path):
+    boxes = _grid(tmp_path / "img" / "sheet.png")
+    orig = np.asarray(Image.open(tmp_path / "img" / "sheet.png").convert("RGB"))
+    lay = images.cut_sheet(tmp_path / "img" / "sheet.png", 3, 2).layout()
+    pdf = _cards_pdf(tmp_path / "t.pdf", [(0, 0, 0), (250, 250, 0)])
+    outs = images.compose_sheets([lay], tmp_path / "img", pdf, [1, 3], tmp_path / "out")  # 2·4·5·6쪽은 뺀 쪽
+    assert [o.name for o in outs] == ["sheet.png"]
+    res = Image.open(outs[0])
+    assert res.size == (orig.shape[1], orig.shape[0]) and round(res.info["dpi"][0]) == 300
+    arr = np.asarray(res.convert("RGB"))
+
+    def inside(b):
+        return arr[b[1] + 5:b[3] - 5, b[0] + 5:b[2] - 5].reshape(-1, 3)
+
+    assert (inside(boxes[0]) == 0).all()  # 1쪽 → 1번째 칸
+    assert (inside(boxes[2]) == (250, 250, 0)).all()  # 3쪽 → 3번째 칸
+    for k in (1, 3, 4, 5):  # 결과가 없는 칸은 원본 그대로
+        b = boxes[k]
+        assert (arr[b[1]:b[3], b[0]:b[2]] == orig[b[1]:b[3], b[0]:b[2]]).all()
+    assert (arr[:boxes[0][1]] == orig[:boxes[0][1]]).all()  # 바깥 여백·틈도 그대로
+    gap = slice(boxes[0][2], boxes[1][0])
+    assert (arr[:, gap] == orig[:, gap]).all()
+
+
+def test_compose_sheets_jpg_and_multi_sheet_order(tmp_path):
+    _grid(tmp_path / "img" / "a.jpg", cols=2, rows=1, fmt="JPEG")
+    _grid(tmp_path / "img" / "b.png", cols=2, rows=1)
+    lays = [images.cut_sheet(tmp_path / "img" / n, 2, 1).layout() for n in ("a.jpg", "b.png")]
+    pdf = _cards_pdf(tmp_path / "t.pdf", [(0, 0, 0)] * 4)
+    outs = images.compose_sheets(lays, tmp_path / "img", pdf, [1, 2, 3, 4], tmp_path / "out")
+    assert [o.name for o in outs] == ["a.jpg", "b.png"]
+    b = lays[1]["boxes"][1]  # 4쪽 = 두 번째 시트의 두 번째 칸
+    arr = np.asarray(Image.open(outs[1]).convert("RGB"))
+    assert (arr[b[1] + 5:b[3] - 5, b[0] + 5:b[2] - 5] == 0).all()
+
+
+def test_compose_sheets_rejects_changed_source(tmp_path):
+    _grid(tmp_path / "img" / "s.png", cols=2, rows=1)
+    lay = images.cut_sheet(tmp_path / "img" / "s.png", 2, 1).layout()
+    lay["size"] = [10, 10]
+    with pytest.raises(ValueError, match="크기"):
+        images.compose_sheets([lay], tmp_path / "img", _cards_pdf(tmp_path / "t.pdf", [(0, 0, 0)]), [1],
+                              tmp_path / "out")
+
+
+def test_image_sheet_layouts_old_project_recut(tmp_path):
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    _grid(tmp_path / "in" / "s.png")
+    r = service.add_images(info.dir, [tmp_path / "in" / "s.png"], "이미지", cols=3, rows=2, new_group=True)
+    saved = service.image_sheet_layouts(r.file_dir)
+    meta = workspace.file_settings(r.file_dir)
+    del meta["from_images"]["sheets"]  # 예전 프로젝트: 가로×세로만 남아 있다
+    workspace._write(r.file_dir / "file.json", meta)
+    assert service.image_sheet_layouts(r.file_dir) == saved
+    assert service.image_sheet_layouts(tmp_path) == []  # 이미지로 넣지 않은 파일
+
+
+def test_compose_writes_sheet_images_for_image_input(tmp_path):
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    _grid(tmp_path / "in" / "s.png")
+    r = service.add_images(info.dir, [tmp_path / "in" / "s.png"], "이미지", cols=3, rows=2, new_group=True)
+    g = next(g for g in service.project_overview(info.dir)["groups"] if g["name"] == "이미지")
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.15}}]})
+    assert service.erase(r.file_dir, "1-6").ok
+    res = service._compose_with_cards(r.file_dir, {}, None, None)
+    assert res.state == "done" and res.sheet_error is None
+    assert [p.name for p in res.sheet_images] == ["s.png"]
+    assert res.sheet_images[0] == r.file_dir / "translated" / "images" / "s.png"
+    assert Image.open(res.sheet_images[0]).size == Image.open(tmp_path / "in" / "s.png").size
+
