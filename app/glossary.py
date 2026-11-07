@@ -38,7 +38,8 @@ INFO_SHEET = "정보"
 HEADERS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형",
            "메모"]  # 확인할 정보(원문 상태·번역 확인·다른 후보)를 번역 바로 옆에 둔다 (2026-11-04 사용자 요청)
 # '번역 확인': 모델이 번역이 갈릴 수 있다고 본 용어 ("확인 필요", 보라색). '다른 후보': 대안 번역과 이유
-# '원문 상태': 이 용어가 나온 원문 칸의 추출 확인 결과 중 가장 나쁜 것 (결론 못 냄 > 확인 필요 > 빈 칸=확실)
+# '원문 상태': 이 용어가 나온 원문 칸의 추출 확인 결과 중 가장 나쁜 것 (결론 못 냄 > 확인 필요 > 확실)
+VERDICT_SURE = "확실"
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
 _BRACKET = re.compile(r"(?<!\[)\[([^\[\]\n]{1,24})\](?!\])")  # 카드에 인쇄된 [炎]·[人族] (아이콘 [[x]]는 제외)
 _ICON = re.compile(r"\[\[[a-z0-9_]+\]\]")
@@ -264,9 +265,11 @@ def _assess_schema() -> dict:
 
 
 def assess_terms(info: ProjectInfo, terms: list["Term"], client, model: str, work_dir: Path) -> tuple[float, float]:
-    """확정 용어와 새 후보 모두에 대해 '번역 확인 필요'를 모델이 판단한다 (t.check·alternatives를 채움)."""
+    """새 후보에 대해 '번역 확인 필요'를 모델이 판단한다 (t.check·alternatives를 채움).
+    이미 확정된 용어는 확인 필요가 아니므로 묻지 않는다."""
     from app.llm import complete_json
 
+    terms = [t for t in terms if not t.confirmed]
     if not terms:
         return 0.0, 0.0
     lines = []
@@ -331,8 +334,10 @@ def find_candidates(info: ProjectInfo, sources: list[Source], client, model: str
         if line not in seen:
             seen.add(line)
             uniq.append(f"[{s.region}] {line}")
+    must = [w for w in local if w not in existing and not is_icon_term(w)]  # 코드로 뽑은 후보도 추천 번역을 받는다
     prompt = (f"Game: {info.game}. Source language: {info.source_language}.\n"
               f"Already confirmed terms (do not list again): {', '.join(existing) or '(none)'}\n"
+              f"Terms found by code that you MUST also list, each with suggested_ko: {', '.join(must) or '(none)'}\n"
               f"Card texts ({len(uniq)} unique lines, region name in brackets):\n" + "\n".join(uniq))
     data, api_usd, equiv = complete_json(client, model, CANDIDATE_SYSTEM, prompt, _candidate_schema(), work_dir)
 
@@ -417,12 +422,17 @@ def export_review(info: ProjectInfo, terms: list[Term], out: Path) -> Path:
     no_verdict = PatternFill("solid", fgColor="FF7C80")  # 빨강(심각): 결론 못 낸 원문에서만 나온 용어
     unsure = PatternFill("solid", fgColor="FFE066")  # 노랑: 확인 필요 원문에서만 나온 용어
     to_check = PatternFill("solid", fgColor="D9D2E9")  # 보라: 번역이 갈릴 수 있어 사람이 골라야 하는 용어
+    for t in terms:  # 이미 확정된 용어는 확인 필요가 아니다
+        if t.confirmed:
+            t.check = False
+    # 정렬: 1차 번역 확인(확인 필요가 위), 2차 원문 용어
+    terms = sorted(terms, key=lambda t: (not t.check, t.source))
     for i, t in enumerate(terms, start=2):
         b = t.chosen if t.chosen is not None else (t.ko if t.confirmed else t.suggested)
-        vals = {"원문 용어": t.source, "번역": b, "추천 번역": t.suggested,
+        vals = {"원문 용어": t.source, "번역": b, "추천 번역": (t.suggested or t.ko) if t.confirmed else t.suggested,
                 "분류": t.category, "등장 횟수": t.count, "예문": "\n".join(t.examples),
                 "변형": ", ".join(t.variants), "메모": ("이미 확정된 용어. " if t.confirmed else "") + t.note,
-                "원문 상태": t.verdict or None, "번역 확인": "확인 필요" if t.check else None,
+                "원문 상태": t.verdict or VERDICT_SURE, "번역 확인": "확인 필요" if t.check else None,
                 "다른 후보": (", ".join(t.alternatives) + (f" — {t.check_reason}" if t.check_reason else ""))
                 if t.check else None}
         for h, v in vals.items():
@@ -568,7 +578,8 @@ def terms_from_review(xlsx: Path) -> list[Term]:
                         examples=[e for e in get(row, "예문").split("\n") if e],
                         variants=[v.strip() for v in get(row, "변형").split(",") if v.strip()],
                         note=note.replace("이미 확정된 용어. ", ""), confirmed=note.startswith("이미 확정된 용어"),
-                        verdict=get(row, "원문 상태"), check=bool(get(row, "번역 확인")),
+                        verdict="" if get(row, "원문 상태") == VERDICT_SURE else get(row, "원문 상태"),
+                        check=bool(get(row, "번역 확인")),
                         alternatives=[a.strip() for a in alts.split(",") if a.strip()], check_reason=reason,
                         chosen=get(row, "번역")))
     return out

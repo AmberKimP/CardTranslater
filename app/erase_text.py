@@ -132,8 +132,14 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             if w > 0.6 * bw or h > 0.8 * bh:  # 테두리·큰 그림
                 continue
             comp = lab == i
-            if (comp & ~inbox).sum() / a > 0.03:  # 상자 밖으로 이어지는 그림·선
-                continue
+            out_frac = (comp & ~inbox).sum() / a
+            if out_frac > 0.03:  # 상자 밖으로 이어지는 그림·선
+                # 영역을 글자에 조금 빠듯하게 그려 위·아래 가장자리에 걸친 글자 조각: 대부분 안에 있고 글자 크기이면
+                # 글자로 보고 상자를 그만큼 넓힌다 (좌우로 걸친 것·큰 것은 그림·테두리로 두고 그대로 뺀다)
+                edge = (y < y0 <= y + h or y < y1 <= y + h) and x >= x0 and x + w <= x1
+                if not (edge and out_frac <= 0.6 and h <= 0.5 * bh and w <= 0.2 * bw):
+                    continue
+                inbox[max(0, y - 2):min(H, y + h + 2), max(0, x - 2):min(W, x + w + 2)] = True
             cands.append((comp, I[comp].mean(axis=0), a, max(w, h)))
     # 가로로 긴 덩어리 중 글자보다 두꺼운 것은 구분선이 아니라 색 라벨(예: 빨간 ‘プレイ時効果’ 띠): 라벨은 남기고
     # 안의 글자는 글자로 본다. 진짜 구분선은 글자 획 굵기쯤으로 가늘다
@@ -499,7 +505,7 @@ def is_icon_line(text: str) -> bool:
     return not _WORD.search(_TOKEN.sub("", text))
 
 
-def match_source_lines(tm: TextMask, lay: dict, source: str) -> dict:
+def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | None = None) -> dict:
     """찾은 줄을 읽은 원문 줄에 맞춘다. tm.mask를 고친다(남길 줄은 지우지 않음).
 
     - 원문보다 줄이 많으면 가장 작은 글자 줄(카드 번호 ‘A-001’ 같은 것)부터 원문에 없는 줄로 보고 남긴다
@@ -509,6 +515,19 @@ def match_source_lines(tm: TextMask, lay: dict, source: str) -> dict:
     lines = list(lay.get("lines") or [])
     if not src or not lines:
         return lay
+    src_text = [t for t in src if not is_icon_line(t)]
+    if len(src_text) < len(src):
+        # 색 그림 아이콘만 있는 줄(예: 큰 칼 두 개)은 글자로 잡히지 않는다: 그 줄은 그대로 두고 글 줄끼리 맞춘다.
+        # 아이콘 자리(icon_rows: 아이콘만 있는 줄의 아이콘 세로 범위)를 알면, 그 높이에 잡힌 줄이 없을 때만.
+        def on_icon(ln) -> bool:
+            y0, y1 = ln["bbox"][1], ln["bbox"][3]
+            return any(min(y1, b) - max(y0, a) > 0.5 * max(1, y1 - y0) for a, b in icon_rows or [])
+
+        if icon_rows is not None:
+            if not any(on_icon(ln) for ln in lines):
+                src = src_text
+        elif len(lines) == len(src_text):
+            src = src_text
     extra = []
     while len(lines) - len(extra) > len(src):
         extra.append(min((ln for ln in lines if ln not in extra), key=lambda ln: ln["glyph_h"]))

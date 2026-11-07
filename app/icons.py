@@ -362,6 +362,113 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     return second if second[0] is not None else first
 
 
+# ---------------------------------------------------------------- 아이콘에 붙은 숫자 (예: 2[[coin]] -> 숫자까지 아이콘)
+_NUM_BEFORE = re.compile(r"(?<![0-9０-９])([+\-＋－]?[0-9０-９]+)[ 　]?$")
+_NUM_AFTER = re.compile(r"^[ 　]?([+\-＋－]?[0-9０-９]+)(?![0-9０-９ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ]|[ 　]?\[\[)")
+
+
+def number_near(text: str, start: int, end: int) -> tuple[str, int, int] | None:
+    """text[start:end]의 아이콘 토큰 바로 앞(또는 뒤)에 붙은 숫자: (앞|뒤, 숫자 시작, 숫자 끝). 같은 줄 안만.
+    앞이 먼저다 (‘2[[coin]]’). 뒤 숫자는 단위 글자(枚 등)나 다음 아이콘이 이어지면 빼다."""
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    le = len(text) if le < 0 else le
+    before = text[ls:start]
+    if not before.endswith("]]"):
+        m = _NUM_BEFORE.search(before)
+        if m:
+            return "before", ls + m.start(1), ls + m.end(1)
+    m = _NUM_AFTER.match(text[end:le])
+    if m:
+        return "after", end + m.start(1), end + m.end(1)
+    return None
+
+
+def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_chars: int):
+    """아이콘 상자 옆(side: before=왼쪽, after=오른쪽)에 인쇄된 숫자를 상자에 넣는다. 숫자가 아이콘 위에 인쇄돼
+    상자 안에 있으면 상자 그대로. 그림에서 숫자를 찾지 못하면 None (그때는 원문 숫자도 그대로 둔다)."""
+    import cv2
+
+    bx0, by0, bx1, by1 = box
+    h = max(1, by1 - by0)
+    ink = _ink(img, h).astype(np.uint8)
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    comps = []
+    for i in range(1, n):
+        x, y, w, hh, a = (int(v) for v in st[i])
+        if a < 6 or not (0.25 * h <= hh <= 1.2 * h) or w > 1.2 * h:
+            continue
+        cy = y + hh / 2
+        if not (by0 - 0.1 * h <= cy <= by1 + 0.1 * h):
+            continue
+        comps.append((x, y, x + w, y + hh))
+    inside = [c for c in comps if c[0] >= bx0 and c[2] <= bx1 and c[1] >= by0 and c[3] <= by1 and c[3] - c[1] <= 0.8 * h]
+    got = []
+    edge = bx0 if side == "before" else bx1
+    gap = 0.6 * h
+    for _ in range(max(1, n_chars)):  # 숫자 글자 수만큼만 (옆 글자까지 붙이지 않는다)
+        if side == "before":
+            cand = [c for c in comps if c not in got and c[2] <= edge + 2 and edge - c[2] <= gap]
+            nxt = max(cand, key=lambda c: c[2], default=None)
+        else:
+            cand = [c for c in comps if c not in got and c[0] >= edge - 2 and c[0] - edge <= gap]
+            nxt = min(cand, key=lambda c: c[0], default=None)
+        if nxt is None:
+            break
+        got.append(nxt)
+        edge = nxt[0] if side == "before" else nxt[2]
+        gap = 0.35 * h
+    if got:
+        xs = [c[0] for c in got] + [c[2] for c in got]
+        ys = [c[1] for c in got] + [c[3] for c in got]
+        return (min(bx0, *xs), min(by0, *ys), max(bx1, *xs), max(by1, *ys))
+    if inside:
+        return box
+    return None
+
+
+def strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """text에서 (시작, 끝) 구간들을 뺀다 (아이콘에 넣은 숫자). 남는 겹 공백은 하나로."""
+    for s, e in sorted(spans, reverse=True):
+        text = text[:s] + text[e:]
+    text = re.sub(r"(?<=\S)[ 　]{2,}(?=\S)", " ", text)
+    return "\n".join(ln.strip(" 　") for ln in text.split("\n"))
+
+
+def strip_in_extract(file_dir: Path, page: int, region: str, original: str, spans: list[tuple[int, int]]) -> None:
+    """추출 결과의 원문에서 아이콘에 넣은 숫자를 뺀다 (원문이 그사이 바뀌지 않았을 때만)."""
+    for f in _extract_files(file_dir, page):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec["regions"].get(region)
+        if not r or r.get("source") != original:
+            continue
+        r["source"] = strip_spans(original, spans)
+        r["icon_number_note"] = "아이콘 옆·위 숫자를 아이콘에 넣고 원문에서 뺌"
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, int, int], bool]]:
+    """원문의 아이콘 자리 [(이름, (x0, y0, x1, y1) 이미지 px, 아이콘만 있는 줄인가)]. 찾지 못한 아이콘은 뺀다."""
+    from app.erase_text import is_icon_line
+
+    out = []
+    idx = 0
+    for ln in (t for t in text.split("\n") if t.strip()):
+        toks = list(TOKEN_RE.finditer(ln))
+        only = is_icon_line(ln)
+        for k, t in enumerate(toks):
+            box, _why = locate(img, text, idx + k)
+            if box is not None:
+                out.append((t.group(1), box, only))
+        idx += len(toks)
+    return out
+
+
+def inline_icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """글 줄 안의 아이콘 자리 [(이름, 상자)]. 아이콘만 있는 줄의 아이콘은 뺀다 (그 줄은 지우지도 다시 그리지도 않는다)."""
+    return [(n, b) for n, b, only in icon_boxes(img, text) if not only]
+
+
 LIGHT_DRAWING = 135.0  # 덩어리의 가장 진한 쪽(10%) 밝기가 이보다 밝으면 연한 배경 그림 (0~255)
 
 
@@ -960,7 +1067,7 @@ def scan(info, work: Path) -> ScanResult:
                 img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
-                auto_map, left = {}, []
+                auto_map, left, strips = {}, [], []
                 for k, ti in enumerate(ph):
                     n += 1
                     oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
@@ -970,6 +1077,13 @@ def scan(info, work: Path) -> ScanResult:
                     if box is None:
                         oc.reason = why
                     else:
+                        # 아이콘 바로 앞·뒤(또는 위)에 인쇄된 숫자는 아이콘의 일부로: 그림에 넣고 원문에서 뺀다
+                        num = number_near(text, tokens[ti].start(), tokens[ti].end())
+                        if num is not None:
+                            nb = absorb_number(img, box, num[0], num[2] - num[1])
+                            if nb is not None:
+                                box = nb
+                                strips.append((num[1], num[2]))
                         rgba = cut_out(img, box)
                         png = work / "crops" / f"{oc.id}.png"
                         save_png(rgba, png)
@@ -984,6 +1098,11 @@ def scan(info, work: Path) -> ScanResult:
                         res.auto[oc.match] = res.auto.get(oc.match, 0) + 1
                     else:
                         left.append(oc)
+                if strips:  # [[?]] 순서는 그대로라 아래 자동 이름 바꾸기와 겹치지 않는다
+                    strip_in_extract(fd, pno, rname, text, strips)
+                    stripped = strip_spans(text, strips).replace("\n", " / ")
+                    for oc in left:
+                        oc.context = stripped
                 if auto_map:
                     apply_to_extract(fd, pno, rname, auto_map, note="아이콘 사전과 모양이 같아 자동으로 바꿈")
                 for j, oc in enumerate(left):  # 자동으로 바꾼 것을 뺀 순서

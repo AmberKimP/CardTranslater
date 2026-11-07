@@ -7,14 +7,18 @@
 from __future__ import annotations
 
 import datetime as _dt
+import html as _html
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+    QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from app import service
@@ -73,6 +77,125 @@ def source_font(base: QFont, bigger: int = 2) -> QFont:
     if f.pointSize() > 0:
         f.setPointSize(f.pointSize() + bigger)
     return f
+
+
+# ---- 원문 확인: 읽은 결과 비교·아이콘 이름
+ICON_TOKEN_RE = re.compile(r"\[\[([^\[\]]*)\]\]")
+UNKNOWN_ICON = "[[?]]"
+_UNIT_RE = re.compile(r"\[\[[^\[\]]*\]\]|.", re.S)  # 아이콘 토큰은 한 덩어리, 나머지는 한 글자씩
+DIFF_STYLE = "color:#C00000; font-weight:bold; background-color:#FFF2CC"
+PRECISE = READER_NAMES["opus"]
+
+
+def as_text(src) -> str:
+    """원문 값(글자 칸은 문자열, 태그 칸은 목록)을 편집 칸 글로 (목록은 한 줄에 하나)."""
+    return "\n".join(src) if isinstance(src, list) else (src or "")
+
+
+def _units(text: str) -> list[str]:
+    return _UNIT_RE.findall(text or "")
+
+
+def fill_icon_names(reading: str, source: str, known=None) -> str:
+    """읽은 결과 속 이름 없는 아이콘 [[?]]를, 지금 원문의 같은 자리에 있는 [[이름]]으로 바꾼다.
+
+    모델이 읽은 결과에는 아이콘 이름을 정하기 전의 [[?]]가 남아 있고, 이름을 정하면 원문만 [[이름]]이 된다.
+    두 글을 맞춰 보아 같은 자리의 아이콘만 바꾼다. known이 있으면 그 안의 이름(사전에서 정한 것)만."""
+    a = _units(reading)
+    if UNKNOWN_ICON not in a:
+        return reading
+    b, out = _units(source), list(a)
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op != "replace":
+            continue
+        qs = [i for i in range(i1, i2) if a[i] == UNKNOWN_ICON]
+        names = [b[j] for j in range(j1, j2) if ICON_TOKEN_RE.fullmatch(b[j]) and b[j] != UNKNOWN_ICON]
+        if qs and len(qs) == len(names):
+            for i, n in zip(qs, names):
+                if known is None or n[2:-2] in known:
+                    out[i] = n
+    return "".join(out)
+
+
+def _marked_html(units: list[str], marks: set[int]) -> str:
+    out, on = [], False
+    for i, u in enumerate(units):
+        hit = i in marks
+        if hit != on:
+            out.append(f'<span style="{DIFF_STYLE}">' if hit else "</span>")
+            on = hit
+        if u == "\n":
+            out.append("↵<br>" if hit else "<br>")  # 줄바꿈 자리가 다르면 보이게
+        else:
+            out.append("&nbsp;" if hit and u == " " else _html.escape(u, quote=False))  # 다른 빈칸도 배경색으로 보이게
+    if on:
+        out.append("</span>")
+    return "".join(out)
+
+
+def diff_html(texts: list[str], ref: int) -> list[str]:
+    """읽은 결과마다 HTML. texts[ref](정밀 읽기)와 다른 곳을 빨간 굵은 글자로. 줄바꿈은 <br>."""
+    units = [_units(t) for t in texts]
+    marks: list[set[int]] = [set() for _ in texts]
+    for k, u in enumerate(units):
+        if k == ref:
+            continue
+        for op, i1, i2, j1, j2 in SequenceMatcher(None, u, units[ref], autojunk=False).get_opcodes():
+            if op != "equal":
+                marks[k].update(range(i1, i2))
+                marks[ref].update(range(j1, j2))
+    return [_marked_html(u, m) for u, m in zip(units, marks)]
+
+
+def precise_index(readings: list[dict]) -> int | None:
+    """정밀 읽기 결과의 자리 (없으면 마지막 = 나중에 다시 읽은 결과, 읽은 결과가 없으면 None)."""
+    if not readings:
+        return None
+    return next((i for i, rd in enumerate(readings) if reader_name(rd["model"]) == PRECISE), len(readings) - 1)
+
+
+class FitImage(QLabel):
+    """그림을 비율 그대로 주어진 칸 안에 다 보이게 줄이거나(크게는 2배까지) 키운다. 창 크기가 바뀌면 다시 맞춘다."""
+
+    MAX_UP = 2.0
+
+    def __init__(self, min_height: int = 160):
+        super().__init__()
+        self._pm = QPixmap()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(120, min_height)
+        # 그림 크기가 창 배치를 밀어내지 않게 (칸 크기는 배치가 정하고, 그림이 거기에 맞춘다)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setStyleSheet("background: #FAFAFA; border: 1px solid #DDD;")
+
+    def set_image(self, pm: QPixmap) -> None:
+        self._pm = QPixmap(pm)
+        self._refit()
+
+    def source_size(self) -> QSize:
+        return self._pm.size()
+
+    def clear(self):
+        self._pm = QPixmap()
+        super().clear()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._refit()
+
+    def _refit(self):
+        if self._pm.isNull():
+            return
+        room = self.contentsRect().size()
+        w, h = self._pm.width(), self._pm.height()
+        if room.width() < 2 or room.height() < 2 or not w or not h:
+            return
+        scale = min(room.width() / w, room.height() / h, self.MAX_UP)
+        dpr = self.devicePixelRatioF() or 1.0
+        pm = self._pm.scaled(max(1, int(w * scale * dpr)), max(1, int(h * scale * dpr)),
+                             Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        self.setPixmap(pm)
 
 
 def _ask_list(parent, title: str, intro: str, items: list[str], question: str) -> bool:
@@ -189,7 +312,7 @@ class SourceReviewDialog(QDialog):
     def __init__(self, files: list[dict], parent=None, only_check: bool = True):
         super().__init__(parent)
         self.setWindowTitle("원문 확인")
-        fit_to_screen(self, 1300, 820)
+        fit_to_screen(self, 1300, 940)  # 그림 아래에 사유·읽은 결과 표·편집 칸이 있어 세로로 넉넉히
         self.files = files
         self.file = QComboBox()
         for f in files:
@@ -212,17 +335,21 @@ class SourceReviewDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.currentCellChanged.connect(self._on_cell_changed)
         self._src_font = source_font(self.table.font(), 1)
-        self.image = QLabel()
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setMinimumHeight(160)
-        scroll = QScrollArea()
-        scroll.setWidget(self.image)
-        scroll.setWidgetResizable(True)
-        self.info = QLabel()
-        self.info.setWordWrap(True)
-        self.info.setFont(source_font(self.info.font(), 1))
-        self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.image = FitImage(160)  # 세로로 긴 그림도 다 보이게 칸에 맞춘다
+        # 그림 아래: 위 = 확인할 사유, 가운데 = 읽은 결과 표 (왼쪽 ‘보통 읽기’·‘정밀 읽기’, 오른쪽 그 결과)
+        self.info = hint_bar("", "info")
+        self.info.setTextFormat(Qt.TextFormat.RichText)
+        self.readings_box = QWidget()
+        self.readings_grid = QGridLayout(self.readings_box)
+        self.readings_grid.setContentsMargins(0, 0, 0, 0)
+        self.readings_grid.setHorizontalSpacing(0)
+        self.readings_grid.setVerticalSpacing(0)
+        self.readings_grid.setColumnStretch(1, 1)
+        self.reading_rows: list[tuple[QLabel, QLabel]] = []  # (머리 칸, 결과 칸)
+        self._reading_font = source_font(self.font(), 1)
         self.edit = QPlainTextEdit()
+        self.edit.setMinimumHeight(100)  # 네 줄쯤
+        self.edit.setMaximumHeight(140)
         self.edit.setFont(source_font(self.edit.font(), 3))
         self.edit.setPlaceholderText("원문 (줄바꿈 그대로. 태그 칸은 한 줄에 하나. 아이콘은 [[이름]]). "
                                      "읽은 결과가 맞으면 고치지 않고 저장해도 ‘사람이 확인’이 됩니다")
@@ -244,19 +371,24 @@ class SourceReviewDialog(QDialog):
         btns.addWidget(self.next_btn)
         btns.addWidget(self.save_btn)
         btns.addStretch(1)
+        btns.addWidget(hint)
+        # 오른쪽: 위 = 그림(남는 높이를 모두 쓰고, 그림은 늘 칸 안에 다 보이게 맞춘다),
+        # 그 아래 = 사유 → 읽은 결과 표 → 고르기 → 편집 칸 → 저장 (글이 잘리지 않게 제 높이대로)
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.addWidget(scroll, 2)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.image, 1)
         rl.addWidget(self.info)
+        rl.addWidget(self.readings_box)
         rl.addLayout(self.pick_row)
-        rl.addWidget(self.edit, 1)
+        rl.addWidget(self.edit)
         rl.addLayout(btns)
-        rl.addWidget(hint)
         split = QSplitter()
         split.addWidget(self.table)
         split.addWidget(right)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 1)
+        split.setStretchFactor(0, 2)
+        split.setStretchFactor(1, 3)
+        split.setSizes([500, 750])
         close = QPushButton("닫기")
         close.setAutoDefault(False)
         close.clicked.connect(self.accept)
@@ -367,6 +499,7 @@ class SourceReviewDialog(QDialog):
     def reload(self, keep: tuple | None = None, row: int | None = None):
         fd = self.file.currentData()
         allc = service.extracted_cells(fd)
+        self._known = set(service.known_icon_names(fd))  # 이름을 정한 아이콘 (읽은 결과의 [[?]]를 이름으로 보인다)
         self.cells = [c for c in allc if self.needs_check(c)] if self.only.isChecked() else allc
         n_att = sum(1 for c in allc if self.needs_attention(c))
         n_unread = sum(1 for c in allc if c["label"] == self.UNREAD)
@@ -411,7 +544,9 @@ class SourceReviewDialog(QDialog):
             self._show()
         else:
             self.image.clear()
-            self.info.setText("확인할 칸이 없습니다")
+            set_hint(self.info, "확인할 칸이 없습니다", "done")
+            self._fill_readings([], None)
+            self._fill_picks([])
             self.edit.clear()
             self._shown = self._shown_cell = None
             self._orig_text = ""
@@ -428,40 +563,110 @@ class SourceReviewDialog(QDialog):
             return
         pm = QPixmap()
         pm.loadFromData(service.region_crop(self.file.currentData(), c["page"], c["region"]), "PNG")
-        room = max(300, self.image.parentWidget().width() - 24) if self.image.parentWidget() else 800
-        if pm.width() > room:  # 오른쪽 칸 너비에 맞춘다
-            pm = pm.scaledToWidth(room, Qt.TransformationMode.SmoothTransformation)
-        self.image.setPixmap(pm)
-        lines = [f"{c['page']}쪽 · {c['region']} · {label_text(c['label'])}"]
-        for rd in c["readings"]:
-            s = rd["source"]
-            lines.append(f"{reader_name(rd['model'])}: {' / '.join(s) if isinstance(s, list) else s}")
-        if c["note"]:
-            lines.append(plain_note(c["note"]))
-        self.info.setText("\n".join(lines))
-        self._fill_picks(c)
-        src = c["source"]
-        self.edit.setPlainText("\n".join(src) if isinstance(src, list) else (src or ""))
+        self.image.set_image(pm)  # 칸에 다 들어가게 비율 그대로 맞춘다 (창 크기가 바뀌면 다시)
+        src = as_text(c["source"])
+        texts = self.reading_texts(c, self._known)
+        pi = precise_index(c["readings"])
+        differ = len({t for _n, t in texts}) >= 2
+        default = self.default_text(c, texts, pi)
+        kind = "todo" if self.needs_attention(c) else "info"
+        head = _html.escape(f"{c['page']}쪽 · {c['region']} · {label_text(c['label'])}")
+        reason, memo = self.reason_text(c, differ)
+        reason = _html.escape(reason)
+        if differ:
+            reason = reason.replace("다릅니다.", f'다릅니다 (다른 곳은 <span style="{DIFF_STYLE}">빨간 굵은 글자</span>).', 1)
+        if differ and pi is not None and self.needs_attention(c):
+            reason += " 편집 칸에는 정밀 읽기 결과를 넣어 두었습니다."
+        text = f"<b>{head}</b><br>사유: {reason}"
+        if memo:
+            text += f'<br><span style="color:#555">읽은 모델의 메모: {_html.escape(memo)}</span>'
+        set_hint(self.info, text, kind)
+        self._fill_readings(texts, pi)
+        self._fill_picks(texts)
+        self.edit.setPlainText(default)
         self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
         self._orig_text = self.edit.toPlainText()
 
-    def _fill_picks(self, c: dict):
+    @staticmethod
+    def reading_texts(c: dict, known=None) -> list[tuple[str, str]]:
+        """[(‘보통 읽기’ 등, 읽은 결과 글)]. 이름을 정한 아이콘은 [[?]] 대신 [[이름]]으로."""
+        src = as_text(c["source"])
+        return [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known)) for rd in c["readings"]]
+
+    def default_text(self, c: dict, texts: list[tuple[str, str]], pi: int | None) -> str:
+        """편집 칸의 처음 글. 다시 봐야 하는 칸은 정밀 읽기 결과를 따른다.
+        지금 원문이 정밀 읽기와 (아이콘·빈칸 말고) 같으면 원문 그대로 둔다 (아이콘 이름을 정한 결과를 지키려고)."""
+        src = as_text(c["source"])
+        if pi is None or not self.needs_attention(c):
+            return src
+        precise = texts[pi][1]
+
+        def core(t: str) -> str:
+            return re.sub(r"\s", "", ICON_TOKEN_RE.sub("", t))
+        return src if src and core(src) == core(precise) else precise
+
+    @staticmethod
+    def reason_text(c: dict, differ: bool) -> tuple[str, str]:
+        """(이 칸을 확인해야 하는 까닭, 읽은 모델이 남긴 메모) — 쉬운 말로."""
+        note = c.get("note") or ""
+        if c["label"] == SourceReviewDialog.UNREAD:
+            return "아직 읽지 않은 칸입니다. 그림을 보고 원문을 직접 적어 저장해도 됩니다.", ""
+        if not SourceReviewDialog.needs_attention(c):
+            return plain_note(note) or "따로 확인할 점은 없습니다. 틀린 곳이 보이면 고쳐서 저장하세요.", ""
+        # 엔진 메모 ‘두 모델이 다르게 읽음 (A: … / B: …). 덧붙인 말’에서 두 결과는 표에 있으니 덧붙인 말만
+        memo = note.rsplit(").", 1)[1].strip() if note.startswith("두 모델이") and ")." in note else ""
+        if differ:
+            base = "두 번 읽은 결과가 다릅니다. 그림과 비교해 맞게 고쳐 저장하세요."
+        elif c["readings"]:
+            base = "두 번 읽은 결과는 같지만 정밀 읽기도 확실하지 않다고 했습니다. 그림과 비교해 주세요."
+        else:
+            base, memo = "읽은 결과가 확실하지 않다고 했습니다. 그림과 비교해 주세요.", note
+        return base, plain_note(memo)
+
+    def _fill_readings(self, texts: list[tuple[str, str]], pi: int | None):
+        """읽은 결과 표: 왼쪽 ‘보통 읽기’·‘정밀 읽기’, 오른쪽 그 결과 (정밀 읽기와 다른 곳은 빨간 굵은 글자)."""
+        for h, v in self.reading_rows:
+            for w in (h, v):
+                self.readings_grid.removeWidget(w)
+                w.hide()  # 지워지기 전까지 옛 칸이 겹쳐 그려지지 않게
+                w.deleteLater()
+        self.reading_rows = []
+        self.readings_box.setVisible(bool(texts))
+        if not texts:
+            return
+        htmls = diff_html([t for _n, t in texts], pi if pi is not None else len(texts) - 1)
+        last = len(texts) - 1
+        for i, ((name, _t), body) in enumerate(zip(texts, htmls)):
+            edge = "border: 1px solid #CCC;" + ("" if i == last else " border-bottom: none;")
+            h = QLabel(name)
+            h.setStyleSheet(f"background: #F2F2F2; font-weight: bold; padding: 4px 8px; {edge} border-right: none;")
+            h.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            v = QLabel(body or '<span style="color:#888">(빈 칸)</span>')
+            v.setTextFormat(Qt.TextFormat.RichText)
+            v.setWordWrap(True)
+            v.setFont(self._reading_font)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            v.setStyleSheet(f"background: white; padding: 4px 8px; {edge}")
+            self.readings_grid.addWidget(h, i, 0)
+            self.readings_grid.addWidget(v, i, 1)
+            self.reading_rows.append((h, v))
+
+    def _fill_picks(self, texts: list[tuple[str, str]]):
         """읽은 결과마다 ‘이것으로’ 버튼. 결과가 하나뿐이거나 같으면 숨긴다."""
         for b in self.pick_buttons:
             self.pick_row.removeWidget(b)
+            b.hide()
             b.deleteLater()
         self.pick_buttons = []
-        texts = []
-        for rd in c["readings"]:
-            s = rd["source"]
-            t = "\n".join(s) if isinstance(s, list) else (s or "")
-            if t not in [x for _n, x in texts]:
-                texts.append((reader_name(rd["model"]), t))
-        show = len(texts) >= 2
+        uniq: list[tuple[str, str]] = []
+        for name, t in texts:
+            if t not in [x for _n, x in uniq]:
+                uniq.append((name, t))
+        show = len(uniq) >= 2
         self.pick_label.setVisible(show)
         if not show:
             return
-        for i, (name, t) in enumerate(texts):
+        for i, (name, t) in enumerate(uniq):
             b = QPushButton(f"{name}대로")
             b.setAutoDefault(False)
             b.setToolTip(t)

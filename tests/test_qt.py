@@ -331,8 +331,10 @@ def test_source_review_dialog_edits_unresolved_cell(qapp, tmp_path):
     # 확인할 칸: 1쪽 이름(결론 못 냄) + 3쪽 두 칸(읽지 않음)
     # 화면에는 쉬운 말: ‘결론 못 냄’ → ‘다시 봐야 함’, 모델 이름 대신 ‘보통 읽기’·‘정밀 읽기’
     assert dlg.table.rowCount() == 3 and dlg.table.item(0, 2).text() == "다시 봐야 함"
-    assert "정밀 읽기: 盗掘フェレット" in dlg.info.text() and dlg.image.pixmap() is not None
-    assert not any(w in dlg.info.text() for w in ("Opus", "Sonnet", "claude-"))
+    rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
+    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기"] and "フェレット" in rows[1][1]
+    assert "사유:" in dlg.info.text() and dlg.image.pixmap() is not None
+    assert not any(w in dlg.info.text() + str(rows) for w in ("Opus", "Sonnet", "claude-"))
     # 원문 칸은 일본어가 잘 보이는 글꼴 (있으면 Yu Gothic UI → Meiryo, 없으면 기본)
     fams = dlg.edit.font().families()
     assert fams[-1] and all(f in ("Yu Gothic UI", "Meiryo") for f in fams[:-1])
@@ -1076,10 +1078,11 @@ def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
         return next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (page, region))
 
     # 글을 고치고 다른 줄을 누르면 묻는다: 취소 -> 원래 줄·고친 글 그대로, 저장 안 됨
-    dlg.edit.setPlainText("盗掘フェレット")
+    assert dlg.edit.toPlainText() == "盗掘フェレット"  # 다시 봐야 하는 칸은 정밀 읽기 결과로 시작
+    dlg.edit.setPlainText("盗掘フェレット改")
     monkeypatch.setattr(steps, "ask_choice", answer(2))
     dlg.table.setCurrentCell(1, 0)
-    assert dlg.table.currentRow() == 0 and dlg.edit.toPlainText() == "盗掘フェレット"
+    assert dlg.table.currentRow() == 0 and dlg.edit.toPlainText() == "盗掘フェレット改"
     assert asked[0] == ("고친 원문", "1쪽 이름의 고친 원문을 저장할까요?", ["저장", "저장 안 함", "취소"])
     assert saved()["source"] == "盗賊フェレット"
     # 저장 안 함 -> 옮겨 가고 저장되지 않음
@@ -1876,6 +1879,118 @@ def test_source_review_hides_model_name_and_guides(qapp, tmp_path):
     dlg = SourceReviewDialog(files)
     assert "확인할 칸 1개" in dlg.guide.text() and dlg.guide.property("hint_kind") == "todo"
     assert dlg.next_btn.styleSheet() and dlg.save_btn.text() == "고친 원문 저장"
+
+
+def test_source_review_image_fits_tall_crop(qapp):
+    """세로로 긴 그림도 잘리지 않게 칸 안에 비율 그대로 들어가고, 칸 크기가 바뀌면 다시 맞춘다."""
+    from PySide6.QtGui import QColor, QPixmap
+
+    from app.qt.steps import FitImage
+
+    pm = QPixmap(200, 1600)
+    pm.fill(QColor("red"))
+    w = FitImage(100)
+    w.resize(400, 300)
+    w.set_image(pm)
+    w.show()
+    qapp.processEvents()
+
+    def shown():
+        p = w.pixmap()
+        return p.width() / p.devicePixelRatio(), p.height() / p.devicePixelRatio()
+
+    room = w.contentsRect()
+    sw, sh = shown()
+    assert sh <= room.height() and sw <= room.width() and sh >= room.height() - 2  # 높이에 맞춤
+    assert abs(sw / sh - 200 / 1600) < 0.02 and w.source_size().height() == 1600  # 비율 그대로, 원본은 그대로
+    w.resize(400, 700)
+    qapp.processEvents()
+    assert shown()[1] > sh and shown()[1] <= w.contentsRect().height()
+    w.close()
+
+
+def test_reading_diff_html_highlights_only_differences():
+    from app.qt.steps import DIFF_STYLE, diff_html
+
+    a, b = diff_html(["盗賊フェレット", "盗掘フェレット"], 1)
+    assert f'<span style="{DIFF_STYLE}">賊</span>' in a and f'<span style="{DIFF_STYLE}">掘</span>' in b
+    assert "フェレット" in a and "<span" not in a.split("</span>")[1]  # 같은 곳은 그대로
+    x, y = diff_html(["a<b>\n4", "a<b>\n４"], 1)  # 글은 이스케이프, 줄바꿈은 <br>
+    assert x.startswith("a&lt;b&gt;<br>") and "４</span>" in y and "<b>" not in x
+    same = diff_html(["竜", "竜"], 1)
+    assert same == ["竜", "竜"]
+    # 아이콘 토큰은 한 덩어리로 비교한다
+    p, q = diff_html(["[[sword]]が", "[[book]]が"], 1)
+    assert f'<span style="{DIFF_STYLE}">[[book]]</span>が' == q
+
+
+def test_fill_icon_names_uses_confirmed_names():
+    from app.qt.steps import fill_icon_names
+
+    src = "A-007\nプレイ時効果\n[[sword]] [[sword]]\n文明[[book]]が４以下なら[[number_1]]を得る"
+    sonnet = "プレイ時効果\n文明[[?]]が4以下なら[[?]]を得る"
+    opus = "A-007\nプレイ時効果\n[[?]] [[?]]\n文明[[?]]が４以下なら[[?]]を得る"
+    assert fill_icon_names(opus, src) == src
+    assert fill_icon_names(sonnet, src) == "プレイ時効果\n文明[[book]]が4以下なら[[number_1]]を得る"
+    # 사전에서 정한 이름만 (정하지 않은 것은 [[?]] 그대로)
+    assert fill_icon_names(sonnet, src, {"book"}) == "プレイ時効果\n文明[[book]]が4以下なら[[?]]を得る"
+    assert fill_icon_names("文[[?]]", "文[[?]]") == "文[[?]]"
+
+
+def _project_with_icon_cell(tmp_path):
+    """3쪽 이름 칸: 두 번 읽은 결과가 다르고, 원문에는 아이콘 이름을 정해 넣은 상태."""
+    from app import icons
+
+    info, fd = _project_with_extract(tmp_path)
+    icons.save_dictionary(workspace.load_project_info(info.dir),
+                          {"game": "G", "icons": {"sword": {"file": "sword.png"}, "book": {"file": "book.png"}}})
+    (fd / "extract" / "pages" / "page-003.json").write_text(json.dumps({"page": 3, "model": "claude-sonnet-5-5", "regions": {
+        "이름": {"source": "[[sword]] 文明[[book]]が４以下", "uncertain": True,
+                "note": "두 모델이 다르게 읽음 (claude-sonnet-5-5: x / claude-opus-5-5: y). 二文字目が薄い",
+                "readings": [{"model": "claude-sonnet-5-5", "source": "文明[[?]]が4以下"},
+                             {"model": "claude-opus-5-5", "source": "[[?]] 文明[[?]]が４以下"}]},
+        "태그": {"source": ["人族"], "uncertain": False, "note": ""}}}, ensure_ascii=False), encoding="utf-8")
+    return info, fd
+
+
+def test_source_review_shows_icon_names_and_reason_grid(qapp, tmp_path):
+    from app.qt.steps import DIFF_STYLE, SourceReviewDialog
+
+    info, fd = _project_with_icon_cell(tmp_path)
+    assert service.known_icon_names(fd) == ["book", "sword"]
+    dlg = SourceReviewDialog(service.project_overview(info.dir)["groups"][0]["files"])
+    row = next(i for i, c in enumerate(dlg.cells) if (c["page"], c["region"]) == (3, "이름"))
+    dlg.table.setCurrentCell(row, 0)
+    rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
+    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기"]
+    assert "[[?]]" not in str(rows) and "[[book]]" in rows[0][1] and "[[sword]]" in rows[1][1]
+    assert DIFF_STYLE in rows[0][1] and DIFF_STYLE in rows[1][1]  # 4 / ４ 가 다르다
+    # 위쪽 사유: 무엇 때문에 확인하는지, 모델 메모는 쉬운 말로 (모델 이름 없이)
+    info_text = dlg.info.text()
+    assert "사유: 두 번 읽은 결과가 다릅니다" in info_text and "二文字目が薄い" in info_text
+    assert "claude-" not in info_text and dlg.info.property("hint_kind") == "todo"
+    # 편집 칸 = 정밀 읽기 (이름을 정한 아이콘은 그 이름으로), 고르는 버튼에도 이름
+    assert dlg.edit.toPlainText() == "[[sword]] 文明[[book]]が４以下"
+    assert "[[?]]" not in " ".join(b.toolTip() for b in dlg.pick_buttons)
+    dlg.close()
+
+
+def test_source_review_default_follows_precise_reading(qapp, tmp_path):
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)  # 1쪽 이름: 원문은 보통 읽기(盗賊), 정밀 읽기는 盗掘
+    dlg = SourceReviewDialog(service.project_overview(info.dir)["groups"][0]["files"])
+    assert dlg.current()["page"] == 1 and dlg.edit.toPlainText() == "盗掘フェレット"
+    assert "정밀 읽기 결과를 넣어 두었습니다" in dlg.info.text()
+    dlg.save_current()  # 그대로 저장하면 정밀 읽기 결과가 원문이 된다 (저장 방식은 그대로)
+    c = next(x for x in service.extracted_cells(fd) if (x["page"], x["region"]) == (1, "이름"))
+    assert c["source"] == "盗掘フェレット" and c["label"] == "사람이 고침" and not c["uncertain"]
+    # 다시 봐야 하는 칸이 아니면 원문 그대로
+    dlg.only.setChecked(False)
+    row = next(i for i, x in enumerate(dlg.cells) if (x["page"], x["region"]) == (2, "이름"))
+    dlg.table.setCurrentCell(row, 0)
+    assert dlg.edit.toPlainText() == "竜" and len(dlg.reading_rows) == 2 and not dlg.pick_buttons
+    dlg.close()
 
 
 def test_result_viewer_colors_and_footer(qapp, tmp_path):

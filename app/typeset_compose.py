@@ -22,6 +22,7 @@ import pymupdf
 from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
+from app.erase_text import is_icon_line
 from app.typeset_layout import wrap_sentence_fonts
 from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
@@ -314,7 +315,8 @@ def assign_lines(ko_lines: list[str], counts: list[int]) -> list[list[str]]:
     return out
 
 
-def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pivot=None, **kw) -> TextStyle:
+def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pivot=None,
+                icon_fit: dict | None = None, **kw) -> TextStyle:
     """원문 줄 모양(색·테두리·굵기·정렬·다른 색 낱말)을 따른 서식. 영역 서식에 직접 적은 값이 먼저다."""
     st = TextStyle.from_region_style(style_d, base_dir, ink_height_pt=ln["glyph_h_pt"], **kw)
     if pivot is not None:
@@ -336,7 +338,18 @@ def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pi
     # 그림 카드의 글 속 아이콘은 보통 글자보다 크다: 사전의 기본 크기(1.1)를 그대로 둔 아이콘은 1.3으로
     st.icon_scale = max(st.icon_scale, LAYOUT_ICON_SCALE)
     st.icon_scales = {k: (LAYOUT_ICON_SCALE if abs(v - 1.1) < 1e-6 else v) for k, v in (st.icon_scales or {}).items()}
+    if icon_fit:  # 지울 때 잰 원본 아이콘 크기(그 줄 글자 높이 대비)가 있으면 그 크기로
+        st.icon_scales = {**st.icon_scales, **icon_fit}
     return st
+
+
+def measured_icon_scales(layout: dict) -> dict:
+    """지우기 때 잰 글 속 아이콘 크기 {이름: 글자 높이 대비 배율} (같은 이름이 여럿이면 가운데 값)."""
+    by: dict[str, list[float]] = {}
+    for ic in layout.get("icons") or []:
+        if ic.get("scale"):
+            by.setdefault(ic["name"], []).append(float(ic["scale"]))
+    return {k: float(np.median(v)) for k, v in by.items()}
 
 
 def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
@@ -378,6 +391,16 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     lines_all = layout["lines"]
     secs = layout_sections(layout, rect)
     ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
+    # 아이콘만 있는 줄(큰 칼 두 개 등)은 원본 그대로 남겼다: 글 줄 수가 남은 줄 자리와 맞으면 그 줄들은 빼고 넣는다
+    ko_text = [t for t in ko_lines if not is_icon_line(t)]
+    if len(ko_text) < len(ko_lines) and len(ko_text) == sum(1 for ln in lines_all if not ln.get("keep")):
+        ko_lines = ko_text
+        lines_all = [ln for ln in lines_all if not ln.get("keep")]
+        if not lines_all:
+            return None
+        layout = {**layout, "lines": lines_all}
+        secs = layout_sections(layout, rect)
+    icon_fit = measured_icon_scales(layout)
     parts = assign_lines(ko_lines, [len(s["lines"]) for s in secs])
     region_accents: list[str] = []
     for ln in lines_all:
@@ -425,7 +448,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                     continue
                 b = ln["bbox_pt"]
                 gh = ln["glyph_h_pt"]
-                st = _line_style(style_d, base_dir, ln, region_accents, pivot)
+                st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
                 pad = 0.5 * gh
                 cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
                 top = cy - gh / 2
@@ -448,6 +471,13 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                     r = pymupdf.Rect(max(rect.x0, left - pad), top, b[2], top + slot_k * gh)
                 else:
                     r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + slot_k * gh)
+                # 원본 크기로 넣을 큰 아이콘이 있는 줄: 아이콘은 글자 위아래로 나온다. 자리를 그만큼 위·아래로 넓혀
+                # 글자가 줄지 않고 원래 높이에 오게 한다
+                s_ = max([icon_fit.get(n_, 0.0) for n_ in re.findall(r"\[\[([a-z0-9_]+)\]\]", ko)] + [0.0])
+                if s_ > 1.0:
+                    extra = (s_ - 1.0) / 2 * gh
+                    top -= extra
+                    r = pymupdf.Rect(r.x0, r.y0 - extra, r.x1, max(r.y1, r.y0 - extra + s_ * gh * 1.2))
                 slots.append((ln, ko, r, st, top))
         else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
             ln0 = dict(src[0])
@@ -456,7 +486,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             ln0["align"] = max(set(aligns), key=aligns.count)
             pitch = (float(np.median([src[i + 1]["bbox_pt"][1] - src[i]["bbox_pt"][1] for i in range(len(src) - 1)]))
                      if len(src) > 1 else None)
-            st = _line_style(style_d, base_dir, ln0, region_accents, pivot, line_pitch_pt=pitch)
+            st = _line_style(style_d, base_dir, ln0, region_accents, pivot, icon_fit, line_pitch_pt=pitch)
             gh = ln0["glyph_h_pt"]
             top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
             bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)

@@ -142,7 +142,7 @@ def test_glossary_review_marks_terms_only_from_unresolved_cells(tmp_path):
     head = [c.value for c in ws[1]]
     col = head.index("원문 상태")
     rows = {ws.cell(i, 1).value: ws.cell(i, col + 1).value for i in range(2, ws.max_row + 1) if ws.cell(i, 1).value}
-    assert rows["盗賊フェレット"] == "결론 못 냄" and rows["判定"] is None and rows["炎"] is None
+    assert rows["盗賊フェレット"] == "결론 못 냄" and rows["判定"] == "확실" and rows["炎"] == "확실"
     note = ws.cell([ws.cell(i, 1).value for i in range(1, ws.max_row + 1)].index("盗賊フェレット") + 1, 1).comment
     assert "틀렸을 수 있습니다" in note.text
 

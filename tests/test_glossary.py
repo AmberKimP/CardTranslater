@@ -129,11 +129,11 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
     run2 = FakeRunner([_terms_reply([]), _assess_reply()])
     r2 = service.finish_extraction(info2.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
     assert r2.confirmed_terms == 2 and r2.new_terms == 1  # 闇만 새 후보
-    # 이미 확정된 용어도 '번역 확인'이면, 확정 번역 그대로 다시 가져올 때 확인 목록에 나온다
+    # 이미 확정된 용어는 모델이 '번역 확인'이라 해도 확인 필요가 아니다 (2026-11-07 사용자 요청)
     run3 = FakeRunner([_terms_reply([]), _assess_reply({"毒": ["독성"]})])
     r3 = service.finish_extraction(info2.dir, accept_issues=True, client=ClaudeCodeClient(exe="claude", runner=run3))
     c3 = service.import_glossary(info2.dir, r3.review_xlsx)
-    assert c3.state == "needs_confirmation" and any("毒 = 독" in i for i in c3.issues)
+    assert not any("毒 = 독" in i for i in c3.issues)
     assert "炎" in run2.inputs[0].split("Already confirmed terms")[1].split("\n")[0]
 
 
@@ -168,3 +168,42 @@ def test_icons_never_enter_the_glossary(tmp_path):
     glossary.confirm(info, [{"source": "[[coin]]", "ko": "[[coin]]", "category": "자원·토큰"},
                             {"source": "召喚石", "ko": "소환석", "category": "자원·토큰"}])
     assert [t["source"] for t in glossary.load_glossary(info)["terms"]] == ["召喚石"]
+
+
+# ---------------------------------------------------------------- 검증 엑셀 정렬·확정 용어·빈 열
+def test_review_excel_sorted_by_check_then_source_and_confirmed_not_checked(tmp_path):
+    """1차 번역 확인(확인 필요가 위), 2차 원문 용어. 이미 확정된 용어는 확인 필요가 아니고 추천 번역에 확정 번역,
+    원문 상태가 빈 칸 대신 ‘확실’. 다시 읽으면 ‘확실’은 빈 판정으로 돌아온다."""
+    from openpyxl import load_workbook
+
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    terms = [glossary.Term("毒", suggested="독"),
+             glossary.Term("炎", ko="불꽃", confirmed=True, check=True, alternatives=["화염"]),
+             glossary.Term("闇", suggested="어둠", check=True, alternatives=["암흑"]),
+             glossary.Term("光", suggested="빛", check=True, alternatives=["광"]),
+             glossary.Term("判定", suggested="판정", verdict="확인 필요", verdict_keys=["1쪽/본문"])]
+    out = glossary.export_review(info, terms, tmp_path / "r.xlsx")
+    ws = load_workbook(out)["용어집"]
+    h = [c.value for c in ws[1]]
+    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=2) if r[0].value]
+    assert [r[0] for r in rows] == sorted(["光", "闇"]) + sorted(["判定", "毒", "炎"])
+    by = {r[0]: r for r in rows}
+    assert by["炎"][h.index("번역 확인")] is None and by["炎"][h.index("추천 번역")] == "불꽃"
+    assert by["毒"][h.index("원문 상태")] == "확실" and by["判定"][h.index("원문 상태")] == "확인 필요"
+    back = {t.source: t for t in glossary.terms_from_review(out)}
+    assert back["毒"].verdict == "" and back["判定"].verdict == "확인 필요"
+
+
+def test_assess_skips_confirmed_and_code_candidates_are_asked(tmp_path):
+    """확정 용어는 ‘번역 확인’ 판단에 보내지 않고, 코드로 뽑은 후보([炎])는 추천 번역을 받도록 모델에 알린다."""
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    glossary.confirm(info, [{"source": "毒", "ko": "독", "category": "기타", "variants": [], "note": "", "count": 1}])
+    src = [glossary.Source(key="1쪽/본문", region="본문", kind="text", text="[炎]と[毒]の判定",
+                           card_name="", verdict="")]
+    run = FakeRunner([_terms_reply([{"term": "炎", "category": "분류어·태그", "suggested_ko": "불꽃", "reason": ""}]),
+                      _assess_reply({"炎": ["화염"]})])
+    terms, *_ = glossary.find_candidates(info, src, ClaudeCodeClient(exe="claude", runner=run), "m", tmp_path / "w")
+    assert "MUST also list" in run.inputs[0] and "炎" in run.inputs[0].split("MUST also list")[1].split("\n")[0]
+    assert "\"term\": \"毒\"" not in run.inputs[1] and "\"term\": \"炎\"" in run.inputs[1]
+    by = {t.source: t for t in terms}
+    assert by["炎"].suggested == "불꽃" and by["炎"].check and not by["毒"].check

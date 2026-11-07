@@ -1012,6 +1012,52 @@ def uses_text_mask(reg: Region, has_text_layer: bool) -> bool:
     return not has_text_layer and not er.get("keep_ink_taller_than_pt")
 
 
+INLINE_ICON_SCALE_RANGE = (0.8, 3.0)  # 글 속 아이콘 크기(그 줄 글자 높이 대비)로 믿을 범위
+
+
+def _find_icons(sub: np.ndarray, lb, src, reg) -> list:
+    """원문 아이콘의 자리 [(이름, sub 안 px 상자, 아이콘만 있는 줄인가)]. 못 찾은 아이콘은 뺀다."""
+    if not isinstance(src, str) or "[[" not in src:
+        return []
+    from app import icons
+
+    rot = int(((reg.style if reg is not None else None) or {}).get("rotate", 0) or 0) % 360
+    img = sub[lb[1]:lb[3], lb[0]:lb[2]]
+    if rot == 180:
+        img = np.ascontiguousarray(img[::-1, ::-1])
+    out = []
+    try:
+        found = icons.icon_boxes(img, src)
+    except Exception:  # noqa: BLE001 - 아이콘을 못 찾아도 글자 지우기는 한다
+        return []
+    for nm, (x0, y0, x1, y1), only in found:
+        if rot == 180:
+            x0, y0, x1, y1 = img.shape[1] - x1, img.shape[0] - y1, img.shape[1] - x0, img.shape[0] - y0
+        out.append((nm, (x0 + lb[0], y0 + lb[1], x1 + lb[0], y1 + lb[1]), only))
+    return out
+
+
+def _inline_icons(found: list, lay: dict, tm) -> list:
+    """글 줄 안의 아이콘 자리를 tm.mask에 더한다 (그 자리를 지운다).
+    [(이름, sub 안 px 상자, 그 줄 글자 높이 대비 크기 | None)]. 아이콘만 있는 줄의 아이콘은 그대로 둔다."""
+    H, W = tm.mask.shape
+    out = []
+    for nm, bx, only in found:
+        if only:
+            continue
+        tm.mask[max(0, bx[1] - 2):min(H, bx[3] + 2), max(0, bx[0] - 2):min(W, bx[2] + 2)] = True
+        cy = (bx[1] + bx[3]) / 2
+        ln = min((ln for ln in lay.get("lines") or [] if ln["bbox"][1] - ln["glyph_h"] <= cy <= ln["bbox"][3] + ln["glyph_h"]),
+                 key=lambda ln: abs((ln["bbox"][1] + ln["bbox"][3]) / 2 - cy), default=None)
+        sc = None
+        if ln is not None and ln.get("glyph_h"):
+            v = (bx[3] - bx[1]) / ln["glyph_h"]
+            if INLINE_ICON_SCALE_RANGE[0] <= v <= INLINE_ICON_SCALE_RANGE[1]:
+                sc = round(v, 3)
+        out.append((nm, bx, sc))
+    return out
+
+
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
                params: CleanParams | None = None, modes: dict | None = None,
                sources: dict | None = None) -> PageErase:
@@ -1226,6 +1272,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
 
     text_mask_meta: dict[str, dict] = {}
     layout_meta: dict[str, dict] = {}
+    regs_by_name = {r.name: r for r in template.regions}
     for name, mode in mask_regions.items():
         b = work_px[name]
         mg = 24
@@ -1237,10 +1284,18 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         tm = erase_text.text_mask(sub, lb, prot)
         lay = erase_text.text_layout(sub, tm, lb)
         src = (sources or {}).get(name)
+        found = _find_icons(sub, lb, src, regs_by_name.get(name))
         if isinstance(src, str) and src.strip():
-            lay = erase_text.match_source_lines(tm, lay, src)
+            rows = [(b_[1], b_[3]) for _n, b_, only in found if only]
+            lay = erase_text.match_source_lines(tm, lay, src, icon_rows=rows or None)
+        # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
+        icons_found = _inline_icons(found, lay, tm)
         filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
         new_img[oy0:oy1, ox0:ox1] = filled
+        if changed.any():  # 영역 가장자리에 걸친 글자를 상자 밖까지 지웠으면 패치도 그만큼 넓힌다
+            ys_, xs_ = np.nonzero(changed)
+            work_px[name] = (min(b[0], int(xs_.min()) + ox0), min(b[1], int(ys_.min()) + oy0),
+                             max(b[2], int(xs_.max()) + 1 + ox0), max(b[3], int(ys_.max()) + 1 + oy0))
         res.mask[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] |= changed
         res.image[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] = filled
         wa = max(1, (b[3] - b[1]) * (b[2] - b[0]))
@@ -1269,6 +1324,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
                                    for a_ in ln["accents"]]}
                       for ln in lay["lines"]],
             "dividers_pt": [_pt(d) for d in lay["dividers"]],
+            # 지운 글 속 아이콘: 이름, 자리, 그 줄 글자 높이 대비 크기 (한글 넣기가 원본 크기로 다시 그린다)
+            "icons": [{"name": n_, "bbox_pt": _pt(bx), "scale": sc} for n_, bx, sc in icons_found],
         }
 
     # ---- 4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,

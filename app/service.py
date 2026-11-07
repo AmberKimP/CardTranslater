@@ -1593,6 +1593,14 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
     return out
 
 
+def known_icon_names(file_dir: Path | str) -> list[str]:
+    """이 파일이 속한 게임의 아이콘 사전에 있는(이름을 정한) 아이콘 이름 (원문 확인 화면, 읽기만 함)."""
+    from app import icons, workspace
+
+    info = workspace.project_of(Path(file_dir))
+    return sorted(icons.load_dictionary(info)["icons"]) if info else []
+
+
 def region_crop(file_dir: Path | str, page: int, region: str) -> bytes:
     """원본에서 영역을 잘라 바로 세운 PNG (원문 확인 화면)."""
     import pymupdf
