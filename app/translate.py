@@ -32,8 +32,8 @@ Rules:
   the sentence (e.g. 버리다 -> 버린다 / 버려진다 / 버린 뒤), but keep its stem, meaning and nuance; never swap it
   for a synonym.
 - Rule/effect text: concise rulebook style ending in the plain "~한다/~할 수 있다" form.
-  Flavor text and quotes: keep the tone; Japanese 「」 become Korean “ ”. Do not add quotation marks
-  or brackets that are not in the source.
+  Flavor text and quotes: keep the tone. Keep the corner brackets 「」 and 『』 exactly as in the source
+  (do not change them to “ ” or ‘ ’). Do not add quotation marks or brackets that are not in the source.
 - Keep the same number of lines: the source line breaks (\\n) mark where the card breaks lines.
 - Keep [[icon]] placeholders unchanged (move them only to fit Korean word order).
   Keep card brackets such as [炎] as [ ] around the translated glossary word, e.g. [불꽃].
@@ -151,6 +151,19 @@ def _stale(entry: dict, source: str, glossary: list[dict]) -> bool:
     return any(used.get(t["source"]) != t["ko"] for t in terms_in(source, glossary))
 
 
+_BRACKETS = (("「", "」", "“", "”"), ("『", "』", "‘", "’"))
+
+
+def keep_brackets(source: str, ko: str) -> str:
+    """원문의 「」·『』를 번역이 “ ”·‘ ’로 바꿨으면 원래 괄호로 되돌린다 (원문에 없는 따옴표는 그대로)."""
+    for o, c, qo, qc in _BRACKETS:
+        n = source.count(o)
+        if (n and o not in ko and qo not in source and ko.count(qo) == n
+                and ko.count(qc) == source.count(c)):
+            ko = ko.replace(qo, o).replace(qc, c)
+    return ko
+
+
 def lookup(cache: dict, source) -> dict | None:
     """원문(문자열 또는 태그 목록) -> 캐시 항목."""
     if isinstance(source, list):
@@ -219,6 +232,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
     for text, region, kind in items:
         if text in cache and not _stale(cache[text], text, glossary):
             if cache[text].get("by") != "glossary":  # 검사 규칙이 바뀌었을 수 있으니 상태만 다시 매긴다 (모델 호출 없음)
+                cache[text]["ko"] = keep_brackets(text, cache[text]["ko"])  # 예전 번역의 “ ”도 「」로
                 st, missing = check(text, cache[text]["ko"], glossary)
                 cache[text].update(status=st, missing_terms=missing)
                 if STATUS_LEFTOVER in st and not cache[text].get("retried_leftover"):
@@ -267,6 +281,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
                 ko = got.get(str(i))
                 if ko is None:
                     continue  # 빠진 칸은 다음 실행에서 다시
+                ko = keep_brackets(text, ko)
                 status, missing = check(text, ko, glossary)
                 entry = {"ko": ko, "status": status, "missing_terms": missing, "by": model, "region": region,
                          "terms_used": {t["source"]: t["ko"] for t in terms_in(text, glossary)},
@@ -281,9 +296,10 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
                 res.equiv_usd += eq2
                 for it in data2.get("items", []):
                     text, region, _k = retry[int(it["id"])]
-                    status, missing = check(text, it["ko"], glossary)
+                    ko2 = keep_brackets(text, it["ko"])
+                    status, missing = check(text, ko2, glossary)
                     if len(status) <= len(cache[text]["status"]):
-                        cache[text].update(ko=it["ko"], status=status, missing_terms=missing, retried=True)
+                        cache[text].update(ko=ko2, status=status, missing_terms=missing, retried=True)
             res.translated += sum(1 for t, _r, _k in batch if t in cache)
             save_cache(project_dir, cache)
     except Paused as p:

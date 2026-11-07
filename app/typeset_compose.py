@@ -352,6 +352,41 @@ def measured_icon_scales(layout: dict) -> dict:
     return {k: float(np.median(v)) for k, v in by.items()}
 
 
+_SENTENCE_END = re.compile(r"(?:[.!?。．！？」』”’)）\]］]|다)\s*$")
+
+
+def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
+    """줄을 문장으로 묶는다 (번역 줄이 ‘다’·마침표·닫는 괄호로 끝나면 문장 끝, 아이콘만 남긴 줄도 끝).
+    두 줄 이상인 문장마다 {"x0", "x1", "align"}: 가장 왼쪽·오른쪽, 그리고 원문 줄들이 맞춰진 쪽
+    (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것). 반환: id(줄) -> 그 문장."""
+    out: dict[int, dict] = {}
+    cur: list[dict] = []
+
+    def close():
+        if len(cur) >= 2:
+            x0s = [ln["bbox_pt"][0] for ln in cur]
+            x1s = [ln["bbox_pt"][2] for ln in cur]
+            cxs = [(a + b) / 2 for a, b in zip(x0s, x1s)]
+            spread = {"left": max(x0s) - min(x0s), "right": max(x1s) - min(x1s), "center": max(cxs) - min(cxs)}
+            blk = {"x0": min(x0s), "x1": max(x1s), "align": min(spread, key=spread.get)}
+            for ln in cur:
+                out[id(ln)] = blk
+        cur.clear()
+
+    for ln, ko in zip(src, kos):
+        if ln.get("keep"):
+            close()
+            continue
+        if cur and (ln.get("_g") != cur[-1].get("_g")
+                    or abs(ln["glyph_h_pt"] - cur[-1]["glyph_h_pt"]) > 0.25 * max(ln["glyph_h_pt"], cur[-1]["glyph_h_pt"])):
+            close()  # 서식(색·글자 크기)이 다른 줄은 다른 문장 (카드 번호·제목 등)
+        cur.append(ln)
+        if _SENTENCE_END.search(re.sub(r"<[^>]+>", "", ko)):
+            close()
+    close()
+    return out
+
+
 def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
                           base_dir: Path = ROOT, source_text: str | None = None) -> dict:
     """원문 줄 모양(지우기 때 잰 text_layout)대로 한글을 넣는다.
@@ -443,12 +478,18 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             continue
         src = sec["lines"]
         if len(kos) == len(src):
+            block_of = sentence_blocks(src, kos)
             for ln, ko in zip(src, kos):
                 if ln.get("keep"):  # 아이콘·숫자만 있는 줄: 원문 그대로 남겼다 (지우지도 그리지도 않음)
                     continue
                 b = ln["bbox_pt"]
                 gh = ln["glyph_h_pt"]
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
+                blk = block_of.get(id(ln))
+                if blk and not (style_d.get("align") or ""):
+                    # 여러 줄 문장: 문장 전체의 가장 왼쪽·오른쪽을 기준으로 같은 정렬 (줄마다 시작점이 달라지지 않게)
+                    b = (blk["x0"], b[1], blk["x1"], b[3])
+                    st.align = blk["align"]
                 pad = 0.5 * gh
                 cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
                 top = cy - gh / 2

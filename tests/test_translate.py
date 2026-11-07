@@ -193,3 +193,17 @@ def test_leftover_japanese_is_flagged_and_retranslated_once(tmp_path):
     run2 = FakeRunner([_reply(["일거수일투족이 방아쇠"])])
     r2 = service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
     assert r2.translated == 1 and len(run2.calls) == 1
+
+
+def test_keep_brackets_restores_corner_brackets():
+    from app.translate import SYSTEM_PROMPT, keep_brackets
+
+    src = "プレイ時効果\n「5+生活[[house]]タグ+商売[[coin_bag]]タグ」の\n[[coin]]を得る"
+    ko = "플레이 시 효과\n“5+생활[[house]]태그+상업[[coin_bag]]태그”의\n[[coin]]을 얻는다"
+    assert keep_brackets(src, ko) == ko.replace("“", "「").replace("”", "」")
+    assert keep_brackets("『本』を読む", "‘책’을 읽는다") == "『책』을 읽는다"
+    # 원문에 괄호가 없으면 따옴표는 그대로, 이미 「」면 그대로, 수가 안 맞으면 건드리지 않는다
+    assert keep_brackets("彼は言った", "“좋아”라고 했다") == "“좋아”라고 했다"
+    assert keep_brackets("「A」", "「가」") == "「가」"
+    assert keep_brackets("「A」「B」", "“가와 나”") == "“가와 나”"
+    assert "「」" in SYSTEM_PROMPT and "become Korean" not in SYSTEM_PROMPT

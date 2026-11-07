@@ -345,7 +345,7 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
             # 색 아이콘을 못 찾아 칸으로 짐작한 자리가 검정 글자처럼 보이면 틀린 자리다 (못 찾음으로 둔다)
             return None, "아이콘 자리로 짐작한 곳이 글자임"
         if len(cells) > len(seq):  # 원문이 한 칸으로 읽은 세트 아이콘(예: 큰 숫자 3 + 검)은 붙은 칸까지 하나로
-            box = _set_partner(box, cells, seq, tok_pos, em_line, em)
+            box = _set_partner(box, cells, seq, tok_pos, em_line, em, img, lum, ink)
         bx0, by0, bx1, by1 = _grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
         by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
@@ -595,8 +595,22 @@ def _colored_icon_boxes(img, lum, ink, comps, em: float, seq: list[str], min_gra
     return None
 
 
-def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float):
-    """이미지 칸이 원문보다 많을 때, 고른 아이콘 칸에 바짝 붙은 큰 칸(보통 글자보다 확실히 큼)이 있으면 합친다.
+def _not_black_text(img, lum, ink, box) -> bool:
+    """칸의 잉크가 검정 글자가 아니다: 회색·밝은 아이콘(검·숫자 장식)이거나 색이 있다."""
+    if img is None:
+        return False
+    x0, y0, x1, y1 = (int(v) for v in box)
+    m = ink[y0:y1, x0:x1]
+    if m.sum() < 20:
+        return False
+    px = img[y0:y1, x0:x1][m].astype(np.float32)
+    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
+    return float(np.median(lum[y0:y1, x0:x1][m])) >= 85 or float(np.median(sat)) >= 0.25
+
+
+def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float, img=None, lum=None, ink=None):
+    """이미지 칸이 원문보다 많을 때, 고른 아이콘 칸에 바짝 붙은 아이콘 칸이 있으면 합친다 (예: 큰 숫자 5 + 검).
+    이웃 칸이 아이콘인지는 크기(보통 글자보다 확실히 큼)나 잉크(검정 글자가 아닌 회색·색)로 본다.
     원문에서 그쪽 이웃이 다른 아이콘이면 합치지 않는다 (따로 읽은 아이콘)."""
     bx0, _by0, bx1, _by1 = box
     i = next((j for j, c in enumerate(cells) if c[0] < bx1 and c[2] > bx0), None)
@@ -611,13 +625,15 @@ def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float):
         if nb == "■":
             continue
         c = cells[j]
+        # 세로는 고른 칸 근처까지만 (이웃 칸에 윗줄 글자가 붙어 있을 수 있다)
+        h = out[3] - out[1]
+        c = (c[0], max(c[1], int(out[1] - 0.35 * h)), c[2], min(c[3], int(out[3] + 0.35 * h)))
         gap = (c[0] - out[2]) if side == "right" else (out[0] - c[2])
-        if (0 <= gap + 2 and gap <= 0.35 * em_line and c[3] - c[1] >= 1.2 * em_line
+        icon_like = c[3] - c[1] >= 1.2 * em_line or (
+            c[3] - c[1] >= 0.8 * em_line and _not_black_text(img, lum, ink, c))
+        if (0 <= gap + 2 and gap <= 0.35 * em_line and icon_like
                 and max(out[2], c[2]) - min(out[0], c[0]) <= 3.0 * max(em, em_line)):
-            # 세로는 고른 칸 근처까지만 (이웃 칸에 윗줄 글자가 붙어 있을 수 있다)
-            h = out[3] - out[1]
-            out = [min(out[0], c[0]), min(out[1], max(c[1], int(out[1] - 0.35 * h))),
-                   max(out[2], c[2]), max(out[3], min(c[3], int(out[3] + 0.35 * h)))]
+            out = [min(out[0], c[0]), min(out[1], c[1]), max(out[2], c[2]), max(out[3], c[3])]
             break
     return tuple(out)
 

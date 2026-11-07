@@ -912,13 +912,10 @@ class IconReviewDialog(QDialog):
         combo = QComboBox()
         for w in g.get("where", []):
             combo.addItem(w["label"], w)
-        pic = QLabel()
-        pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pic = FitImage()  # 창 안에 다 보이게 줄인다 (스크롤 없음, 창 크기를 바꾸면 다시 맞춤)
+        dlg.pic = pic
         crop = QLabel()
         crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        scroll = QScrollArea()
-        scroll.setWidget(pic)
-        scroll.setWidgetResizable(True)
 
         def show(_i=0):
             w = combo.currentData()
@@ -926,9 +923,7 @@ class IconReviewDialog(QDialog):
                 return
             pm = QPixmap()
             pm.loadFromData(service.region_crop(w["file_dir"], w["page"], w["region"]), "PNG")
-            if pm.width() > 940:
-                pm = pm.scaledToWidth(940, Qt.TransformationMode.SmoothTransformation)
-            pic.setPixmap(pm)
+            pic.set_image(pm)
             if w.get("png"):
                 crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
                 crop.setToolTip("이 자리에서 잘라 낸 그림")
@@ -940,7 +935,7 @@ class IconReviewDialog(QDialog):
         close.clicked.connect(dlg.accept)
         lay = QVBoxLayout(dlg)
         lay.addWidget(combo)
-        lay.addWidget(scroll, 1)
+        lay.addWidget(pic, 1)
         lay.addWidget(QLabel("잘라 낸 그림:"))
         lay.addWidget(crop)
         lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
@@ -1280,8 +1275,10 @@ class StepActions:
         self.page.refresh()
         head = getattr(self, "_translate_summary", "")
         self._translate_summary = ""
-        if getattr(self, "_then_erase", False):  # 묻지 않고 바로 ⑦ 글자 지우기, 결과는 지우기 끝에 함께 보인다
+        if getattr(self, "_then_erase", False):  # 엑셀을 먼저 열고, 묻지 않고 바로 ⑦ 글자 지우기 (결과는 지우기 끝에 함께)
             self._then_erase = False
+            if paths:
+                open_path(Path(paths[0]).resolve())
             self.page.out.erase(auto=True, note=(head + "\n" if head else "")
                                 + "검수 엑셀: " + ", ".join(Path(p).name for p in paths))
             return

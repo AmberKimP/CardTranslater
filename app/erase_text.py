@@ -117,6 +117,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     busy = texture >= 8.0
 
     cands = []  # (덩어리, 평균색, 넓이, 큰 변)
+    edge_glyphs: set[int] = set()  # 위·아래 가장자리에 걸쳐 글자로 받아들인 덩어리 (id)
     lines = []  # 가로 구분선의 (세로 중심, 두께): 선 사이의 장식(◆)도 남긴다
     dividers = []
     for pol in (1, -1):
@@ -140,6 +141,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
                 if not (edge and out_frac <= 0.6 and h <= 0.5 * bh and w <= 0.2 * bw):
                     continue
                 inbox[max(0, y - 2):min(H, y + h + 2), max(0, x - 2):min(W, x + w + 2)] = True
+                edge_glyphs.add(id(comp))
             cands.append((comp, I[comp].mean(axis=0), a, max(w, h)))
     # 가로로 긴 덩어리 중 글자보다 두꺼운 것은 구분선이 아니라 색 라벨(예: 빨간 ‘プレイ時効果’ 띠): 라벨은 남기고
     # 안의 글자는 글자로 본다. 진짜 구분선은 글자 획 굵기쯤으로 가늘다
@@ -187,7 +189,10 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
                 kept.append((c, False))
                 continue
             ys, xs = np.nonzero(c[0])
-            touch = xs.min() <= x0 + 2 or ys.min() <= y0 + 2 or xs.max() >= x1 - 3 or ys.max() >= y1 - 3
+            # 위·아래 가장자리에 걸친 글자로 이미 받아들인 것은 그쪽 가장자리에 닿아도 그림 조각으로 보지 않는다
+            # 위·아래에만 닿은 글자 크기 덩어리는 "tb": 영역을 빠듯하게 그려 글자 밑동이 닿은 것일 수 있다
+            touch = "lr" if (xs.min() <= x0 + 2 or xs.max() >= x1 - 3) else (
+                "tb" if id(c[0]) not in edge_glyphs and (ys.min() <= y0 + 2 or ys.max() >= y1 - 3) else "")
             ov = (c[0] & busy_map).sum() / c[2]
             (dropped if ov > 0.3 or (touch and ov > 0.05) else kept).append((c, touch))
         # 글자보다 길고 속이 빈 가는 곡선(패널 테두리 조각)은 글자가 아니다
@@ -222,7 +227,9 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
                     continue
                 if sum(d[2] for d in kept if np.abs(d[1] - c[1]).max() < COLOR_TOL) / tot >= 0.2:
                     main.append(c[1])
-            kept += [c for c, t in dropped if not t and any(np.abs(m - c[1]).max() < 35 for m in main)]
+            # 위·아래에만 닿은 것도 글자 크기면 되살린다 (빽빽한 글자 ‘殻城’의 밑동이 빠듯한 영역 끝에 닿은 경우)
+            kept += [c for c, t in dropped if (not t or (t == "tb" and glyph and c[3] <= 2.0 * glyph))
+                     and any(np.abs(m - c[1]).max() < 35 for m in main)]
         for c in kept:
             keep |= c[0]
     else:
@@ -524,8 +531,19 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
             return any(min(y1, b) - max(y0, a) > 0.5 * max(1, y1 - y0) for a, b in icon_rows or [])
 
         if icon_rows is not None:
-            if not any(on_icon(ln) for ln in lines):
-                src = src_text
+            # 아이콘 자리에 잡힌 줄은 아이콘 조각이다: 지우지 않고 빼 둔 뒤, 남은 줄을 글 줄끼리 맞춘다
+            # (그대로 두면 아이콘 조각이 줄 수를 늘려 카드 번호가 제목 자리를 차지하는 식으로 한 칸씩 밀린다)
+            on = [ln for ln in lines if on_icon(ln)]
+            if on:
+                H_, W_ = tm.mask.shape
+                for ln in on:
+                    x0, y0, x1, y1 = ln["bbox"]
+                    pad = int(max(3, 0.35 * ln["glyph_h"]))
+                    tm.mask[max(0, y0 - pad):min(H_, y1 + pad), max(0, x0 - pad):min(W_, x1 + pad)] = False
+                lines = [ln for ln in lines if not on_icon(ln)]
+                if not lines:
+                    return {**lay, "lines": []}
+            src = src_text
         elif len(lines) == len(src_text):
             src = src_text
     extra = []

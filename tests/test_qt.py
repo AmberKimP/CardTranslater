@@ -2139,10 +2139,13 @@ def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
     shown = []
     monkeypatch.setattr(res_mod.QMessageBox, "information", lambda p, t, text: shown.append(text))
+    opened = []
+    monkeypatch.setattr("app.qt.main.open_path", lambda p: opened.append((p, seen.get("title"))))
     page.steps._then_erase = True
     page.steps._translate_summary = "서로 다른 원문 3칸"
     page.steps._excel_done([str(tmp_path / "G_검수.xlsx")])  # 엑셀 창 없이 바로 지우기
     assert seen["title"] == "글자 지우기" and seen["redo"] is False and not page.steps._then_erase
+    assert len(opened) == 1 and opened[0][0].name == "G_검수.xlsx" and opened[0][1] is None  # 지우기 전에 엑셀을 연다
     seen["done"](SimpleNamespace(state="done", reason="", files=[{"file": "a", "state": "done", "pages": 2, "warnings": 0}]))
     assert len(shown) == 1 and "서로 다른 원문 3칸" in shown[0] and "G_검수.xlsx" in shown[0] and "a:" in shown[0]
     # 번역이 끝나지 못하면 이어서 지우지 않는다

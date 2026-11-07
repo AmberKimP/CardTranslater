@@ -57,11 +57,29 @@ def test_match_source_lines_skips_icon_only_line_not_found_as_text():
     assert [ln["bbox"][1] for ln in out["lines"]] == [30, 150]
     assert not any(ln.get("keep") for ln in out["lines"])
     assert not tm.mask[5:12, 20:200].any()  # 카드 번호는 지우지 않음
-    # 아이콘 자리에 줄이 잡혔으면(검정 선 아이콘) 예전처럼 그 줄을 남김 표시
+    # 아이콘 자리에 줄이 잡혔으면(검정 선 아이콘): 그 줄은 빼 두고 지우지 않는다, 글 줄끼리 맞춘다
     tm2 = erase_text.TextMask(np.ones((200, 240), bool), mask.copy(), False, 1.0)
     lay2 = {"lines": [_ln(30, 45, 15), _ln(80, 110, 15), _ln(150, 165, 15)], "dividers": []}
     out2 = erase_text.match_source_lines(tm2, lay2, "LABEL\n[[sword]][[sword]]\nTEXT", icon_rows=[(78, 112)])
-    assert [bool(ln.get("keep")) for ln in out2["lines"]] == [False, True, False]
+    assert [ln["bbox"][1] for ln in out2["lines"]] == [30, 150]
+    assert not tm2.mask[85:105, 20:200].any()  # 아이콘 줄은 지우지 않음
+
+
+def test_match_source_lines_icon_pieces_do_not_shift_lines():
+    """8쪽: 카드 번호 / 라벨 / 아이콘 조각 3줄 / 글 3줄. 아이콘 조각이 줄 수를 늘려 카드 번호가 라벨 자리를
+    차지하던 문제: 아이콘 조각을 먼저 빼면 카드 번호는 원문에 없는 줄로 남고 라벨·글이 맞는다."""
+    mask = np.ones((900, 1240), bool)
+    tm = erase_text.TextMask(mask, mask.copy(), False, 1.0)
+
+    def ln(x0, y0, x1, y1, gh):
+        return {"bbox": (x0, y0, x1, y1), "glyph_h": gh, "color": "#303030", "align": "left"}
+    lay = {"lines": [ln(1068, 95, 1148, 123, 24), ln(378, 229, 815, 274, 40), ln(300, 391, 512, 429, 38),
+                     ln(310, 452, 425, 474, 20), ln(298, 492, 361, 508, 16), ln(73, 630, 1115, 687, 50),
+                     ln(40, 720, 1138, 777, 50), ln(275, 815, 846, 866, 50)], "dividers": []}
+    src = "プレイ時効果\n[[coin_crate_arrow]] [[tower_down]]\nこのカード\nその拠点\nすべて"
+    out = erase_text.match_source_lines(tm, lay, src, icon_rows=[(358, 547), (353, 592)])
+    assert [l_["bbox"][1] for l_ in out["lines"]] == [229, 630, 720, 815]
+    assert not tm.mask[95:123, 1068:1148].any()  # 카드 번호는 지우지 않음
 
 
 # ---------------------------------------------------------------- 영역 가장자리에 걸친 글자
@@ -158,3 +176,19 @@ def test_icon_review_puts_issues_first_then_appearance_order(tmp_path, monkeypat
     groups = service.icon_review(info.dir)["groups"]
     assert [g["group"] for g in groups] == [names[2], names[0], names[1]]
     assert groups[0]["issue"] == "한국어 이름 없음" and not groups[1]["issue"]
+
+
+def test_sentence_blocks_align_multiline_sentence_to_its_outer_edges():
+    """여러 줄 문장은 문장 전체의 가장 왼쪽·오른쪽이 기준. 가운데 맞춘 원문이면 가운데, 서식이 다른 줄은 따로."""
+    from app.typeset_compose import sentence_blocks
+
+    def ln(x0, x1, gh=6.2, g=0):
+        return {"bbox_pt": [x0, 0, x1, 6], "glyph_h_pt": gh, "_g": g}
+    num = ln(146.8, 156.4, gh=3.4, g=1)  # 카드 번호
+    a, b, c = ln(23.6, 155.3), ln(37.3, 141.5), ln(40.6, 130.9)
+    blocks = sentence_blocks([num, a, b, c], ["플레이 시 효과", "이 카드 위에 있는", "칩을 1장 놓아도 된다", "그렇게 한 경우 얻는다"])
+    assert id(num) not in blocks and id(c) not in blocks  # 한 줄 문장·다른 서식은 그대로
+    assert blocks[id(a)] is blocks[id(b)]
+    assert blocks[id(a)]["align"] == "center" and blocks[id(a)]["x0"] == 23.6 and blocks[id(a)]["x1"] == 155.3
+    left = sentence_blocks([ln(20, 150), ln(20, 90)], ["첫 줄", "끝."])
+    assert next(iter(left.values()))["align"] == "left"
