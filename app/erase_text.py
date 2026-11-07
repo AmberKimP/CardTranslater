@@ -512,6 +512,43 @@ def is_icon_line(text: str) -> bool:
     return not _WORD.search(_TOKEN.sub("", text))
 
 
+def _extra_lines(lines: list[dict], src: list[str]) -> list[dict]:
+    """찾은 줄이 원문보다 많을 때 원문에 없는 줄을 고른다.
+    줄 폭이 원문 줄 길이(글자 수)와 가장 잘 맞게 남는 줄을 뺀다 (원문이 빠뜨린 숫자 타일·카드 번호 등).
+    폭으로 가리지 못하면 글자가 작은 줄부터 (예전 방식)."""
+    from itertools import combinations
+
+    from app.icons import TOKEN_RE, _line_units
+
+    n_drop = len(lines) - len(src)
+    if n_drop <= 0:
+        return []
+
+    def smallest() -> list[dict]:
+        out: list[dict] = []
+        while len(lines) - len(out) > len(src):
+            out.append(min((ln for ln in lines if ln not in out), key=lambda ln: ln["glyph_h"]))
+        return out
+
+    if n_drop > 3 or len(lines) > 14:
+        return smallest()
+    widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
+    units = [_line_units(t) for t in src]
+    icon_only = [bool(TOKEN_RE.findall(t)) and not TOKEN_RE.sub("", t).strip() for t in src]
+    best, best_key = None, None
+    for drop in combinations(range(len(lines)), n_drop):
+        keep = [i for i in range(len(lines)) if i not in drop]
+        txt = [(i, j) for i, j in zip(keep, range(len(src))) if not icon_only[j]] or list(zip(keep, range(len(src))))
+        r = sum(widths[i] for i, _j in txt) / max(sum(units[j] for _i, j in txt), 1e-6)
+        err = sum(abs(widths[i] - units[j] * r) for i, j in txt) / max(sum(widths[i] for i, _j in txt), 1)
+        key = (round(err, 2), sum(lines[i]["glyph_h"] for i in drop))
+        if best_key is None or key < best_key:
+            best, best_key = drop, key
+    if best is None or best_key[0] >= 0.35:
+        return smallest()
+    return [lines[i] for i in best]
+
+
 def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | None = None) -> dict:
     """찾은 줄을 읽은 원문 줄에 맞춘다. tm.mask를 고친다(남길 줄은 지우지 않음).
 
@@ -546,9 +583,7 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
             src = src_text
         elif len(lines) == len(src_text):
             src = src_text
-    extra = []
-    while len(lines) - len(extra) > len(src):
-        extra.append(min((ln for ln in lines if ln not in extra), key=lambda ln: ln["glyph_h"]))
+    extra = _extra_lines(lines, src)
     kept = [ln for ln in lines if ln not in extra]
     restore = list(extra)
     if len(kept) == len(src):

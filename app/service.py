@@ -1294,6 +1294,14 @@ def page_count(file_dir: Path | str) -> int:
     return workspace.page_count(Path(file_dir))
 
 
+def shown_pages(file_dir: Path | str) -> list[int]:
+    """화면(영역 지정)에서 보일 쪽: 뺄 쪽을 뺀 나머지 (시험 모드 제한은 적용하지 않음). 다 뺐으면 모든 쪽."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    return workspace.included_pages(fd, limited=False) or list(range(1, workspace.page_count(fd) + 1))
+
+
 def page_image(file_dir: Path | str, page: int, dpi: int = 110) -> tuple[bytes, tuple[float, float]]:
     """파일 폴더 원본의 한 쪽을 PNG로. (PNG, (너비 pt, 높이 pt))."""
     import pymupdf

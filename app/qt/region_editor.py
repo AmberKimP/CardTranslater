@@ -856,13 +856,26 @@ class RegionEditor(QDialog):
         self.dirty = False
         return True
 
+    def _shown(self, fd: Path | None = None) -> list[int]:
+        """이 파일에서 보일 쪽 (뺄 쪽은 건너뛴다)."""
+        fd = fd or self.current_file()
+        cache = self.__dict__.setdefault("_shown_cache", {})
+        if fd not in cache:
+            cache[fd] = service.shown_pages(fd)
+        return cache[fd]
+
     def _load_page(self):
         fd = self.current_file()
         n = service.page_count(fd)
+        shown = self._shown(fd)
         self.page_spin.blockSignals(True)
         self.page_spin.setMaximum(max(1, n))
+        if self.page_spin.value() not in shown:  # 뺀 쪽이면 가까운 보일 쪽으로
+            v = self.page_spin.value()
+            self.page_spin.setValue(next((p for p in shown if p >= v), shown[-1]))
         self.page_spin.blockSignals(False)
-        self.page_total.setText(f"/ {n}")
+        hidden = n - len(shown)
+        self.page_total.setText(f"/ {n}" + (f" (뺀 쪽 {hidden}개 건너뜀)" if hidden else ""))
         self._sync_nav()
         png, _size = service.page_image(fd, self.page_spin.value(), dpi=150)
         pm = QPixmap()
@@ -876,18 +889,34 @@ class RegionEditor(QDialog):
         self.scene.setSceneRect(self.scene.page_rect.adjusted(-20, -20, 20, 20))
 
     def step_page(self, d: int):
-        """이전·다음 쪽 (파일 끝에서는 멈춘다). 영역은 같은 비율로 다음 카드에 겹쳐 보인다."""
-        p = self.page_spin.value() + d
-        if 1 <= p <= self.page_spin.maximum():
+        """이전·다음 쪽 (뺄 쪽은 건너뛰고, 파일 끝에서는 멈춘다). 영역은 같은 비율로 다음 카드에 겹쳐 보인다."""
+        v, shown = self.page_spin.value(), self._shown()
+        p = next((q for q in (shown if d > 0 else reversed(shown)) if (q > v if d > 0 else q < v)), None)
+        if p is not None:
             self.page_spin.setValue(p)  # valueChanged -> _change_page
         self._sync_nav()
 
     def _sync_nav(self):
         if hasattr(self, "prev_btn"):
-            self.prev_btn.setEnabled(self.page_spin.value() > 1)
-            self.next_btn.setEnabled(self.page_spin.value() < self.page_spin.maximum())
+            v, shown = self.page_spin.value(), self._shown()
+            self.prev_btn.setEnabled(any(p < v for p in shown))
+            self.next_btn.setEnabled(any(p > v for p in shown))
 
     def _change_page(self):
+        shown = self._shown()
+        v = self.page_spin.value()
+        if v not in shown:  # 쪽 번호를 직접 넣어 뺀 쪽에 오면 움직인 쪽으로 가까운 보일 쪽에
+            prev = getattr(self, "_last_page", v)
+            nxt = (next((p for p in shown if p > v), None) if v >= prev
+                   else next((p for p in reversed(shown) if p < v), None))
+            nxt = nxt or min(shown, key=lambda p: abs(p - v))
+            self.page_spin.blockSignals(True)
+            self.page_spin.setValue(nxt)
+            self.page_spin.blockSignals(False)
+        self._last_page = self.page_spin.value()
+        self._change_page_impl()
+
+    def _change_page_impl(self):
         if self.is_per_card():  # 카드마다 영역: 보던 카드의 영역을 넣어 두고 새 카드의 영역을 꺼낸다
             self._stash_card()
             self._clear_items()
@@ -963,7 +992,8 @@ class RegionEditor(QDialog):
         left = 0
         if self.is_per_card():
             done = sum(1 for v in self._cards().values() if v.get("regions"))
-            left = max(0, sum(service.page_count(f) for f in self.file_dirs) - done)
+            keys = set(self.all_card_keys())
+            left = max(0, len(keys) - sum(1 for k, v in self._cards().items() if k in keys and v.get("regions")))
         if not has:
             set_hint(self.guide, "위의 ‘+ 글자 영역’(T)을 누르고, 번역할 글자 위를 끌어 영역을 그리세요.", "todo")
         elif self.dirty:
@@ -990,8 +1020,9 @@ class RegionEditor(QDialog):
         for w in (self.copy_rest, self.sync_names):
             w.setEnabled(True)
         n = len([i for i in self.items() if i.kind != "protect"])
-        done = sum(1 for v in self._cards().values() if v.get("regions"))
-        total = sum(service.page_count(f) for f in self.file_dirs)
+        keys = set(self.all_card_keys())  # 뺄 쪽은 세지 않는다
+        done = sum(1 for k, v in self._cards().items() if k in keys and v.get("regions"))
+        total = len(keys)
         self.card_info.setText(f"이 카드: {'영역 ' + str(n) + '개' if n else '영역 없음'} · 지정한 카드 {done}/{total}장")
         self.copy_prev.setEnabled(True)
 
@@ -1013,7 +1044,7 @@ class RegionEditor(QDialog):
 
     def all_card_keys(self) -> list[str]:
         """이 그룹의 모든 카드 키 (파일 순서, 쪽 순서)."""
-        return [f"{f.name}/{q}" for f in self.file_dirs for q in range(1, service.page_count(f) + 1)]
+        return [f"{f.name}/{q}" for f in self.file_dirs for q in self._shown(f)]  # 뺄 쪽은 빼고
 
     def copy_to_rest(self):
         """지금 카드의 영역을 나머지 카드에 복사한다 (영역 없는 카드에만 / 모두 덮어쓰기)."""
@@ -1073,7 +1104,8 @@ class RegionEditor(QDialog):
         self.status.setText("이 카드의 영역을 비웠습니다" if r == 0 else "모든 카드의 영역을 비웠습니다")
 
     def jump_page(self, where: int):
-        self.page_spin.setValue(1 if where == 0 else self.page_spin.maximum())
+        shown = self._shown()
+        self.page_spin.setValue(shown[0] if where == 0 else shown[-1])
         self._sync_nav()
 
     def _key_action(self, act: str):

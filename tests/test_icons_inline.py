@@ -210,3 +210,16 @@ def test_match_line_uses_icon_height_for_icon_only_lines():
     assert _match_line(lines, 1, bands, comps) == 2  # 칼 줄
     assert _match_line(lines, 0, bands, comps) == 1  # 라벨
     assert _match_line(lines, 3, bands, comps) == 4
+
+
+def test_extra_lines_dropped_by_width_not_glyph_size():
+    """원문이 숫자 타일 줄(‘2’)을 빠뜨림: 찾은 줄 4개(라벨·타일·글·글) vs 원문 3줄. 글자가 작은 라벨을 빼면
+    ‘プレイ時効果’가 타일 자리에 간다. 줄 폭으로 맞춰 좁은 타일 줄을 뺀다."""
+    def ln(x0, x1, gh):
+        return {"bbox": (x0, 0, x1, 10), "glyph_h": gh}
+    label, tile, l2, l3 = ln(333, 813, 40), ln(502, 642, 70), ln(200, 940, 50), ln(390, 705, 60)
+    extra = erase_text._extra_lines([label, tile, l2, l3], ["プレイ時効果", "人物[[person]]タグが２個以上なら", "[[sword_2]]を得る"])
+    assert extra == [tile]
+    # 카드 번호처럼 폭으로도 작은 줄은 그대로 빠진다
+    num = ln(1040, 1125, 24)
+    assert erase_text._extra_lines([num, label, l2, l3], ["プレイ時効果", "人物[[person]]タグが２個以上なら", "[[sword_2]]を得る"]) == [num]

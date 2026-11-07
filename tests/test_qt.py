@@ -2153,3 +2153,30 @@ def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr("app.qt.steps.show_problem", lambda *a, **k: None)
     page.steps._translate_done(SimpleNamespace(state="limited", reason="한도", retry_after=None))
     assert not page.steps._then_erase
+
+
+def test_region_editor_skips_excluded_pages(qapp, tmp_path):
+    """뺄 쪽으로 정한 쪽은 영역 지정에서 보이지 않는다 (▶·◀·처음·끝·쪽 번호 입력 모두 건너뜀)."""
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    fd = Path(g["files"][0]["dir"])
+    service.set_pages(fd, [2])
+    service.save_region_template(g["dir"], {"regions": [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    ed = RegionEditor(Path(g["dir"]), [fd])
+    assert ed.page_spin.value() == 1 and "뺀 쪽 1개" in ed.page_total.text()
+    ed.step_page(1)
+    assert ed.page_spin.value() == 3 and not ed.next_btn.isEnabled()
+    ed.step_page(-1)
+    assert ed.page_spin.value() == 1 and not ed.prev_btn.isEnabled()
+    ed.page_spin.setValue(2)  # 직접 넣어도 건너뛴다
+    assert ed.page_spin.value() == 3
+    ed.jump_page(0)
+    assert ed.page_spin.value() == 1
+    assert ed.all_card_keys() == [f"{fd.name}/1", f"{fd.name}/3"]
+    # 처음 열 때 기준 쪽이 뺀 쪽이면 다음 보일 쪽에서 연다
+    service.set_pages(fd, [1])
+    ed2 = RegionEditor(Path(g["dir"]), [fd])
+    assert ed2.page_spin.value() == 2
+    ed.dirty = ed2.dirty = False
