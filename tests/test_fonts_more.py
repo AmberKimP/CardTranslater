@@ -181,7 +181,7 @@ def _hook(monkeypatch, plans, dialog_result):
 
         def choices(self):
             return [{"file_dir": "D", "regions": {"이름": SANS_B}, "cards": {1: {"이름": SERIF}},
-                     "sentences": {1: {"이름": {0: GAEGU}}}}]
+                     "sentences": {1: {"이름": {0: GAEGU}}}, "sizes": {"이름": 1.2}}]
 
     monkeypatch.setattr(worker, "run_with_dialog", fake_run)
     monkeypatch.setattr(fonts_dialog, "FontPlanDialog", Dlg)
@@ -200,7 +200,7 @@ def test_compose_button_ok_saves_then_composes(qapp, tmp_path, monkeypatch):
     """확인하면 고른 글꼴을 저장한 뒤 한글 넣기를 돌린다 (accept_issues=False)."""
     cls, log = _hook(monkeypatch, _plan(), 1)
     cls(_FakePage(tmp_path)).compose()
-    assert log["saved"] == [("D", {"이름": SANS_B}, {1: {"이름": SERIF}}, {1: {"이름": {0: GAEGU}}})]
+    assert log["saved"] == [("D", {"이름": SANS_B}, {1: {"이름": SERIF}}, {1: {"이름": {0: GAEGU}}}, {"이름": 1.2})]
     assert len(log["compose"]) == 1 and log["compose"][0]["accept_issues"] is False
 
 
@@ -264,3 +264,41 @@ def test_settings_and_login_have_log_folder_buttons(qapp, monkeypatch):
     assert lg.b_log.text() == "로그 폴더 열기"
     lg.b_log.click()
     assert called == ["settings", "login"]
+
+
+# ---------------------------------------------------------------- 글자 크기 배율
+def test_size_scale_multiplies_start_size_but_not_fixed():
+    """글꼴 창의 글자 크기 배율은 원문 기준 시작 크기에 곱하고, 엑셀 고정 크기에는 쓰지 않는다."""
+    from app.typeset import TextStyle
+
+    base = TextStyle.from_region_style({}, size_pt=10.0)
+    big = TextStyle.from_region_style({"size_scale": 1.5}, size_pt=10.0)
+    assert big.start_size() == pytest.approx(base.start_size() * 1.5)
+    ink = TextStyle.from_region_style({"size_scale": 0.8}, ink_height_pt=5.0)
+    assert ink.start_size() == pytest.approx(TextStyle.from_region_style({}, ink_height_pt=5.0).start_size() * 0.8)
+    fixed = TextStyle.from_region_style({"size_scale": 2.0}, size_pt=10.0, fixed_size_pt=7.0)
+    assert fixed.start_size() == 7.0
+
+
+def test_save_sizes_round_trip_and_keep(tmp_path):
+    """sizes는 1.0이 아닌 것만 저장, None이면 예전 것을 그대로 둔다."""
+    font_plan.save(tmp_path, {"이름": SANS_B}, {}, None, {"이름": 1.2, "본문": 1.0})
+    assert font_plan.size_scales(font_plan.load(tmp_path)) == {"이름": 1.2}
+    font_plan.save(tmp_path, {"이름": SANS_B}, {})
+    assert font_plan.size_scales(font_plan.load(tmp_path)) == {"이름": 1.2}
+    font_plan.save(tmp_path, {"이름": SANS_B}, {}, None, {"이름": 1.0})
+    assert font_plan.size_scales(font_plan.load(tmp_path)) == {}
+
+
+def test_compose_page_applies_size_scale():
+    """compose_page(sizes=)로 그 영역의 시작 크기가 배율만큼 커진다."""
+    doc, sdoc = pymupdf.open(), pymupdf.open()
+    meta = {"regions": [{"name": "본문", "kind": "text", "rect_pt": [10, 10, 290, 90],
+                         "text_layer": {"size_pt": 8.0}}]}
+    starts = []
+    for sizes in (None, {"본문": 1.5}):
+        pg = doc.new_page(width=300, height=100)
+        src = sdoc.new_page(width=300, height=100)
+        rec = typeset_compose.compose_page(pg, src, meta, {"본문": {"ko": "짧은 글"}}, sizes=sizes)
+        starts.append(rec["본문"]["start_size_pt"])
+    assert starts[1] == pytest.approx(starts[0] * 1.5)

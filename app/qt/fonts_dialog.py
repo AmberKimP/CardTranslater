@@ -2,6 +2,8 @@
 
 - 항목(영역)마다 글꼴을 고른다. 기본 선택은 원본과 느낌이 가장 비슷한 추천(★).
 - 항목을 펼치면 카드(문장)마다 따로 고를 수 있다. 기본은 ‘항목과 같음’.
+- 아래 미리 보기: 왼쪽은 원본 카드의 그 영역, 오른쪽은 지운 카드 위에 고른 글꼴·원본 글자 색으로 쓴 번역 (같은 배율).
+- 글자 크기: 항목마다 원본 크기 대비 배율 (한글 넣기에 그대로 쓴다).
 - 목록: 추천 글꼴 + 이 프로젝트에서 쓴 적이 있는 글꼴 + 이 창에서 추가한 글꼴, 맨 아래 ‘글꼴 추가…’
   (PC에 설치된 글꼴 목록 또는 글꼴 파일).
 화면은 app.service만 부른다.
@@ -11,11 +13,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QPushButton, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
 from app import service
@@ -121,6 +123,8 @@ class FontPlanDialog(QDialog):
         self.plans = plans
         self.added: list[dict] = []  # 이 창에서 추가한 글꼴 {"file", "label"}
         self.combos: list[tuple[QComboBox, str]] = []  # (콤보, 종류: region|card)
+        self.sizes: dict[tuple[int, str], float] = {  # (파일 번호, 영역): 글자 크기 배율
+            (pi, r["name"]): float(r.get("size_scale") or 1.0) for pi, p in enumerate(plans) for r in p["regions"]}
 
         title = QLabel("한글 글꼴 고르기")
         f = title.font()
@@ -144,12 +148,41 @@ class FontPlanDialog(QDialog):
         self.tree.itemExpanded.connect(self._expand)
         self.tree.currentItemChanged.connect(lambda *_a: self._preview())
 
+        box = "background: white; border: 1px solid #ccc; padding: 4px"
+        self.orig = QLabel()
+        self.orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.orig.setMinimumSize(300, 120)
+        self.orig.setStyleSheet(box)
         self.sample = QLabel()
-        self.sample.setMinimumHeight(70)
+        self.sample.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sample.setMinimumSize(300, 120)
         self.sample.setWordWrap(True)
-        self.sample.setStyleSheet("background: white; border: 1px solid #ccc; padding: 8px")
+        self.sample.setStyleSheet(box)
         self.sample_note = QLabel()
         self.sample_note.setStyleSheet("color: #666")
+        self.sample_note.setWordWrap(True)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("원본"), 0, 0)
+        grid.addWidget(QLabel("미리 보기 (고른 글꼴 · 원본 글자 색 · 지운 카드 위)"), 0, 1)
+        grid.addWidget(self.orig, 1, 0)
+        grid.addWidget(self.sample, 1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        self.size_label = QLabel("글자 크기")
+        self.size = QSpinBox()
+        self.size.setRange(50, 200)
+        self.size.setSingleStep(5)
+        self.size.setSuffix(" %")
+        self.size.setToolTip("원본 글자 크기 대비 배율입니다. 한글 넣기에서 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
+        self.size.valueChanged.connect(self._size_changed)
+        b_reset = QPushButton("원본 크기로")
+        b_reset.clicked.connect(lambda: self.size.setValue(100))
+        size_row = QHBoxLayout()
+        size_row.addWidget(self.size_label)
+        size_row.addWidget(self.size)
+        size_row.addWidget(b_reset)
+        size_row.addStretch(1)
 
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "이대로 한글 넣기")
@@ -160,8 +193,8 @@ class FontPlanDialog(QDialog):
         lay.addWidget(help_)
         lay.addWidget(self.note)
         lay.addWidget(self.tree, 1)
-        lay.addWidget(QLabel("미리 보기 (고른 줄의 번역을 고른 글꼴로)"))
-        lay.addWidget(self.sample)
+        lay.addLayout(grid)
+        lay.addLayout(size_row)
         lay.addWidget(self.sample_note)
         lay.addWidget(bb)
         self._build()
@@ -331,6 +364,26 @@ class FontPlanDialog(QDialog):
             return self._row_font(item.parent())
         return f if f not in (ADD, SAME) else None
 
+    def _where(self, item: QTreeWidgetItem) -> tuple[int, str, int | None] | None:
+        """고른 줄의 (파일 번호, 영역, 쪽). 항목 줄이면 번역이 있는 첫 카드."""
+        kind = item.data(0, ROLE_KIND)
+        if not kind:
+            return None
+        pi, name = kind[1], kind[2]
+        if kind[0] == "region":
+            cards = self._reg(pi, name)["cards"]
+            c = next((c for c in cards if c["text"]), cards[0] if cards else None)
+            return pi, name, (c["page"] if c else None)
+        return pi, name, kind[3]
+
+    def _size_changed(self, v: int):
+        item = self.tree.currentItem()
+        w = self._where(item) if item is not None else None
+        if w is None:
+            return
+        self.sizes[(w[0], w[1])] = v / 100.0
+        self._preview()
+
     def _preview(self):
         item = self.tree.currentItem()
         if item is None:
@@ -338,19 +391,62 @@ class FontPlanDialog(QDialog):
         text = item.toolTip(2) or item.text(2) or "가나다라 한글 글꼴 견본"
         f = self._row_font(item)
         fam = qt_family(f) if f else None
-        if fam:
-            self.sample.setFont(QFont(fam, 16))
-        self.sample.setText(text[:200])
+        w = self._where(item)
+        scale = self.sizes.get((w[0], w[1]), 1.0) if w else 1.0
+        self.size.blockSignals(True)
+        self.size.setEnabled(w is not None)
+        self.size.setValue(round(scale * 100))
+        self.size.blockSignals(False)
+        self.size_label.setText(f"글자 크기 ({w[1]} 항목 전체)" if w else "글자 크기")
+        info = None
+        if w and w[2] is not None:
+            try:
+                info = service.font_preview(self.plans[w[0]]["file_dir"], w[2], w[1], f, scale)
+            except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
+                info = None
+        if info is None:
+            self.orig.setPixmap(QPixmap())
+            self.orig.setText("(원본 그림 없음)")
+            if fam:
+                self.sample.setFont(QFont(fam, round(16 * scale)))
+            self.sample.setPixmap(QPixmap())
+            self.sample.setText(text[:200])
+        else:
+            op = QPixmap()
+            op.loadFromData(info["original_png"])
+            self.orig.setPixmap(op)
+            self.sample.setPixmap(self._draw(info, text, fam))
         cb = self.tree.itemWidget(item, 1)
         note = cb.currentText().strip() if cb else ""
         if cb is not None and cb.currentData() == SAME and item.parent() is not None:
-            f = self._row_font(item)
             note = "위와 같음: " + (service.font_label(f) if f else "")
+        if info is not None:
+            note += f"   ·   {w[2]}쪽, 글자 색 {info['color']}, 시작 크기 {info['size_pt']:.1f}pt"
         self.sample_note.setText(note)
+
+    @staticmethod
+    def _draw(info: dict, text: str, fam: str | None) -> QPixmap:
+        """지운 카드 그림 위에 번역을 원본 글자 색·고른 크기로 쓴다 (칸 너비에서 줄바꿈)."""
+        pm = QPixmap()
+        pm.loadFromData(info["cleared_png"])
+        z = info["zoom"]
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        font = QFont(fam) if fam else QFont()
+        font.setPixelSize(max(1, round(info["size_pt"] * z)))
+        p.setFont(font)
+        p.setPen(QColor(info["color"]))
+        h = {"center": Qt.AlignmentFlag.AlignHCenter, "right": Qt.AlignmentFlag.AlignRight}.get(
+            info["align"], Qt.AlignmentFlag.AlignLeft)
+        bx = info.get("text_box_pt") or [0, 0, info["w_pt"], info["h_pt"]]
+        r = QRectF(bx[0] * z, bx[1] * z, (bx[2] - bx[0]) * z, (bx[3] - bx[1]) * z)
+        p.drawText(r, int(h | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), text)
+        p.end()
+        return pm
 
     # ---- 결과
     def choices(self) -> list[dict]:
-        """파일마다 {"file_dir", "regions": {영역: 글꼴}, "cards": {쪽: {영역: 글꼴}},
+        """파일마다 {"file_dir", "regions": {영역: 글꼴}, "cards": {쪽: {영역: 글꼴}}, "sizes": {영역: 크기 배율},
         "sentences": {쪽: {영역: {문장 번호: 글꼴}}}}. 펼치지 않은 줄의 카드·문장별 선택은 예전 것을 그대로 둔다."""
         out = []
         for plan in self.plans:
@@ -362,7 +458,8 @@ class FontPlanDialog(QDialog):
                     for x in c.get("sentences") or []:
                         if x["selected"]:
                             sents.setdefault(c["page"], {}).setdefault(reg["name"], {})[x["idx"]] = x["selected"]
-            out.append({"file_dir": plan["file_dir"], "regions": {}, "cards": cards, "sentences": sents})
+            out.append({"file_dir": plan["file_dir"], "regions": {}, "cards": cards, "sentences": sents,
+                        "sizes": {name: v for (pi, name), v in self.sizes.items() if pi == len(out)}})
         it = self.tree.invisibleRootItem()
         stack = [it.child(i) for i in range(it.childCount())]
         while stack:

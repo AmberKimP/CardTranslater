@@ -109,13 +109,14 @@ STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많�
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
                  base_dir: Path = ROOT, styles: dict | None = None,
                  region_erase: dict | None = None, fonts: dict | None = None,
-                 sentence_fonts: dict | None = None) -> dict:
+                 sentence_fonts: dict | None = None, sizes: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
     서식만 바꿔 합성할 수 있게, 있으면 지우기 때 저장한 style_defaults보다 우선한다.
     fonts: {영역 이름: 글꼴 파일} — 한글 넣기 전에 고른 글꼴(fonts.json). 영역 서식의 글꼴보다 우선한다.
     sentence_fonts: {영역 이름: {문장 번호: 글꼴 파일}} — ‘문장마다 글꼴’ 영역(style.font_mode="sentence")에서만 쓴다.
+    sizes: {영역 이름: 글자 크기 배율} — 글꼴 창에서 정한 크기 (원문 크기 기준).
     """
     card = card or {}
     out: dict = {}
@@ -128,6 +129,9 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             missing, chosen = chosen, None  # 글꼴을 지웠거나 다른 PC의 경로: 영역 글꼴로 넣고 알린다
         if chosen:  # 고른 글꼴: 굵게용 파일은 그 글꼴의 이웃 굵기에서 다시 찾는다
             style_d = {**style_d, "font": {**(style_d.get("font") or {}), "file": chosen, "bold_file": None}}
+        scale = (sizes or {}).get(name)
+        if scale and abs(scale - 1.0) > 1e-6:
+            style_d = {**style_d, "size_scale": float(scale)}
         entry = card.get(name) or {}
         rect = pymupdf.Rect(reg["rect_pt"])
         work = pymupdf.Rect(reg["work_rect_pt"]) if reg.get("work_rect_pt") else None
@@ -410,6 +414,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     left = min(ln["bbox_pt"][0] for ln in lines_all)
     results: list[tuple[TypesetResult, str]] = []
     slots = []  # (줄 모양, 번역, 사각형, 서식, 위)
+    slot_k = 1.6 * max(1.0, float(style_d.get("size_scale") or 1.0))  # 크기를 키우면 줄 자리도 높게
     for sec, kos in zip(secs, parts):
         if not kos:
             continue
@@ -427,22 +432,22 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 mode = style_d.get("align") or ""
                 if mode == "center":  # 영역 가운데
                     st.align = "center"
-                    r = pymupdf.Rect(rect.x0, top, rect.x1, top + 1.6 * gh)
+                    r = pymupdf.Rect(rect.x0, top, rect.x1, top + slot_k * gh)
                 elif mode == "left":  # 글 칸의 왼쪽 끝(가장 왼쪽 원문 줄)
-                    r = pymupdf.Rect(left, top, min(rect.x1, right + pad), top + 1.6 * gh)
+                    r = pymupdf.Rect(left, top, min(rect.x1, right + pad), top + slot_k * gh)
                 elif mode == "right":  # 글 칸의 오른쪽 끝(가장 오른쪽 원문 줄)
-                    r = pymupdf.Rect(max(rect.x0, left - pad), top, right, top + 1.6 * gh)
+                    r = pymupdf.Rect(max(rect.x0, left - pad), top, right, top + slot_k * gh)
                 elif mode == "original":  # 원래 위치 그대로: 그 줄의 원문 시작점에서
-                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + 1.6 * gh)
+                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + slot_k * gh)
                 elif st.align == "center":  # 자동: 원문 줄의 정렬을 따른다
                     cx = (b[0] + b[2]) / 2
                     hw = max(min(cx - rect.x0, rect.x1 - cx), (b[2] - b[0]) / 2)
                     hw = min(hw, max(cx - left, right - cx) + pad)
-                    r = pymupdf.Rect(cx - hw, top, cx + hw, top + 1.6 * gh)
+                    r = pymupdf.Rect(cx - hw, top, cx + hw, top + slot_k * gh)
                 elif st.align == "right":
-                    r = pymupdf.Rect(max(rect.x0, left - pad), top, b[2], top + 1.6 * gh)
+                    r = pymupdf.Rect(max(rect.x0, left - pad), top, b[2], top + slot_k * gh)
                 else:
-                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + 1.6 * gh)
+                    r = pymupdf.Rect(b[0], top, min(rect.x1, right + pad), top + slot_k * gh)
                 slots.append((ln, ko, r, st, top))
         else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
             ln0 = dict(src[0])
@@ -458,10 +463,10 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             mode = style_d.get("align") or ""
             if mode == "center":
                 st.align = "center"
-                r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + 1.6 * gh))
+                r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + slot_k * gh))
             else:
                 x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
-                r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + 1.6 * gh))
+                r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + slot_k * gh))
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}
@@ -597,7 +602,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
             cancel.check()
         _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
         rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
-                           font_plan.overrides_for_page(font_data, pno), font_plan.sentences_for_page(font_data, pno))
+                           font_plan.overrides_for_page(font_data, pno), font_plan.sentences_for_page(font_data, pno),
+                           font_plan.size_scales(font_data))
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]

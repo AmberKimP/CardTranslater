@@ -71,6 +71,7 @@ class TextStyle:
     ink_height_pt: float | None = None  # 원문 대표 잉크 높이 (F28). 있으면 이것으로 시작 크기를 정함
     ink_sample: str = DEFAULT_KO_SAMPLE
     fixed_size_pt: float | None = None  # 엑셀 I열(글자 크기)
+    size_scale: float = 1.0  # 글꼴 창에서 정한 크기 배율 (원문 크기 기준, 고정 크기에는 쓰지 않는다)
     line_pitch_pt: float | None = None  # 원문 줄 간격 (시작 크기 기준)
     min_ratio: float = 0.8
     floor_pt: float = 6.0  # floor_basis="pt"일 때만 쓴다
@@ -121,7 +122,7 @@ class TextStyle:
             kw["tag_fonts"] = {k: str(Path(v) if Path(v).is_absolute() else Path(base_dir) / v)
                                for k, v in style["tag_fonts"].items()}
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
-                  "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales"):
+                  "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales", "size_scale"):
             if k in style:
                 kw[k] = style[k]
         kw.update(overrides)
@@ -137,10 +138,11 @@ class TextStyle:
         """시작 크기: 고정 크기 > 잉크 높이 보정(F28) > 원문 pt."""
         if self.fixed_size_pt:
             return float(self.fixed_size_pt)
+        k = float(self.size_scale or 1.0)
         if self.ink_height_pt:
-            return start_size_for_ink(self.ink_height_pt, self.font_file, self.ink_sample)
+            return start_size_for_ink(self.ink_height_pt, self.font_file, self.ink_sample) * k
         if self.size_pt:
-            return float(self.size_pt)
+            return float(self.size_pt) * k
         raise ValueError("size_pt, ink_height_pt, fixed_size_pt 중 하나는 있어야 합니다")
 
 

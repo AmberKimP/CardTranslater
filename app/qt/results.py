@@ -382,7 +382,8 @@ class OutputActions:
             if not dlg.exec():
                 return
             for c in dlg.choices():
-                service.save_font_choices(c["file_dir"], c["regions"], c["cards"], c["sentences"])
+                service.save_font_choices(c["file_dir"], c["regions"], c["cards"], c["sentences"],
+                                          c.get("sizes"))
         self._run_compose(False)
 
     def _run_compose(self, accept: bool):

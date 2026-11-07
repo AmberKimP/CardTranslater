@@ -200,7 +200,8 @@ def test_font_dialog_defaults_and_choices(qapp):
     cb.setCurrentIndex(cb.findData(GAEGU))
     c1.setCurrentIndex(c1.findData(SANS_B))
     c2.setCurrentIndex(0)  # 항목과 같음으로 되돌림
-    assert dlg.choices() == [{"file_dir": "C:/x", "regions": {"이름": GAEGU}, "cards": {1: {"이름": SANS_B}}, "sentences": {}}]
+    assert dlg.choices() == [{"file_dir": "C:/x", "regions": {"이름": GAEGU}, "cards": {1: {"이름": SANS_B}}, "sentences": {},
+                              "sizes": {"이름": 1.0}}]
 
 
 def test_font_dialog_add_font(qapp, monkeypatch):

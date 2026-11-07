@@ -4,6 +4,7 @@
     {"regions": {영역: 글꼴 파일},              # 영역 기본 글꼴 (사용자가 고른 것)
      "cards": {"쪽": {영역: 글꼴 파일}},        # 카드(쪽)×영역 단위로 따로 고른 글꼴
      "sentences": {"쪽": {영역: {"문장 번호": 글꼴 파일}}},  # ‘문장마다 글꼴’ 영역에서 문장마다 고른 글꼴
+     "sizes": {영역: 배율},                     # 글자 크기 배율 (1.0 = 원문 크기, 없으면 1.0)
      "recommended": {영역: [{"file", "reason", "by"}]},  # 추천 (by: claude | shape), 1번째가 기본값
      "recommended_sig": "...",                 # 추천을 만든 지우기 결과 (바뀌면 다시 추천)
      "updated": "YYYY-MM-DD HH:MM"}
@@ -41,8 +42,10 @@ def load(file_dir: Path | str) -> dict:
         return {}
 
 
-def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentences: dict | None = None) -> Path:
-    """고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다).
+def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentences: dict | None = None,
+         sizes: dict | None = None) -> Path:
+    """sizes: {영역: 크기 배율} (None이면 예전 것을 그대로, 1.0은 넣지 않는다).
+    고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다).
     sentences: {쪽: {영역: {문장 번호: 파일}}} (None이면 예전 것을 그대로 둔다)."""
     p = Path(file_dir) / FILE_NAME
     data = load(file_dir)
@@ -61,6 +64,8 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
             if regs:
                 sc[str(page)] = regs
         data["sentences"] = sc
+    if sizes is not None:
+        data["sizes"] = {k: round(float(v), 3) for k, v in sizes.items() if v and abs(float(v) - 1.0) > 1e-6}
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -84,6 +89,11 @@ def region_font_modes(file_dir: Path) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     return {r.name: ((r.style or {}).get("font_mode") or "cell") for r in regs}
+
+
+def size_scales(data: dict) -> dict:
+    """{영역: 글자 크기 배율} (정하지 않은 영역은 빠짐 = 1.0)."""
+    return {k: float(v) for k, v in (data.get("sizes") or {}).items() if v}
 
 
 def overrides_for_page(data: dict, page: int) -> dict:
@@ -336,7 +346,7 @@ def order_by_category(picks: list[dict], styles: dict) -> list[dict]:
 def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh: bool = False,
           cancel=None, say=None) -> dict:
     """창에 보여 줄 한 파일의 글꼴 계획.
-    {"file_dir", "regions": [{"name", "kind", "font_mode", "recommended": [...], "selected",
+    {"file_dir", "regions": [{"name", "kind", "font_mode", "recommended": [...], "selected", "size_scale",
                               "cards": [{"page", "text", "selected", "sentences": [{"idx", "text", "selected"}]}]}],
      "used": [파일...], "note"}"""
     fd = Path(file_dir)
@@ -380,7 +390,139 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                                      for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
             cards.append(card)
         regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
-                        "cards": cards})
+                        "size_scale": float((data.get("sizes") or {}).get(name) or 1.0), "cards": cards})
     used = [f for f in project_used_fonts(fd)]
     return {"file_dir": str(fd), "regions": regions, "used": [{"file": f, "label": label_for(f)} for f in used],
             "note": note}
+
+
+# ---------------------------------------------------------------- 글꼴 창 미리 보기
+PREVIEW_W_PX = 460  # 미리 보기 한쪽 칸 너비 (원본과 미리 보기가 같은 배율)
+PREVIEW_H_PX = 220
+_preview_cache: dict = {}
+
+
+def _region_meta(fd: Path, page: int, region: str) -> dict | None:
+    p = fd / "cleared" / "meta" / f"page-{int(page):03d}.json"
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    reg = next((r for r in m.get("regions", []) if r["name"] == region), None)
+    return None if reg is None else {**reg, "_out_idx": m.get("output_page_index", int(page) - 1)}
+
+
+def _main_color(lines: list[dict]) -> str | None:
+    """줄 모양에서 가장 많이 쓰인 글자 색 (글자 수 대신 줄 너비로 센다)."""
+    w: dict[str, float] = {}
+    for ln in lines:
+        c = ln.get("color")
+        if c:
+            b = ln.get("bbox_pt") or [0, 0, 1, 0]
+            w[c] = w.get(c, 0.0) + max(b[2] - b[0], 0.1)
+    return max(w, key=w.get) if w else None
+
+
+def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
+    """한 카드·영역의 미리 보기 재료 (같은 배율): {"original_png", "cleared_png" (bytes), "zoom" (px/pt),
+    "w_pt", "h_pt", "text_box_pt" (글 칸, 영역 왼쪽 위 기준 pt), "color", "align", "glyph_h_pt", "size_pt", "kind"}. 한글 넣기와 같은 규칙으로 색을 정한다."""
+    import numpy as np
+    import pymupdf
+
+    from app.project import load_project
+    from app.typeset_ink import measure_source_ink
+
+    fd = Path(file_dir)
+    key = (str(fd), int(page), region, _signature(fd))
+    if key in _preview_cache:
+        return _preview_cache[key]
+    reg = _region_meta(fd, page, region)
+    if reg is None:
+        return None
+    project = load_project(fd)
+    tmpl = next((r for r in project.template.regions if r.name == region), None)
+    style_d = (tmpl.style if tmpl is not None else None) or reg.get("style_defaults") or {}
+    lines = [ln for ln in (reg.get("text_layout") or {}).get("lines") or [] if ln.get("glyph_h_pt", 0) >= 2.5]
+    tl = reg.get("text_layer") or {}
+    rot = int(style_d.get("rotate", 0) or 0) % 360
+    rect = pymupdf.Rect(reg["rect_pt"])
+    src = pymupdf.open(project.source_pdf)
+    cl = pymupdf.open(fd / "cleared" / "cleared.pdf")
+    try:
+        sp = src[int(page) - 1]
+        rect &= sp.rect
+        if rect.is_empty:
+            return None
+        zoom = min(PREVIEW_W_PX / rect.width, PREVIEW_H_PX / rect.height, 8.0)
+        mat = pymupdf.Matrix(zoom, zoom)
+        if rot == 180:  # 거꾸로 인쇄된 영역은 바로 세워 보여 준다
+            mat = mat.prerotate(180)
+        orig = sp.get_pixmap(matrix=mat, clip=rect, alpha=False).tobytes("png")
+        cpg = cl[min(reg["_out_idx"], cl.page_count - 1)]
+        clear = cpg.get_pixmap(matrix=mat, clip=rect, alpha=False).tobytes("png")
+        glyph = None
+        if lines:
+            glyph = float(np.median([ln["glyph_h_pt"] for ln in lines]))
+        elif reg.get("kind") == "tag_pills":
+            for lab in reg.get("tag_labels") or []:
+                lr = pymupdf.Rect(lab["bbox_pt"])
+                inset = lab.get("radius_pt") or lr.height / 2
+                ink = measure_source_ink(sp, (lr.x0 + inset, lr.y0 + 0.5, lr.x1 - inset, lr.y1 - 0.5),
+                                         polarity="light")
+                if ink.glyph_height:
+                    glyph = ink.glyph_height
+                    break
+        else:
+            work = pymupdf.Rect(reg["work_rect_pt"]) if reg.get("work_rect_pt") else rect
+            ink = measure_source_ink(sp, (rect | work) & sp.rect, polarity="dark", rotate=rot)
+            glyph = ink.glyph_height
+    except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
+        log.debug("미리 보기 재료 실패", exc_info=True)
+        return None
+    finally:
+        src.close()
+        cl.close()
+    if "color" in style_d or not lines:
+        color = style_d.get("color", "#000000")
+    else:
+        color = _main_color(lines) or "#000000"
+    align = style_d.get("align") or ""
+    if align in ("", "original"):
+        aligns = [ln.get("align", "left") for ln in lines]
+        align = max(set(aligns), key=aligns.count) if aligns else "left"
+    if reg.get("kind") == "tag_pills":
+        align = "left"
+    # 글을 넣을 칸 (영역 안 pt, 한글 넣기와 같이): 원문 줄이 있으면 그 줄들의 좌우, 없으면 작업 영역 오른쪽까지
+    if lines:
+        gh = glyph or 4.0
+        bx = [min(ln["bbox_pt"][0] for ln in lines), min(ln["bbox_pt"][1] for ln in lines) - 0.3 * gh,
+              min(rect.x1, max(ln["bbox_pt"][2] for ln in lines) + 0.5 * gh), rect.y1]
+    else:
+        x1 = min(rect.x1, reg["work_rect_pt"][2]) if reg.get("work_rect_pt") else rect.x1
+        bx = [rect.x0, rect.y0, x1, rect.y1]
+    if rot == 180:
+        sx, sy = rect.x0 + rect.x1, rect.y0 + rect.y1
+        bx = [sx - bx[2], sy - bx[3], sx - bx[0], sy - bx[1]]
+    box = [max(bx[0], rect.x0) - rect.x0, max(bx[1], rect.y0) - rect.y0,
+           min(bx[2], rect.x1) - rect.x0, min(bx[3], rect.y1) - rect.y0]
+    out = {"original_png": orig, "cleared_png": clear, "zoom": zoom, "w_pt": rect.width, "h_pt": rect.height,
+           "text_box_pt": box,
+           "color": color, "align": align, "glyph_h_pt": glyph, "size_pt": tl.get("size_pt"),
+           "kind": reg.get("kind", "text")}
+    _preview_cache[key] = out
+    return out
+
+
+def preview_size(src: dict, font_file: str | None, scale: float = 1.0) -> float:
+    """미리 보기 글자 크기(pt): 한글 넣기와 같이 원문 글자 높이를 그 글꼴로 맞춘 크기 × 배율."""
+    from app.typeset_ink import start_size_for_ink
+
+    base = None
+    if src.get("glyph_h_pt") and font_file:
+        try:
+            base = start_size_for_ink(src["glyph_h_pt"], str(resolve(font_file)))
+        except Exception:  # noqa: BLE001
+            base = None
+    if base is None:
+        base = float(src.get("size_pt") or 8.0)
+    return base * float(scale or 1.0)
