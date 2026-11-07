@@ -233,16 +233,34 @@ def _match_line(lines: list[str], line_no: int, bands, comps, max_diff: int = 2)
         return None
     widths = []
     for y0, y1 in bands:
-        xs = [(x, x + w) for x, y, w, h, _a in comps if y0 <= y + h / 2 <= y1]
-        widths.append(max(b for _a, b in xs) - min(a for a, _b in xs) if xs else 0)
+        cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
+        # 배경 그림의 가는 선 조각(낮거나 속이 빈 것)은 줄 길이에서 뺀다 (집 그림이 줄을 카드 폭만큼 늘리지 않게)
+        solid = [c for c in cs if c[3] >= 0.35 * (y1 - y0) and c[4] >= 0.12 * c[2] * c[3]] or cs
+        widths.append(max(x + w for x, _y, w, _h, _a in solid) - min(x for x, *_r in solid) if solid else 0)
     units = [_line_units(ln) for ln in lines]
+    n_tok = [len(TOKEN_RE.findall(ln)) for ln in lines]
+    icon_only = [bool(n) and not TOKEN_RE.sub("", ln).strip() for ln, n in zip(lines, n_tok)]
+
+    def cost_of(pairs):  # [(이미지 줄, 원문 줄)]
+        # 글 줄은 글자 수에 비례한 폭, 아이콘만 있는 줄은 그 줄 높이만 한 아이콘이 늘어선 폭으로 잰다
+        # (큰 아이콘을 글자 하나 폭으로 치면 아이콘 줄과 카드 번호 줄을 헷갈린다)
+        txt = [(b, j) for b, j in pairs if not icon_only[j]] or pairs
+        r = sum(widths[b] for b, _j in txt) / max(sum(units[j] for _b, j in txt), 1e-6)
+        err = 0.0
+        for b, j in pairs:
+            if icon_only[j]:
+                h = bands[b][1] - bands[b][0]
+                exp = n_tok[j] * h + (n_tok[j] - 1) * 0.25 * h
+            else:
+                exp = units[j] * r
+            err += abs(widths[b] - exp)
+        return err / max(sum(widths[b] for b, _j in pairs), 1)
+
     best, best_cost = None, float("inf")
     if nb > nl:
         for drop in combinations(range(nb), nb - nl):
             keep = [i for i in range(nb) if i not in drop]
-            ws = [widths[i] for i in keep]
-            r = sum(ws) / max(sum(units), 1e-6)
-            cost = sum(abs(w - u * r) for w, u in zip(ws, units)) / max(sum(ws), 1)
+            cost = cost_of(list(zip(keep, range(nl))))
             if cost < best_cost:
                 best, best_cost = keep[line_no], cost
     else:
@@ -250,9 +268,7 @@ def _match_line(lines: list[str], line_no: int, bands, comps, max_diff: int = 2)
             if line_no in drop:
                 continue
             keep = [i for i in range(nl) if i not in drop]
-            us = [units[i] for i in keep]
-            r = sum(widths) / max(sum(us), 1e-6)
-            cost = sum(abs(w - u * r) for w, u in zip(widths, us)) / max(sum(widths), 1)
+            cost = cost_of(list(zip(range(nb), keep)))
             if cost < best_cost:
                 best, best_cost = keep.index(line_no), cost
     return best if best_cost < 0.35 else None

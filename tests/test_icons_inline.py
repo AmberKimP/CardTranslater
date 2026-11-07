@@ -192,3 +192,21 @@ def test_sentence_blocks_align_multiline_sentence_to_its_outer_edges():
     assert blocks[id(a)]["align"] == "center" and blocks[id(a)]["x0"] == 23.6 and blocks[id(a)]["x1"] == 155.3
     left = sentence_blocks([ln(20, 150), ln(20, 90)], ["첫 줄", "끝."])
     assert next(iter(left.values()))["align"] == "left"
+
+
+def test_match_line_uses_icon_height_for_icon_only_lines():
+    """칼 셋만 있는 줄(큰 아이콘)과 카드 번호 줄: 아이콘을 글자 한 칸 폭으로 치면 아이콘 줄을 빼 버렸다.
+    아이콘만 있는 줄은 그 줄 높이만 한 아이콘이 늘어선 폭으로 재서, 남는 카드 번호 줄을 뺀다."""
+    from app.icons import _match_line
+
+    lines = ["プレイ時効果", "[[?]][[?]][[?]]", "自身のプレイ済の表向きのイベントカードを", "１枚選び、それを裏向きにしてもよい"]
+    bands = [(8, 39), (114, 202), (276, 454), (515, 567), (591, 643)]
+
+    def row(x0, x1, y0, y1, n):
+        step = (x1 - x0) / n
+        return [(int(x0 + i * step), y0, int(step * 0.8), y1 - y0, int(step * 0.8 * (y1 - y0) * 0.4)) for i in range(n)]
+    comps = (row(1048, 1124, 10, 38, 5) + row(338, 818, 116, 200, 1) + row(283, 871, 277, 453, 3)
+             + row(36, 1112, 517, 565, 20) + row(126, 1034, 593, 641, 17))
+    assert _match_line(lines, 1, bands, comps) == 2  # 칼 줄
+    assert _match_line(lines, 0, bands, comps) == 1  # 라벨
+    assert _match_line(lines, 3, bands, comps) == 4
