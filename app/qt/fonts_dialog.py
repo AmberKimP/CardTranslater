@@ -244,7 +244,8 @@ class FontPlanDialog(QDialog):
             by = {"claude": "추천", "shape": "모양 비슷", "default": "기본"}.get(r.get("by", ""), "")
             out.append((f"{mark}{r['label']}", r["file"], f"{by}: {r.get('reason', '')}"))
             seen.add(r["file"])
-        others = [u for u in plan.get("used", []) + self.added if u["file"] not in seen]
+        picked = self._picked_fonts()  # 다른 영역·카드·문장에서 고른 글꼴도 고를 수 있게
+        others = [u for u in plan.get("used", []) + self.added + picked if u["file"] not in seen]
         if reg.get("selected") and reg["selected"] not in seen and all(u["file"] != reg["selected"] for u in others):
             others.insert(0, {"file": reg["selected"], "label": Path(reg["selected"]).stem})
         if others:
@@ -253,11 +254,31 @@ class FontPlanDialog(QDialog):
                 if u["file"] in seen:
                     continue
                 seen.add(u["file"])
-                src = "추가한 글꼴" if u in self.added else "이 프로젝트에서 쓴 글꼴"
+                src = ("추가한 글꼴" if u in self.added else "이 창에서 고른 글꼴" if u in picked
+                       else "이 프로젝트에서 쓴 글꼴")
                 out.append((f"    {u['label']}", u["file"], src))
         out.append(("", "-", ""))
         out.append(("글꼴 추가…", ADD, "PC에 설치된 다른 글꼴이나 글꼴 파일을 추가합니다"))
         return out
+
+    def _picked_fonts(self) -> list[dict]:
+        """이 창에서 지금 고른 글꼴 (모든 영역·카드·문장, 펼치지 않은 줄은 저장된 선택) [{"file", "label"}]."""
+        files: list[str] = []
+
+        def add(f):
+            if f and f not in (SAME, ADD) and f not in files:
+                files.append(f)
+
+        for plan in self.plans:
+            for reg in plan["regions"]:
+                add(reg.get("selected"))
+                for c in reg["cards"]:
+                    add(c.get("selected"))
+                    for x in c.get("sentences") or []:
+                        add(x.get("selected"))
+        for cb, _kind in getattr(self, "combos", []):
+            add(cb.currentData())
+        return [{"file": f, "label": service.font_label(f)} for f in files]
 
     def _fill(self, combo: QComboBox, pi: int, name: str, level: str, selected: str | None):
         combo.blockSignals(True)
@@ -376,6 +397,13 @@ class FontPlanDialog(QDialog):
                 pi, name, level = cb.property("meta")
                 keep = new["file"] if cb is combo else cb.currentData()
                 self._fill(cb, pi, name, level, keep)
+        else:  # 고른 글꼴이 다른 줄의 목록에 없으면 넣는다 (그 줄의 선택은 그대로)
+            f = combo.currentData()
+            if f not in (SAME, ADD, None):
+                for cb, _kind in self.combos:
+                    if cb is not combo and cb.findData(f) < 0:
+                        pi, name, level = cb.property("meta")
+                        self._fill(cb, pi, name, level, cb.currentData())
         combo.setProperty("prev", combo.currentData())
         for cb, _kind in self.combos:
             self._mark(cb)

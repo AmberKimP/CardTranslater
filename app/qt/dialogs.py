@@ -9,7 +9,7 @@ import sys
 from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QSpinBox, QStackedWidget,
     QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
@@ -698,6 +698,23 @@ class SettingsDialog(QDialog):
                                   "(예전 폴더의 자료는 옮기지 않습니다)."))
         form.addRow("로그인 방식", info)
         form.addRow("로그 폴더", lrow)
+        # 작업 끝 소리: 5초 넘게 걸린 작업(추출·지우기·한글 넣기 등)이 끝나면
+        self.sound_on = QCheckBox(f"{int(service.DONE_SOUND_MIN_S)}초 넘게 걸린 작업이 끝나면 소리 내기")
+        self.sound_on.setChecked(s.done_sound_on)
+        self.sound_path = QLineEdit(s.done_sound)
+        self.sound_path.setPlaceholderText("비우면 Windows 기본 알림 소리")
+        self.b_sound = QPushButton("고르기…")
+        self.b_sound.clicked.connect(self._pick_sound)
+        self.b_listen = QPushButton("들어 보기")
+        self.b_listen.clicked.connect(self._listen)
+        srow = QHBoxLayout()
+        srow.addWidget(self.sound_path)
+        srow.addWidget(self.b_sound)
+        srow.addWidget(self.b_listen)
+        self.sound_on.toggled.connect(lambda on: [w.setEnabled(on) for w in (self.sound_path, self.b_sound, self.b_listen)])
+        self.sound_on.toggled.emit(self.sound_on.isChecked())
+        form.addRow("작업 끝 소리", self.sound_on)
+        form.addRow("소리 파일", srow)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
@@ -705,7 +722,22 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(bb)
-        self.resize(640, 190)
+        self.resize(640, 250)
+
+    def _pick_sound(self):
+        f, _ = QFileDialog.getOpenFileName(self, "소리 파일", self.sound_path.text() or "C:/Windows/Media",
+                                           "소리 (*.mp3 *.wav)")
+        if f:
+            self.sound_path.setText(f)
+
+    def _listen(self):
+        from app.qt import sound
+
+        path = self.sound_path.text().strip()
+        if path and not Path(path).exists():
+            show_problem(self, "소리 파일이 없습니다", path, "다른 파일을 고르세요.")
+            return
+        sound.play(path or service.default_done_sound())
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "데이터 폴더", self.dir.text())
@@ -720,4 +752,5 @@ class SettingsDialog(QDialog):
             show_problem(self, "데이터 폴더를 쓸 수 없습니다", str(e), "다른 폴더를 고르거나, 쓸 수 있는 폴더인지 확인하세요.")
             return
         service.save_settings(d, self.engine)
+        service.save_done_sound(self.sound_on.isChecked(), self.sound_path.text().strip())
         super().accept()

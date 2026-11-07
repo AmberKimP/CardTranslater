@@ -87,8 +87,18 @@ def start(job: Job) -> Job:
     _running.add(job)
     for sig in (job.signals.done, job.signals.failed, job.signals.cancelled):
         sig.connect(lambda *_a, j=job: _running.discard(j))
+    t0 = time.monotonic()
+    job.signals.done.connect(lambda *_a, t=t0: _done_sound(time.monotonic() - t))
     QThreadPool.globalInstance().start(job)
     return job
+
+
+def _done_sound(elapsed: float) -> None:
+    """오래(5초 넘게) 걸린 작업이 잘 끝나면 소리 (실패·취소는 소리 없음)."""
+    if elapsed >= service.DONE_SOUND_MIN_S:
+        from app.qt import sound
+
+        sound.play_done()
 
 
 def run_with_dialog(parent: QWidget | None, title: str, job: Job,

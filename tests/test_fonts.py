@@ -252,3 +252,28 @@ def test_font_dialog_preview_is_above_list(qapp):
     assert item.background(0).color().name().upper() == "#CFE2F3"
     dlg.b_all_rec.click()
     assert cb.currentData() == SANS_B and item.background(0).color().name().upper() != "#CFE2F3"
+
+
+def test_font_picked_in_one_region_is_offered_in_others(qapp):
+    """영역 1에서 고른 글꼴이 영역 2·카드 목록에도 보인다 (다른 줄의 선택은 그대로)."""
+    from app.qt.fonts_dialog import FontPlanDialog
+
+    other = "fonts/sunflower/Sunflower-Medium.ttf"
+    plan = _plan()
+    plan[0]["used"] = []
+    plan[0]["regions"].append({"name": "본문", "kind": "text", "selected": SERIF,
+                               "recommended": [{"file": SERIF, "label": "본명조", "reason": "", "by": "shape"}],
+                               "cards": [{"page": 1, "text": "본문 글", "selected": None}]})
+    plan[0]["regions"][0]["recommended"].append({"file": other, "label": "해바라기", "reason": "", "by": "shape"})
+    dlg = FontPlanDialog(plan)
+    r1, r2 = dlg.tree.topLevelItem(0), dlg.tree.topLevelItem(1)
+    cb1, cb2 = dlg.tree.itemWidget(r1, 1), dlg.tree.itemWidget(r2, 1)
+    assert SANS_B in [cb2.itemData(i) for i in range(cb2.count())]  # 처음 고른 것(영역 1의 선택)도 보인다
+    assert cb2.findData(other) < 0
+    cb1.setCurrentIndex(cb1.findData(other))
+    assert cb2.findData(other) >= 0 and cb2.currentData() == SERIF  # 목록에 넣고 선택은 그대로
+    tip = cb2.itemData(cb2.findData(other), 3)
+    assert "이 창에서 고른" in tip
+    dlg.tree.expandItem(r2)
+    card = dlg.tree.itemWidget(r2.child(0), 1)
+    assert card.findData(other) >= 0

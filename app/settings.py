@@ -23,6 +23,8 @@ class Settings:
     data_dir: str = ""
     engine: str = "claude-code"
     last_project: str = ""
+    done_sound_on: bool = True  # 5초 넘게 걸린 작업이 끝나면 소리
+    done_sound: str = ""  # 소리 파일 (mp3·wav). 비우면 Windows 기본 알림 소리
 
 
 def settings_path() -> Path:

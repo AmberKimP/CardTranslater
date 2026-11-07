@@ -1559,6 +1559,39 @@ def save_settings(data_dir: str | Path, engine: str = "claude-code") -> Path:
     return settings.save(s)
 
 
+DONE_SOUND_MIN_S = 5.0  # 이만큼 넘게 걸린 작업이 끝나면 소리를 낸다
+
+
+def save_done_sound(enabled: bool, path: str = "") -> Path:
+    """작업 끝 소리 설정 (path가 비면 Windows 기본 알림 소리)."""
+    from app import settings
+
+    s = settings.load()
+    s.done_sound_on, s.done_sound = bool(enabled), str(path or "")
+    return settings.save(s)
+
+
+def done_sound_file() -> Path | None:
+    """작업이 끝날 때 낼 소리 파일. 꺼 두었으면 None. 고른 파일이 없으면 Windows 기본 알림 소리."""
+    s = get_settings()
+    if not s.done_sound_on:
+        return None
+    if s.done_sound and Path(s.done_sound).exists():
+        return Path(s.done_sound)
+    return default_done_sound()
+
+
+def default_done_sound() -> Path | None:
+    """Windows 기본 알림 소리 파일 (없으면 None)."""
+    import os
+
+    win = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Media"
+    for name in ("Windows Notify System Generic.wav", "Windows Notify.wav", "tada.wav"):
+        if (win / name).exists():
+            return win / name
+    return None
+
+
 def data_dir() -> Path:
     """games/·projects/가 들어가는 데이터 폴더."""
     from app import settings
