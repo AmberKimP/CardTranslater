@@ -14,12 +14,12 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QBrush, QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame, QGraphicsRectItem,
-    QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QGraphicsScene, QGroupBox, QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
 from app import service
-from app.qt.dialogs import ask_choice, fit_to_screen, show_problem
+from app.qt.dialogs import PRIMARY_QSS, ask_choice, fit_to_screen, grey_note, hint_bar, set_hint, show_problem
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
 ALIGN_LABELS = [("", "자동 (원문 줄마다 따라감)"), ("left", "왼쪽 정렬"), ("center", "가운데 정렬"),
@@ -457,6 +457,10 @@ class RegionEditor(QDialog):
         self.page_total = QLabel()
         top.addWidget(self.page_total)
         tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
+        tools.setSpacing(3)
+        cap = QLabel("영역 그리기:")
+        cap.setStyleSheet("color: #666")
+        tools.addWidget(cap)
         self.add_buttons = {}
         for kind, text, key in (("text", "+ 글자 영역", "T"), ("tag_pills", "+ 태그 라벨 영역", "L"),
                                 ("protect", "+ 보호 영역", "P"), ("ocr_exclude", "+ 읽기 제외 영역", "O")):
@@ -467,7 +471,7 @@ class RegionEditor(QDialog):
             b.clicked.connect(lambda checked, k=kind: self._set_add_kind(k if checked else None))
             self.add_buttons[kind] = b
             tools.addWidget(b)
-        tools.addSpacing(16)
+        tools.addSpacing(6)
         self.per_card = QCheckBox("카드마다 영역 지정")
         self.per_card.setToolTip("카드마다 형식이 달라 공통 영역을 쓸 수 없는 그룹: 카드 한 장씩 영역을 정합니다")
         self.per_card.setChecked(self.template.get("layout") == "per_card")
@@ -476,16 +480,16 @@ class RegionEditor(QDialog):
         self.copy_prev = QPushButton("이전 카드 영역 복사")
         self.copy_prev.setToolTip("앞 카드의 영역을 이 카드로 가져옵니다 (Ctrl+Shift+V)")
         self.copy_prev.clicked.connect(self.copy_previous_card)
-        cards = QHBoxLayout()  # 셋째 줄: 카드마다 영역 도구
+        cards = QHBoxLayout()  # 셋째 줄: 카드마다 영역 도구 (카드마다일 때만 보인다)
+        cards.setContentsMargins(0, 0, 0, 0)
         cards.addWidget(self.copy_prev)
         self.copy_rest = QPushButton("나머지 카드에 복사")
         self.copy_rest.setToolTip("지금 카드의 영역을 같은 그룹의 다른 카드에 복사합니다 (영역 없는 카드에만, 또는 모두 덮어쓰기)")
         self.copy_rest.clicked.connect(self.copy_to_rest)
         cards.addWidget(self.copy_rest)
-        self.reset_btn = QPushButton("초기화")
+        self.reset_btn = QPushButton("초기화…")
         self.reset_btn.setToolTip("이 카드(또는 모든 카드)의 영역을 비웁니다. 저장하기 전까지는 파일에 쓰지 않습니다")
         self.reset_btn.clicked.connect(self.reset_regions)
-        cards.addWidget(self.reset_btn)
         self.sync_names = QCheckBox("설정은 같은 이름 영역에 함께")
         self.sync_names.setToolTip("카드마다 영역일 때: 영역의 이름·종류·회전·정렬·색·글꼴·지우기 방식을 바꾸면\n"
                                    "다른 카드의 같은 이름 영역에도 똑같이 적용합니다 (위치·크기는 카드마다 따로)")
@@ -493,7 +497,10 @@ class RegionEditor(QDialog):
         cards.addWidget(self.sync_names)
         cards.addStretch(1)
         self.cards_row = cards
+        self.cards_bar = QWidget()
+        self.cards_bar.setLayout(cards)
         tools.addStretch(1)
+        tools.addWidget(self.reset_btn)
         top.addStretch(1)
         for text, f, tip in (("－", 1 / 1.25, "축소 (Ctrl+휠 아래)"), ("＋", 1.25, "확대 (Ctrl+휠 위)")):
             zb = QPushButton(text)
@@ -504,7 +511,7 @@ class RegionEditor(QDialog):
         fit = QPushButton("화면에 맞춤 (F)")
         fit.clicked.connect(self.view.fit_again)
         top.addWidget(fit)
-        self.save_btn = QPushButton("저장 (Ctrl+S)")
+        self.save_btn = QPushButton("저장 (Ctrl+S)")  # 저장 안 한 변경이 있을 때만 파랗게 (_update_title)
         self.save_btn.clicked.connect(self.save)
         top.addWidget(self.save_btn)
         close = QPushButton("닫기")
@@ -513,7 +520,7 @@ class RegionEditor(QDialog):
 
         side = QWidget()
         sl = QVBoxLayout(side)
-        sl.addWidget(QLabel("영역 (위에서부터 처리·표시 순서)"))
+        sl.addWidget(QLabel("영역 (위에서부터 처리 순서)"))
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._on_list_row)
         sl.addWidget(self.list, 1)
@@ -587,23 +594,40 @@ class RegionEditor(QDialog):
         self.f_keep_above.setToolTip("예: 이름 위의 왕관 아이콘")
         self.f_notes = QPlainTextEdit()
         self.f_notes.setFixedHeight(70)
-        form.addRow("이름", self.f_name)
-        form.addRow("종류", self.f_kind)
-        form.addRow(QLabel("위치(비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
-        form.addRow(xy)
-        form.addRow("회전", self.f_rotate)
-        form.addRow("정렬", self.f_align)
-        form.addRow("글자 색", crow)
-        form.addRow("한글 글꼴", self.f_font)
-        form.addRow("글꼴 단위", self.f_font_mode)
-        form.addRow("글자 지우기", self.f_erase_mode)
-        form.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
-        form.addRow("", self.f_keep_above)
-        form.addRow("보호 영역", self.f_ocr_exclude)
-        form.addRow("메모", self.f_notes)
+        def group(title: str) -> tuple[QGroupBox, QFormLayout]:
+            box = QGroupBox(title)
+            fl = QFormLayout(box)
+            return box, fl
+
+        self.g_basic, fb = group("기본")
+        fb.addRow("이름", self.f_name)
+        fb.addRow("종류", self.f_kind)
+        fb.addRow(QLabel("위치(비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
+        fb.addRow(xy)
+        fb.addRow("보호 영역", self.f_ocr_exclude)  # 보호 영역일 때만 보인다
+        self.g_style, fs = group("한글 넣기")
+        fs.addRow("회전", self.f_rotate)
+        fs.addRow("정렬", self.f_align)
+        fs.addRow("글자 색", crow)
+        fs.addRow("한글 글꼴", self.f_font)
+        fs.addRow("글꼴 단위", self.f_font_mode)
+        self.g_erase, fe = group("글자 지우기")
+        fe.addRow("글자 지우기", self.f_erase_mode)
+        fe.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
+        fe.addRow("", self.f_keep_above)
+        self.g_notes, fn = group("메모")
+        fn.addRow(self.f_notes)
+        self._basic_form = fb
         self.form_box = QWidget()
-        self.form_box.setLayout(form)
+        fv = QVBoxLayout(self.form_box)
+        fv.setContentsMargins(0, 0, 0, 0)
+        for g in (self.g_basic, self.g_style, self.g_erase, self.g_notes):
+            fv.addWidget(g)
+        self.form_hint = grey_note("영역을 고르면 여기에서 이름·글꼴·지우기 방식을 바꿀 수 있습니다.\n"
+                                   "카드 위의 영역을 누르거나 위 목록에서 고르세요.")
         sl.addWidget(self.form_box)
+        sl.addWidget(self.form_hint)
+        sl.addStretch(1)
         help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
                      "고른 영역: 화살표 1px(Shift 10px) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
@@ -665,6 +689,7 @@ class RegionEditor(QDialog):
         side_scroll.setWidget(side)
         side_scroll.setMinimumWidth(360)
         self.list.setMinimumHeight(90)
+        self.list.setMaximumHeight(max(90, (self.list.fontMetrics().height() + 8) * 6 + 8))  # 빈 공간은 폼에게
         help_.setWordWrap(True)
         split = QSplitter()
         split.addWidget(center)
@@ -676,14 +701,15 @@ class RegionEditor(QDialog):
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addLayout(tools)
-        lay.addLayout(cards)
+        lay.addWidget(self.cards_bar)
         lay.addWidget(split, 1)
         self.status = QLabel()
         self.card_info = QLabel()
         self.card_info.setStyleSheet("color: #0b5cad; font-weight: bold")
+        self.guide = hint_bar("", "info")  # 다음 할 일 안내 띠
         srow = QHBoxLayout()
         srow.addWidget(self.card_info)
-        srow.addStretch(1)
+        srow.addWidget(self.guide, 1)
         srow.addWidget(self.status)
         lay.addLayout(srow)
 
@@ -691,6 +717,7 @@ class RegionEditor(QDialog):
         self.page_spin.valueChanged.connect(lambda _v: self._change_page())
         self.file_combo.currentIndexChanged.connect(self._on_file_combo)
         self._update_form_enabled()
+        self._sync_guide()
 
     def used_fonts(self, exclude: RegionItem | None = None) -> list[tuple[str, str, list[str]]]:
         """다른 영역에서 이미 고른 글꼴 [(파일, 이름, [쓰는 곳])]: 이 창의 영역 + 프로젝트의 다른 그룹."""
@@ -900,7 +927,33 @@ class RegionEditor(QDialog):
         self._rebuild_list()
         self._update_card_info()
 
+    def _sync_guide(self):
+        """아래 안내 띠: 지금 무엇을 하면 되는지 (위에서 먼저 맞는 것)."""
+        if not hasattr(self, "guide"):
+            return
+        has = any(i.kind != "protect" for i in self.items())
+        left = 0
+        if self.is_per_card():
+            done = sum(1 for v in self._cards().values() if v.get("regions"))
+            left = max(0, sum(service.page_count(f) for f in self.file_dirs) - done)
+        if not has:
+            set_hint(self.guide, "위의 ‘+ 글자 영역’(T)을 누르고, 번역할 글자 위를 끌어 영역을 그리세요.", "todo")
+        elif self.dirty:
+            set_hint(self.guide, "저장하지 않은 변경이 있습니다. Ctrl+S로 저장하세요.", "warn")
+        elif left:
+            set_hint(self.guide, f"영역이 없는 카드가 {left}장 남았습니다. ▶로 넘기며 지정하거나 ‘나머지 카드에 복사’를 쓰세요.", "todo")
+        else:
+            set_hint(self.guide, "저장했습니다. 다 지정했으면 창을 닫고 프로젝트 화면에서 ‘① 글자 추출’을 누르세요.", "done")
+
     def _update_card_info(self):
+        try:
+            self._update_card_info_impl()
+        finally:
+            self._sync_guide()
+
+    def _update_card_info_impl(self):
+        if hasattr(self, "cards_bar"):
+            self.cards_bar.setVisible(self.is_per_card())
         if not self.is_per_card():
             self.card_info.setText("")
             for w in (self.copy_prev, self.copy_rest, self.sync_names):
@@ -1132,6 +1185,7 @@ class RegionEditor(QDialog):
         for r in self.template.get("protect_rects", []):
             self._add_item(copy.deepcopy(r), protect=True)
         self._rebuild_list()
+        self._update_card_info()
 
     def _add_item(self, data: dict, protect: bool) -> RegionItem:
         it = RegionItem(self.rect_from_ratio(data.get("rect") or {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}),
@@ -1175,6 +1229,7 @@ class RegionEditor(QDialog):
         if keep in order:
             self.list.setCurrentRow(order.index(keep))
         self.list.blockSignals(False)
+        self._sync_guide()
 
     def selected(self) -> RegionItem | None:
         sel = [i for i in self.scene.selectedItems() if isinstance(i, RegionItem)]
@@ -1200,7 +1255,10 @@ class RegionEditor(QDialog):
         self._update_form_enabled()
 
     def _update_form_enabled(self):
-        self.form_box.setEnabled(self.selected() is not None)
+        sel = self.selected() is not None
+        self.form_box.setEnabled(sel)
+        self.form_box.setVisible(sel)
+        self.form_hint.setVisible(not sel)
 
     def _on_created(self, it: RegionItem):
         if it not in self._order:
@@ -1293,8 +1351,19 @@ class RegionEditor(QDialog):
             self.f_font_mode.setEnabled(it.kind == "text")  # 태그 라벨은 라벨마다 짧은 글이라 칸 단위만
             self.f_ocr_exclude.setEnabled(prot)
             self.f_ocr_exclude.setChecked(bool(it.data.get("ocr_exclude")) and prot)
+            self._sync_kind_fields(it.kind)
         finally:
             self._loading = False
+
+    def _sync_kind_fields(self, kind: str):
+        """종류에 맞는 칸만: 보호 영역은 한글 넣기·글자 지우기 묶음을 숨기고, 보호 영역 칸은 보호일 때만."""
+        prot = kind == "protect"
+        self.g_style.setVisible(not prot)
+        self.g_erase.setVisible(not prot)
+        self.f_ocr_exclude.setVisible(prot)
+        lab = self._basic_form.labelForField(self.f_ocr_exclude)
+        if lab is not None:
+            lab.setVisible(prot)
 
     def _from_form(self, *_a):
         if self._loading:
@@ -1378,6 +1447,7 @@ class RegionEditor(QDialog):
             if n:
                 self.status.setText(f"다른 카드의 ‘{old_name}’ 영역 {n}개에도 적용했습니다")
         it.refresh()
+        self._sync_kind_fields(it.kind)
         self._rebuild_list(it)
         self._mark_dirty()
 
@@ -1431,6 +1501,8 @@ class RegionEditor(QDialog):
 
     def _update_title(self):
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}{' *' if self.dirty else ''}")
+        if hasattr(self, "save_btn"):
+            self.save_btn.setStyleSheet(PRIMARY_QSS if self.dirty else "")
 
     def closeEvent(self, ev):
         if not self._confirm_leave():

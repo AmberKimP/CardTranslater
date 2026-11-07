@@ -7,16 +7,18 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import fit_to_screen, show_error, show_failure, show_problem
+from app.qt.dialogs import (
+    fit_to_screen, grey_note, hint_bar, make_primary, set_hint, set_ok_text, show_error, show_failure, show_problem,
+)
 
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
-STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자"}  # 엔진 상태 낱말을 화면용으로
+STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임"}  # 엔진 상태 낱말을 화면용으로
 
 
 def status_text(st: list[str]) -> str:
@@ -41,9 +43,13 @@ class ResultViewer(QDialog):
         self.run = QComboBox()
         for name, d in runs:
             self.run.addItem(name, str(d))
-        self.only = QCheckBox("문제 있는 쪽만 (넘침·아이콘 오류·글꼴에 없는 글자 등)")
-        self.info = QLabel()
+        self.only = QCheckBox("문제 있는 쪽만 보기")
+        self.only.setToolTip("넘침·아이콘 오류·글꼴에 없는 글자 등")
+        self.info = hint_bar("", "done")
         pdf_btn = QPushButton("PDF 열기")
+        make_primary(pdf_btn)
+        pdf_btn.setDefault(False)
+        pdf_btn.setAutoDefault(False)
         pdf_btn.clicked.connect(self.open_pdf)
         folder_btn = QPushButton("폴더 열기")
         folder_btn.clicked.connect(lambda: _open(self.run_dir()))
@@ -53,15 +59,18 @@ class ResultViewer(QDialog):
         top = QHBoxLayout()
         top.addWidget(QLabel("파일"))
         top.addWidget(self.run)
-        top.addWidget(self.only)
-        top.addStretch(1)
-        top.addWidget(self.info)
+        top.addWidget(self.info, 1)
         top.addWidget(pdf_btn)
         top.addWidget(self.sheet_btn)
         top.addWidget(folder_btn)
         self.pages = QListWidget()
-        self.pages.setMaximumWidth(230)
         self.pages.currentRowChanged.connect(lambda _r: self._show_page())
+        left = QWidget()
+        left.setMaximumWidth(230)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.addWidget(self.only)
+        ll.addWidget(self.pages, 1)
         self.regions = QListWidget()
         self.regions.setMaximumHeight(150)
         self.regions.currentRowChanged.connect(lambda _r: self._show_region())
@@ -81,26 +90,33 @@ class ResultViewer(QDialog):
         self.redo_btn = QPushButton("이 방식으로 다시 지우고 한글 넣기")
         self.redo_btn.clicked.connect(self.redo_card)
         erow = QHBoxLayout()
-        self.erase_label = QLabel("이 카드 글자 지우기")
-        erow.addWidget(self.erase_label)
         erow.addWidget(self.erase_mode, 1)
         erow.addWidget(self.redo_btn)
+        self.erase_hint = grey_note("")
+        self.erase_box = QGroupBox("이 카드의 이 영역만 다르게 지우기")
+        egl = QVBoxLayout(self.erase_box)
+        egl.addWidget(self.erase_hint)
+        egl.addLayout(erow)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.addWidget(self.scroll, 1)
         rl.addWidget(QLabel("영역 — 고르면 그 부분을 크게 비교합니다"))
         rl.addWidget(self.regions)
-        rl.addLayout(erow)
+        rl.addWidget(self.erase_box)
         split = QSplitter()
-        split.addWidget(self.pages)
+        split.addWidget(left)
         split.addWidget(right)
         split.setStretchFactor(1, 1)
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
+        self.footer = grey_note("")
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.footer, 1)
+        bottom.addWidget(close)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(split, 1)
-        lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
+        lay.addLayout(bottom)
         self.run.currentIndexChanged.connect(lambda _i: self.reload())
         self.only.toggled.connect(lambda _c: self.reload())
         self.items: list[dict] = []
@@ -122,15 +138,21 @@ class ResultViewer(QDialog):
         self.sheet_btn.setVisible(bool(self.sheet_images()))  # 배열 이미지로 넣은 파일만
         allp = service.result_pages(self.run_dir())
         n_bad = sum(1 for p in allp if self.problems(p["status"]))
-        self.info.setText(f"{len(allp)}쪽, 문제 있는 쪽 {n_bad}")
+        if n_bad:
+            set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 {n_bad} — 주황 쪽을 먼저 보세요", "warn")
+        else:
+            set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 0", "done")
+        self.footer.setText("번역을 고치려면 검수 엑셀을 고친 뒤 프로젝트 화면에서 ‘⑧ 한글 넣기’를 다시 누르세요."
+                            if self.file_dir() is not None
+                            else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다.")
         self.items = [p for p in allp if self.problems(p["status"])] if self.only.isChecked() else allp
         self.pages.clear()
         for p in self.items:
             it = QListWidgetItem(f"{p['page']}쪽" + (f" · {status_text(p['status'])}" if p["status"] else ""))
             if self.problems(p["status"]):
                 it.setBackground(QColor("#F4B183"))
-            elif p["status"]:
-                it.setBackground(QColor("#FFF2CC"))
+            elif p["status"]:  # 알림만 있는 쪽: 배경 없이 회색 글자
+                it.setForeground(QColor("#666"))
             self.pages.addItem(it)
         if self.items:
             self.pages.setCurrentRow(0)
@@ -205,6 +227,8 @@ class ResultViewer(QDialog):
             it = QListWidgetItem(text)
             if self.problems(r["status"]):
                 it.setBackground(QColor("#F4B183"))
+            elif not ei.get("mode") and ei.get("needs_choice"):
+                it.setBackground(QColor("#FFE066"))
             self.regions.addItem(it)
         self.regions.setCurrentRow(0)
         self.regions.blockSignals(False)
@@ -226,11 +250,13 @@ class ResultViewer(QDialog):
                     self.erase_mode.addItem(t, k)
             self.erase_mode.setCurrentIndex(max(0, self.erase_mode.findData(ei.get("mode"))) if ei.get("mode") else 0)
         self.erase_mode.blockSignals(False)
-        for w in (self.erase_mode, self.redo_btn, self.erase_label):
+        for w in (self.erase_mode, self.redo_btn):
             w.setEnabled(ok)
+            w.setVisible(ok)
+        self.erase_hint.setVisible(not ok)
         if not ok:
-            self.erase_mode.addItem("영역을 고르면 그 영역의 지우기 방식을 바꿀 수 있습니다" if self.file_dir()
-                                    else "시험 결과에서는 바꿀 수 없습니다")
+            self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 영역의 지우기 방식을 바꿀 수 있습니다."
+                                    if self.file_dir() else "시험 결과에서는 바꿀 수 없습니다.")
 
     def redo_card(self):
         p, r = self.current(), self.regions.currentRow() - 1
@@ -287,6 +313,7 @@ class TestRunDialog(QDialog):
     def __init__(self, files: list[dict], parent=None):
         super().__init__(parent)
         self.setWindowTitle("시험 실행")
+        self.setMinimumWidth(420)
         self.file = QComboBox()
         for f in files:
             self.file.addItem(f"{f['key']} ({f['pages']}쪽)", str(f["dir"]))
@@ -299,7 +326,10 @@ class TestRunDialog(QDialog):
         form.addRow("파일", self.file)
         form.addRow("쪽", self.pages)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("시험 실행")
+        set_ok_text(bb, "시험 실행")
+        self.ok_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_btn.setEnabled(False)  # 쪽을 넣어야 켜진다
+        self.pages.textChanged.connect(lambda t: self.ok_btn.setEnabled(bool(t.strip())))
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)

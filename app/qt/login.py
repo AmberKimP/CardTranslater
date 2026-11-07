@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import open_log_folder, show_error, show_failure, show_problem
+from app.qt.dialogs import PRIMARY_QSS, open_log_folder, show_error, show_failure, show_problem
 
 
 # 시작 화면 그림 (exe에서는 assets/가 함께 묶인다: packaging/build.py)
@@ -67,9 +67,9 @@ class LoginDialog(QDialog):
         self.b_install.setToolTip("Node.js(없을 때만)와 Claude Code를 이 사용자 폴더에 설치합니다 (관리자 권한 필요 없음)")
         self.b_install.clicked.connect(self.install_claude)
         crow = QHBoxLayout()
-        crow.addWidget(self.b_install)
-        crow.addWidget(self.b_check)
+        crow.addWidget(self.b_install)  # 설치 -> 로그인 창 열기 -> 로그인 확인 순서
         crow.addWidget(self.b_login)
+        crow.addWidget(self.b_check)
         crow.addStretch(1)
 
         # ---- API 키
@@ -101,6 +101,7 @@ class LoginDialog(QDialog):
 
         self.start = QPushButton("시작" if first_run else "확인")
         self.start.setDefault(True)
+        self.start.setStyleSheet(PRIMARY_QSS)
         self.start.clicked.connect(self.accept)
         quit_ = QPushButton("끝내기" if first_run else "취소")
         quit_.clicked.connect(self.reject)

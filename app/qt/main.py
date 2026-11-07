@@ -8,13 +8,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox,
+    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
 from app.qt.dialogs import (
-    AddFilesDialog, ExcludePagesDialog, NewProjectDialog, SettingsDialog, install_korean, show_error, show_problem,
+    BANNER_QSS, DONE_BG, EMPTY_QSS, NEXT_QSS, PRIMARY_QSS, AddFilesDialog, ExcludePagesDialog, NewProjectDialog,
+    SettingsDialog, hint_bar, install_korean, make_primary, set_hint, show_error, show_problem,
 )
 from app.qt.region_editor import RegionEditor
 from app.qt.results import OutputActions
@@ -22,12 +23,6 @@ from app.qt.steps import StepActions
 
 APP_NAME = "CardTranslater"
 
-# 화면 색 약속: 주 버튼 파랑, 끝난 단계 연두(#D9EAD3), 확인할 것 노랑(#FFE066)·주황(#F4B183)
-PRIMARY_QSS = ("QPushButton { background: #0b5cad; color: white; font-weight: bold; border: 1px solid #0b5cad;"
-               " border-radius: 4px; padding: 4px 14px; }"
-               "QPushButton:hover { background: #0a4f95; } QPushButton:disabled { background: #9db7d3; }")
-NEXT_QSS = PRIMARY_QSS.replace("padding: 4px 14px;", "padding: 8px 22px; font-size: 11pt;")
-EMPTY_QSS = "color: #666; font-size: 11pt; background: white; border: 1px solid #ddd;"
 STEP_QSS = (
     'QPushButton[step="todo"], QPushButton[step="done"], QPushButton[step="now"] {'
     " padding: 4px 10px; border: 1px solid #b9b9b9; border-radius: 4px; background: white; }"
@@ -36,8 +31,6 @@ STEP_QSS = (
     'QPushButton[step="now"] { background: #0b5cad; color: white; border-color: #0b5cad; font-weight: bold; }'
     'QPushButton[step="todo"]:disabled, QPushButton[step="done"]:disabled {'
     " color: #a0a0a0; background: #f2f2f2; border-color: #dddddd; }")
-BANNER_QSS = "background: #FFE066; border: 1px solid #e0c040; border-radius: 4px;"
-DONE_BG = "#D9EAD3"
 
 # 단계 버튼: (키, 글자, 하는 일, 아직 못 쓸 때 이유)
 STEP_INFO = {
@@ -71,31 +64,38 @@ class HomePage(QWidget):
         super().__init__()
         self.win = win
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["게임 / 프로젝트", "상태", "게임 자료"])
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["게임 / 프로젝트", "상태", "다음 할 일", "게임 자료"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        for c in (1, 2, 3):
+            self.tree.header().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.currentItemChanged.connect(lambda *_a: self._sync_buttons())
         self.tree.itemDoubleClicked.connect(lambda _it, _c: self.open_selected())
         new = QPushButton("새 프로젝트")
         new.setStyleSheet(PRIMARY_QSS)
         new.setToolTip("고른 게임에 프로젝트를 만듭니다 (게임을 고르지 않았으면 새 게임도 만들 수 있음)")
         new.clicked.connect(self.new_project)
-        opn = QPushButton("열기")
-        opn.clicked.connect(self.open_selected)
+        self.b_open = QPushButton("열기")
+        self.b_open.setToolTip("고른 프로젝트를 엽니다 (두 번 눌러도 열림)")
+        self.b_open.clicked.connect(self.open_selected)
         folder = QPushButton("게임 폴더 열기")
         folder.setToolTip("용어집·아이콘 검증 엑셀과 번역 검수 엑셀이 있는 게임 폴더")
         folder.clicked.connect(self.open_game_folder)
         ref = QPushButton("새로 고침")
         ref.clicked.connect(self.refresh)
-        dele = QPushButton("프로젝트 삭제")
-        dele.clicked.connect(self.delete_selected)
+        self.b_delete = QPushButton("프로젝트 삭제…")
+        self.b_delete.setToolTip("고른 프로젝트를 휴지통으로 옮깁니다 (확인 창이 뜹니다)")
+        self.b_delete.clicked.connect(self.delete_selected)
         btns = QHBoxLayout()
-        for b in (new, opn, folder, ref, dele):
+        for b in (new, self.b_open, folder):
             btns.addWidget(b)
         btns.addStretch(1)
+        btns.addWidget(ref)
+        btns.addWidget(self.b_delete)
         title = QLabel("게임 · 프로젝트")
         title.setFont(QFont(title.font().family(), 14, QFont.Weight.Bold))
+        guide = QLabel("프로젝트를 두 번 누르면 열립니다. 용어집·아이콘 사전·검수 엑셀은 게임마다 하나씩 있습니다.")
+        guide.setStyleSheet("color: #666")
         lay = QVBoxLayout(self)
         self.empty = QLabel("아직 프로젝트가 없습니다.\n‘새 프로젝트’를 눌러 게임 이름과 프로젝트 이름을 정하면 시작할 수 있습니다.")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -104,10 +104,18 @@ class HomePage(QWidget):
         self.body.addWidget(self.tree)
         self.body.addWidget(self.empty)
         lay.addWidget(title)
+        lay.addWidget(guide)
         lay.addLayout(btns)
         lay.addWidget(self.body, 1)
         self.projects: list[dict] = []
         self.games: list[dict] = []
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        sel = self.selected()
+        is_project = bool(sel) and sel[0] == "project"
+        self.b_open.setEnabled(is_project)
+        self.b_delete.setEnabled(is_project)
 
     def refresh(self):
         root = self.win.root
@@ -126,11 +134,15 @@ class HomePage(QWidget):
             extra = [f"용어 {g['terms']}개"] if g.get("terms") else []
             extra += [label for key, label in (("glossary_review", "용어집 검증"), ("icon_review", "아이콘 검증"),
                                                ("translation_review", "검수 엑셀")) if (g.get("files") or {}).get(key)]
-            gi = QTreeWidgetItem([g["name"], f"프로젝트 {len(ps)}개", " · ".join(extra)])
+            gi = QTreeWidgetItem([g["name"], f"프로젝트 {len(ps)}개", "", " · ".join(extra)])
             gi.setFont(0, bold)
             gi.setData(0, Qt.ItemDataRole.UserRole, ("game", g))
             for p in ps:
-                pi = QTreeWidgetItem([p["name"], service.STATUS_LABEL.get(p["status"], p["status"]), ""])
+                try:
+                    nxt = service.project_overview(p["dir"]).get("next_step") or ""
+                except Exception:  # noqa: BLE001 - 요약을 못 읽어도 목록은 보인다
+                    nxt = ""
+                pi = QTreeWidgetItem([p["name"], service.STATUS_LABEL.get(p["status"], p["status"]), nxt, ""])
                 pi.setData(0, Qt.ItemDataRole.UserRole, ("project", p))
                 gi.addChild(pi)
             self.tree.addTopLevelItem(gi)
@@ -146,6 +158,16 @@ class HomePage(QWidget):
             gi = self.tree.topLevelItem(i)
             for j in range(gi.childCount()):
                 if gi.child(j).data(0, Qt.ItemDataRole.UserRole)[1]["name"] == name:
+                    self.tree.setCurrentItem(gi.child(j))
+                    return True
+        return False
+
+    def select_dir(self, project_dir: Path) -> bool:
+        want = Path(project_dir).resolve()
+        for i in range(self.tree.topLevelItemCount()):
+            gi = self.tree.topLevelItem(i)
+            for j in range(gi.childCount()):
+                if Path(gi.child(j).data(0, Qt.ItemDataRole.UserRole)[1]["dir"]).resolve() == want:
                     self.tree.setCurrentItem(gi.child(j))
                     return True
         return False
@@ -221,25 +243,37 @@ class ProjectPage(QWidget):
         bl.setContentsMargins(8, 4, 8, 4)
         bl.addWidget(self.banner_text, 1)
         bl.addWidget(self.banner_off)
-        # 다음 할 일: 큰 버튼 + 설명 한 줄
+        # 다음 할 일: 큰 버튼 + 설명 두 줄 (무엇을 · 왜/대상)
         self.next_btn = QPushButton()
         self.next_btn.setStyleSheet(NEXT_QSS)
         self.next_btn.clicked.connect(self.do_next)
         self.next = QLabel()
         self.next.setWordWrap(True)
-        self.next.setStyleSheet("color: #333")
-        next_box = QHBoxLayout()
+        self.next.setStyleSheet("color: #222; font-weight: bold; border: none; background: transparent;")
+        self.next_why = QLabel()
+        self.next_why.setWordWrap(True)
+        self.next_why.setStyleSheet("color: #666; border: none; background: transparent;")
+        self.next_box = QFrame()
+        self.next_box.setObjectName("nextbox")
+        self.next_box.setStyleSheet("QFrame#nextbox { background: #EEF4FB; border: 1px solid #c9d9ee; border-radius: 4px; }")
+        next_box = QHBoxLayout(self.next_box)
+        next_box.setContentsMargins(10, 6, 10, 6)
         cap = QLabel("다음 할 일")
-        cap.setStyleSheet("color: #0b5cad; font-weight: bold")
+        cap.setStyleSheet("color: #0b5cad; font-weight: bold; border: none; background: transparent;")
+        why_col = QVBoxLayout()
+        why_col.setSpacing(2)
+        why_col.addWidget(self.next)
+        why_col.addWidget(self.next_why)
         next_box.addWidget(cap)
         next_box.addWidget(self.next_btn)
-        next_box.addWidget(self.next, 1)
+        next_box.addLayout(why_col, 1)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["그룹 / 파일", "쪽", "뺀 쪽", "글자 추출", "글자 지움", "한글"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.itemSelectionChanged.connect(self._sync_buttons)
         self.tree.itemDoubleClicked.connect(lambda *_a: self.edit_regions())
         back = QPushButton("← 프로젝트 목록")
+        back.setFlat(True)
         back.clicked.connect(self.win.show_home)
         self.b_add = QPushButton("파일 넣기")
         self.b_add.clicked.connect(self.add_files)
@@ -247,54 +281,86 @@ class ProjectPage(QWidget):
         self.b_regions.clicked.connect(self.edit_regions)
         self.b_pages = QPushButton("뺄 쪽")
         self.b_pages.clicked.connect(self.exclude_pages)
-        self.b_folder = QPushButton("폴더 열기")
-        self.b_folder.setToolTip("고른 그룹·파일의 작업 폴더 (안 골랐으면 이 프로젝트 폴더)")
-        self.b_folder.clicked.connect(self.open_folder)
-        self.b_game_folder = QPushButton("게임 폴더 (엑셀)")
-        self.b_game_folder.setToolTip("용어집·아이콘 검증 엑셀과 번역 검수 엑셀이 있는 게임 폴더")
-        self.b_game_folder.clicked.connect(self.open_game_folder)
-        ref = QPushButton("새로 고침")
-        ref.clicked.connect(self.refresh)
-        self.b_delete = QPushButton("삭제")
-        self.b_delete.setToolTip("고른 그룹 또는 파일을 휴지통으로 옮깁니다")
+        self.b_folders = QToolButton()
+        self.b_folders.setText("폴더 ▾")
+        self.b_folders.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        fmenu = QMenu(self.b_folders)
+        self.a_folder = fmenu.addAction("이 그룹·파일 폴더 열기")
+        self.a_folder.setToolTip("고른 그룹·파일의 작업 폴더 (안 골랐으면 이 프로젝트 폴더)")
+        self.a_folder.triggered.connect(lambda _c=False: self.open_folder())
+        self.a_game_folder = fmenu.addAction("게임 폴더 열기 (용어집·검수 엑셀)")
+        self.a_game_folder.setToolTip("용어집·아이콘 검증 엑셀과 번역 검수 엑셀이 있는 게임 폴더")
+        self.a_game_folder.triggered.connect(lambda _c=False: self.open_game_folder())
+        self.b_folders.setMenu(fmenu)
+        self.b_refresh = QPushButton("새로 고침")
+        self.b_refresh.clicked.connect(self.refresh)
+        self.b_delete = QPushButton("삭제…")
+        self.b_delete.setToolTip("고른 그룹 또는 파일을 휴지통으로 옮깁니다 (확인 창이 뜹니다)")
         self.b_delete.clicked.connect(self.delete_selected)
-        self.b_reset = QPushButton("초기화")
+        self.b_reset = QPushButton("초기화…")
         self.b_reset.clicked.connect(self.reset_selected)
-        btns = QHBoxLayout()
-        for b in (back, self.b_add, self.b_regions, self.b_pages, self.b_folder, self.b_game_folder, ref, self.b_reset, self.b_delete):
-            btns.addWidget(b)
-        btns.addStretch(1)
+        # 제목 줄: 이동 | 제목·부제 | 폴더·새로 고침
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        titles.addWidget(self.title)
+        titles.addWidget(self.sub)
+        head = QHBoxLayout()
+        head.addWidget(back, alignment=Qt.AlignmentFlag.AlignTop)
+        head.addLayout(titles, 1)
+        head.addWidget(self.b_folders, alignment=Qt.AlignmentFlag.AlignTop)
+        head.addWidget(self.b_refresh, alignment=Qt.AlignmentFlag.AlignTop)
+        # 편집 줄 (목록 바로 위): 만들기·고치기 | 되돌리기 어려운 것은 오른쪽 끝
+        edit = QHBoxLayout()
+        for b in (self.b_add, self.b_regions, self.b_pages):
+            edit.addWidget(b)
+        edit.addStretch(1)
+        edit.addWidget(self.b_reset)
+        edit.addWidget(self.b_delete)
         # 2단계 작업: 추출 -> 원문 확인 -> 아이콘 -> 추출 완료(용어집) -> 용어집 가져오기 -> 번역(+검수 엑셀)
         self.steps = StepActions(self)
         self.step_buttons = {}
         steps = QHBoxLayout()
-        steps.addWidget(QLabel("작업:"))
+        steps.addWidget(self._row_caption("원문·번역"))
         self.step_fns = {}
-        for key, fn in (
+        for i, (key, fn) in enumerate((
                 ("extract", self.steps.extract),
                 ("icons", self.steps.icons),
                 ("review", self.steps.review_sources),
                 ("finish", self.steps.finish),
                 ("glossary", self.steps.import_glossary),
-                ("translate", self.steps.translate)):
+                ("translate", self.steps.translate))):
+            if i:
+                steps.addWidget(self._arrow())
             steps.addWidget(self._step_button(key, fn))
         steps.addStretch(1)
         # 3단계: 지우기 -> 한글 넣기 -> 결과 보기, 시험 실행
         self.out = OutputActions(self)
         outs = QHBoxLayout()
-        outs.addWidget(QLabel("결과:"))
-        for key, fn in (
+        outs.addWidget(self._row_caption("카드 만들기"))
+        for i, (key, fn) in enumerate((
                 ("erase", self.out.erase),
                 ("compose", self.out.compose),
-                ("results", self.out.results),
-                ("test", self.out.test_run)):
+                ("results", self.out.results))):
+            if i:
+                outs.addWidget(self._arrow())
             outs.addWidget(self._step_button(key, fn))
         outs.addStretch(1)
+        outs.addWidget(self._step_button("test", self.out.test_run))
+        # 작업 대상: 목록 바로 위. 목록에서 고른 것이 위 단계 버튼의 범위가 된다
         self.scope_label = QLabel("작업 대상: 전체")
         self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
         self.scope_label.setToolTip("아래 목록에서 고른 항목. 작업·결과 버튼(①③⑥⑦⑧·결과 보기·시험 실행)은 이 범위에 대해 합니다.\n"
                                     "② 아이콘 이름 · ④ 용어집 · ⑤ 용어집 가져오기는 프로젝트(게임) 전체에 대해 합니다.")
-        outs.addWidget(self.scope_label)
+        self.scope_hint = QLabel()
+        self.scope_hint.setStyleSheet("color: #666")
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(self.scope_label)
+        scope_row.addWidget(self.scope_hint, 1)
+        rule = QFrame()
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setStyleSheet("color: #ddd")
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
         self.setStyleSheet(STEP_QSS)
         # 파일이 없을 때 표 자리에 보이는 안내
         empty = QWidget()
@@ -316,15 +382,57 @@ class ProjectPage(QWidget):
         self.body.addWidget(self.tree)
         self.body.addWidget(empty)
         lay = QVBoxLayout(self)
-        lay.addWidget(self.title)
-        lay.addWidget(self.sub)
+        lay.addLayout(head)
         lay.addWidget(self.banner)
-        lay.addLayout(next_box)
+        lay.addWidget(self.next_box)
         lay.addSpacing(4)
-        lay.addLayout(btns)
         lay.addLayout(steps)
         lay.addLayout(outs)
+        lay.addWidget(rule)
+        lay.addLayout(scope_row)
+        lay.addLayout(edit)
         lay.addWidget(self.body, 1)
+
+    @staticmethod
+    def _row_caption(text: str) -> QLabel:
+        lb = QLabel(text)
+        lb.setFixedWidth(72)
+        lb.setStyleSheet("color: #666; font-weight: bold")
+        return lb
+
+    @staticmethod
+    def _arrow() -> QLabel:
+        lb = QLabel("›")
+        lb.setStyleSheet("color: #888")
+        return lb
+
+    # ---- 목록 오른쪽 클릭 메뉴
+    def _menu_items(self, kind: str) -> list[tuple[str, object] | None]:
+        """줄 종류별 메뉴 [(글자, 부를 함수)], None은 구분선."""
+        if kind == "file":
+            return [("영역 지정", self.edit_regions), ("뺄 쪽…", self.exclude_pages), ("폴더 열기", self.open_folder),
+                    None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
+        if kind == "group":
+            return [("영역 지정", self.edit_regions), ("폴더 열기", self.open_folder),
+                    None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
+        return [("파일 넣기", self.add_files), ("초기화…", self.reset_selected)]
+
+    def _context_menu(self, pos):
+        it = self.tree.itemAt(pos)
+        if it is None:
+            return
+        self.tree.setCurrentItem(it)
+        sel = self._selected()
+        if not sel:
+            return
+        menu = QMenu(self)
+        for entry in self._menu_items(sel[0]):
+            if entry is None:
+                menu.addSeparator()
+            else:
+                text, fn = entry
+                menu.addAction(text, lambda f=fn: f())
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _step_button(self, key: str, fn) -> QPushButton:
         b = QPushButton(STEP_INFO[key][0])
@@ -388,6 +496,9 @@ class ProjectPage(QWidget):
                 fi = QTreeWidgetItem([f["name"], str(f["pages"]), ex, ext,
                                       "완료" if f["erased"] else "—", "완료" if f["composed"] else "—"])
                 fi.setData(0, Qt.ItemDataRole.UserRole, ("file", f))
+                fi.setToolTip(3, "읽은 카드 / 작업할 카드")
+                fi.setToolTip(4, "완료 = 이 파일 전체를 했습니다")
+                fi.setToolTip(5, "완료 = 이 파일 전체를 했습니다")
                 if f["excluded"]:
                     tip = "뺀 쪽: " + ", ".join(map(str, f["excluded"]))
                     fi.setToolTip(2, tip + (f"\n이유: {f['exclude_reason']}" if f["exclude_reason"] else ""))
@@ -535,16 +646,37 @@ class ProjectPage(QWidget):
         # 목록을 다시 채우는 사이에는 옛 항목이 잠깐 남을 수 있다: 못 찾으면 None
         return next((g for g in self.ov["groups"] if any(str(f["dir"]) == str(d["dir"]) for f in g["files"])), None)
 
+    def _sync_next_why(self):
+        """‘다음 할 일’ 상자 둘째 줄: 그 단계가 하는 일과 대상."""
+        if not hasattr(self, "next_why"):
+            return
+        key = self.ov.get("next_key") or "add"
+        if key == "add":
+            why = "카드 PDF나 그림(JPG·PNG)을 프로젝트에 넣습니다"
+        elif key == "regions":
+            why = "카드에서 번역할 글자가 있는 곳을 영역으로 지정합니다"
+        elif key == "results":
+            why = "모든 카드에 한글을 넣었습니다. 번역을 고치려면 검수 엑셀을 고친 뒤 ‘⑧ 한글 넣기’를 다시 누르세요."
+        elif key in STEP_INFO:
+            why = STEP_INFO[key][1] + " · 대상: " + self.scope()[0]
+        else:
+            why = ""
+        self.next_why.setText(why)
+
     def _sync_buttons(self):
         sel = self._selected()
         self.b_delete.setEnabled(bool(sel) and sel[0] != "all")
+        self._sync_next_why()
         if hasattr(self, "b_reset"):
             self.b_reset.setEnabled(bool(self.ov.get("groups")))
             label, _d = self.scope()
             self.b_reset.setToolTip(f"{label}의 작업 결과(추출·지운 카드·한글 카드)를 비우고 다시 할 수 있게 합니다.\n"
                                     "파일·영역·뺄 쪽 설정은 그대로입니다 (‘삭제’는 그룹·파일 자체를 뺍니다).")
         if hasattr(self, "scope_label"):
-            self.scope_label.setText(f"작업 대상: {self.scope()[0]}")
+            label = self.scope()[0]
+            self.scope_label.setText(f"작업 대상: {label}")
+            self.scope_hint.setText(" — 목록에서 그룹이나 파일을 고르면 위 단계를 그것만 합니다" if label == "전체"
+                                    else " — ‘전체’를 고르면 모든 파일에 합니다")
         self.b_pages.setEnabled(bool(sel and sel[0] == "file"))
         self.b_regions.setEnabled(self._group_of_selection() is not None)
 
@@ -675,6 +807,16 @@ class MainWindow(QMainWindow):
         st = service.engine_status()
         self.statusBar().showMessage(st["message"])
         self.show_home()
+        self._select_last()
+
+    def _select_last(self):
+        """홈에서 마지막에 연 프로젝트를 골라 둔다."""
+        try:
+            last = service.last_project()
+            if last and self.root.resolve() in last.resolve().parents:
+                self.home.select_dir(last)
+        except Exception:  # noqa: BLE001
+            pass
 
     def resume_last(self) -> bool:
         """앱을 다시 켜면 마지막에 연 프로젝트를 이어서 연다 (데이터 폴더 안의 것만)."""

@@ -196,10 +196,10 @@ def test_font_dialog_defaults_and_choices(qapp):
     assert files[:2] == [SANS_B, SERIF] and GAEGU in files and files[-1] == ADD
     assert top.isExpanded()  # 카드별 선택이 있으면 펼쳐 보인다
     c1, c2 = dlg.tree.itemWidget(top.child(0), 1), dlg.tree.itemWidget(top.child(1), 1)
-    assert c1.currentText() == "(항목과 같음)" and c2.currentData() == SERIF
+    assert c1.currentText() == "(영역과 같음)" and c2.currentData() == SERIF
     cb.setCurrentIndex(cb.findData(GAEGU))
     c1.setCurrentIndex(c1.findData(SANS_B))
-    c2.setCurrentIndex(0)  # 항목과 같음으로 되돌림
+    c2.setCurrentIndex(0)  # 영역과 같음으로 되돌림
     assert dlg.choices() == [{"file_dir": "C:/x", "regions": {"이름": GAEGU}, "cards": {1: {"이름": SANS_B}}, "sentences": {},
                               "sizes": {"이름": 1.0}}]
 
@@ -215,7 +215,7 @@ def test_font_dialog_add_font(qapp, monkeypatch):
     cb.setCurrentIndex(cb.findData(fonts_dialog.ADD))
     assert cb.currentData() == new  # 추가한 글꼴이 이 줄에 선택되고
     c1 = dlg.tree.itemWidget(top.child(0), 1)
-    assert c1.findData(new) >= 0 and c1.currentText() == "(항목과 같음)"  # 다른 줄 목록에도 생긴다
+    assert c1.findData(new) >= 0 and c1.currentText() == "(영역과 같음)"  # 다른 줄 목록에도 생긴다
     monkeypatch.setattr(dlg, "_add_font", lambda: None)  # 취소하면 예전 선택으로
     cb.setCurrentIndex(cb.findData(fonts_dialog.ADD))
     assert cb.currentData() == new
@@ -231,3 +231,24 @@ def test_add_font_dialog_filter(qapp):
     dlg.list.setCurrentRow(1)
     dlg.accept()
     assert dlg.chosen["label"] == "Gaegu"
+
+
+def test_font_dialog_preview_is_above_list(qapp):
+    """사용자 요구: 원본/미리 보기 그림 묶음이 목록(트리) 위에 있다."""
+    from app.qt.fonts_dialog import FontPlanDialog
+
+    dlg = FontPlanDialog(_plan())
+    assert dlg.split.widget(1) is dlg.tree
+    top = dlg.split.widget(0)
+    assert top.isAncestorOf(dlg.orig) and top.isAncestorOf(dlg.sample) and not top.isAncestorOf(dlg.tree)
+    assert dlg.tree.headerItem().text(0) == "영역 / 카드 / 문장"
+    item = dlg.tree.topLevelItem(0)
+    dlg.tree.setCurrentItem(item)
+    assert "이름 영역" in dlg.where.text()
+    cb = dlg.tree.itemWidget(item, 1)
+    assert cb.currentText().startswith("★") and "굵기 비슷" not in cb.currentText()  # 이유는 툴팁으로
+    assert "‘이름’ 영역의 모든 카드" in dlg.size_label.text()
+    cb.setCurrentIndex(cb.findData(GAEGU))
+    assert item.background(0).color().name().upper() == "#CFE2F3"
+    dlg.b_all_rec.click()
+    assert cb.currentData() == SANS_B and item.background(0).color().name().upper() != "#CFE2F3"

@@ -7,10 +7,10 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
-from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QSpinBox,
+    QLabel, QSpinBox, QStackedWidget,
     QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
 
@@ -42,9 +42,57 @@ def install_korean(app=None) -> bool:
     return False
 
 
-def set_ok_text(bb: QDialogButtonBox, text: str) -> None:
-    """확인 버튼을 ‘확인’ 대신 하는 일 이름(만들기·넣기·저장)으로."""
-    bb.button(QDialogButtonBox.StandardButton.Ok).setText(text)
+# 화면 색 약속: 주 버튼 파랑, 끝난 단계 연두(#D9EAD3), 확인할 것 노랑(#FFE066)·주황(#F4B183)
+PRIMARY_QSS = ("QPushButton { background: #0b5cad; color: white; font-weight: bold; border: 1px solid #0b5cad;"
+               " border-radius: 4px; padding: 4px 14px; }"
+               "QPushButton:hover { background: #0a4f95; } QPushButton:disabled { background: #9db7d3; }")
+NEXT_QSS = PRIMARY_QSS.replace("padding: 4px 14px;", "padding: 8px 22px; font-size: 11pt;")
+EMPTY_QSS = "color: #666; font-size: 11pt; background: white; border: 1px solid #ddd;"
+BANNER_QSS = "background: #FFE066; border: 1px solid #e0c040; border-radius: 4px;"
+DONE_BG = "#D9EAD3"
+
+# 안내 띠 종류: (배경, 테두리)
+HINT_COLORS = {"info": ("#EEF4FB", "#c9d9ee"), "todo": ("#FFE066", "#e0c040"),
+               "done": ("#D9EAD3", "#9cc28f"), "warn": ("#F4B183", "#d9905c")}
+
+
+def make_primary(btn: QPushButton) -> None:
+    """주 버튼(파랑). 엔터로 눌리는 기본 버튼도 된다."""
+    btn.setStyleSheet(PRIMARY_QSS)
+    btn.setDefault(True)
+
+
+def set_ok_text(bb: QDialogButtonBox, text: str, primary: bool = True) -> None:
+    """확인 버튼을 ‘확인’ 대신 하는 일 이름(만들기·넣기·저장)으로. primary이면 파랗게."""
+    b = bb.button(QDialogButtonBox.StandardButton.Ok)
+    b.setText(text)
+    if primary:
+        make_primary(b)
+
+
+def set_hint(label: QLabel, text: str, kind: str = "info") -> None:
+    """안내 띠의 글과 종류(info·todo·done·warn)를 바꾼다."""
+    bg, border = HINT_COLORS.get(kind, HINT_COLORS["info"])
+    label.setText(text)
+    label.setProperty("hint_kind", kind)
+    label.setStyleSheet(f"background: {bg}; border: 1px solid {border}; border-radius: 4px; padding: 6px;")
+
+
+def hint_bar(text: str, kind: str = "info") -> QLabel:
+    """창 맨 위 같은 곳에 두는 안내 띠 (줄바꿈 허용)."""
+    lb = QLabel()
+    lb.setWordWrap(True)
+    lb.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    set_hint(lb, text, kind)
+    return lb
+
+
+def grey_note(text: str) -> QLabel:
+    """회색 보조 설명."""
+    lb = QLabel(text)
+    lb.setWordWrap(True)
+    lb.setStyleSheet("color: #666")
+    return lb
 
 
 def fit_to_screen(w, width: int, height: int, margin: float = 0.92, maximize_below: int = 800) -> None:
@@ -182,6 +230,7 @@ class NewProjectDialog(QDialog):
         self.root = Path(root)
         self.created = None
         self.setWindowTitle("새 프로젝트")
+        self.setMinimumWidth(460)
         self.name = QLineEdit()
         self.game = QComboBox()
         self.game.setEditable(True)
@@ -198,6 +247,7 @@ class NewProjectDialog(QDialog):
         form = QFormLayout()
         form.addRow("게임", self.game)  # 프로젝트는 게임 안에 있다: 게임을 먼저
         form.addRow("", self.hint)
+        self._hint_label = form.labelForField(self.hint)
         form.addRow("프로젝트 이름", self.name)
         form.addRow("원문 언어", self.lang)
         self.name.textEdited.connect(lambda _t: setattr(self, "_name_auto", False))
@@ -207,6 +257,7 @@ class NewProjectDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.addWidget(grey_note("게임 안에 프로젝트를 만듭니다. 같은 게임의 프로젝트는 용어집과 아이콘 사전을 함께 씁니다."))
         lay.addLayout(form)
         lay.addWidget(bb)
         self._hint(self.game.currentText())
@@ -222,6 +273,10 @@ class NewProjectDialog(QDialog):
         # 프로젝트 이름 기본값: 새 게임이면 게임 이름, 기존 게임에 더하는 프로젝트면 비움 (사람이 고친 이름은 둔다)
         if getattr(self, "_name_auto", True):
             self.name.setText("" if (not t or t in self.games) else t)
+        self.hint.setVisible(bool(self.hint.text()))
+        lab = getattr(self, "_hint_label", None)
+        if lab is not None:
+            lab.setVisible(bool(self.hint.text()))
 
     def accept(self):
         name, game = self.name.text().strip(), self.game.currentText().strip()
@@ -262,12 +317,13 @@ class AddFilesDialog(QDialog):
         self.files.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         for f in files or []:
             self.files.addItem(f)
-        pick = QPushButton("파일 고르기… (PDF·JPG·PNG)")
-        pick.clicked.connect(self._pick)
+        self.files.setMinimumHeight(100)
+        self.pick = QPushButton("파일 고르기… (PDF·JPG·PNG)")
+        self.pick.clicked.connect(self._pick)
         remove = QPushButton("목록에서 빼기")
         remove.clicked.connect(self._remove)
         prow = QHBoxLayout()
-        prow.addWidget(pick)
+        prow.addWidget(self.pick)
         prow.addWidget(remove)
         prow.addStretch(1)
         self.r_exist = QRadioButton("기존 그룹에 넣기")
@@ -297,7 +353,7 @@ class AddFilesDialog(QDialog):
         form.addRow("새 그룹 영역", self.copy_from)
 
         # ---- 이미지일 때
-        self.img_box = QGroupBox("이미지로 된 카드")
+        self.img_box = QGroupBox("③ 이미지로 된 카드")
         self.r_single = QRadioButton("이미지 한 장에 카드 한 장")
         self.r_grid = QRadioButton("이미지 한 장에 카드 여러 장 (배열)")
         ib = QButtonGroup(self)
@@ -335,14 +391,28 @@ class AddFilesDialog(QDialog):
         self.files.model().rowsInserted.connect(lambda *_a: self._sync())
         self.files.model().rowsRemoved.connect(lambda *_a: self._sync())
 
+        self.empty_hint = QLabel("‘파일 고르기…’를 눌러 카드 PDF나 그림(JPG·PNG)을 고르세요.\n여러 개를 한 번에 골라도 됩니다.")
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_hint.setStyleSheet("color: #666; background: white; border: 1px solid #ddd")
+        self.files_stack = QStackedWidget()
+        self.files_stack.addWidget(self.files)
+        self.files_stack.addWidget(self.empty_hint)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "넣기")
+        self.ok_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("카드 파일 (같은 카드 형식끼리 한 그룹). 이미지는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣습니다."))
-        lay.addWidget(self.files)
+        t1 = QLabel("① 넣을 파일")
+        t1.setStyleSheet("font-weight: bold")
+        t2 = QLabel("② 어느 그룹에 넣을까요?")
+        t2.setStyleSheet("font-weight: bold")
+        lay.addWidget(t1)
+        lay.addWidget(grey_note("이미지는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣습니다."))
         lay.addLayout(prow)
+        lay.addWidget(self.files_stack, 1)
+        lay.addWidget(t2)
+        lay.addWidget(grey_note("같은 형식의 카드끼리 한 그룹입니다. 그룹마다 영역을 한 번 지정합니다."))
         lay.addLayout(form)
         lay.addWidget(self.img_box)
         lay.addWidget(bb)
@@ -367,6 +437,10 @@ class AddFilesDialog(QDialog):
         self.new_name.setEnabled(not ex)
         self.copy_from.setEnabled(not ex)
         imgs = self.image_files()
+        empty = not files
+        self.files_stack.setCurrentWidget(self.empty_hint if empty else self.files)
+        self.pick.setStyleSheet(PRIMARY_QSS if empty else "")
+        self.ok_btn.setEnabled(not empty)
         self.img_box.setVisible(bool(imgs))
         grid = self.r_grid.isChecked()
         self.cols.setEnabled(grid)
@@ -481,6 +555,7 @@ class ExcludePagesDialog(QDialog):
         self.list.setIconSize(QSize(150, 150))
         self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.list.setSpacing(6)
+        self._pressed_state = None
         for p in range(1, service.page_count(self.file_dir) + 1):
             png, _ = service.page_image(self.file_dir, p, dpi=36)
             pm = QPixmap()
@@ -504,21 +579,47 @@ class ExcludePagesDialog(QDialog):
         send = QPushButton("체크한 쪽을 이 그룹으로 보내기")
         send.clicked.connect(self.send_to_group)
         mrow = QHBoxLayout()
-        mrow.addWidget(QLabel("다른 형식이면:"))
         mrow.addWidget(self.target, 1)
         mrow.addWidget(send)
+        move_box = QGroupBox("형식이 다른 카드라면")
+        mv = QVBoxLayout(move_box)
+        mv.addWidget(grey_note("다른 형식의 카드라면 다른 그룹으로 보내 그 그룹의 영역으로 처리합니다."))
+        mv.addLayout(mrow)
+        self.count = QLabel()
+        self.count.setStyleSheet("font-weight: bold")
+        self.list.itemPressed.connect(lambda it: setattr(self, "_pressed_state", it.checkState()))
+        self.list.itemClicked.connect(self._toggle_on_click)
+        self.list.itemChanged.connect(lambda it: self._paint(it))
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        set_ok_text(bb, "저장")
+        set_ok_text(bb, "체크한 쪽 빼기")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("체크한 쪽은 추출·용어집·번역·지우기·한글 넣기에서 모두 빠집니다.\n"
-                             "다른 형식의 카드라면 아래에서 다른 그룹으로 보내면 그 그룹의 영역으로 처리합니다."))
+        lay.addWidget(hint_bar("그림이나 쪽 번호를 눌러 뺄 쪽을 체크하세요. 체크한 쪽은 추출·용어집·번역·지우기·한글 넣기에서 모두 빠집니다."))
         lay.addWidget(self.list, 1)
+        lay.addWidget(self.count)
         lay.addWidget(self.reason)
-        lay.addLayout(mrow)
+        lay.addWidget(move_box)
         lay.addWidget(bb)
         fit_to_screen(self, 900, 640, maximize_below=0)
+        for i in range(self.list.count()):
+            self._paint(self.list.item(i))
+        self._update_count()
+
+    def _toggle_on_click(self, it):
+        # 체크 칸을 직접 눌렀으면 보기가 이미 바꿨다. 그림·글자를 눌렀을 때만 우리가 바꾼다.
+        if self._pressed_state is not None and it.checkState() == self._pressed_state:
+            it.setCheckState(Qt.CheckState.Unchecked if it.checkState() == Qt.CheckState.Checked
+                             else Qt.CheckState.Checked)
+        self._pressed_state = None
+
+    def _paint(self, it):
+        it.setBackground(QColor("#F4B183") if it.checkState() == Qt.CheckState.Checked else QBrush())
+        self._update_count()
+
+    def _update_count(self):
+        c = self.checked()
+        self.count.setText(f"체크한 쪽: {len(c)}쪽" + (f" ({', '.join(f'{p}쪽' for p in c)})" if c else ""))
 
     def checked(self) -> list[int]:
         return [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
@@ -593,6 +694,8 @@ class SettingsDialog(QDialog):
         lrow.addWidget(self.b_log)
         form = QFormLayout()
         form.addRow("데이터 폴더", row)
+        form.addRow("", grey_note("게임·프로젝트가 저장되는 폴더입니다. 바꾸면 새 폴더의 프로젝트 목록이 보입니다 "
+                                  "(예전 폴더의 자료는 옮기지 않습니다)."))
         form.addRow("로그인 방식", info)
         form.addRow("로그 폴더", lrow)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)

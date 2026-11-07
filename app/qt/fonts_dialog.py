@@ -1,9 +1,9 @@
 """한글 넣기 직전 글꼴 고르기 창.
 
-- 항목(영역)마다 글꼴을 고른다. 기본 선택은 원본과 느낌이 가장 비슷한 추천(★).
-- 항목을 펼치면 카드(문장)마다 따로 고를 수 있다. 기본은 ‘항목과 같음’.
-- 아래 미리 보기: 왼쪽은 원본 카드의 그 영역, 오른쪽은 지운 카드 위에 고른 글꼴·원본 글자 색으로 쓴 번역 (같은 배율).
-- 글자 크기: 항목마다 원본 크기 대비 배율 (한글 넣기에 그대로 쓴다).
+- 영역마다 글꼴을 고른다. 기본 선택은 원본과 느낌이 가장 비슷한 추천(★).
+- 영역을 펼치면 카드(문장)마다 따로 고를 수 있다. 기본은 ‘영역과 같음’.
+- 위 미리 보기(목록 위): 왼쪽은 원본 카드의 그 영역, 오른쪽은 지운 카드 위에 고른 글꼴·원본 글자 색으로 쓴 번역 (같은 배율).
+- 글자 크기: 영역마다 원본 크기 대비 배율 (한글 넣기에 그대로 쓴다).
 - 목록: 추천 글꼴 + 이 프로젝트에서 쓴 적이 있는 글꼴 + 이 창에서 추가한 글꼴, 맨 아래 ‘글꼴 추가…’
   (PC에 설치된 글꼴 목록 또는 글꼴 파일).
 화면은 app.service만 부른다.
@@ -13,18 +13,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QListWidgetItem, QPushButton, QSizePolicy, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
-from app.qt.dialogs import fit_to_screen, set_ok_text, show_error
+from app.qt.dialogs import fit_to_screen, grey_note, hint_bar, set_ok_text, show_error
 
 ADD = "__add__"
-SAME = ""  # 카드 줄: 항목과 같음
+SAME = ""  # 카드 줄: 영역과 같음
 ROLE_KIND = Qt.ItemDataRole.UserRole  # 트리 항목: ("region", plan_idx, region_name) | ("card", plan_idx, name, page)
 
 _families: dict[str, str | None] = {}
@@ -123,6 +123,7 @@ class FontPlanDialog(QDialog):
         self.plans = plans
         self.added: list[dict] = []  # 이 창에서 추가한 글꼴 {"file", "label"}
         self.combos: list[tuple[QComboBox, str]] = []  # (콤보, 종류: region|card)
+        self._cb_item: dict = {}  # 콤보 -> 트리 줄
         self.sizes: dict[tuple[int, str], float] = {  # (파일 번호, 영역): 글자 크기 배율
             (pi, r["name"]): float(r.get("size_scale") or 1.0) for pi, p in enumerate(plans) for r in p["regions"]}
 
@@ -131,9 +132,9 @@ class FontPlanDialog(QDialog):
         f.setPointSize(f.pointSize() + 3)
         f.setBold(True)
         title.setFont(f)
-        help_ = QLabel("항목마다 글꼴을 고릅니다. ★가 원본과 느낌이 가장 비슷한 추천입니다.\n"
-                       "항목을 펼치면 카드(문장)마다 따로 고를 수 있습니다. 목록 맨 아래 ‘글꼴 추가…’로 PC의 다른 글꼴도 쓸 수 있습니다.")
-        help_.setWordWrap(True)
+        help_ = hint_bar("아래 목록에서 영역(또는 카드·문장)을 고르면 위에 원본과 미리 보기가 나옵니다. 글꼴 칸에서 바꾸세요. "
+                         "★는 원본과 가장 비슷한 추천입니다. 영역을 펼치면 카드·문장마다 따로 고를 수 있고, "
+                         "목록 맨 아래 ‘글꼴 추가…’로 PC의 다른 글꼴도 쓸 수 있습니다.", "info")
         notes = [f"{p['file']}: {p['note']}" for p in plans if p.get("note")]
         self.note = QLabel("\n".join(notes))
         self.note.setStyleSheet("color: #a15c00")
@@ -142,22 +143,27 @@ class FontPlanDialog(QDialog):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["항목 / 카드", "글꼴", "번역"])
-        self.tree.setColumnWidth(0, 230)
-        self.tree.setColumnWidth(1, 380)
+        self.tree.setHeaderLabels(["영역 / 카드 / 문장", "글꼴", "번역"])
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 320)
+        self.tree.header().setStretchLastSection(True)
+        self.tree.setMinimumHeight(140)
         self.tree.itemExpanded.connect(self._expand)
         self.tree.currentItemChanged.connect(lambda *_a: self._preview())
 
         box = "background: white; border: 1px solid #ccc; padding: 4px"
+        self._orig_pm = QPixmap()
+        self._sample_pm = QPixmap()
         self.orig = QLabel()
-        self.orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.orig.setMinimumSize(300, 120)
-        self.orig.setStyleSheet(box)
         self.sample = QLabel()
-        self.sample.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sample.setMinimumSize(300, 120)
+        for lb in (self.orig, self.sample):
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lb.setMinimumSize(200, 100)
+            lb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)  # 그림이 창을 넓히지 않게
+            lb.setStyleSheet(box)
         self.sample.setWordWrap(True)
-        self.sample.setStyleSheet(box)
+        self.where = QLabel()
+        self.where.setStyleSheet("font-weight: bold; color: #0b5cad")
         self.sample_note = QLabel()
         self.sample_note.setStyleSheet("color: #666")
         self.sample_note.setWordWrap(True)
@@ -168,12 +174,14 @@ class FontPlanDialog(QDialog):
         grid.addWidget(self.sample, 1, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
+        grid.setRowStretch(1, 1)
 
         self.size_label = QLabel("글자 크기")
         self.size = QSpinBox()
         self.size.setRange(50, 200)
         self.size.setSingleStep(5)
         self.size.setSuffix(" %")
+        self.size.setMinimumWidth(90)
         self.size.setToolTip("원본 글자 크기 대비 배율입니다. 한글 넣기에서 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
         self.size.valueChanged.connect(self._size_changed)
         b_reset = QPushButton("원본 크기로")
@@ -184,20 +192,41 @@ class FontPlanDialog(QDialog):
         size_row.addWidget(b_reset)
         size_row.addStretch(1)
 
+        # 위: 미리 보기 묶음, 아래: 목록 (사용자 요구: 원본/미리 보기 그림이 목록 위)
+        self.preview_box = QWidget()
+        pv = QVBoxLayout(self.preview_box)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.addWidget(self.where)
+        pv.addLayout(grid, 1)
+        pv.addWidget(self.sample_note)
+        pv.addLayout(size_row)
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        self.split.addWidget(self.preview_box)
+        self.split.addWidget(self.tree)
+        self.split.setChildrenCollapsible(False)
+        self.split.setStretchFactor(0, 2)
+        self.split.setStretchFactor(1, 3)
+        self.split.splitterMoved.connect(lambda *_a: QTimer.singleShot(0, self._fit_previews))
+
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "이대로 한글 넣기")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        self.b_all_rec = QPushButton("모두 추천으로")
+        self.b_all_rec.setToolTip("모든 영역을 ★ 추천 글꼴로, 카드·문장은 ‘영역과 같음’으로 되돌립니다")
+        self.b_all_rec.clicked.connect(self._all_recommended)
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.b_all_rec)
+        bottom.addWidget(grey_note("누르면 고른 글꼴을 저장하고 바로 한글 넣기를 시작합니다."), 1)
+        bottom.addWidget(bb)
         lay = QVBoxLayout(self)
         lay.addWidget(title)
         lay.addWidget(help_)
         lay.addWidget(self.note)
-        lay.addWidget(self.tree, 1)
-        lay.addLayout(grid)
-        lay.addLayout(size_row)
-        lay.addWidget(self.sample_note)
-        lay.addWidget(bb)
+        lay.addWidget(self.split, 1)
+        lay.addLayout(bottom)
         self._build()
+        self.split.setSizes([300, 400])
 
     # ---- 목록
     def _options(self, pi: int, name: str, level: str) -> list[tuple[str, str, str]]:
@@ -206,15 +235,14 @@ class FontPlanDialog(QDialog):
         reg = next(r for r in plan["regions"] if r["name"] == name)
         out: list[tuple[str, str, str]] = []
         if level == "card":
-            out.append(("(항목과 같음)", SAME, "이 항목에서 고른 글꼴을 씁니다"))
+            out.append(("(영역과 같음)", SAME, "이 영역에서 고른 글꼴을 씁니다"))
         elif level == "sentence":
             out.append(("(카드와 같음)", SAME, "이 카드에서 고른 글꼴을 씁니다"))
         seen = set()
         for i, r in enumerate(reg["recommended"]):
             mark = "★ " if i == 0 else "    "
             by = {"claude": "추천", "shape": "모양 비슷", "default": "기본"}.get(r.get("by", ""), "")
-            out.append((f"{mark}{r['label']}" + (f"  · {r['reason']}" if r.get("reason") else ""), r["file"],
-                        f"{by}: {r.get('reason', '')}"))
+            out.append((f"{mark}{r['label']}", r["file"], f"{by}: {r.get('reason', '')}"))
             seen.add(r["file"])
         others = [u for u in plan.get("used", []) + self.added if u["file"] not in seen]
         if reg.get("selected") and reg["selected"] not in seen and all(u["file"] != reg["selected"] for u in others):
@@ -252,7 +280,22 @@ class FontPlanDialog(QDialog):
         cb.currentIndexChanged.connect(lambda _i, c=cb, it=item: self._changed(c, it))
         self.tree.setItemWidget(item, 1, cb)
         self.combos.append((cb, level))
+        self._cb_item[cb] = item
+        self._mark(cb)
         return cb
+
+    def _mark(self, cb: QComboBox):
+        """사람이 추천과 다르게 고른 줄은 0열을 하늘색으로 (카드·문장 줄은 ‘같음’이 아닐 때)."""
+        item = self._cb_item.get(cb)
+        if item is None:
+            return
+        pi, name, level = cb.property("meta")
+        if level == "region":
+            rec = self._reg(pi, name)["recommended"]
+            changed = bool(rec) and cb.currentData() not in (rec[0]["file"], None)
+        else:
+            changed = cb.currentData() not in (SAME, None)
+        item.setBackground(0, QBrush(QColor("#CFE2F3")) if changed else QBrush())
 
     def _reg(self, pi: int, name: str) -> dict:
         return next(r for r in self.plans[pi]["regions"] if r["name"] == name)
@@ -276,7 +319,7 @@ class FontPlanDialog(QDialog):
                 if orig:
                     tips.append(f"원문 글씨 (Claude 판단): {orig}")
                 if reg.get("font_mode") == "sentence":
-                    tips.append("문장마다 글꼴을 고를 수 있는 항목입니다 (카드를 펼치면 문장 목록)")
+                    tips.append("문장마다 글꼴을 고를 수 있는 영역입니다 (카드를 펼치면 문장 목록)")
                 if tips:
                     it.setToolTip(0, "\n".join(tips))
                 parent.addChild(it)
@@ -334,6 +377,8 @@ class FontPlanDialog(QDialog):
                 keep = new["file"] if cb is combo else cb.currentData()
                 self._fill(cb, pi, name, level, keep)
         combo.setProperty("prev", combo.currentData())
+        for cb, _kind in self.combos:
+            self._mark(cb)
         self.tree.setCurrentItem(item)
         self._preview()
 
@@ -397,7 +442,8 @@ class FontPlanDialog(QDialog):
         self.size.setEnabled(w is not None)
         self.size.setValue(round(scale * 100))
         self.size.blockSignals(False)
-        self.size_label.setText(f"글자 크기 ({w[1]} 항목 전체)" if w else "글자 크기")
+        self.size_label.setText(f"글자 크기 (‘{w[1]}’ 영역의 모든 카드)" if w else "글자 크기")
+        self.where.setText(self._where_text(item, w))
         info = None
         if w and w[2] is not None:
             try:
@@ -405,6 +451,8 @@ class FontPlanDialog(QDialog):
             except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
                 info = None
         if info is None:
+            self._orig_pm = QPixmap()
+            self._sample_pm = QPixmap()
             self.orig.setPixmap(QPixmap())
             self.orig.setText("(원본 그림 없음)")
             if fam:
@@ -414,15 +462,87 @@ class FontPlanDialog(QDialog):
         else:
             op = QPixmap()
             op.loadFromData(info["original_png"])
-            self.orig.setPixmap(op)
-            self.sample.setPixmap(self._draw(info, text, fam))
+            self._orig_pm = op
+            self._sample_pm = self._draw(info, text, fam)
+            self.orig.setText("")
+            self.sample.setText("")
+            self._fit_previews()
         cb = self.tree.itemWidget(item, 1)
-        note = cb.currentText().strip() if cb else ""
+        note = cb.currentText().strip().lstrip("★").strip() if cb else ""
+        reason = ""
+        if cb is not None and cb.currentIndex() >= 0:
+            tip = cb.itemData(cb.currentIndex(), Qt.ItemDataRole.ToolTipRole) or ""
+            reason = tip.split(": ", 1)[1] if ": " in tip else ""
         if cb is not None and cb.currentData() == SAME and item.parent() is not None:
             note = "위와 같음: " + (service.font_label(f) if f else "")
+            reason = ""
+        elif cb is not None:
+            note = cb.currentText().strip()
+        if reason:
+            note = f"추천 이유: {reason} · {note}"
         if info is not None:
-            note += f"   ·   {w[2]}쪽, 글자 색 {info['color']}, 시작 크기 {info['size_pt']:.1f}pt"
+            note += f"   ·   글자 색 {info['color']}, 시작 크기 {info['size_pt']:.1f}pt"
         self.sample_note.setText(note)
+
+    def _where_text(self, item: QTreeWidgetItem, w) -> str:
+        """미리 보는 대상: 어느 영역·쪽의 것인지."""
+        if w is None:
+            return ""
+        pi, name, page = w
+        kind = item.data(0, ROLE_KIND)
+        who = f"{self.plans[pi]['file']} · " if len(self.plans) > 1 else ""
+        if page is None:
+            return f"{who}{name} 영역 (번역 있는 카드 없음)"
+        if kind and kind[0] == "sentence":
+            return f"{who}{name} 영역 · {page}쪽 · 문장 {kind[4] + 1}"
+        if kind and kind[0] == "card":
+            return f"{who}{name} 영역 · {page}쪽 카드"
+        return f"{who}{name} 영역 · {page}쪽 카드로 미리 봅니다"
+
+    def _fit_previews(self):
+        """보관한 그림을 칸 크기에 맞춰 줄여 넣는다 (원래보다 키우지는 않는다)."""
+        try:
+            for lb, pm in ((self.orig, self._orig_pm), (self.sample, self._sample_pm)):
+                if pm.isNull():
+                    continue
+                avail = lb.contentsRect().size()
+                avail.setWidth(max(avail.width() - 10, 20))
+                avail.setHeight(max(avail.height() - 10, 20))
+                if pm.width() > avail.width() or pm.height() > avail.height():
+                    pm = pm.scaled(avail, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                lb.setPixmap(pm)
+        except RuntimeError:  # 창이 닫혀 지워진 뒤에 늦게 불린 경우
+            pass
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        QTimer.singleShot(0, self._fit_previews)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self._fit_previews)
+
+    def _all_recommended(self):
+        """모든 영역 콤보를 ★ 추천으로, 카드·문장 콤보를 ‘같음’으로."""
+        for cb, level in self.combos:
+            if level == "region":
+                pi, name, _lv = cb.property("meta")
+                rec = self._reg(pi, name)["recommended"]
+                idx = cb.findData(rec[0]["file"]) if rec else -1
+                if idx >= 0:
+                    self._set_quiet(cb, idx)
+            else:
+                idx = cb.findData(SAME)
+                if idx >= 0:
+                    self._set_quiet(cb, idx)
+        self._preview()
+
+    def _set_quiet(self, cb: QComboBox, idx: int):
+        cb.blockSignals(True)
+        cb.setCurrentIndex(idx)
+        cb.setProperty("prev", cb.currentData())
+        cb.blockSignals(False)
+        self._mark(cb)
 
     @staticmethod
     def _draw(info: dict, text: str, fam: str | None) -> QPixmap:

@@ -10,7 +10,7 @@ import datetime as _dt
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -19,7 +19,10 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import ask_choice, fit_to_screen, set_ok_text, show_error, show_failure, show_problem
+from app.qt.dialogs import (
+    PRIMARY_QSS, ask_choice, fit_to_screen, grey_note, hint_bar, set_hint, set_ok_text, show_error, show_failure,
+    show_problem,
+)
 
 MODE_LABELS = [("double-check", "꼼꼼히 (추천) — 보통 읽기 뒤, 애매한 칸만 정밀 읽기로 한 번 더"),
                ("opus", "처음부터 정밀 읽기 (느리고 사용량이 많음)")]
@@ -43,7 +46,8 @@ def state_label(s: str) -> str:
 
 
 def label_text(label: str) -> str:
-    return LABEL_TEXT.get(label, label)
+    """칸 상태 이름을 화면용으로. 모르는 이름은 모델 이름(Sonnet 등)만 쉬운 말로 바꾼다."""
+    return LABEL_TEXT.get(label) or plain_note(label)
 
 
 def reader_name(model: str) -> str:
@@ -99,8 +103,7 @@ class ExtractDialog(QDialog):
     def __init__(self, groups: list[str], parent=None, card_limit: int | None = None, summary: str = ""):
         super().__init__(parent)
         self.setWindowTitle("글자 추출")
-        self.summary = QLabel(summary)
-        self.summary.setWordWrap(True)
+        self.summary = hint_bar(summary, "info")
         self.summary.setVisible(bool(summary))
         self.group = QComboBox()
         self.group.addItem("모든 그룹", None)
@@ -150,7 +153,7 @@ class ExtractDialog(QDialog):
         form.addRow("로그인 방식", self.engine)
         form.addRow("시험으로 몇 장만", limit_box)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("추출 시작")
+        set_ok_text(bb, "추출 시작")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
@@ -200,6 +203,7 @@ class SourceReviewDialog(QDialog):
         top.addWidget(self.only)
         top.addStretch(1)
         top.addWidget(self.count)
+        self.guide = hint_bar("", "info")
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
@@ -235,9 +239,10 @@ class SourceReviewDialog(QDialog):
         self.next_btn.clicked.connect(self.save_and_next)
         hint = QLabel("Ctrl+S 저장 · Ctrl+Enter 저장하고 다음 칸 · Alt+↑/↓ 칸 이동")
         hint.setStyleSheet("color: #888")
+        self.next_btn.setStyleSheet(PRIMARY_QSS)  # 주 동작 (엔터 기본 버튼으로는 만들지 않는다)
         btns = QHBoxLayout()
-        btns.addWidget(self.save_btn)
         btns.addWidget(self.next_btn)
+        btns.addWidget(self.save_btn)
         btns.addStretch(1)
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -257,6 +262,7 @@ class SourceReviewDialog(QDialog):
         close.clicked.connect(self.accept)
         lay = QVBoxLayout(self)
         lay.addLayout(top)
+        lay.addWidget(self.guide)
         lay.addWidget(split, 1)
         lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
         for b in (self.save_btn, self.next_btn):
@@ -365,6 +371,12 @@ class SourceReviewDialog(QDialog):
         n_att = sum(1 for c in allc if self.needs_attention(c))
         n_unread = sum(1 for c in allc if c["label"] == self.UNREAD)
         self.count.setText(f"확인할 칸 {n_att} · 아직 읽지 않은 칸 {n_unread} / 전체 {len(allc)}")
+        if n_att:
+            set_hint(self.guide, f"확인할 칸 {n_att}개가 남았습니다. 그림과 비교해 고친 뒤 ‘저장하고 다음 칸’을 누르세요.", "todo")
+        elif n_unread:
+            set_hint(self.guide, f"아직 읽지 않은 칸이 {n_unread}개 있습니다. 프로젝트 화면에서 ‘① 글자 추출’을 다시 누르면 이어서 읽습니다.", "info")
+        else:
+            set_hint(self.guide, "확인할 칸이 없습니다. 창을 닫고 ‘④ 추출 완료 → 용어집’으로 넘어가세요.", "done")
         self._busy = True
         try:
             self.table.setRowCount(len(self.cells))
@@ -500,6 +512,7 @@ class IconDictionaryDialog(QDialog):
         self._rows = rows
         lab = QLabel(intro)
         lab.setWordWrap(True)
+        reset_note = grey_note("‘다시 정하기’를 체크하면 그 아이콘을 원문에서 되돌리고, 저장한 뒤 다시 찾아 이름을 정합니다.")
         self.table = QTableWidget(len(rows), len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.verticalHeader().setVisible(False)
@@ -534,14 +547,27 @@ class IconDictionaryDialog(QDialog):
             self.table.setCellWidget(i, 6, cb)
             self.resets.append(cb)
             self.table.setRowHeight(i, 48)
+        for i in range(len(rows)):
+            self._paint_ko(i)
+        self.table.itemChanged.connect(lambda it: self._paint_ko(it.row()) if it.column() == 2 else None)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("저장")
+        set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
         lay.addWidget(lab)
+        lay.addWidget(reset_note)
         lay.addWidget(self.table, 1)
         lay.addWidget(bb)
+
+    def _paint_ko(self, i: int):
+        """한국어 이름이 빈 줄은 노랑 (입력하면 지움)."""
+        it = self.table.item(i, 2)
+        if it is None:
+            return
+        self.table.blockSignals(True)
+        it.setBackground(QBrush(QColor("#FFE066")) if not it.text().strip() else QBrush())
+        self.table.blockSignals(False)
 
     def rows(self) -> list[dict]:
         return [{"name": r["name"], "ko": self.table.item(i, 2).text().strip(),
@@ -607,20 +633,27 @@ class IconReviewDialog(QDialog):
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
             self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
         self.table.resizeColumnToContents(1)
-        known = QLabel("왼쪽 번호가 줄 번호입니다. ‘같은 아이콘’에서 다른 줄이나 사전 아이콘을 고르면 하나로 합칩니다 "
-                       "(따로 묶인 같은 아이콘·잘못 잘린 조각). 아이콘이 아니라 글자면 ‘아이콘 아님’을 고르고 ‘뜻’ 칸에 그 글자를 적으세요 "
-                       "(그 글자로 바꿉니다. 비우면 원문에서 뺌).\n"
-                       "사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
-        known.setWordWrap(True)
-        known.setStyleSheet("color: #666")
+        steps_text = hint_bar(f"정할 아이콘 {len(groups)}개\n"
+                              "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요.\n"
+                              "2. 같은 아이콘이 따로 묶였으면 ‘같은 아이콘’에서 그 줄 번호를 고르세요.\n"
+                              "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌).", "info")
+        known = grey_note("사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
+        for w in self.widgets:  # 한국어 이름이 빈 줄은 노랑
+            self._paint_ko_edit(w[3])
+            w[3].textChanged.connect(lambda _t, e=w[3]: self._paint_ko_edit(e))
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("확정")
+        set_ok_text(bb, "이름 확정")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(self.table, 1)
+        lay.addWidget(steps_text)
         lay.addWidget(known)
+        lay.addWidget(self.table, 1)
         lay.addWidget(bb)
+
+    @staticmethod
+    def _paint_ko_edit(edit: QLineEdit):
+        edit.setStyleSheet("" if edit.text().strip() else "background: #FFE066")
 
     def _sync_row(self, r: int):
         _g, name, meaning, ko, not_icon, scale, same = self.widgets[r]

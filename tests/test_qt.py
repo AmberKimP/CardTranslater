@@ -881,7 +881,7 @@ def test_korean_standard_buttons_and_action_names(qapp, tmp_path):
         info = _project(tmp_path)
         file_dir = service.project_overview(info.dir)["groups"][0]["files"][0]["dir"]
         for dlg, ok in ((NewProjectDialog(tmp_path), "만들기"), (AddFilesDialog(info.dir), "넣기"),
-                        (ExcludePagesDialog(Path(file_dir), [], ""), "저장"), (SettingsDialog(), "저장")):
+                        (ExcludePagesDialog(Path(file_dir), [], ""), "체크한 쪽 빼기"), (SettingsDialog(), "저장")):
             bb = dlg.findChild(QDialogButtonBox)
             assert bb.button(QDialogButtonBox.StandardButton.Ok).text() == ok, type(dlg).__name__
             assert bb.button(QDialogButtonBox.StandardButton.Cancel).text() == "취소"
@@ -1682,7 +1682,7 @@ def test_project_names_unique_per_game_and_new_project_dialog_defaults(qapp, tmp
         pass
     # 창: 게임이 먼저, 새 게임이면 프로젝트 이름 = 게임 이름, 기존 게임이면 비움
     dlg = NewProjectDialog(tmp_path)
-    form = dlg.layout().itemAt(0).layout()
+    form = dlg.layout().itemAt(1).layout()
     assert form.itemAt(0, form.ItemRole.FieldRole).widget() is dlg.game
     dlg.game.setCurrentText("새게임")
     assert dlg.name.text() == "새게임"
@@ -1718,3 +1718,188 @@ def test_login_shows_banner_image_only_at_startup(qapp):
     assert d1.banner.pixmap().width() <= 620
     d2 = LoginDialog(None, first_run=False)  # 파일 > 로그인 방식에서 열 때는 그림 없이
     assert d2.banner is None
+
+
+# ---------------------------------------------------------------- 화면 재구성 (UI 제안)
+def test_hint_bar_and_primary_helpers(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from app.qt.dialogs import PRIMARY_QSS, hint_bar, set_hint, set_ok_text
+
+    lb = hint_bar("안내", "todo")
+    assert lb.text() == "안내" and "#FFE066" in lb.styleSheet() and lb.wordWrap()
+    set_hint(lb, "끝", "done")
+    assert "#D9EAD3" in lb.styleSheet() and lb.property("hint_kind") == "done"
+    bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    set_ok_text(bb, "넣기")
+    assert bb.button(QDialogButtonBox.StandardButton.Ok).styleSheet() == PRIMARY_QSS
+    bb2 = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    set_ok_text(bb2, "넣기", primary=False)
+    assert bb2.button(QDialogButtonBox.StandardButton.Ok).styleSheet() == ""
+
+
+def test_new_project_dialog_min_width_and_hint(qapp, tmp_path):
+    from app.qt.dialogs import NewProjectDialog
+
+    dlg = NewProjectDialog(tmp_path)
+    assert dlg.minimumWidth() >= 460
+    assert dlg.hint.isHidden()  # 게임을 안 골랐으면 힌트 줄이 없다
+    dlg.game.setCurrentText("새게임")
+    assert not dlg.hint.isHidden()
+
+
+def test_add_files_dialog_empty_state(qapp, tmp_path):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from app.qt.dialogs import AddFilesDialog
+
+    info = _project(tmp_path)
+    dlg = AddFilesDialog(info.dir)
+    ok = dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+    assert dlg.files_stack.currentWidget() is dlg.empty_hint and not ok.isEnabled()
+    assert "#0b5cad" in dlg.pick.styleSheet()
+    dlg.files.addItem(str(tmp_path / "in" / "cards.pdf"))
+    assert dlg.files_stack.currentWidget() is dlg.files and ok.isEnabled() and dlg.pick.styleSheet() == ""
+
+
+def test_exclude_pages_click_toggles_and_counts(qapp, tmp_path):
+    from PySide6.QtTest import QTest
+
+    from app.qt.dialogs import ExcludePagesDialog
+
+    info = _project(tmp_path)
+    fd = Path(service.project_overview(info.dir)["groups"][0]["files"][0]["dir"])
+    dlg = ExcludePagesDialog(fd, [], "")
+    dlg.show()
+    qapp.processEvents()
+    assert dlg.count.text() == "체크한 쪽: 0쪽" and dlg.checked() == []
+    rect = dlg.list.visualItemRect(dlg.list.item(1))
+    QTest.mouseClick(dlg.list.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())  # 그림을 눌러도 체크
+    assert dlg.checked() == [2] and dlg.count.text() == "체크한 쪽: 1쪽 (2쪽)"
+    assert dlg.list.item(1).background().color().name().upper() == "#F4B183"
+    QTest.mouseClick(dlg.list.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    assert dlg.checked() == []
+
+
+def test_project_page_layout_next_why_and_menu(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    assert page.b_reset.text() == "초기화…" and page.b_delete.text() == "삭제…"
+    assert page.scope_label.text() == "작업 대상: 전체" and "목록에서" in page.scope_hint.text()
+    assert page.next_why.text()  # 영역 지정 단계
+    assert page.b_folders.menu().actions()[0].text().startswith("이 그룹")
+    assert page.a_folder is not None and page.a_game_folder is not None
+    group = page.all_item.child(0)
+    page.tree.setCurrentItem(group)
+    assert page.scope_label.text().startswith("작업 대상: 그룹") and "전체" in page.scope_hint.text()
+    assert [e[0] if e else None for e in page._menu_items("group")] == [
+        "영역 지정", "폴더 열기", None, "초기화…", "삭제…"]
+    assert [e[0] for e in page._menu_items("all") if e] == ["파일 넣기", "초기화…"]
+    assert "영역 지정" in [e[0] for e in page._menu_items("file") if e]
+    # 모두 끝난 뒤의 다음 할 일 문구
+    page.ov["next_key"] = "results"
+    page._sync_next_why()
+    assert "검수 엑셀" in page.next_why.text()
+    page.ov["next_key"] = "extract"
+    page._sync_next_why()
+    assert "대상:" in page.next_why.text()
+
+
+def test_home_buttons_follow_selection(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    home = win.home
+    home.tree.setCurrentItem(None)
+    assert not home.b_open.isEnabled() and not home.b_delete.isEnabled()
+    g = home.tree.topLevelItem(0)
+    home.tree.setCurrentItem(g)
+    assert not home.b_open.isEnabled()
+    home.tree.setCurrentItem(g.child(0))
+    assert home.b_open.isEnabled() and home.b_delete.isEnabled() and home.b_delete.text() == "프로젝트 삭제…"
+    assert g.child(0).text(2)  # 다음 할 일 열
+
+
+def test_region_editor_guide_form_hint_and_save_button(qapp, tmp_path):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtTest import QTest
+
+    from app.qt.dialogs import PRIMARY_QSS
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.show()
+    qapp.processEvents()
+    assert "+ 글자 영역" in ed.guide.text() and ed.guide.property("hint_kind") == "todo"
+    assert ed.cards_bar.isHidden() and ed.form_box.isHidden() and not ed.form_hint.isHidden()
+    assert ed.reset_btn.text() == "초기화…" and ed.save_btn.styleSheet() == ""
+    ed._set_add_kind("text")
+    vp = ed.view.viewport()
+    c0 = ed.view.mapFromScene(QPointF(100, 100))
+    c1 = ed.view.mapFromScene(QPointF(300, 200))
+    QTest.mousePress(vp, Qt.MouseButton.LeftButton, pos=c0)
+    QTest.mouseMove(vp, c1)
+    QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=c1)
+    assert len(ed.items()) == 1
+    assert "저장하지 않은 변경" in ed.guide.text() and ed.guide.property("hint_kind") == "warn"
+    assert ed.save_btn.styleSheet() == PRIMARY_QSS
+    assert not ed.form_box.isHidden() and ed.form_hint.isHidden()
+    assert not ed.g_style.isHidden()
+    ed.f_kind.setCurrentIndex(ed.f_kind.findData("protect"))
+    assert ed.g_style.isHidden() and ed.g_erase.isHidden() and not ed.f_ocr_exclude.isHidden()
+    ed.f_kind.setCurrentIndex(ed.f_kind.findData("text"))
+    assert not ed.g_style.isHidden() and ed.f_ocr_exclude.isHidden()
+    assert ed.save() is True
+    assert "① 글자 추출" in ed.guide.text() and ed.save_btn.styleSheet() == ""
+    ed.per_card.blockSignals(True)
+    ed.per_card.setChecked(True)
+    ed.per_card.blockSignals(False)
+    ed._update_card_info()
+    assert not ed.cards_bar.isHidden()
+    ed.dirty = False
+
+
+def test_source_review_hides_model_name_and_guides(qapp, tmp_path):
+    from app.qt.steps import SourceReviewDialog, label_text
+
+    assert label_text("Sonnet 1회") == "보통 읽기 1회" and label_text("결론 못 냄") == "다시 봐야 함"
+    assert label_text("두 번 확인") == "두 번 확인"
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files)
+    assert "확인할 칸 1개" in dlg.guide.text() and dlg.guide.property("hint_kind") == "todo"
+    assert dlg.next_btn.styleSheet() and dlg.save_btn.text() == "고친 원문 저장"
+
+
+def test_result_viewer_colors_and_footer(qapp, tmp_path):
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    assert v.info.property("hint_kind") == "done" and "검수 엑셀" in v.footer.text()
+    assert v.only.text() == "문제 있는 쪽만 보기"
+    assert v.regions.count() >= 1
+    r = service.test_run(fd, "2", out_root=tmp_path / "runs")
+    v2 = ResultViewer([("시험", r.run_dir)])
+    assert "시험 결과입니다" in v2.footer.text() and "바꿀 수 없습니다" in v2.erase_hint.text()
+
+
+def test_test_run_dialog_needs_pages(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from app.qt.results import TestRunDialog
+
+    dlg = TestRunDialog([{"key": "a", "pages": 3, "dir": "x"}])
+    ok = dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+    assert not ok.isEnabled() and dlg.minimumWidth() >= 420
+    dlg.pages.setText("1-2")
+    assert ok.isEnabled()
