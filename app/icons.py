@@ -360,7 +360,9 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         if colored is None and text_line and _line_color_design(img, ink, y0, y1) and _looks_like_text(img, lum, ink, box):
             # 색 아이콘을 못 찾아 칸으로 짐작한 자리가 검정 글자처럼 보이면 틀린 자리다 (못 찾음으로 둔다)
             return None, "아이콘 자리로 짐작한 곳이 글자임"
-        if len(cells) > len(seq):  # 원문이 한 칸으로 읽은 세트 아이콘(예: 큰 숫자 3 + 검)은 붙은 칸까지 하나로
+        # 원문이 한 칸으로 읽은 세트 아이콘(예: 큰 숫자 3 + 검, 검 + 1 타일)은 붙은 칸까지 하나로.
+        # 칸 수가 원문과 꼭 맞아 순서로 짝지은 경우만 빼고 늘 본다 (배경 그림 조각 때문에 칸 수가 어긋나기도 한다)
+        if len(cells) != len(seq) or colored is not None:
             box = _set_partner(box, cells, seq, tok_pos, em_line, em, img, lum, ink)
         bx0, by0, bx1, by1 = _grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
@@ -638,15 +640,17 @@ def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float, img=N
             continue
         nb = seq[tok_pos + 1] if side == "right" and tok_pos + 1 < len(seq) else (
             seq[tok_pos - 1] if side == "left" and tok_pos > 0 else "")
-        if nb == "■":
-            continue
+        if nb == "■" or _DIGIT_CH.match(nb or " "):
+            continue  # 원문에서 그쪽이 다른 아이콘이거나 숫자·기호(+2 등)면 그 칸은 그 글자다
         c = cells[j]
         # 세로는 고른 칸 근처까지만 (이웃 칸에 윗줄 글자가 붙어 있을 수 있다)
         h = out[3] - out[1]
         c = (c[0], max(c[1], int(out[1] - 0.35 * h)), c[2], min(c[3], int(out[3] + 0.35 * h)))
         gap = (c[0] - out[2]) if side == "right" else (out[0] - c[2])
-        icon_like = c[3] - c[1] >= 1.2 * em_line or (
-            c[3] - c[1] >= 0.8 * em_line and _not_black_text(img, lum, ink, c))
+        if img is None:  # 그림이 없으면(시험) 크기로만
+            icon_like = c[3] - c[1] >= 1.2 * em_line
+        else:  # 검정 글자는 크게 잡혀도(아래 그림 선이 붙음) 아이콘이 아니다: 회색·색 잉크여야 한다
+            icon_like = c[3] - c[1] >= 0.8 * em_line and _not_black_text(img, lum, ink, c)
         if (0 <= gap + 2 and gap <= 0.35 * em_line and icon_like
                 and max(out[2], c[2]) - min(out[0], c[0]) <= 3.0 * max(em, em_line)):
             out = [min(out[0], c[0]), min(out[1], c[1]), max(out[2], c[2]), max(out[3], c[3])]

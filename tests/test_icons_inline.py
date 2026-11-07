@@ -223,3 +223,12 @@ def test_extra_lines_dropped_by_width_not_glyph_size():
     # 카드 번호처럼 폭으로도 작은 줄은 그대로 빠진다
     num = ln(1040, 1125, 24)
     assert erase_text._extra_lines([num, label, l2, l3], ["プレイ時効果", "人物[[person]]タグが２個以上なら", "[[sword_2]]を得る"]) == [num]
+
+
+def test_set_partner_does_not_take_printed_number_or_plus():
+    """원문이 ‘[[coin]]+2’처럼 아이콘 바로 옆에 숫자·기호를 적었으면 옆 칸은 그 글자: 합치지 않는다."""
+    from app.icons import _set_partner
+
+    seq = list("それをした場合") + ["■", "+", "2"]
+    cells = [(i * 60, 100, i * 60 + 50, 150) for i in range(7)] + [(430, 80, 520, 170), (525, 80, 600, 170), (610, 100, 650, 150)]
+    assert _set_partner(cells[7], cells, seq, 7, 55.0, 90.0) == cells[7]

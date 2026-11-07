@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import re
 import cv2
 import numpy as np
 
@@ -512,6 +513,48 @@ def is_icon_line(text: str) -> bool:
     return not _WORD.search(_TOKEN.sub("", text))
 
 
+def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
+    """줄 맨 앞·맨 뒤에 넓은 틈을 두고 떨어진 작은 조각(글자 하나 크기)이 원문에 없으면 줄에서 뺀다.
+    예: 제목 영역 왼쪽 위 배지 안의 숫자 ‘5’가 ‘緊急クエスト’ 줄에 붙어 같이 지워지던 것.
+    원문 그 끝이 숫자·기호면 진짜 글자일 수 있어 그대로 둔다. 줄 상자(ln["bbox"])를 고친다."""
+    from app.icons import TOKEN_RE
+
+    x0, y0, x1, y1 = ln["bbox"]
+    gh = float(ln.get("glyph_h") or 0)
+    plain = TOKEN_RE.sub("■", text).strip()
+    if gh <= 0 or len(plain) < 2 or x1 - x0 < 4 * gh:
+        return False
+    cols = tm.mask[max(0, y0):y1, max(0, x0):x1].any(axis=0)
+    xs = np.nonzero(cols)[0]
+    if len(xs) < 2:
+        return False
+    # 잉크가 있는 열을 틈으로 나눈 덩이들
+    segs, start = [], xs[0]
+    for a, b in zip(xs[:-1], xs[1:]):
+        if b - a > 1:
+            segs.append((start, a + 1))
+            start = b
+    segs.append((start, xs[-1] + 1))
+    if len(segs) < 2:
+        return False
+    changed = False
+    for end in ("left", "right"):
+        if len(segs) < 2:
+            break
+        s, nxt = (segs[0], segs[1]) if end == "left" else (segs[-1], segs[-2])
+        gap = (nxt[0] - s[1]) if end == "left" else (s[0] - nxt[1])
+        ch = plain[0] if end == "left" else plain[-1]
+        if (gap >= 2.5 * gh and s[1] - s[0] <= 1.6 * gh
+                and not re.match(r"[0-9０-９+＋\-−×xX■]", ch)):
+            a, b = x0 + int(s[0]), x0 + int(s[1])
+            tm.mask[max(0, y0 - int(gh)):y1 + int(gh), max(0, a - 2):b + 2] = False
+            segs = segs[1:] if end == "left" else segs[:-1]
+            changed = True
+    if changed:
+        ln["bbox"] = [x0 + int(segs[0][0]), y0, x0 + int(segs[-1][1]), y1]
+    return changed
+
+
 def _extra_lines(lines: list[dict], src: list[str]) -> list[dict]:
     """찾은 줄이 원문보다 많을 때 원문에 없는 줄을 고른다.
     줄 폭이 원문 줄 길이(글자 수)와 가장 잘 맞게 남는 줄을 뺀다 (원문이 빠뜨린 숫자 타일·카드 번호 등).
@@ -593,6 +636,12 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
                 restore.append(ln)
     H, W = tm.mask.shape
     if len(kept) == len(src):
+        trimmed = 0
+        for ln, t in zip(kept, src):
+            if not ln.get("keep") and _trim_stray_end(tm, ln, t):
+                trimmed += 1
+        if trimmed:
+            tm.notes.append(f"줄 끝에 떨어진 원문에 없는 조각 {trimmed}개는 지우지 않음")
         # 원문 줄과 맞으면: 지울 줄(아이콘만 있는 줄 빼고) 둘레 밖의 지울 픽셀은 원문에 없는 것(작은 카드 번호 등)이라 남긴다
         allowed = np.zeros_like(tm.mask)
         for ln in kept:
