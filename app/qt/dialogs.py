@@ -9,7 +9,8 @@ import sys
 from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout,
     QLabel, QSpinBox, QStackedWidget,
     QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QVBoxLayout,
 )
@@ -44,22 +45,99 @@ def install_korean(app=None) -> bool:
 
 # 화면 색 약속: 주 버튼 파랑, 끝난 단계 연두(#D9EAD3), 확인할 것 노랑(#FFE066)·주황(#F4B183)
 PRIMARY_QSS = ("QPushButton { background: #0b5cad; color: white; font-weight: bold; border: 1px solid #0b5cad;"
-               " border-radius: 4px; padding: 4px 14px; }"
-               "QPushButton:hover { background: #0a4f95; } QPushButton:disabled { background: #9db7d3; }")
-NEXT_QSS = PRIMARY_QSS.replace("padding: 4px 14px;", "padding: 8px 22px; font-size: 11pt;")
-EMPTY_QSS = "color: #666; font-size: 11pt; background: white; border: 1px solid #ddd;"
-BANNER_QSS = "background: #FFE066; border: 1px solid #e0c040; border-radius: 4px;"
+               " border-radius: 6px; padding: 5px 16px; min-height: 20px; }"
+               "QPushButton:hover { background: #0a4f95; border-color: #0a4f95; }"
+               "QPushButton:pressed { background: #083f78; }"
+               "QPushButton:disabled { background: #A9C2DC; border-color: #A9C2DC; color: #F4F7FB; }")
+NEXT_QSS = PRIMARY_QSS.replace("padding: 5px 16px;", "padding: 10px 26px; font-size: 12pt; border-radius: 8px;")
+EMPTY_QSS = ("color: #5F6B7A; font-size: 11pt; background: white; border: 1px dashed #C5CCD6;"
+             " border-radius: 10px;")
+BANNER_QSS = "background: #FFF4C2; border: 1px solid #FFE066; border-radius: 8px;"
 DONE_BG = "#D9EAD3"
 
-# 안내 띠 종류: (배경, 테두리)
-HINT_COLORS = {"info": ("#EEF4FB", "#c9d9ee"), "todo": ("#FFE066", "#e0c040"),
-               "done": ("#D9EAD3", "#9cc28f"), "warn": ("#F4B183", "#d9905c")}
+# 안내 띠 종류: (배경, 테두리). 확인할 것 노랑·주황, 끝남 연두 (색 약속), 바탕은 조금 옅게
+HINT_COLORS = {"info": ("#EEF4FB", "#C9D9EE"), "todo": ("#FFF4C2", "#FFE066"),
+               "done": ("#E7F2E2", "#D9EAD3"), "warn": ("#FCE6D8", "#F4B183")}
 
 
 def make_primary(btn: QPushButton) -> None:
     """주 버튼(파랑). 엔터로 눌리는 기본 버튼도 된다."""
     btn.setStyleSheet(PRIMARY_QSS)
     btn.setDefault(True)
+
+
+def make_danger(btn: QPushButton) -> None:
+    """되돌리기 어려운 일(삭제·초기화) 버튼: 빨간 글자 (테마의 danger 속성)."""
+    btn.setProperty("danger", True)
+    btn.style().unpolish(btn)
+    btn.style().polish(btn)
+
+
+def page_title(text: str, size: int = 15) -> QLabel:
+    """창·화면 맨 위 큰 제목."""
+    lb = QLabel(text)
+    f = lb.font()
+    f.setPointSize(size)
+    f.setBold(True)
+    lb.setFont(f)
+    lb.setStyleSheet("color: #102A43;")
+    return lb
+
+
+def subtitle(text: str) -> QLabel:
+    """제목 바로 아래 한 줄 설명 (회색, 줄바꿈)."""
+    lb = QLabel(text)
+    lb.setWordWrap(True)
+    lb.setStyleSheet("color: #5F6B7A;")
+    return lb
+
+
+def section_title(text: str) -> QLabel:
+    """창 안의 묶음 제목 (굵게, 조금 크게)."""
+    lb = QLabel(text)
+    f = lb.font()
+    f.setPointSize(f.pointSize() + 1 if f.pointSize() > 0 else 11)
+    f.setBold(True)
+    lb.setFont(f)
+    lb.setStyleSheet("color: #243B53;")
+    return lb
+
+
+def card(*items, margins: tuple[int, int, int, int] = (14, 12, 14, 12), spacing: int = 8) -> QFrame:
+    """흰 카드(둥근 테두리) 안에 위젯·배치를 위에서 아래로 담는다."""
+    fr = QFrame()
+    fr.setObjectName("card")
+    fr.setStyleSheet("QFrame#card { background: white; border: 1px solid #E6E9EE; border-radius: 10px; }")
+    lay = QVBoxLayout(fr)
+    lay.setContentsMargins(*margins)
+    lay.setSpacing(spacing)
+    for it in items:
+        if it is None:
+            continue
+        (lay.addLayout if not hasattr(it, "show") else lay.addWidget)(it)
+    return fr
+
+
+def file_label(key: str) -> str:
+    """파일 이름 표시: ‘그룹/파일’에서 그룹과 파일 이름이 같으면 하나만, 다르면 ‘그룹 › 파일’."""
+    if "/" not in (key or ""):
+        return key
+    g, f = key.split("/", 1)
+    return f if g == f else f"{g} › {f}"
+
+
+ERASE_LABELS = {
+    "auto": "자동 (알아서 고름)",
+    "solid": "한 가지 색으로 덮기",
+    "pattern": "주변 무늬로 채우기",
+    "rect_avg": "사각형으로 덮기",
+    "inpaint": "뒤 그림 이어 채우기",
+}
+
+
+def erase_modes() -> list[tuple[str, str]]:
+    """글자 지우기 방식 [(키, 쉬운 문구)]. 키는 service.ERASE_MODES 그대로, 문구만 일반 말로."""
+    return [(k, ERASE_LABELS.get(k, t)) for k, t in service.ERASE_MODES]
 
 
 def set_ok_text(bb: QDialogButtonBox, text: str, primary: bool = True) -> None:
@@ -75,7 +153,7 @@ def set_hint(label: QLabel, text: str, kind: str = "info") -> None:
     bg, border = HINT_COLORS.get(kind, HINT_COLORS["info"])
     label.setText(text)
     label.setProperty("hint_kind", kind)
-    label.setStyleSheet(f"background: {bg}; border: 1px solid {border}; border-radius: 4px; padding: 6px;")
+    label.setStyleSheet(f"background: {bg}; border: 1px solid {border}; border-radius: 8px; padding: 8px 12px;")
 
 
 def hint_bar(text: str, kind: str = "info") -> QLabel:
@@ -91,7 +169,7 @@ def grey_note(text: str) -> QLabel:
     """회색 보조 설명."""
     lb = QLabel(text)
     lb.setWordWrap(True)
-    lb.setStyleSheet("color: #666")
+    lb.setStyleSheet("color: #5F6B7A")
     return lb
 
 
@@ -242,9 +320,11 @@ class NewProjectDialog(QDialog):
         for k, t in LANGS:
             self.lang.addItem(t, k)
         self.hint = QLabel()
-        self.hint.setStyleSheet("color: #666")
+        self.hint.setStyleSheet("color: #0b5cad")
         self.game.currentTextChanged.connect(self._hint)
         form = QFormLayout()
+        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(14)
         form.addRow("게임", self.game)  # 프로젝트는 게임 안에 있다: 게임을 먼저
         form.addRow("", self.hint)
         self._hint_label = form.labelForField(self.hint)
@@ -257,8 +337,12 @@ class NewProjectDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(grey_note("게임 안에 프로젝트를 만듭니다. 같은 게임의 프로젝트는 용어집과 아이콘 사전을 함께 씁니다."))
-        lay.addLayout(form)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(12)
+        lay.addWidget(page_title("새 프로젝트 만들기", 14))
+        lay.addWidget(subtitle("게임 안에 프로젝트를 만듭니다. 같은 게임의 프로젝트는 용어집과 아이콘 사전을 함께 씁니다."))
+        self.form = form
+        lay.addWidget(card(form))
         lay.addWidget(bb)
         self._hint(self.game.currentText())
 
@@ -316,8 +400,9 @@ class AddFilesDialog(QDialog):
         self.files.setTextElideMode(Qt.TextElideMode.ElideMiddle)  # 긴 경로는 가운데를 줄여 파일 이름이 보이게
         self.files.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         for f in files or []:
-            self.files.addItem(f)
+            self._add_path(f)
         self.files.setMinimumHeight(100)
+        self.files.setSpacing(1)
         self.pick = QPushButton("파일 고르기… (PDF·JPG·PNG)")
         self.pick.clicked.connect(self._pick)
         remove = QPushButton("목록에서 빼기")
@@ -393,7 +478,7 @@ class AddFilesDialog(QDialog):
 
         self.empty_hint = QLabel("‘파일 고르기…’를 눌러 카드 PDF나 그림(JPG·PNG)을 고르세요.\n여러 개를 한 번에 골라도 됩니다.")
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_hint.setStyleSheet("color: #666; background: white; border: 1px solid #ddd")
+        self.empty_hint.setStyleSheet(EMPTY_QSS)
         self.files_stack = QStackedWidget()
         self.files_stack.addWidget(self.files)
         self.files_stack.addWidget(self.empty_hint)
@@ -403,24 +488,35 @@ class AddFilesDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        t1 = QLabel("① 넣을 파일")
-        t1.setStyleSheet("font-weight: bold")
-        t2 = QLabel("② 어느 그룹에 넣을까요?")
-        t2.setStyleSheet("font-weight: bold")
-        lay.addWidget(t1)
-        lay.addWidget(grey_note("이미지는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣습니다."))
-        lay.addLayout(prow)
-        lay.addWidget(self.files_stack, 1)
-        lay.addWidget(t2)
-        lay.addWidget(grey_note("같은 형식의 카드끼리 한 그룹입니다. 그룹마다 영역을 한 번 지정합니다."))
-        lay.addLayout(form)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(12)
+        form.setVerticalSpacing(8)
+        lay.addWidget(page_title("카드 파일 넣기", 14))
+        lay.addWidget(card(section_title("① 넣을 파일"),
+                           grey_note("카드 PDF나 그림(JPG·PNG)을 고르세요. 그림은 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣습니다."),
+                           prow, self.files_stack), 1)
+        lay.addWidget(card(section_title("② 어느 그룹에 넣을까요?"),
+                           grey_note("같은 형식의 카드끼리 한 그룹입니다. 그룹마다 영역을 한 번 지정합니다."), form))
         lay.addWidget(self.img_box)
         lay.addWidget(bb)
-        self.resize(620, 560)
+        self.resize(640, 620)
         self._sync()
 
     def all_files(self) -> list[str]:
-        return [self.files.item(i).text() for i in range(self.files.count())]
+        """고른 파일의 전체 경로 (목록에는 파일 이름만 보이고 경로는 줄에 담아 둔다)."""
+        return [self._path_of(self.files.item(i)) for i in range(self.files.count())]
+
+    @staticmethod
+    def _path_of(it) -> str:
+        return it.data(Qt.ItemDataRole.UserRole) or it.text()
+
+    def _add_path(self, f: str) -> None:
+        if f in self.all_files():
+            return
+        it = QListWidgetItem(f"{Path(f).name}")
+        it.setData(Qt.ItemDataRole.UserRole, f)
+        it.setToolTip(f)
+        self.files.addItem(it)
 
     def image_files(self) -> list[str]:
         return [f for f in self.all_files() if Path(f).suffix.lower() in IMAGE_EXTS]
@@ -454,8 +550,7 @@ class AddFilesDialog(QDialog):
         fs, _ = QFileDialog.getOpenFileNames(self, "카드 파일 고르기", "",
                                              f"카드 파일 (*.pdf {exts});;PDF (*.pdf);;이미지 ({exts})")
         for f in sorted(fs):
-            if not self.files.findItems(f, Qt.MatchFlag.MatchExactly):
-                self.files.addItem(f)
+            self._add_path(f)
 
     def _remove(self):
         for it in self.files.selectedItems():
@@ -468,7 +563,8 @@ class AddFilesDialog(QDialog):
         imgs = self.image_files()
         if not imgs:
             return
-        sel = [it.text() for it in self.files.selectedItems() if Path(it.text()).suffix.lower() in IMAGE_EXTS]
+        sel = [self._path_of(it) for it in self.files.selectedItems()
+               if Path(self._path_of(it)).suffix.lower() in IMAGE_EXTS]
         path = sel[0] if sel else imgs[0]
         cols, rows = self.layout_choice()
         try:
@@ -595,6 +691,9 @@ class ExcludePagesDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(10)
+        lay.addWidget(page_title("뺄 쪽 고르기", 14))
         lay.addWidget(hint_bar("그림이나 쪽 번호를 눌러 뺄 쪽을 체크하세요. 체크한 쪽은 추출·용어집·번역·지우기·한글 넣기에서 모두 빠집니다."))
         lay.addWidget(self.list, 1)
         lay.addWidget(self.count)
@@ -682,22 +781,19 @@ class SettingsDialog(QDialog):
         row.addWidget(self.dir)
         row.addWidget(browse)
         self.engine = s.engine
-        info = QLabel(service.engine_status()["message"] + "\n(Claude 구독 / API 키는 파일 > 로그인 방식에서 바꿉니다)")
-        info.setStyleSheet("color: #666")
-        self.log_path = QLineEdit(str(service.log_folder()))
+        st = service.engine_status()["message"]
+        info = QLabel(f"지금: {st}\n바꾸려면 메뉴의 ‘파일 > 로그인 방식…’을 누르세요.")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #334E68")
+        self.log_path = QLineEdit(str(service.log_folder()))  # 경로는 보이지 않게 두고 버튼 말풍선에 보인다
         self.log_path.setReadOnly(True)
-        self.log_path.setToolTip("문제가 생기면 이 폴더의 파일(또는 도움말 > 로그 묶어서 저장)을 보내 주세요")
+        self.log_path.setVisible(False)
         self.b_log = QPushButton("폴더 열기")
+        self.b_log.setToolTip(f"{service.log_folder()}\n문제가 생기면 이 폴더의 파일(또는 도움말 > 로그 묶어서 저장)을 보내 주세요")
         self.b_log.clicked.connect(lambda: open_log_folder(self))
         lrow = QHBoxLayout()
-        lrow.addWidget(self.log_path)
+        lrow.addWidget(grey_note("문제가 생기면 ‘도움말 > 로그 묶어서 저장…’으로 만든 파일을 보내 주세요."), 1)
         lrow.addWidget(self.b_log)
-        form = QFormLayout()
-        form.addRow("데이터 폴더", row)
-        form.addRow("", grey_note("게임·프로젝트가 저장되는 폴더입니다. 바꾸면 새 폴더의 프로젝트 목록이 보입니다 "
-                                  "(예전 폴더의 자료는 옮기지 않습니다)."))
-        form.addRow("로그인 방식", info)
-        form.addRow("로그 폴더", lrow)
         # 작업 끝 소리: 5초 넘게 걸린 작업(추출·지우기·한글 넣기 등)이 끝나면
         self.sound_on = QCheckBox(f"{int(service.DONE_SOUND_MIN_S)}초 넘게 걸린 작업이 끝나면 소리 내기")
         self.sound_on.setChecked(s.done_sound_on)
@@ -713,16 +809,23 @@ class SettingsDialog(QDialog):
         srow.addWidget(self.b_listen)
         self.sound_on.toggled.connect(lambda on: [w.setEnabled(on) for w in (self.sound_path, self.b_sound, self.b_listen)])
         self.sound_on.toggled.emit(self.sound_on.isChecked())
-        form.addRow("작업 끝 소리", self.sound_on)
-        form.addRow("소리 파일", srow)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "저장")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addLayout(form)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        lay.addWidget(page_title("설정", 14))
+        lay.addWidget(card(section_title("저장 위치"), row,
+                           grey_note("게임·프로젝트가 저장되는 폴더입니다. 바꾸면 새 폴더의 프로젝트 목록이 보입니다 "
+                                     "(예전 폴더의 자료는 옮기지 않습니다).")))
+        lay.addWidget(card(section_title("Claude 연결"), info))
+        lay.addWidget(card(section_title("작업이 끝나면"), self.sound_on, srow))
+        lay.addWidget(card(section_title("문제가 생겼을 때"), lrow))
+        lay.addWidget(self.log_path)
         lay.addWidget(bb)
-        self.resize(640, 250)
+        self.resize(640, 0)
 
     def _pick_sound(self):
         f, _ = QFileDialog.getOpenFileName(self, "소리 파일", self.sound_path.text() or "C:/Windows/Media",

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import PRIMARY_QSS, open_log_folder, show_error, show_failure, show_problem
+from app.qt.dialogs import PRIMARY_QSS, card, open_log_folder, page_title, show_error, show_failure, show_problem
 
 
 # 시작 화면 그림 (exe에서는 assets/가 함께 묶인다: packaging/build.py)
@@ -88,16 +88,11 @@ class LoginDialog(QDialog):
         krow.addWidget(self.b_clear)
 
         note = QLabel("키는 이 컴퓨터의 이 사용자만 풀 수 있게 암호화해 저장합니다 (소스 코드·프로젝트 폴더에는 남지 않음).")
-        note.setStyleSheet("color: #666")
+        note.setStyleSheet("color: #5F6B7A")
         note.setWordWrap(True)
 
         def box(*widgets_or_layouts):
-            fr = QFrame()
-            fr.setFrameShape(QFrame.Shape.StyledPanel)
-            lay = QVBoxLayout(fr)
-            for w in widgets_or_layouts:
-                (lay.addLayout if isinstance(w, QHBoxLayout) else lay.addWidget)(w)
-            return fr
+            return card(*widgets_or_layouts, margins=(16, 12, 16, 12))
 
         self.start = QPushButton("시작" if first_run else "확인")
         self.start.setDefault(True)
@@ -115,12 +110,10 @@ class LoginDialog(QDialog):
         brow.addWidget(self.start)
         brow.addWidget(quit_)
 
-        title = QLabel("어떤 방식으로 Claude를 쓸까요?")
-        f = title.font()
-        f.setPointSize(f.pointSize() + 3)
-        f.setBold(True)
-        title.setFont(f)
+        title = page_title("어떤 방식으로 Claude를 쓸까요?", 14)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
         banner = login_banner(620) if first_run else None  # 프로그램을 시작할 때만
         if banner is not None:
             lay.addWidget(banner)
@@ -142,7 +135,7 @@ class LoginDialog(QDialog):
     # ---- 표시
     def _refresh_claude(self, st: dict):
         mark = {True: "● ", False: "✕ ", None: "○ "}[st["logged_in"]]
-        color = {True: "#2e7d32", False: "#c62828", None: "#666"}[st["logged_in"]]
+        color = {True: "#2F6B1F", False: "#B42318", None: "#5F6B7A"}[st["logged_in"]]
         self.claude_status.setText(mark + st["message"])
         self.claude_status.setStyleSheet(f"color: {color}")
         self.b_check.setEnabled(st["installed"])
@@ -154,10 +147,10 @@ class LoginDialog(QDialog):
         info = service.api_key_info()
         if info["has_key"]:
             self.api_status.setText(f"● 키 있음: {info['masked']} ({info['source']})")
-            self.api_status.setStyleSheet("color: #2e7d32")
+            self.api_status.setStyleSheet("color: #2F6B1F")
         else:
             self.api_status.setText("○ 저장한 키가 없습니다")
-            self.api_status.setStyleSheet("color: #666")
+            self.api_status.setStyleSheet("color: #5F6B7A")
         self.b_clear.setEnabled(info["source"] == "저장한 키")
         self._api = info
 

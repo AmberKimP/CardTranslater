@@ -1183,7 +1183,7 @@ def test_card_erase_mode_override_and_redo(qapp, tmp_path):
     v = ResultViewer([("카드/cards", fd / "translated")])
     v.regions.setCurrentRow(1)
     assert v.redo_btn.isEnabled() and v.erase_mode.currentData() == "rect_avg"
-    assert "지우기: 그림: 사각형 + 평균색" in v.regions.item(1).text()
+    assert "지우기: 사각형으로 덮기" in v.regions.item(1).text()
     service.set_card_erase_mode(fd, 1, region, None)  # 영역 설정대로 되돌리기
     assert "erase_modes" not in workspace.file_settings(fd)
 
@@ -1685,7 +1685,7 @@ def test_project_names_unique_per_game_and_new_project_dialog_defaults(qapp, tmp
         pass
     # 창: 게임이 먼저, 새 게임이면 프로젝트 이름 = 게임 이름, 기존 게임이면 비움
     dlg = NewProjectDialog(tmp_path)
-    form = dlg.layout().itemAt(1).layout()
+    form = dlg.form  # 흰 카드 안의 입력 칸 묶음
     assert form.itemAt(0, form.ItemRole.FieldRole).widget() is dlg.game
     dlg.game.setCurrentText("새게임")
     assert dlg.name.text() == "새게임"
@@ -2018,3 +2018,98 @@ def test_test_run_dialog_needs_pages(qapp):
     assert not ok.isEnabled() and dlg.minimumWidth() >= 420
     dlg.pages.setText("1-2")
     assert ok.isEnabled()
+
+
+# ---------------------------------------------------------------- 앱 전체 모양 (theme)
+def test_theme_applies_whole_app_style_and_restores(qapp, tmp_path):
+    """테마: Fusion + 스타일시트(둥근 칸·주/보조/위험 버튼)를 앱에 입힌다. 화살표·체크 그림 파일도 만든다."""
+    from pathlib import Path as _P
+
+    from app.qt import theme
+    from app.qt.main import MainWindow
+
+    old_sheet, old_pal = qapp.styleSheet(), qapp.palette()
+    try:
+        theme.apply(qapp)
+        sheet = qapp.styleSheet()
+        assert "QPushButton" in sheet and "border-radius" in sheet and 'danger="true"' in sheet
+        for name in ("down", "up", "check", "dot"):
+            assert f"{name}.svg" in sheet
+        for line in sheet.splitlines():
+            if "url(" in line:
+                assert _P(line.split("url(", 1)[1].split(")", 1)[0]).exists()
+        theme.apply(qapp)  # 두 번 불러도 괜찮다
+        info = _project(tmp_path)
+        win = MainWindow(root=tmp_path)
+        assert win.home.b_delete.property("danger") is True
+        win.open_project(info.dir)
+        page = win.project
+        assert page.b_delete.property("danger") is True and page.b_reset.property("danger") is True
+        assert page.next_btn.text().startswith("▶ ")
+        win.close()
+    finally:
+        qapp.setStyleSheet(old_sheet)
+        qapp.setPalette(old_pal)
+
+
+def test_file_label_hides_repeated_group_name():
+    from app.qt.dialogs import file_label
+
+    assert file_label("카드/카드") == "카드"
+    assert file_label("아이템/items_b") == "아이템 › items_b"
+    assert file_label("하나") == "하나"
+
+
+def test_add_files_list_shows_names_but_keeps_paths(qapp, tmp_path):
+    """파일 넣기 목록은 파일 이름만 보이고(경로는 말풍선), 넣을 때는 전체 경로를 쓴다."""
+    from app.qt.dialogs import AddFilesDialog
+
+    info = _project(tmp_path)
+    pdf = str(tmp_path / "in" / "cards.pdf")
+    dlg = AddFilesDialog(info.dir, files=[pdf, pdf])
+    assert dlg.files.count() == 1  # 같은 파일은 한 번만
+    it = dlg.files.item(0)
+    assert it.text() == "cards.pdf" and it.toolTip() == pdf and dlg.all_files() == [pdf]
+    dlg.files.addItem(str(tmp_path / "in" / "other.pdf"))  # 경로를 글자로만 넣은 줄도 그대로 읽는다
+    assert dlg.all_files()[1].endswith("other.pdf")
+
+
+def test_settings_hides_log_path_and_source_review_shows_short_file_name(qapp, tmp_path):
+    from app.qt.dialogs import SettingsDialog
+    from app.qt.steps import SourceReviewDialog
+
+    s = SettingsDialog()
+    assert s.log_path.isHidden() and str(service.log_folder()) in s.b_log.toolTip()
+    info, _fd = _project_with_extract(tmp_path)
+    files = [f for g in service.project_overview(info.dir)["groups"] for f in g["files"]]
+    dlg = SourceReviewDialog(files, None, False)
+    assert "/" not in dlg.file.itemText(0) and not dlg.table.verticalHeader().isVisible()
+    dlg.done(0)
+
+
+def test_erase_labels_cover_every_service_key_and_keep_keys():
+    """쉬운 말 문구는 service.ERASE_MODES의 모든 키를 덮고, 키 자체는 그대로 둔다(저장값이 문구로 바뀌지 않게)."""
+    from app.qt.dialogs import ERASE_LABELS, erase_modes
+
+    keys = [k for k, _ in service.ERASE_MODES]
+    assert [k for k, _ in erase_modes()] == keys
+    assert set(keys) <= set(ERASE_LABELS)
+    assert all(k not in v for k, v in erase_modes() if k != "auto")
+
+
+def test_theme_survives_unwritable_temp_dir(qapp, tmp_path, monkeypatch):
+    """임시 폴더에 쓸 수 없어도(읽기 전용·없는 폴더) 테마는 화살표 그림 없이 그대로 적용되고 죽지 않는다."""
+    from app.qt import theme
+
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x")  # 폴더가 와야 할 자리에 파일 -> mkdir 실패
+    monkeypatch.setattr(theme.tempfile, "gettempdir", lambda: str(blocker))
+    assert theme._arrow_files() == {}
+    sheet = theme.stylesheet()
+    assert "QPushButton" in sheet and "url(" not in sheet
+    old_sheet, old_pal = qapp.styleSheet(), qapp.palette()
+    try:
+        theme.apply(qapp)
+    finally:
+        qapp.setStyleSheet(old_sheet)
+        qapp.setPalette(old_pal)

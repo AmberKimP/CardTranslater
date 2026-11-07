@@ -106,6 +106,7 @@ def run_with_dialog(parent: QWidget | None, title: str, job: Job,
                     cancellable: bool = True) -> Job:
     """진행률 창(취소 버튼 포함)을 띄우고 job을 돌린다. 진행률이 없는 작업은 막대가 계속 움직인다."""
     dlg = QProgressDialog(title, "취소", 0, 0, parent)
+    dlg.setMinimumWidth(440)
     if not cancellable:
         dlg.setCancelButton(None)
     dlg.setWindowTitle(title)

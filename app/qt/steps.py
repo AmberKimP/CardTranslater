@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt import worker
 from app.qt.dialogs import (
-    PRIMARY_QSS, ask_choice, fit_to_screen, grey_note, hint_bar, set_hint, set_ok_text, show_error, show_failure,
-    show_problem,
+    PRIMARY_QSS, ask_choice, card, file_label, fit_to_screen, grey_note, hint_bar, page_title, set_hint, set_ok_text,
+    show_error, show_failure, show_problem, subtitle,
 )
 
 MODE_LABELS = [("double-check", "꼼꼼히 (추천) — 보통 읽기 뒤, 애매한 칸만 정밀 읽기로 한 번 더"),
@@ -258,16 +258,14 @@ class ExtractDialog(QDialog):
         limit_row.addWidget(self.limit_on)
         limit_row.addWidget(self.limit_n)
         limit_row.addStretch(1)
-        limit_note = QLabel("번역·검수 엑셀·지우기·한글 넣기도 이 카드만 합니다. 끄고 다시 추출하면 남은 카드부터 이어 읽습니다.")
-        limit_note.setWordWrap(True)
-        limit_note.setStyleSheet("color: #666")
+        limit_note = grey_note("번역·검수 엑셀·지우기·한글 넣기도 이 카드만 합니다. 끄고 다시 추출하면 남은 카드부터 이어 읽습니다.")
         limit_box = QVBoxLayout()
         limit_box.addLayout(limit_row)
         limit_box.addWidget(limit_note)
-        note = QLabel("이미 읽은 카드는 다시 읽지 않습니다. 사용 한도로 멈추면 다시 시작한 곳부터 이어 갑니다.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #666")
+        note = grey_note("이미 읽은 카드는 다시 읽지 않습니다. 사용 한도로 멈추면 다시 시작한 곳부터 이어 갑니다.")
         form = QFormLayout()
+        form.setVerticalSpacing(12)
+        form.setHorizontalSpacing(16)
         if groups:
             form.addRow("그룹", self.group)
         else:
@@ -280,10 +278,15 @@ class ExtractDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        lay.addWidget(page_title("① 글자 추출", 14))
+        lay.addWidget(subtitle("카드 그림에서 원문 글자를 읽습니다. 끝나면 ‘③ 원문 확인’에서 읽은 글을 확인합니다."))
         lay.addWidget(self.summary)
-        lay.addLayout(form)
+        lay.addWidget(card(form))
         lay.addWidget(note)
         lay.addWidget(bb)
+        self.setMinimumWidth(560)
 
     def choice(self) -> tuple[str | None, str, str]:
         return self.group.currentData(), self.modes.checkedButton().property("key"), self.engine.currentData()
@@ -316,11 +319,17 @@ class SourceReviewDialog(QDialog):
         self.files = files
         self.file = QComboBox()
         for f in files:
-            self.file.addItem(f["key"], str(f["dir"]))
+            self.file.addItem(file_label(f["key"]), str(f["dir"]))
+            self.file.setItemData(self.file.count() - 1, f["key"], Qt.ItemDataRole.ToolTipRole)
+        self.file.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.file.setMinimumContentsLength(18)
         self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·확인 필요·아직 읽지 않음)")
         self.only.setChecked(only_check)
         self.count = QLabel()
+        self.count.setStyleSheet("color: #334E68; background: white; border: 1px solid #E6E9EE;"
+                                 " border-radius: 10px; padding: 3px 10px;")
         top = QHBoxLayout()
+        top.setSpacing(10)
         top.addWidget(QLabel("파일"))
         top.addWidget(self.file)
         top.addWidget(self.only)
@@ -333,6 +342,9 @@ class SourceReviewDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)  # 줄 번호 대신 ‘쪽’ 열을 본다
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
         self.table.currentCellChanged.connect(self._on_cell_changed)
         self._src_font = source_font(self.table.font(), 1)
         self.image = FitImage(160)  # 세로로 긴 그림도 다 보이게 칸에 맞춘다
@@ -365,7 +377,7 @@ class SourceReviewDialog(QDialog):
         self.next_btn = QPushButton("저장하고 다음 칸 (Ctrl+Enter)")
         self.next_btn.clicked.connect(self.save_and_next)
         hint = QLabel("Ctrl+S 저장 · Ctrl+Enter 저장하고 다음 칸 · Alt+↑/↓ 칸 이동")
-        hint.setStyleSheet("color: #888")
+        hint.setStyleSheet("color: #7B8794")
         self.next_btn.setStyleSheet(PRIMARY_QSS)  # 주 동작 (엔터 기본 버튼으로는 만들지 않는다)
         btns = QHBoxLayout()
         btns.addWidget(self.next_btn)
@@ -393,6 +405,8 @@ class SourceReviewDialog(QDialog):
         close.setAutoDefault(False)
         close.clicked.connect(self.accept)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(8)
         lay.addLayout(top)
         lay.addWidget(self.guide)
         lay.addWidget(split, 1)
@@ -637,16 +651,16 @@ class SourceReviewDialog(QDialog):
         htmls = diff_html([t for _n, t in texts], pi if pi is not None else len(texts) - 1)
         last = len(texts) - 1
         for i, ((name, _t), body) in enumerate(zip(texts, htmls)):
-            edge = "border: 1px solid #CCC;" + ("" if i == last else " border-bottom: none;")
+            edge = "border: 1px solid #D9DEE5;" + ("" if i == last else " border-bottom: none;")
             h = QLabel(name)
-            h.setStyleSheet(f"background: #F2F2F2; font-weight: bold; padding: 4px 8px; {edge} border-right: none;")
+            h.setStyleSheet(f"background: #F4F6F9; color: #334E68; font-weight: bold; padding: 5px 10px; {edge} border-right: none;")
             h.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             v = QLabel(body or '<span style="color:#888">(빈 칸)</span>')
             v.setTextFormat(Qt.TextFormat.RichText)
             v.setWordWrap(True)
             v.setFont(self._reading_font)
             v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            v.setStyleSheet(f"background: white; padding: 4px 8px; {edge}")
+            v.setStyleSheet(f"background: white; padding: 5px 10px; {edge}")
             self.readings_grid.addWidget(h, i, 0)
             self.readings_grid.addWidget(v, i, 1)
             self.reading_rows.append((h, v))
@@ -715,13 +729,14 @@ class IconDictionaryDialog(QDialog):
         self.setWindowTitle("아이콘 사전")
         fit_to_screen(self, 900, 560)
         self._rows = rows
-        lab = QLabel(intro)
-        lab.setWordWrap(True)
+        lab = subtitle(intro)
         reset_note = grey_note("‘다시 정하기’를 체크하면 그 아이콘을 원문에서 되돌리고, 저장한 뒤 다시 찾아 이름을 정합니다.")
         self.table = QTableWidget(len(rows), len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setStyleSheet("QDoubleSpinBox { margin: 7px 6px; padding-top: 1px; padding-bottom: 1px; }"
+                                 " QCheckBox { margin-left: 12px; }")
         self.scales: list[QDoubleSpinBox] = []
         self.resets: list[QCheckBox] = []
         for i, r in enumerate(rows):
@@ -760,6 +775,9 @@ class IconDictionaryDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
+        lay.addWidget(page_title("아이콘 사전", 14))
         lay.addWidget(lab)
         lay.addWidget(reset_note)
         lay.addWidget(self.table, 1)
@@ -801,6 +819,9 @@ class IconReviewDialog(QDialog):
         self.table = QTableWidget(len(groups), len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.setIconSize(QSize(40, 40))
+        self.table.setStyleSheet("QLineEdit, QComboBox, QDoubleSpinBox, QPushButton { margin: 5px 4px; }"
+                                 " QLineEdit, QDoubleSpinBox { padding-top: 1px; padding-bottom: 1px; }"
+                                 " QCheckBox { margin-left: 12px; }")
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
         self.widgets = []
         for i, g in enumerate(groups):
@@ -838,6 +859,8 @@ class IconReviewDialog(QDialog):
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
             self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
         self.table.resizeColumnToContents(1)
+        for col, w in ((2, 150), (3, 170), (4, 150), (6, 100)):  # 입력 칸 글이 잘리지 않게
+            self.table.setColumnWidth(col, w)
         steps_text = hint_bar(f"정할 아이콘 {len(groups)}개\n"
                               "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요.\n"
                               "2. 같은 아이콘이 따로 묶였으면 ‘같은 아이콘’에서 그 줄 번호를 고르세요.\n"
@@ -851,6 +874,9 @@ class IconReviewDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
+        lay.addWidget(page_title("아이콘 이름 정하기", 14))
         lay.addWidget(steps_text)
         lay.addWidget(known)
         lay.addWidget(self.table, 1)

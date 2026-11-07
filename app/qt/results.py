@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt import worker
 from app.qt.dialogs import (
-    fit_to_screen, grey_note, hint_bar, make_primary, set_hint, set_ok_text, show_error, show_failure, show_problem,
+    card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
+    show_error, show_failure, show_problem, subtitle,
 )
 
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
@@ -42,7 +43,10 @@ class ResultViewer(QDialog):
         self.runs = runs
         self.run = QComboBox()
         for name, d in runs:
-            self.run.addItem(name, str(d))
+            self.run.addItem(file_label(name), str(d))
+            self.run.setItemData(self.run.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
+        self.run.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.run.setMinimumContentsLength(18)
         self.only = QCheckBox("문제 있는 쪽만 보기")
         self.only.setToolTip("넘침·아이콘 오류·글꼴에 없는 글자 등")
         self.info = hint_bar("", "done")
@@ -57,6 +61,7 @@ class ResultViewer(QDialog):
         self.sheet_btn.setToolTip("배열 이미지로 넣은 카드를 원래 시트 크기·배열로 다시 합친 이미지 (원본 해상도)")
         self.sheet_btn.clicked.connect(self.open_sheets)
         top = QHBoxLayout()
+        top.setSpacing(8)
         top.addWidget(QLabel("파일"))
         top.addWidget(self.run)
         top.addWidget(self.info, 1)
@@ -72,13 +77,16 @@ class ResultViewer(QDialog):
         ll.addWidget(self.only)
         ll.addWidget(self.pages, 1)
         self.regions = QListWidget()
-        self.regions.setMaximumHeight(150)
+        self.regions.setMaximumHeight(160)
         self.regions.currentRowChanged.connect(lambda _r: self._show_region())
         self.image = QLabel()
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.image)
         self.scroll.setWidgetResizable(True)
+        self.scroll.setObjectName("cardview")
+        self.scroll.setStyleSheet("QScrollArea#cardview { background: white; border: 1px solid #E6E9EE; border-radius: 10px; }"
+                                  " QScrollArea#cardview > QWidget > QWidget { background: white; }")
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.image.setMinimumSize(1, 1)
@@ -99,8 +107,12 @@ class ResultViewer(QDialog):
         egl.addLayout(erow)
         right = QWidget()
         rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
         rl.addWidget(self.scroll, 1)
-        rl.addWidget(QLabel("영역 — 고르면 그 부분을 크게 비교합니다"))
+        rrow = QHBoxLayout()
+        rrow.addWidget(section_title("영역"))
+        rrow.addWidget(grey_note("고르면 그 부분을 크게 비교합니다"), 1)
+        rl.addLayout(rrow)
         rl.addWidget(self.regions)
         rl.addWidget(self.erase_box)
         split = QSplitter()
@@ -114,6 +126,8 @@ class ResultViewer(QDialog):
         bottom.addWidget(self.footer, 1)
         bottom.addWidget(close)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(10)
         lay.addLayout(top)
         lay.addWidget(split, 1)
         lay.addLayout(bottom)
@@ -219,7 +233,7 @@ class ResultViewer(QDialog):
             text = f"{r['name']}" + (f" · {status_text(r['status'])}" if r["status"] else "")
             ei = self._erase_info.get(r["name"]) or {}
             if ei.get("mode"):
-                text += f" · 지우기: {dict(service.ERASE_MODES)[ei['mode']]}"
+                text += f" · 지우기: {dict(erase_modes())[ei['mode']]}"
             elif ei.get("needs_choice"):
                 text += " · 그림 배경: 지우기 방식 확인"
             if r["errors"]:
@@ -242,10 +256,10 @@ class ResultViewer(QDialog):
         self.erase_mode.blockSignals(True)
         self.erase_mode.clear()
         if ok:
-            labels = dict(service.ERASE_MODES)
+            labels = dict(erase_modes())
             used = f", 이번에 쓴 방식: {labels.get(ei['used'], ei['used'])}" if ei.get("used") else ""
             self.erase_mode.addItem(f"영역 설정대로 ({labels.get(ei['default'], ei['default'])}{used})", None)
-            for k, t in service.ERASE_MODES:
+            for k, t in erase_modes():
                 if k != "auto":
                     self.erase_mode.addItem(t, k)
             self.erase_mode.setCurrentIndex(max(0, self.erase_mode.findData(ei.get("mode"))) if ei.get("mode") else 0)
@@ -316,13 +330,13 @@ class TestRunDialog(QDialog):
         self.setMinimumWidth(420)
         self.file = QComboBox()
         for f in files:
-            self.file.addItem(f"{f['key']} ({f['pages']}쪽)", str(f["dir"]))
+            self.file.addItem(f"{file_label(f['key'])} ({f['pages']}쪽)", str(f["dir"]))
         self.pages = QLineEdit()
         self.pages.setPlaceholderText("예: 2-4 또는 3,7,9")
-        note = QLabel("고른 쪽만 따로 지우고 한글을 넣어 전후를 비교합니다.\n"
-                      "프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다.")
-        note.setStyleSheet("color: #666")
+        note = subtitle("고른 쪽만 따로 지우고 한글을 넣어 전후를 비교합니다. "
+                        "프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다.")
         form = QFormLayout()
+        form.setVerticalSpacing(10)
         form.addRow("파일", self.file)
         form.addRow("쪽", self.pages)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -333,9 +347,13 @@ class TestRunDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addLayout(form)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        lay.addWidget(page_title("시험 실행 (몇 쪽만)", 14))
         lay.addWidget(note)
+        lay.addWidget(card(form))
         lay.addWidget(bb)
+        self.setMinimumWidth(480)
 
     def accept(self):
         if not self.pages.text().strip():

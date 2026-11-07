@@ -1,7 +1,7 @@
 """영역 지정 화면 (PRD 2단계). 카드 위에 사각형을 그리고 이름·종류·서식을 정해 그룹의 regions.json에 저장한다.
 
 - 빈 곳을 끌면 새 영역, 영역 안을 끌면 옮기기, 가장자리를 끌면 크기 조절.
-- 화살표 키로 1px(Shift: 10px) 옮기기, Alt+화살표로 크기 조절, Delete로 지우기, Ctrl+휠로 확대.
+- 화살표 키로 조금씩(Shift: 크게) 옮기기, Alt+화살표로 크기 조절, Delete로 지우기, Ctrl+휠로 확대.
 - 좌표는 카드 대비 비율로 저장한다. 손으로 쓴 regions.json의 모르는 항목은 그대로 둔다.
 """
 
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
-from app.qt.dialogs import PRIMARY_QSS, ask_choice, fit_to_screen, grey_note, hint_bar, set_hint, show_problem
+from app.qt.dialogs import PRIMARY_QSS, ask_choice, erase_modes, fit_to_screen, grey_note, hint_bar, section_title, set_hint, show_problem
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
 ALIGN_LABELS = [("", "자동 (원문 줄마다 따라감)"), ("left", "왼쪽 정렬"), ("center", "가운데 정렬"),
@@ -434,6 +434,21 @@ class RegionEditor(QDialog):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._clip: list[dict] = []
 
+    def _widen_file_popup(self):
+        """긴 ‘그룹 / 파일’ 이름이 목록에서 잘리지 않게 펼친 목록을 가장 긴 이름 폭에 맞춘다 (화면 폭 안에서).
+        칸에 다 안 들어가는 이름은 가운데를 줄이고, 마우스를 올리면 전체 이름이 나온다."""
+        cb = self.file_combo
+        view = cb.view()
+        view.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        fm = cb.fontMetrics()
+        widest = max((fm.horizontalAdvance(cb.itemText(i)) for i in range(cb.count())), default=0)
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        cap = int(scr.availableGeometry().width() * 0.8) if scr else 900
+        view.setMinimumWidth(min(widest + 60, cap))  # 글자 + 여백·스크롤 막대
+        cb.setMinimumWidth(min(widest + 76, 480))  # 칸도 이름이 다 보이게 (너무 길면 480에서 멈춤, 전체는 말풍선)
+        cb.setToolTip(cb.currentText())
+        cb.currentIndexChanged.connect(lambda _i: cb.setToolTip(cb.currentText()))
+
     # ------------------------------------------------------------ 화면 구성
     def _build_ui(self):
         top = QHBoxLayout()
@@ -441,14 +456,17 @@ class RegionEditor(QDialog):
         self.file_combo = QComboBox()
         self.file_combo.setMinimumWidth(200)
         self.file_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.file_combo.setMinimumContentsLength(16)
+        self.file_combo.setMinimumContentsLength(18)
         for g in self.groups:  # 모든 그룹의 파일. 다른 그룹 파일을 고르면 그 그룹 영역으로 옮겨 간다
             for fd in g["files"]:
-                self.file_combo.addItem(f"{g['name']} / {fd.name}", (str(g["dir"]), str(fd)))
+                full = f"{g['name']} / {fd.name}"
+                self.file_combo.addItem(full, (str(g["dir"]), str(fd)))
+                self.file_combo.setItemData(self.file_combo.count() - 1, full, Qt.ItemDataRole.ToolTipRole)
         cur = next((i for i in range(self.file_combo.count())
                     if Path(self.file_combo.itemData(i)[0]) == self.group_dir), 0)
         self.file_combo.setCurrentIndex(cur)
         self._combo_index = cur
+        self._widen_file_popup()
         top.addWidget(self.file_combo)
         top.addWidget(QLabel("쪽"))
         self.page_spin = QSpinBox()
@@ -458,8 +476,8 @@ class RegionEditor(QDialog):
         top.addWidget(self.page_total)
         tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
         tools.setSpacing(3)
-        cap = QLabel("영역 그리기:")
-        cap.setStyleSheet("color: #666")
+        cap = QLabel("영역 그리기")
+        cap.setStyleSheet("color: #334E68; font-weight: bold;")
         tools.addWidget(cap)
         self.add_buttons = {}
         for kind, text, key in (("text", "+ 글자 영역", "T"), ("tag_pills", "+ 태그 라벨 영역", "L"),
@@ -505,6 +523,7 @@ class RegionEditor(QDialog):
         for text, f, tip in (("－", 1 / 1.25, "축소 (Ctrl+휠 아래)"), ("＋", 1.25, "확대 (Ctrl+휠 위)")):
             zb = QPushButton(text)
             zb.setFixedWidth(36)
+            zb.setStyleSheet("font-size: 13pt; font-weight: bold; padding: 0 4px;")
             zb.setToolTip(tip + " · 확대한 뒤 가운데 버튼(휠)을 누른 채 끌거나 Space+끌기로 옮기기")
             zb.clicked.connect(lambda _c=False, ff=f: self.view.zoom(ff))
             top.addWidget(zb)
@@ -520,7 +539,12 @@ class RegionEditor(QDialog):
 
         side = QWidget()
         sl = QVBoxLayout(side)
-        sl.addWidget(QLabel("영역 (위에서부터 처리 순서)"))
+        sl.setContentsMargins(4, 0, 4, 0)
+        sl.setSpacing(8)
+        lrow = QHBoxLayout()
+        lrow.addWidget(section_title("이 카드의 영역"))
+        lrow.addWidget(grey_note("위에서부터 처리"), 1)
+        sl.addLayout(lrow)
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._on_list_row)
         sl.addWidget(self.list, 1)
@@ -543,7 +567,7 @@ class RegionEditor(QDialog):
         from PySide6.QtWidgets import QGridLayout
 
         xy = QGridLayout()  # 두 줄: x·y / 너비·높이 (좁은 칸에서도 숫자가 보이게)
-        for i, (lab, sp) in enumerate((("x", self.f_x), ("y", self.f_y), ("너비", self.f_w), ("높이", self.f_h))):
+        for i, (lab, sp) in enumerate((("왼쪽", self.f_x), ("위쪽", self.f_y), ("너비", self.f_w), ("높이", self.f_h))):
             # "0.0863" + 위/아래 버튼이 늘 들어갈 폭 (폼 라벨 열과 무관하게 한 줄 전체를 씀)
             sp.setMinimumWidth(sp.fontMetrics().horizontalAdvance("0.0000") + 44)
             xy.addWidget(QLabel(lab), i // 2, (i % 2) * 2)
@@ -580,18 +604,21 @@ class RegionEditor(QDialog):
         self.f_keep_tall = QDoubleSpinBox()
         self.f_keep_tall.setRange(0, 200)
         self.f_keep_tall.setDecimals(1)
-        self.f_keep_tall.setSuffix(" pt")
-        self.f_keep_tall.setSpecialValueText("끔")
-        self.f_keep_tall.setMinimumWidth(self.f_keep_tall.fontMetrics().horizontalAdvance("200.0 pt") + 44)
+        self.f_keep_tall.setSuffix(" 포인트")
+        self.f_keep_tall.setSpecialValueText("안 함")
+        self.f_keep_tall.setToolTip("원래 카드의 글자·그림 중 이 크기보다 큰 것은 지우지 않고 남깁니다.\n"
+                                    "예: 큰 장식 글자나 로고. 크기는 글자 크기 단위(포인트, 보통 본문 글자가 8~12 안팎)입니다.\n"
+                                    "‘안 함’이면 크기와 상관없이 영역 안을 모두 지웁니다.")
+        self.f_keep_tall.setMinimumWidth(self.f_keep_tall.fontMetrics().horizontalAdvance("200.0 포인트") + 44)
         self.f_erase_mode = QComboBox()
-        for k, t in service.ERASE_MODES:
+        for k, t in erase_modes():
             self.f_erase_mode.addItem(t, k)
-        self.f_erase_mode.setToolTip("글자 뒤가 그림인 영역에서 글자를 어떻게 지울지. 결과 보기에서 카드마다 바꿀 수도 있습니다.\n"
-                                     "텍스트 레이어가 있는 PDF는 ‘자동’이면 예전 방식으로 지웁니다.")
-        self.f_ocr_exclude = QCheckBox("글자 읽기(OCR)에서도 빼기")
-        self.f_ocr_exclude.setToolTip("카드 번호·장식 글자처럼 번역하지 않을 글자: 읽을 때 가리고, 지우지도 않습니다")
-        self.f_keep_above = QCheckBox("글자 줄 위의 그림은 남기기")
-        self.f_keep_above.setToolTip("예: 이름 위의 왕관 아이콘")
+        self.f_erase_mode.setToolTip("글자 뒤가 그림인 영역에서 원래 글자를 어떻게 지울지 정합니다. 결과 보기에서 카드마다 바꿀 수도 있습니다.\n"
+                                     "글자가 따로 들어 있는 PDF는 ‘자동’이면 예전 방식으로 지웁니다.")
+        self.f_ocr_exclude = QCheckBox("글자를 읽을 때도 건너뛰기")
+        self.f_ocr_exclude.setToolTip("카드 번호·장식 글자처럼 번역하지 않을 글자: 글자를 읽을 때(추출) 가리고, 지우지도 않습니다")
+        self.f_keep_above = QCheckBox("글자 위쪽 그림은 남기기")
+        self.f_keep_above.setToolTip("글자 줄 바로 위에 붙은 그림은 지우지 않습니다. 예: 이름 위의 왕관 아이콘")
         self.f_notes = QPlainTextEdit()
         self.f_notes.setFixedHeight(70)
         def group(title: str) -> tuple[QGroupBox, QFormLayout]:
@@ -602,7 +629,7 @@ class RegionEditor(QDialog):
         self.g_basic, fb = group("기본")
         fb.addRow("이름", self.f_name)
         fb.addRow("종류", self.f_kind)
-        fb.addRow(QLabel("위치(비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
+        fb.addRow(grey_note("위치·크기 (카드 전체를 1로 본 비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
         fb.addRow(xy)
         fb.addRow("보호 영역", self.f_ocr_exclude)  # 보호 영역일 때만 보인다
         self.g_style, fs = group("한글 넣기")
@@ -612,8 +639,8 @@ class RegionEditor(QDialog):
         fs.addRow("한글 글꼴", self.f_font)
         fs.addRow("글꼴 단위", self.f_font_mode)
         self.g_erase, fe = group("글자 지우기")
-        fe.addRow("글자 지우기", self.f_erase_mode)
-        fe.addRow("이보다 큰 잉크는 남기기", self.f_keep_tall)
+        fe.addRow("지우는 방법", self.f_erase_mode)
+        fe.addRow("큰 글자·그림은 남기기", self.f_keep_tall)
         fe.addRow("", self.f_keep_above)
         self.g_notes, fn = group("메모")
         fn.addRow(self.f_notes)
@@ -629,13 +656,13 @@ class RegionEditor(QDialog):
         sl.addWidget(self.form_hint)
         sl.addStretch(1)
         help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
-                     "고른 영역: 화살표 1px(Shift 10px) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
+                     "고른 영역: 화살표 조금씩 옮기기(Shift: 크게) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
                      "쪽: ←/→(영역을 안 골랐을 때) · PageUp/PageDown · Home/End 처음·끝 · 마우스 휠\n"
                      "F: 화면에 맞춤 · ＋/－ 또는 Ctrl+휠: 확대·축소 · 휠 누른 채 끌기 또는 Space+끌기: 옮기기 · Ctrl+Shift+V: 이전 카드 영역 · "
                      "Ctrl+S 저장 · F1 이 도움말")
         help_ = QLabel(help_text)
-        help_.setStyleSheet("color: #666")
+        help_.setStyleSheet("color: #5F6B7A; background: white; border: 1px solid #E6E9EE; border-radius: 8px; padding: 8px;")
         self.help_label = help_
         self.help_btn = QToolButton()
         self.help_btn.setText("단축키 도움말 (F1)")
@@ -699,6 +726,7 @@ class RegionEditor(QDialog):
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
         lay.addLayout(top)
         lay.addLayout(tools)
         lay.addWidget(self.cards_bar)

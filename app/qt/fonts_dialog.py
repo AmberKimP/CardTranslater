@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QTimer
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
-from app.qt.dialogs import fit_to_screen, grey_note, hint_bar, set_ok_text, show_error
+from app.qt.dialogs import file_label, fit_to_screen, grey_note, hint_bar, page_title, set_ok_text, show_error
 
 ADD = "__add__"
 SAME = ""  # 카드 줄: 영역과 같음
@@ -127,17 +128,13 @@ class FontPlanDialog(QDialog):
         self.sizes: dict[tuple[int, str], float] = {  # (파일 번호, 영역): 글자 크기 배율
             (pi, r["name"]): float(r.get("size_scale") or 1.0) for pi, p in enumerate(plans) for r in p["regions"]}
 
-        title = QLabel("한글 글꼴 고르기")
-        f = title.font()
-        f.setPointSize(f.pointSize() + 3)
-        f.setBold(True)
-        title.setFont(f)
+        title = page_title("한글 글꼴 고르기", 14)
         help_ = hint_bar("아래 목록에서 영역(또는 카드·문장)을 고르면 위에 원본과 미리 보기가 나옵니다. 글꼴 칸에서 바꾸세요. "
                          "★는 원본과 가장 비슷한 추천입니다. 영역을 펼치면 카드·문장마다 따로 고를 수 있고, "
                          "목록 맨 아래 ‘글꼴 추가…’로 PC의 다른 글꼴도 쓸 수 있습니다.", "info")
-        notes = [f"{p['file']}: {p['note']}" for p in plans if p.get("note")]
+        notes = [(f"{file_label(p['file'])}: " if len(plans) > 1 else "") + p["note"] for p in plans if p.get("note")]
         self.note = QLabel("\n".join(notes))
-        self.note.setStyleSheet("color: #a15c00")
+        self.note.setStyleSheet("color: #9A4B00")
         self.note.setWordWrap(True)
         self.note.setVisible(bool(notes))
 
@@ -148,10 +145,12 @@ class FontPlanDialog(QDialog):
         self.tree.setColumnWidth(1, 320)
         self.tree.header().setStretchLastSection(True)
         self.tree.setMinimumHeight(140)
+        # 줄 안의 글꼴 칸이 줄 높이보다 커서 잘리지 않게 (테마의 넉넉한 칸 여백을 줄 안에서는 줄인다)
+        self.tree.setStyleSheet("QComboBox { padding: 1px 26px 1px 6px; } QTreeView::item { padding: 4px 2px; }")
         self.tree.itemExpanded.connect(self._expand)
         self.tree.currentItemChanged.connect(lambda *_a: self._preview())
 
-        box = "background: white; border: 1px solid #ccc; padding: 4px"
+        box = "background: white; border: 1px solid #E6E9EE; border-radius: 8px; padding: 4px"
         self._orig_pm = QPixmap()
         self._sample_pm = QPixmap()
         self.orig = QLabel()
@@ -165,11 +164,16 @@ class FontPlanDialog(QDialog):
         self.where = QLabel()
         self.where.setStyleSheet("font-weight: bold; color: #0b5cad")
         self.sample_note = QLabel()
-        self.sample_note.setStyleSheet("color: #666")
+        self.sample_note.setStyleSheet("color: #5F6B7A")
+        self.sample_note.setTextFormat(Qt.TextFormat.RichText)
         self.sample_note.setWordWrap(True)
         grid = QGridLayout()
-        grid.addWidget(QLabel("원본"), 0, 0)
-        grid.addWidget(QLabel("미리 보기 (고른 글꼴 · 원본 글자 색 · 지운 카드 위)"), 0, 1)
+        grid.setHorizontalSpacing(12)
+        cap_o, cap_s = QLabel("원본"), QLabel("미리 보기 (고른 글꼴 · 원본 글자 색 · 지운 카드 위)")
+        for c in (cap_o, cap_s):
+            c.setStyleSheet("color: #334E68; font-weight: bold")
+        grid.addWidget(cap_o, 0, 0)
+        grid.addWidget(cap_s, 0, 1)
         grid.addWidget(self.orig, 1, 0)
         grid.addWidget(self.sample, 1, 1)
         grid.setColumnStretch(0, 1)
@@ -220,6 +224,8 @@ class FontPlanDialog(QDialog):
         bottom.addWidget(grey_note("누르면 고른 글꼴을 저장하고 바로 한글 넣기를 시작합니다."), 1)
         bottom.addWidget(bb)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(8)
         lay.addWidget(title)
         lay.addWidget(help_)
         lay.addWidget(self.note)
@@ -508,8 +514,10 @@ class FontPlanDialog(QDialog):
             note = cb.currentText().strip()
         if reason:
             note = f"추천 이유: {reason} · {note}"
-        if info is not None:
-            note += f"   ·   글자 색 {info['color']}, 시작 크기 {info['size_pt']:.1f}pt"
+        note = html.escape(note, quote=False)
+        if info is not None:  # 색 값(#…)·pt 대신 색 견본과 크기 숫자로
+            note += (f'&nbsp;&nbsp;·&nbsp;&nbsp;글자 색 <span style="color:{info["color"]}">■</span> 원본과 같게'
+                     f'&nbsp;&nbsp;·&nbsp;&nbsp;시작 글자 크기 {info["size_pt"]:.0f}')
         self.sample_note.setText(note)
 
     def _where_text(self, item: QTreeWidgetItem, w) -> str:
