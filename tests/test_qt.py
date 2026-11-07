@@ -2113,3 +2113,40 @@ def test_theme_survives_unwritable_temp_dir(qapp, tmp_path, monkeypatch):
     finally:
         qapp.setStyleSheet(old_sheet)
         qapp.setPalette(old_pal)
+
+
+def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
+    """⑥ 번역 질문 창의 ‘끝나면 바로 ⑦ 글자 지우기’: 엑셀이 끝나면 묻지 않고 지우고, 결과를 한 창에 보인다."""
+    from types import SimpleNamespace
+
+    from app.qt import results as res_mod
+    from app.qt.main import MainWindow
+
+    info = _two_group_project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    page.step_buttons["erase"].setEnabled(False)
+    assert page.steps._erase_option() is None  # 지울 수 없는 상태면 묻지 않음
+    page.step_buttons["erase"].setEnabled(True)
+    cb = page.steps._erase_option()
+    assert cb is not None and cb.isChecked() and "⑦" in cb.text()
+
+    seen = {}
+
+    def fake_run(parent, title, job, done, fail, **k):
+        seen.update(title=title, redo=job.kwargs.get("redo"), done=done)
+    monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
+    shown = []
+    monkeypatch.setattr(res_mod.QMessageBox, "information", lambda p, t, text: shown.append(text))
+    page.steps._then_erase = True
+    page.steps._translate_summary = "서로 다른 원문 3칸"
+    page.steps._excel_done([str(tmp_path / "G_검수.xlsx")])  # 엑셀 창 없이 바로 지우기
+    assert seen["title"] == "글자 지우기" and seen["redo"] is False and not page.steps._then_erase
+    seen["done"](SimpleNamespace(state="done", reason="", files=[{"file": "a", "state": "done", "pages": 2, "warnings": 0}]))
+    assert len(shown) == 1 and "서로 다른 원문 3칸" in shown[0] and "G_검수.xlsx" in shown[0] and "a:" in shown[0]
+    # 번역이 끝나지 못하면 이어서 지우지 않는다
+    page.steps._then_erase = True
+    monkeypatch.setattr("app.qt.steps.show_problem", lambda *a, **k: None)
+    page.steps._translate_done(SimpleNamespace(state="limited", reason="한도", retry_after=None))
+    assert not page.steps._then_erase

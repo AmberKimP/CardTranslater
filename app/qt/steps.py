@@ -829,7 +829,7 @@ class IconReviewDialog(QDialog):
             if g["image"]:
                 img.setIcon(QIcon(QPixmap(g["image"])))
             elif g.get("reason"):
-                img.setToolTip(g["reason"])
+                img.setToolTip("못 찾은 이유: " + g["reason"])
             self.table.setItem(i, 0, img)
             same = QComboBox()
             same.addItem(self.NEW, None)
@@ -861,7 +861,9 @@ class IconReviewDialog(QDialog):
         self.table.resizeColumnToContents(1)
         for col, w in ((2, 150), (3, 170), (4, 150), (6, 100)):  # 입력 칸 글이 잘리지 않게
             self.table.setColumnWidth(col, w)
-        steps_text = hint_bar(f"정할 아이콘 {len(groups)}개\n"
+        n_issue = sum(1 for g in groups if g.get("issue"))
+        steps_text = hint_bar(f"정할 아이콘 {len(groups)}개"
+                              + (f" · 한국어 이름이 빈 {n_issue}개(노랑)는 맨 위" if n_issue else "") + "\n"
                               "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요.\n"
                               "2. 같은 아이콘이 따로 묶였으면 ‘같은 아이콘’에서 그 줄 번호를 고르세요.\n"
                               "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌).", "info")
@@ -1219,16 +1221,35 @@ class StepActions:
         sonnet = box.addButton("보통 번역 (추천)", QMessageBox.ButtonRole.AcceptRole)
         opus = box.addButton("정밀 번역", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        then_erase = self._erase_option()
+        if then_erase is not None:
+            box.setCheckBox(then_erase)
         box.exec()
         model = {sonnet: "sonnet", opus: "opus"}.get(box.clickedButton())
         if not model:
             return
+        self._then_erase = bool(then_erase and then_erase.isChecked())
         job = worker.Job(service.translate_project, self.pdir, model=model, engine=eng, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "번역", job, self._translate_done, _fail_as(self.page, "번역을 끝내지 못했습니다"))
+
+    def _erase_option(self) -> QCheckBox | None:
+        """번역 질문 창에 붙일 ‘끝나면 바로 ⑦ 글자 지우기’ 체크 (지울 수 있는 상태일 때만)."""
+        btn = getattr(self.page, "step_buttons", {}).get("erase")
+        if btn is None or not btn.isEnabled() or not hasattr(self.page, "out"):
+            return None
+        files = self.page.scoped_files()
+        if not files or all(f.get("erased") for f in files):
+            return None
+        cb = QCheckBox("끝나면 바로 ‘⑦ 글자 지우기’까지 하기")
+        cb.setToolTip("번역과 검수 엑셀이 끝나면 이어서 글자를 지웁니다. 이미 지운 파일은 건너뜁니다.")
+        cb.setChecked(True)
+        return cb
 
     def _translate_done(self, r):
         """번역이 끝나면 검수 엑셀까지 이어서 만든다 (따로 누르는 단계 없음)."""
         self.page.refresh()
+        if r.state != "done":
+            self._then_erase = False
         if r.state == "cancelled":
             QMessageBox.information(self.page, "번역을 멈췄습니다",
                                     "번역한 칸은 저장했습니다. ‘⑥ 번역 · 검수 엑셀’을 다시 누르면 남은 칸부터 이어서 합니다.")
@@ -1259,6 +1280,11 @@ class StepActions:
         self.page.refresh()
         head = getattr(self, "_translate_summary", "")
         self._translate_summary = ""
+        if getattr(self, "_then_erase", False):  # 묻지 않고 바로 ⑦ 글자 지우기, 결과는 지우기 끝에 함께 보인다
+            self._then_erase = False
+            self.page.out.erase(auto=True, note=(head + "\n" if head else "")
+                                + "검수 엑셀: " + ", ".join(Path(p).name for p in paths))
+            return
         box = QMessageBox(self.page)
         box.setWindowTitle("번역 · 검수 엑셀")
         box.setText((head + "\n\n" if head else "")

@@ -1700,7 +1700,12 @@ def icon_review(project_dir: Path | str) -> dict | None:
                        "where": [{"file_dir": icons._occ_dir(info, o.file), "page": o.page, "region": o.region, "line": o.line,
                                   "png": o.png or None, "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
                                  for o in members],
-                       "reason": members[0].reason if members and not gi.get("rep") else ""})
+                       "reason": members[0].reason if members and not gi.get("rep") else "",
+                       "first": min((res.occurrences.index(o) for o in members), default=len(res.occurrences))})
+    for g in groups:  # 사람이 봐야 하는 것: 한국어 이름이 비어 있음 (창에서 노랑 칸)
+        g["issue"] = "" if g["ko"].strip() else "한국어 이름 없음"
+    # 이슈가 있는 것을 맨 위로, 그 밖에는 원문에 처음 나온 순서
+    groups.sort(key=lambda g: (not g["issue"], g["first"]))
     return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
 
 

@@ -381,11 +381,13 @@ class OutputActions:
         return self.page.scoped_files()
 
     # ---- 지우기
-    def erase(self):
+    def erase(self, auto: bool = False, note: str = ""):
+        """auto=True: 번역에 이어서 부를 때. 묻지 않고 지운 파일은 건너뛴다. note는 끝 창 맨 위에 보인다."""
         files = self._files()
         done = [f for f in files if f["erased"]]
         redo = False
-        if done:
+        self._note = note
+        if done and not auto:
             box = QMessageBox(self.page)
             box.setWindowTitle("글자 지우기")
             box.setText(f"이미 지운 파일이 {len(done)}개 있습니다 ({', '.join(f['key'] for f in done)}).")
@@ -406,6 +408,9 @@ class OutputActions:
         self.page.refresh()
         lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                  else f" — {f.get('reason', '')}") for f in r.files]
+        note, self._note = getattr(self, "_note", ""), ""
+        if note:
+            lines = ["번역 · 검수 엑셀", note, "", "글자 지우기"] + lines
         if r.state in ("done", "skipped"):
             QMessageBox.information(self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
         else:

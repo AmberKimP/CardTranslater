@@ -107,3 +107,54 @@ def test_compose_skips_icon_only_lines_and_uses_measured_icon_size(tmp_path):
         assert imgs, "책 아이콘이 둘째 줄 자리에 들어가야 한다"
         heights.append(imgs[0]["bbox"][3] - imgs[0]["bbox"][1])
     assert heights[1] > heights[0] * 1.3  # 잰 크기(글자 높이의 2배)로 더 크게
+
+
+def test_set_partner_merges_number_and_icon_read_as_one_token():
+    """원문이 ‘3 + 검’을 아이콘 하나로 읽었으면, 고른 칸(3)에 바짝 붙은 큰 칸(검)까지 한 그림으로."""
+    from app.icons import _set_partner
+
+    seq = list("そうした場合") + ["■"] + list("を得る")
+    cells = [(i * 60, 100, i * 60 + 50, 150) for i in range(6)]
+    cells += [(380, 92, 418, 160), (422, 80, 520, 178), (540, 100, 590, 150), (600, 100, 650, 150), (660, 100, 710, 150)]
+    box = _set_partner(cells[6], cells, seq, 6, 55.0, 90.0)
+    assert box[0] == 380 and box[2] == 520 and box[1] < 92 and box[3] > 160
+    # 원문에서 바로 뒤가 다른 아이콘이면 따로 읽은 것: 합치지 않는다
+    seq2 = list("そうした場合") + ["■", "■"] + list("得る")
+    assert _set_partner(cells[6], cells, seq2, 6, 55.0, 90.0) == cells[6]
+    # 뒤 칸이 보통 글자 크기면 합치지 않는다
+    small = cells[:7] + [(422, 100, 470, 150)] + cells[8:]
+    assert _set_partner(cells[6], small, seq, 6, 55.0, 90.0) == cells[6]
+
+
+def test_loose_bands_keep_short_title_strip_on_icon_only_card():
+    """아이콘만 있는 카드: 제목 띠(아이콘보다 낮음)는 보통 기준에선 빠지지만 느슨한 기준에선 남는다."""
+    from app.icons import _bands_from
+
+    comps = [(542, 20, 66, 20, 487),  # 장식 (실제 카드에서 뽑은 덩어리)
+             (1046, 52, 19, 30, 302), (1077, 52, 17, 30, 314), (1095, 52, 16, 30, 268), (1111, 52, 17, 30, 329),  # 카드 번호
+             (335, 171, 481, 88, 36331),  # 제목 띠
+             (630, 309, 196, 226, 26434), (343, 327, 196, 191, 24474), (396, 358, 91, 130, 6876),
+             (464, 445, 58, 58, 1613),  # 아이콘 줄
+             (474, 612, 223, 237, 34134)]  # 아이콘 줄
+    assert len(_bands_from(comps)) == 2
+    assert len(_bands_from(comps, min_rel_h=0.3)) == 3
+
+
+def test_icon_review_puts_issues_first_then_appearance_order(tmp_path, monkeypatch):
+    from app import icons, service
+    from tests.test_icons import _project as icon_project
+
+    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)  # 쪽마다 따로 묶이게
+    info, _fd = icon_project(tmp_path, "1차", pages=3)
+    service.find_icons(info.dir, suggest=False)
+    work = info.game_dir / "work" / "icons"
+    res = icons.load_scan(work)
+    names = list(res.groups)
+    assert len(names) == 3
+    for g in names:
+        res.groups[g].update(suggest="coin", meaning="코인", ko="금화")
+    res.groups[names[2]]["ko"] = ""  # 마지막에 나온 것만 이슈
+    icons._save_scan(work, res)
+    groups = service.icon_review(info.dir)["groups"]
+    assert [g["group"] for g in groups] == [names[2], names[0], names[1]]
+    assert groups[0]["issue"] == "한국어 이름 없음" and not groups[1]["issue"]

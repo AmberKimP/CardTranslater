@@ -126,7 +126,7 @@ def _text_components(ink: np.ndarray) -> tuple[list[tuple[int, int, int, int, in
 
 
 def _bands_from(comps: list[tuple[int, int, int, int, int]],
-                rules: list[tuple[int, int]] = ()) -> list[tuple[int, int]]:
+                rules: list[tuple[int, int]] = (), min_rel_h: float = 0.5) -> list[tuple[int, int]]:
     """덩어리들을 세로로 겹치는 것끼리 묶어 줄 띠 (y0, y1)로. 구분선 높이에 걸친 띠는 뺀다."""
     if not comps:
         return []
@@ -153,7 +153,7 @@ def _bands_from(comps: list[tuple[int, int, int, int, int]],
     hmax = max(b[1] - b[0] for b in bands)
     bands = [b for b in bands if b[1] - b[0] >= hmax * 0.35]  # 띠 테두리 같은 가는 줄
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
-    return [(a, b) for a, b in bands if b - a >= hmed * 0.5]
+    return [(a, b) for a, b in bands if b - a >= hmed * min_rel_h]
 
 
 def _merge_rows(items, overlap: float = 0.3) -> list[list[int]]:
@@ -344,10 +344,14 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         if colored is None and text_line and _line_color_design(img, ink, y0, y1) and _looks_like_text(img, lum, ink, box):
             # 색 아이콘을 못 찾아 칸으로 짐작한 자리가 검정 글자처럼 보이면 틀린 자리다 (못 찾음으로 둔다)
             return None, "아이콘 자리로 짐작한 곳이 글자임"
+        if len(cells) > len(seq):  # 원문이 한 칸으로 읽은 세트 아이콘(예: 큰 숫자 3 + 검)은 붙은 칸까지 하나로
+            box = _set_partner(box, cells, seq, tok_pos, em_line, em)
         bx0, by0, bx1, by1 = _grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
         by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
         box = (bx0, by0, bx1, by1)
+        # 아이콘만 있는 줄은 아이콘이 글자보다 훨씬 클 수 있다 (줄 높이 = 아이콘 높이): 그 줄 높이로 크기를 잰다
+        em = em if text_line else max(em, band_h / 2.2)
         if (not (em * 0.35 <= bx1 - bx0 <= em * 3.0) or by1 - by0 > em * 2.5 or by1 - by0 < em * 0.3
                 or bx1 - bx0 < 0.55 * (by1 - by0)  # 세로로 가늘고 긴 것은 배경 그림 조각
                 or bx1 - bx0 > 2.4 * (by1 - by0)  # 가로로 긴 것은 라벨 띠
@@ -359,7 +363,16 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     if first[0] is not None:
         return first
     second = _try(_bands_text_first(all_comps, rules))
-    return second if second[0] is not None else first
+    if second[0] is not None:
+        return second
+    # 줄이 모자라면: 아이콘만 있는 카드에서는 제목 띠(プレイ時効果)가 아이콘 줄보다 낮아 ‘가는 줄’로 빠진다.
+    # 높이로 빼지 않은 띠로 한 번 더 (줄 길이 짝 맞추기가 남는 줄을 고른다)
+    loose = _bands_from(all_comps, rules, min_rel_h=0.3)
+    if len(loose) > len(_bands_from(all_comps, rules)):
+        third = _try(loose)
+        if third[0] is not None:
+            return third
+    return first
 
 
 # ---------------------------------------------------------------- 아이콘에 붙은 숫자 (예: 2[[coin]] -> 숫자까지 아이콘)
@@ -580,6 +593,33 @@ def _colored_icon_boxes(img, lum, ink, comps, em: float, seq: list[str], min_gra
         if len(wide) == n_tok:
             return [tuple(b) for b in wide]
     return None
+
+
+def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float):
+    """이미지 칸이 원문보다 많을 때, 고른 아이콘 칸에 바짝 붙은 큰 칸(보통 글자보다 확실히 큼)이 있으면 합친다.
+    원문에서 그쪽 이웃이 다른 아이콘이면 합치지 않는다 (따로 읽은 아이콘)."""
+    bx0, _by0, bx1, _by1 = box
+    i = next((j for j, c in enumerate(cells) if c[0] < bx1 and c[2] > bx0), None)
+    if i is None:
+        return box
+    out = list(box)
+    for side, j in (("right", i + 1), ("left", i - 1)):
+        if not 0 <= j < len(cells):
+            continue
+        nb = seq[tok_pos + 1] if side == "right" and tok_pos + 1 < len(seq) else (
+            seq[tok_pos - 1] if side == "left" and tok_pos > 0 else "")
+        if nb == "■":
+            continue
+        c = cells[j]
+        gap = (c[0] - out[2]) if side == "right" else (out[0] - c[2])
+        if (0 <= gap + 2 and gap <= 0.35 * em_line and c[3] - c[1] >= 1.2 * em_line
+                and max(out[2], c[2]) - min(out[0], c[0]) <= 3.0 * max(em, em_line)):
+            # 세로는 고른 칸 근처까지만 (이웃 칸에 윗줄 글자가 붙어 있을 수 있다)
+            h = out[3] - out[1]
+            out = [min(out[0], c[0]), min(out[1], max(c[1], int(out[1] - 0.35 * h))),
+                   max(out[2], c[2]), max(out[3], min(c[3], int(out[3] + 0.35 * h)))]
+            break
+    return tuple(out)
 
 
 def _ordinal_icon_cell(cells, seq, tok_pos: int, band_h: float, em: float):
