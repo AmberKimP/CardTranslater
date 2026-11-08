@@ -181,7 +181,8 @@ def _hook(monkeypatch, plans, dialog_result):
 
         def choices(self):
             return [{"file_dir": "D", "regions": {"이름": SANS_B}, "cards": {1: {"이름": SERIF}},
-                     "sentences": {1: {"이름": {0: GAEGU}}}, "sizes": {"이름": 1.2}}]
+                     "sentences": {1: {"이름": {0: GAEGU}}}, "sizes": {"이름": 1.2},
+                     "aligns": {"이름": "center"}}]
 
     monkeypatch.setattr(worker, "run_with_dialog", fake_run)
     monkeypatch.setattr(fonts_dialog, "FontPlanDialog", Dlg)
@@ -200,7 +201,8 @@ def test_compose_button_ok_saves_then_composes(qapp, tmp_path, monkeypatch):
     """확인하면 고른 글꼴을 저장한 뒤 한글 넣기를 돌린다 (accept_issues=False)."""
     cls, log = _hook(monkeypatch, _plan(), 1)
     cls(_FakePage(tmp_path)).compose()
-    assert log["saved"] == [("D", {"이름": SANS_B}, {1: {"이름": SERIF}}, {1: {"이름": {0: GAEGU}}}, {"이름": 1.2})]
+    assert log["saved"] == [("D", {"이름": SANS_B}, {1: {"이름": SERIF}}, {1: {"이름": {0: GAEGU}}}, {"이름": 1.2},
+                             {"이름": "center"})]
     assert len(log["compose"]) == 1 and log["compose"][0]["accept_issues"] is False
 
 
@@ -302,3 +304,32 @@ def test_compose_page_applies_size_scale():
         rec = typeset_compose.compose_page(pg, src, meta, {"본문": {"ko": "짧은 글"}}, sizes=sizes)
         starts.append(rec["본문"]["start_size_pt"])
     assert starts[1] == pytest.approx(starts[0] * 1.5)
+
+
+def test_save_aligns_round_trip_and_keep(tmp_path):
+    """aligns는 left/center/right만 저장(영역 설정대로 ''는 뺌), None이면 예전 것을 그대로 둔다."""
+    font_plan.save(tmp_path, {"이름": SANS_B}, {}, None, None, {"이름": "center", "본문": "", "x": "bad"})
+    assert font_plan.align_choices(font_plan.load(tmp_path)) == {"이름": "center"}
+    font_plan.save(tmp_path, {"이름": SANS_B}, {})
+    assert font_plan.align_choices(font_plan.load(tmp_path)) == {"이름": "center"}
+    font_plan.save(tmp_path, {"이름": SANS_B}, {}, None, None, {})
+    assert font_plan.align_choices(font_plan.load(tmp_path)) == {}
+
+
+def test_compose_page_applies_align_choice():
+    """compose_page(aligns=)로 그 영역의 한글이 왼쪽 < 가운데 < 오른쪽 자리에 놓인다."""
+    doc, sdoc = pymupdf.open(), pymupdf.open()
+    meta = {"regions": [{"name": "본문", "kind": "text", "rect_pt": [10, 10, 290, 90],
+                         "text_layer": {"size_pt": 8.0}}]}
+    xs = []
+    for al in ("left", "center", "right"):
+        pg = doc.new_page(width=300, height=100)
+        src = sdoc.new_page(width=300, height=100)
+        typeset_compose.compose_page(pg, src, meta, {"본문": {"ko": "짧은 글"}}, aligns={"본문": al})
+        words = pg.get_text("words")
+        assert words
+        xs.append((min(w[0] for w in words), max(w[2] for w in words)))
+    assert xs[0][0] < xs[1][0] < xs[2][0]
+    assert xs[0][0] == pytest.approx(10, abs=3)
+    assert xs[2][1] == pytest.approx(290, abs=3)
+    assert (xs[1][0] - 10) == pytest.approx(290 - xs[1][1], abs=3)

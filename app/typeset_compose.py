@@ -110,7 +110,8 @@ STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많�
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
                  base_dir: Path = ROOT, styles: dict | None = None,
                  region_erase: dict | None = None, fonts: dict | None = None,
-                 sentence_fonts: dict | None = None, sizes: dict | None = None) -> dict:
+                 sentence_fonts: dict | None = None, sizes: dict | None = None,
+                 aligns: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
@@ -118,6 +119,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
     fonts: {영역 이름: 글꼴 파일} — 한글 넣기 전에 고른 글꼴(fonts.json). 영역 서식의 글꼴보다 우선한다.
     sentence_fonts: {영역 이름: {문장 번호: 글꼴 파일}} — ‘문장마다 글꼴’ 영역(style.font_mode="sentence")에서만 쓴다.
     sizes: {영역 이름: 글자 크기 배율} — 글꼴 창에서 정한 크기 (원문 크기 기준).
+    aligns: {영역 이름: left | center | right} — 글꼴 창에서 정한 정렬. 영역 서식의 정렬보다 우선한다.
     """
     card = card or {}
     out: dict = {}
@@ -133,6 +135,9 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         scale = (sizes or {}).get(name)
         if scale and abs(scale - 1.0) > 1e-6:
             style_d = {**style_d, "size_scale": float(scale)}
+        al = (aligns or {}).get(name)
+        if al in ("left", "center", "right"):
+            style_d = {**style_d, "align": al}
         entry = card.get(name) or {}
         rect = pymupdf.Rect(reg["rect_pt"])
         work = pymupdf.Rect(reg["work_rect_pt"]) if reg.get("work_rect_pt") else None
@@ -674,7 +679,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
         rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
                            font_plan.overrides_for_page(font_data, pno), font_plan.sentences_for_page(font_data, pno),
-                           font_plan.size_scales(font_data))
+                           font_plan.size_scales(font_data), font_plan.align_choices(font_data))
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]

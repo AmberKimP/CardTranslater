@@ -5,6 +5,7 @@
      "cards": {"쪽": {영역: 글꼴 파일}},        # 카드(쪽)×영역 단위로 따로 고른 글꼴
      "sentences": {"쪽": {영역: {"문장 번호": 글꼴 파일}}},  # ‘문장마다 글꼴’ 영역에서 문장마다 고른 글꼴
      "sizes": {영역: 배율},                     # 글자 크기 배율 (1.0 = 원문 크기, 없으면 1.0)
+     "aligns": {영역: "left"|"center"|"right"}, # 정렬 (없으면 영역 설정대로)
      "recommended": {영역: [{"file", "reason", "by"}]},  # 추천 (by: claude | shape), 1번째가 기본값
      "recommended_sig": "...",                 # 추천을 만든 지우기 결과 (바뀌면 다시 추천)
      "updated": "YYYY-MM-DD HH:MM"}
@@ -30,6 +31,7 @@ SAMPLE_PAGES = 3  # 원문 모양을 잴 쪽 수
 BASELINE_FONTS = ("fonts/notosanskr/NotoSansKR-Regular.ttf", "fonts/notosanskr/NotoSansKR-Medium.ttf",
                   "fonts/notosanskr/NotoSansKR-Bold.ttf", "fonts/gothica1/GothicA1-Medium.ttf",
                   "fonts/notoserifkr/NotoSerifKR-Regular.ttf", "fonts/notoserifkr/NotoSerifKR-Bold.ttf")
+ALIGNS = ("left", "center", "right")
 _TAG_RE = re.compile(r"</?[a-z0-9]+>|\[\[[^\]]*\]\]")
 
 
@@ -43,8 +45,9 @@ def load(file_dir: Path | str) -> dict:
 
 
 def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentences: dict | None = None,
-         sizes: dict | None = None) -> Path:
+         sizes: dict | None = None, aligns: dict | None = None) -> Path:
     """sizes: {영역: 크기 배율} (None이면 예전 것을 그대로, 1.0은 넣지 않는다).
+    aligns: {영역: left | center | right} (None이면 예전 것을 그대로, 영역 설정대로인 영역은 넣지 않는다).
     고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다).
     sentences: {쪽: {영역: {문장 번호: 파일}}} (None이면 예전 것을 그대로 둔다)."""
     p = Path(file_dir) / FILE_NAME
@@ -66,6 +69,8 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
         data["sentences"] = sc
     if sizes is not None:
         data["sizes"] = {k: round(float(v), 3) for k, v in sizes.items() if v and abs(float(v) - 1.0) > 1e-6}
+    if aligns is not None:
+        data["aligns"] = {k: v for k, v in aligns.items() if v in ALIGNS}
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -94,6 +99,11 @@ def region_font_modes(file_dir: Path) -> dict:
 def size_scales(data: dict) -> dict:
     """{영역: 글자 크기 배율} (정하지 않은 영역은 빠짐 = 1.0)."""
     return {k: float(v) for k, v in (data.get("sizes") or {}).items() if v}
+
+
+def align_choices(data: dict) -> dict:
+    """{영역: left | center | right} — 글꼴 창에서 정한 정렬 (정하지 않은 영역은 빠짐 = 영역 설정대로)."""
+    return {k: v for k, v in (data.get("aligns") or {}).items() if v in ALIGNS}
 
 
 def overrides_for_page(data: dict, page: int) -> dict:
@@ -390,7 +400,8 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                                      for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
             cards.append(card)
         regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
-                        "size_scale": float((data.get("sizes") or {}).get(name) or 1.0), "cards": cards})
+                        "size_scale": float((data.get("sizes") or {}).get(name) or 1.0),
+                        "align": align_choices(data).get(name, ""), "cards": cards})
     used = [f for f in project_used_fonts(fd)]
     return {"file_dir": str(fd), "regions": regions, "used": [{"file": f, "label": label_for(f)} for f in used],
             "note": note}

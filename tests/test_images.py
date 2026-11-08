@@ -247,6 +247,79 @@ def test_compose_writes_sheet_images_for_image_input(tmp_path):
     assert Image.open(res.sheet_images[0]).size == Image.open(tmp_path / "in" / "s.png").size
 
 
+def _composed_image_file(tmp_path):
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    _grid(tmp_path / "in" / "s.png")
+    r = service.add_images(info.dir, [tmp_path / "in" / "s.png"], "이미지", cols=3, rows=2, new_group=True)
+    g = next(g for g in service.project_overview(info.dir)["groups"] if g["name"] == "이미지")
+    service.save_region_template(g["dir"], {"regions": [
+        {"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.15}}]})
+    assert service.erase(r.file_dir, "1-6").ok
+    assert service._compose_with_cards(r.file_dir, {}, None, None).state == "done"
+    return r.file_dir
+
+
+def test_import_edited_pdf_makes_sheet_images_and_survives_recompose(tmp_path):
+    """고친 한글 PDF를 넣으면 원래 배열 이미지로 합쳐 edited/에 둔다 (받은 PDF는 그대로, 다시 한글 넣기를 해도 남음)."""
+    fd = _composed_image_file(tmp_path)
+    assert service.can_import_edited(fd) and service.edited_sheet_images(fd) == []
+    edited = _cards_pdf(tmp_path / "edited_by_me.pdf", [(0, 0, 250)] * 6,
+                        size_pt=tuple(pymupdf.open(fd / "translated" / "translated.pdf")[0].rect[2:]))
+    before = edited.read_bytes()
+    r = service.import_edited_pdf(fd, edited)
+    assert r.warnings == [] and r.pdf == fd / "edited" / "edited.pdf"
+    assert [p.name for p in r.sheet_images] == ["s.png"] and service.edited_sheet_images(fd) == r.sheet_images
+    assert edited.read_bytes() == before
+    arr = np.asarray(Image.open(r.sheet_images[0]).convert("RGB"))
+    lay = service.image_sheet_layouts(fd)[0]
+    for b in lay["boxes"]:  # 모든 카드 자리가 고친 PDF의 색
+        assert (arr[b[1] + 5:b[3] - 5, b[0] + 5:b[2] - 5] == (0, 0, 250)).all()
+    assert Image.open(r.sheet_images[0]).size == Image.open(tmp_path / "in" / "s.png").size
+    service._compose_with_cards(fd, {}, None, None)  # 한글 넣기를 다시 해도
+    assert service.edited_sheet_images(fd) == r.sheet_images and (fd / "edited" / "edited.pdf").exists()
+
+
+def test_import_edited_pdf_rejects_page_count_and_warns_on_shape(tmp_path):
+    fd = _composed_image_file(tmp_path)
+    w, h = pymupdf.open(fd / "translated" / "translated.pdf")[0].rect[2:]
+    with pytest.raises(ValueError, match="쪽 수"):
+        service.import_edited_pdf(fd, _cards_pdf(tmp_path / "five.pdf", [(0, 0, 0)] * 5, size_pt=(w, h)))
+    assert service.edited_sheet_images(fd) == []
+    r = service.import_edited_pdf(fd, _cards_pdf(tmp_path / "wide.pdf", [(0, 0, 0)] * 6, size_pt=(w * 2, h)))
+    assert r.warnings and "비율" in r.warnings[0] and len(r.sheet_images) == 1
+
+
+def test_can_import_edited_false_without_result_or_images(tmp_path):
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    _grid(tmp_path / "in" / "s.png")
+    r = service.add_images(info.dir, [tmp_path / "in" / "s.png"], "이미지", cols=3, rows=2, new_group=True)
+    assert not service.can_import_edited(r.file_dir)  # 한글 넣기 전
+    with pytest.raises(ValueError, match="한글 넣기"):
+        service.import_edited_pdf(r.file_dir, tmp_path / "x.pdf")
+
+
+def test_viewer_import_edited_buttons(tmp_path, monkeypatch):
+    """결과 보기: 배열 이미지 파일이면 ‘고친 PDF 넣기…’가 보이고, 넣은 뒤 ‘고친 배열 이미지’가 보여 그것을 연다."""
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+
+    QApplication.instance() or QApplication([])
+    from app.qt import results, worker
+
+    fd = _composed_image_file(tmp_path)
+    v = results.ResultViewer([("f", fd / "translated")])
+    assert v.import_btn.isVisibleTo(v) and not v.edited_btn.isVisibleTo(v)
+    size = tuple(pymupdf.open(fd / "translated" / "translated.pdf")[0].rect[2:])
+    pdf = _cards_pdf(tmp_path / "mine.pdf", [(0, 0, 250)] * 6, size_pt=size)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(pdf), "")))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(worker, "run_with_dialog",
+                        lambda parent, title, job, done, failed=None, **k: done(job.fn(*job.args, **job.kwargs)))
+    opened = []
+    monkeypatch.setattr(results, "_open", opened.append)
+    v.import_edited()
+    assert v.edited_btn.isVisibleTo(v) and opened == [fd / "edited" / "images" / "s.png"]
+
+
 
 def test_cut_sheet_follows_touching_card_edges_off_grid(tmp_path):
     """스캔처럼: 둥근 귀 카드 3×2가 회색 바탕 위에 거의 붙어 있고 고르게 놓이지 않음(줄·열마다 경계가 다름).

@@ -60,6 +60,14 @@ class ResultViewer(QDialog):
         self.sheet_btn = QPushButton("원래 배열 이미지")
         self.sheet_btn.setToolTip("배열 이미지로 넣은 카드를 원래 시트 크기·배열로 다시 합친 이미지 (원본 해상도)")
         self.sheet_btn.clicked.connect(self.open_sheets)
+        self.import_btn = QPushButton("고친 PDF 넣기…")
+        self.import_btn.setToolTip("이 한글 넣기 결과 PDF를 다른 프로그램에서 고쳤다면 그 PDF를 골라 넣으세요.\n"
+                                   "카드를 원래 시트 크기·배열의 이미지로 다시 합쳐 보여 줍니다.\n"
+                                   "한글 넣기를 다시 해도 고친 PDF와 그 이미지는 지워지지 않습니다.")
+        self.import_btn.clicked.connect(self.import_edited)
+        self.edited_btn = QPushButton("고친 배열 이미지")
+        self.edited_btn.setToolTip("넣은 고친 PDF로 합친 원래 배열 이미지를 엽니다")
+        self.edited_btn.clicked.connect(self.open_edited)
         top = QHBoxLayout()
         top.setSpacing(8)
         top.addWidget(QLabel("파일"))
@@ -67,6 +75,8 @@ class ResultViewer(QDialog):
         top.addWidget(self.info, 1)
         top.addWidget(pdf_btn)
         top.addWidget(self.sheet_btn)
+        top.addWidget(self.import_btn)
+        top.addWidget(self.edited_btn)
         top.addWidget(folder_btn)
         self.pages = QListWidget()
         self.pages.currentRowChanged.connect(lambda _r: self._show_page())
@@ -150,6 +160,9 @@ class ResultViewer(QDialog):
 
     def reload(self):
         self.sheet_btn.setVisible(bool(self.sheet_images()))  # 배열 이미지로 넣은 파일만
+        fd = self.file_dir()
+        self.import_btn.setVisible(fd is not None and service.can_import_edited(fd))  # 시험 결과는 빼고
+        self.edited_btn.setVisible(fd is not None and bool(service.edited_sheet_images(fd)))
         allp = service.result_pages(self.run_dir())
         n_bad = sum(1 for p in allp if self.problems(p["status"]))
         if n_bad:
@@ -314,6 +327,36 @@ class ResultViewer(QDialog):
         if imgs:
             _open(imgs[0] if len(imgs) == 1 else imgs[0].parent)
 
+    def import_edited(self):
+        """고친 한글 PDF를 골라 원래 배열 이미지로 합치고, 다 되면 그 이미지를 연다."""
+        from PySide6.QtWidgets import QFileDialog
+
+        fd = self.file_dir()
+        if fd is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "고친 PDF 고르기", str(self.run_dir()), "PDF (*.pdf)")
+        if not path:
+            return
+
+        def done(r):
+            self.reload()
+            msg = f"고친 PDF로 원래 배열 이미지 {len(r.sheet_images)}장을 만들었습니다."
+            if r.warnings:
+                msg += "\n\n" + "\n".join(r.warnings)
+            QMessageBox.information(self, "고친 PDF 넣기", msg)
+            self.open_edited()
+
+        job = worker.Job(service.import_edited_pdf, fd, path)
+        worker.run_with_dialog(self, "고친 PDF 넣기", job, done,
+                               lambda m: show_failure(self, "고친 PDF를 넣지 못했습니다", m))
+
+    def open_edited(self):
+        """고친 배열 이미지가 하나면 그 이미지를, 여럿이면 폴더를 연다."""
+        fd = self.file_dir()
+        imgs = service.edited_sheet_images(fd) if fd else []
+        if imgs:
+            _open(imgs[0] if len(imgs) == 1 else imgs[0].parent)
+
     def open_pdf(self):
         d = self.run_dir()
         pdf = next((d / n for n in ("translated.pdf", "composed.pdf") if (d / n).exists()), None)
@@ -436,7 +479,7 @@ class OutputActions:
                 return
             for c in dlg.choices():
                 service.save_font_choices(c["file_dir"], c["regions"], c["cards"], c["sentences"],
-                                          c.get("sizes"))
+                                          c.get("sizes"), c.get("aligns"))
         self._run_compose(False)
 
     def _run_compose(self, accept: bool):

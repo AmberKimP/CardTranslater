@@ -4,6 +4,7 @@
 - 영역을 펼치면 카드(문장)마다 따로 고를 수 있다. 기본은 ‘영역과 같음’.
 - 위 미리 보기(목록 위): 왼쪽은 원본 카드의 그 영역, 오른쪽은 지운 카드 위에 고른 글꼴·원본 글자 색으로 쓴 번역 (같은 배율).
 - 글자 크기: 영역마다 원본 크기 대비 배율 (한글 넣기에 그대로 쓴다).
+- 정렬: 영역마다 영역 설정대로 / 왼쪽 / 가운데 / 오른쪽 (영역 지정의 정렬보다 우선한다).
 - 목록: 추천 글꼴 + 이 프로젝트에서 쓴 적이 있는 글꼴 + 이 창에서 추가한 글꼴, 맨 아래 ‘글꼴 추가…’
   (PC에 설치된 글꼴 목록 또는 글꼴 파일).
 화면은 app.service만 부른다.
@@ -26,6 +27,7 @@ from app.qt.dialogs import file_label, fit_to_screen, grey_note, hint_bar, page_
 
 ADD = "__add__"
 SAME = ""  # 카드 줄: 영역과 같음
+ALIGN_CHOICES = [("", "영역 설정대로"), ("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
 ROLE_KIND = Qt.ItemDataRole.UserRole  # 트리 항목: ("region", plan_idx, region_name) | ("card", plan_idx, name, page)
 
 _families: dict[str, str | None] = {}
@@ -127,6 +129,8 @@ class FontPlanDialog(QDialog):
         self._cb_item: dict = {}  # 콤보 -> 트리 줄
         self.sizes: dict[tuple[int, str], float] = {  # (파일 번호, 영역): 글자 크기 배율
             (pi, r["name"]): float(r.get("size_scale") or 1.0) for pi, p in enumerate(plans) for r in p["regions"]}
+        self.aligns: dict[tuple[int, str], str] = {  # (파일 번호, 영역): "" (영역 설정대로) | left | center | right
+            (pi, r["name"]): r.get("align") or "" for pi, p in enumerate(plans) for r in p["regions"]}
 
         title = page_title("한글 글꼴 고르기", 14)
         help_ = hint_bar("아래 목록에서 영역(또는 카드·문장)을 고르면 위에 원본과 미리 보기가 나옵니다. 글꼴 칸에서 바꾸세요. "
@@ -194,6 +198,16 @@ class FontPlanDialog(QDialog):
         size_row.addWidget(self.size_label)
         size_row.addWidget(self.size)
         size_row.addWidget(b_reset)
+        size_row.addSpacing(24)
+        self.align_label = QLabel("정렬")
+        self.align = QComboBox()
+        for key, text in ALIGN_CHOICES:
+            self.align.addItem(text, key)
+        self.align.setToolTip("이 영역의 모든 카드에서 한글을 놓는 방법입니다.\n"
+                              "영역 설정대로: 영역 지정에서 정한 정렬 (기본은 원문 줄을 따라감)")
+        self.align.currentIndexChanged.connect(self._align_changed)
+        size_row.addWidget(self.align_label)
+        size_row.addWidget(self.align)
         size_row.addStretch(1)
 
         # 위: 미리 보기 묶음, 아래: 목록 (사용자 요구: 원본/미리 보기 그림이 목록 위)
@@ -463,6 +477,14 @@ class FontPlanDialog(QDialog):
         self.sizes[(w[0], w[1])] = v / 100.0
         self._preview()
 
+    def _align_changed(self, _i: int):
+        item = self.tree.currentItem()
+        w = self._where(item) if item is not None else None
+        if w is None:
+            return
+        self.aligns[(w[0], w[1])] = self.align.currentData() or ""
+        self._preview()
+
     def _preview(self):
         item = self.tree.currentItem()
         if item is None:
@@ -477,6 +499,12 @@ class FontPlanDialog(QDialog):
         self.size.setValue(round(scale * 100))
         self.size.blockSignals(False)
         self.size_label.setText(f"글자 크기 (‘{w[1]}’ 영역의 모든 카드)" if w else "글자 크기")
+        al = self.aligns.get((w[0], w[1]), "") if w else ""
+        pills = bool(w) and self._reg(w[0], w[1]).get("kind") == "tag_pills"  # 태그 라벨은 정렬을 쓰지 않는다
+        self.align.blockSignals(True)
+        self.align.setCurrentIndex(max(self.align.findData(al), 0))
+        self.align.setEnabled(w is not None and not pills)
+        self.align.blockSignals(False)
         self.where.setText(self._where_text(item, w))
         info = None
         if w and w[2] is not None:
@@ -484,6 +512,8 @@ class FontPlanDialog(QDialog):
                 info = service.font_preview(self.plans[w[0]]["file_dir"], w[2], w[1], f, scale)
             except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
                 info = None
+        if info is not None and al and not pills:
+            info = {**info, "align": al}
         if info is None:
             self._orig_pm = QPixmap()
             self._sample_pm = QPixmap()
@@ -615,7 +645,8 @@ class FontPlanDialog(QDialog):
                         if x["selected"]:
                             sents.setdefault(c["page"], {}).setdefault(reg["name"], {})[x["idx"]] = x["selected"]
             out.append({"file_dir": plan["file_dir"], "regions": {}, "cards": cards, "sentences": sents,
-                        "sizes": {name: v for (pi, name), v in self.sizes.items() if pi == len(out)}})
+                        "sizes": {name: v for (pi, name), v in self.sizes.items() if pi == len(out)},
+                        "aligns": {name: v for (pi, name), v in self.aligns.items() if pi == len(out) and v}})
         it = self.tree.invisibleRootItem()
         stack = [it.child(i) for i in range(it.childCount())]
         while stack:

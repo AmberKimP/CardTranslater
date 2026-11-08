@@ -1126,6 +1126,107 @@ def _attach_sheet_images(file_dir: Path, final_dir: Path, res, progress: Progres
             res.sheet_error = f"원래 배열 이미지로 합치지 못했습니다: {e}"
 
 
+EDITED_DIR = "edited"  # 파일 폴더 안: 사람이 고친 한글 PDF와 그것으로 합친 배열 이미지 (한글 넣기를 다시 해도 남는다)
+EDITED_PDF = "edited.pdf"
+
+
+@dataclass
+class EditedImportResult:
+    pdf: Path
+    sheet_images: list[Path]
+    warnings: list[str] = field(default_factory=list)
+
+
+def can_import_edited(file_dir: Path | str) -> bool:
+    """고친 PDF를 넣어 원래 배열 이미지로 합칠 수 있는 파일인가: 배열 이미지로 넣었고 한글 넣기 결과가 있다."""
+    fd = Path(file_dir)
+    t = fd / "translated"
+    if not ((t / "translated.pdf").exists() and (t / "report.json").exists()):
+        return False
+    try:
+        owner, _members = sheet_family(fd)
+        return bool(owner and image_sheet_layouts(owner))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def edited_sheet_images(file_dir: Path | str) -> list[Path]:
+    """고친 PDF로 합친 배열 이미지 (없으면 [])."""
+    d = Path(file_dir) / EDITED_DIR / "images"
+    return sorted(p for p in d.glob("*") if p.suffix.lower() in (".png", ".jpg")) if d.is_dir() else []
+
+
+def import_edited_pdf(file_dir: Path | str, pdf: Path | str, progress: ProgressFn | None = None,
+                      cancel: CancelToken | None = None) -> EditedImportResult:
+    """한글 넣기 결과 PDF(translated/translated.pdf)를 사람이 고친 것을 받아, 원래 시트 크기·배열의 이미지로 합친다.
+    고친 PDF는 파일 폴더의 edited/edited.pdf로 복사하고, 이미지는 edited/images/에 쓴다 (한글 넣기를 다시 해도 남는다).
+    쪽 수가 한글 넣기 결과와 다르면 ValueError. 받은 PDF 원본은 바꾸지 않는다."""
+    import pymupdf
+
+    from app import images
+
+    progress = progress or _noop
+    fd = Path(file_dir)
+    pdf = Path(pdf)
+    t = fd / "translated"
+    if not ((t / "translated.pdf").exists() and (t / "report.json").exists()):
+        raise ValueError("이 파일은 아직 한글 넣기 결과가 없습니다. 먼저 ⑧ 한글 넣기를 하세요.")
+    owner, members = sheet_family(fd)
+    layouts = image_sheet_layouts(owner) if owner else []
+    if not layouts:
+        raise ValueError("배열 이미지로 넣은 파일이 아니라 원래 배열 이미지로 합칠 수 없습니다.")
+    rep = json.loads((t / "report.json").read_text(encoding="utf-8"))
+    try:
+        new = pymupdf.open(pdf)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"PDF를 열 수 없습니다: {e}") from e
+    warnings: list[str] = []
+    with new, pymupdf.open(t / "translated.pdf") as old:
+        if new.page_count != old.page_count:
+            raise ValueError(f"쪽 수가 다릅니다: 고친 PDF {new.page_count}쪽, 한글 넣기 결과 {old.page_count}쪽.\n"
+                             "쪽을 더하거나 빼지 말고 내용만 고친 PDF를 넣으세요.")
+        odd = []
+        for i in range(old.page_count):
+            a, b = old[i].rect, new[i].rect
+            if abs(a.width / a.height - b.width / b.height) > 0.02 * (a.width / a.height):
+                odd.append(rep["pages"][i] if i < len(rep["pages"]) else i + 1)
+        if odd:
+            warnings.append("쪽 가로세로 비율이 한글 넣기 결과와 다른 쪽이 있어 카드 자리에 맞춰 늘이거나 줄였습니다: "
+                            + ", ".join(f"{p}쪽" for p in odd[:10]) + (" …" if len(odd) > 10 else ""))
+    if cancel:
+        cancel.check()
+    progress(ProgressEvent("render", 0, 1, "고친 PDF를 원래 배열 이미지로 합치는 중"))
+    out = fd / EDITED_DIR
+    out.mkdir(exist_ok=True)
+    tmp_pdf = out / (EDITED_PDF + ".tmp")
+    shutil.copyfile(pdf, tmp_pdf)
+    extra = []
+    for m in members:  # 같은 시트의 다른 그룹 카드: 그쪽도 고친 PDF가 있으면 그것을
+        if m.resolve() == fd.resolve():
+            continue
+        mt = m / "translated"
+        if (mt / "translated.pdf").exists() and (mt / "report.json").exists():
+            mp = m / EDITED_DIR / EDITED_PDF
+            extra.append((mp if mp.exists() else mt / "translated.pdf",
+                          json.loads((mt / "report.json").read_text(encoding="utf-8"))["pages"]))
+    tmp_imgs = out / ".images-tmp"
+    if tmp_imgs.exists():
+        shutil.rmtree(tmp_imgs)
+    try:
+        outs = images.compose_sheets(layouts, owner / "source" / "images", tmp_pdf, rep["pages"], tmp_imgs, extra=extra)
+    except Exception:
+        tmp_pdf.unlink(missing_ok=True)
+        shutil.rmtree(tmp_imgs, ignore_errors=True)
+        raise
+    tmp_pdf.replace(out / EDITED_PDF)
+    final_imgs = out / "images"
+    if final_imgs.exists():
+        shutil.rmtree(final_imgs)
+    tmp_imgs.rename(final_imgs)
+    progress(ProgressEvent("done", 1, 1, "고친 PDF 합치기 완료"))
+    return EditedImportResult(out / EDITED_PDF, [final_imgs / o.name for o in outs], warnings)
+
+
 def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResult:
     """번역 카드(dict)로 바로 한글 넣기 (엑셀 없이)."""
     from app.typeset_compose import run_compose
@@ -1379,13 +1480,14 @@ def font_plans(project_dir: Path | str, group: str | None = None, files: list | 
 
 
 def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = None,
-                      sentences: dict | None = None, sizes: dict | None = None) -> Path:
-    """sizes {영역: 글자 크기 배율} (1.0 = 원문 크기).
+                      sentences: dict | None = None, sizes: dict | None = None,
+                      aligns: dict | None = None) -> Path:
+    """sizes {영역: 글자 크기 배율} (1.0 = 원문 크기). aligns {영역: left | center | right} (영역 설정대로면 뺀다).
     글꼴 창에서 고른 것: regions {영역: 글꼴 파일}, cards {쪽: {영역: 글꼴 파일}} (영역 기본과 다를 때만),
     sentences {쪽: {영역: {문장 번호: 글꼴 파일}}} (‘문장마다 글꼴’ 영역)."""
     from app import font_plan
 
-    return font_plan.save(Path(file_dir), regions, cards, sentences, sizes)
+    return font_plan.save(Path(file_dir), regions, cards, sentences, sizes, aligns)
 
 
 def font_preview(file_dir: Path | str, page: int, region: str, font_file: str | None,

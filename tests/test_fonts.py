@@ -201,7 +201,23 @@ def test_font_dialog_defaults_and_choices(qapp):
     c1.setCurrentIndex(c1.findData(SANS_B))
     c2.setCurrentIndex(0)  # 영역과 같음으로 되돌림
     assert dlg.choices() == [{"file_dir": "C:/x", "regions": {"이름": GAEGU}, "cards": {1: {"이름": SANS_B}}, "sentences": {},
-                              "sizes": {"이름": 1.0}}]
+                              "sizes": {"이름": 1.0}, "aligns": {}}]
+
+
+def test_font_dialog_align_choice(qapp):
+    """정렬 칸: 처음엔 저장된 값(없으면 영역 설정대로), 바꾸면 choices()에 영역별로 들어간다."""
+    from app.qt.fonts_dialog import FontPlanDialog
+
+    plan = _plan()
+    plan[0]["regions"][0]["align"] = "right"
+    dlg = FontPlanDialog(plan)
+    dlg.tree.setCurrentItem(dlg.tree.topLevelItem(0))
+    assert dlg.align.currentData() == "right" and dlg.align.isEnabled()
+    assert dlg.choices()[0]["aligns"] == {"이름": "right"}
+    dlg.align.setCurrentIndex(dlg.align.findData("center"))
+    assert dlg.choices()[0]["aligns"] == {"이름": "center"}
+    dlg.align.setCurrentIndex(dlg.align.findData(""))
+    assert dlg.choices()[0]["aligns"] == {}
 
 
 def test_font_dialog_add_font(qapp, monkeypatch):
