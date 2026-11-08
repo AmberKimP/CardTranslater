@@ -3,7 +3,9 @@
 - 지워야 할 파일 = 아직 안 지운 파일 + 지운 뒤 원문·영역·카드별 지우기 방식이 바뀐 파일 (service.files_needing_erase).
 - ⑦ 글자 지우기를 누르면 우선순위를 높인다 (boost).
 - 프로젝트를 바꾸거나 앱을 닫으면 멈춘다. 다음에 프로젝트를 열면 남은 파일부터 이어 한다.
-- 화면에서 ⑦을 직접 돌리는 동안(page.erasing)에는 시작하지 않는다 (같은 파일을 두 번 지우지 않게).
+- cleared/를 쓰거나 읽는 화면 작업(⑦ 글자 지우기, ⑧ 한글 넣기, 시험 실행, 결과 보기에서 다시 넣기)은
+  run_exclusive로 돌린다: 뒤에서 지우기를 멈추고, 지우던 스레드가 정말 끝난 뒤에 시작하며, 끝나면 다시 이어 한다
+  (같은 파일을 두 스레드가 함께 쓰지 않게).
 """
 
 from __future__ import annotations
@@ -11,12 +13,48 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QThreadPool, Signal
+from PySide6.QtWidgets import QProgressDialog
 
 from app import service
 from app.qt import worker
 
 BG_STATUSES = ("glossary_review", "glossary_confirmed", "translating", "translated")  # ④ 용어집 만들기부터
+
+_CURRENT: "BackgroundEraser | None" = None  # 지금 프로젝트 화면의 뒤에서 지우기 (결과 보기 창 등에서 찾는다)
+
+
+def current() -> "BackgroundEraser | None":
+    return _CURRENT
+
+
+def run_exclusive(parent, title: str, job: worker.Job, on_done, on_failed=None) -> None:
+    """cleared/를 다루는 화면 작업: 뒤에서 지우기를 멈추고 그 스레드가 끝나기를 기다린 뒤 돌리고, 끝나면(취소 포함) 놓아 준다."""
+    bg = _CURRENT
+    if bg is None:
+        worker.run_with_dialog(parent, title, job, on_done, on_failed)
+        return
+    bg.hold()
+    released = [False]
+
+    def release(*_a):
+        if not released[0]:
+            released[0] = True
+            bg.release()
+    for sig in (job.signals.done, job.signals.failed, job.signals.cancelled):
+        sig.connect(release)  # on_done보다 먼저 (on_done이 새로 고치며 뒤에서 지우기를 다시 시작할 수 있게)
+
+    def go():
+        worker.run_with_dialog(parent, title, job, on_done, on_failed)
+    if bg.idle:
+        go()
+        return
+    wait = QProgressDialog("뒤에서 지우던 쪽을 마무리하는 중…", None, 0, 0, parent)  # 몇 초 (한 쪽)
+    wait.setWindowTitle(title)
+    wait.setWindowModality(Qt.WindowModality.WindowModal)
+    wait.setMinimumDuration(0)
+    wait.show()
+    bg.when_idle(lambda: (wait.close(), go()))
 
 
 class _BgJob(worker.Job):
@@ -46,8 +84,13 @@ class BackgroundEraser(QObject):
     file_done = Signal()
 
     def __init__(self, page):
+        global _CURRENT
         super().__init__(page)
+        _CURRENT = self
         self.page = page
+        self.holds = 0  # 화면 작업이 cleared/를 쓰는 중 (run_exclusive): 그동안 시작하지 않는다
+        self._draining: set = set()  # 멈추라고 했지만 스레드가 아직 끝나지 않은 작업
+        self._idle_cbs: list = []
         self.project_dir: Path | None = None
         self.queue: list[Path] = []
         self.total = 0
@@ -61,6 +104,27 @@ class BackgroundEraser(QObject):
     @property
     def active(self) -> bool:
         return self.job is not None
+
+    @property
+    def idle(self) -> bool:
+        """돌고 있는 지우기 스레드가 하나도 없다 (멈춘 것까지 끝남)."""
+        return self.job is None and not self._draining
+
+    def when_idle(self, cb) -> None:
+        """멈춘 지우기 스레드가 모두 끝나면 cb()를 부른다 (이미 그렇다면 바로)."""
+        if self.idle:
+            cb()
+        else:
+            self._idle_cbs.append(cb)
+
+    def hold(self) -> None:
+        self.holds += 1
+        self.stop()
+
+    def release(self) -> None:
+        self.holds = max(0, self.holds - 1)
+        if not self.holds:
+            self.kick()
 
     def busy_with(self, file_dirs) -> bool:
         """지금 지우는 중이거나 지울 차례인 파일이 file_dirs(None=모두) 안에 있나."""
@@ -84,7 +148,7 @@ class BackgroundEraser(QObject):
             return
         if self.project_dir is not None and Path(pdir) != self.project_dir:
             self.stop()
-        if self.active or getattr(self.page, "erasing", False):
+        if self.active or self.holds or self._draining:
             return
         ov = getattr(self.page, "ov", None) or {}
         if ov.get("status") not in BG_STATUSES:
@@ -120,6 +184,8 @@ class BackgroundEraser(QObject):
         self.queue = []
         if self.job is not None:
             self.job.cancel()
+            if getattr(self.job, "signals", None) is not None:
+                self._draining.add(self.job)  # 다음 쪽에서 멈춘다: 끝날 때까지 새로 시작하지 않는다
         self.job = None
         self.boosted = False
         self._current = None
@@ -142,10 +208,27 @@ class BackgroundEraser(QObject):
         job = _BgJob(self, service.erase_project, self.project_dir, files=[fd], stale=True)
         self.job = job
         job.signals.progress.connect(lambda ev, b=label: self._progress(b, ev))
+        for sig in (job.signals.done, job.signals.failed, job.signals.cancelled):
+            sig.connect(lambda *_a, j=job: self._ended(j))
         job.signals.done.connect(lambda r, j=job, f=fd: self._after(j, f, getattr(r, "state", "done") not in ("done", "skipped")))
         job.signals.failed.connect(lambda _m, j=job, f=fd: self._after(j, f, True))
-        job.signals.cancelled.connect(lambda j=job: None)
         worker.start(job)
+
+    def _ended(self, job):
+        """작업 스레드가 끝남 (끝·실패·취소). 멈춘 작업이 다 끝났으면 기다리던 화면 작업을 시작한다."""
+        self._draining.discard(job)
+        if self._draining or self.job is not None:
+            return
+        cbs, self._idle_cbs = self._idle_cbs, []
+        for cb in cbs:
+            cb()
+        if not cbs and not self.holds:
+            self.kick()
+
+    def shutdown(self, wait_ms: int = 15000) -> None:
+        """앱을 닫음: 멈추고 지우던 스레드가 끝나기를 (잠깐) 기다린다."""
+        self.stop()
+        QThreadPool.globalInstance().waitForDone(wait_ms)
 
     def _pace(self) -> str:
         return "(서둘러)" if self.boosted else "(천천히)"

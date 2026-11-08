@@ -858,6 +858,13 @@ def translate_project(project_dir: Path | str, *, model: str = "sonnet", engine:
     if r.state == "done":
         if not partial or info.status == "translated":
             workspace.set_status(info, "translated")
+        if (r.translated or r.from_glossary) and (info.game_dir / "번역_검수.xlsx").exists():
+            # 검수 엑셀이 이미 있으면 새 번역으로 다시 만든다 (한글 넣기는 엑셀을 먼저 쓰므로, 옛 번역이 남지 않게).
+            # 사람이 엑셀에서 고친 번역·메모·글자 크기는 옮겨 담는다.
+            try:
+                export_project_excel(info.dir, force=True)
+            except OSError as e:
+                r.excel_note = f"검수 엑셀을 새 번역으로 다시 만들지 못했습니다 (엑셀에서 열려 있나요?): {e}"
     elif partial and info.status == "translated":
         pass  # 이미 전체 번역을 마친 프로젝트는 그대로
     return r
@@ -981,7 +988,7 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
         pages = workspace.included_pages(fd)
         if ((fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd)
                 and not (stale and stale_erased_pages(fd))):
-            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ‘모두 다시 지우기’)"})
+            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ⑦ 글자 지우기의 ‘그래도 다시 지우기’)"})
             continue
         if not pages:
             out.files.append({"file": key, "state": "skipped", "reason": "처리할 쪽 없음"})
@@ -1381,7 +1388,6 @@ def project_overview(project_dir: Path | str) -> dict:
                 "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(all_inc)),
                 "exclude_reason": workspace.file_settings(fd).get("exclude_reason", ""),
                 "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
-                "erase_stale": bool(stale_erased_pages(fd)) if (fd / "cleared" / "meta").exists() else False,
                 "composed": (fd / "translated" / "translated.pdf").exists(),
                 "review_xlsx": review_xlsx_for(fd),
                 "no_regions": no_regions,
@@ -2195,6 +2201,30 @@ def split_paragraphs(text: str) -> list[str]:
 
 
 _TRANSLATION_CARDS: dict = {}
+_NOT_FOR_CARDS = ("card_edits", "review_checked", "erase_modes")  # 번역 읽기와 상관없는 file.json 키
+
+
+def _file_json_sig(fd: Path) -> str:
+    """file.json 중 번역 읽기에 쓰는 부분(뺀 쪽 등)의 지문. 검수 표시·고친 번역만 바뀌면 그대로 (엑셀을 다시 읽지 않게)."""
+    import hashlib
+
+    try:
+        data = json.loads((Path(fd) / "file.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    data = {k: v for k, v in data.items() if k not in _NOT_FOR_CARDS} if isinstance(data, dict) else data
+    return hashlib.sha1(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _regions_sig(fd: Path) -> tuple:
+    """파일·그룹의 영역 템플릿(regions.json) 시각 (영역이 바뀌면 칸 목록이 바뀐다)."""
+    out = []
+    for p in (Path(fd) / "regions.json", Path(fd).parent.parent / "regions.json"):
+        try:
+            out.append(p.stat().st_mtime)
+        except OSError:
+            out.append(0.0)
+    return tuple(out)
 
 
 def _translation_cards(fd: Path) -> dict:
@@ -2213,8 +2243,8 @@ def _translation_cards(fd: Path) -> dict:
             return 0.0
 
     info = workspace.project_of(fd)
-    stamp = (str(xlsx), mt(xlsx) if xlsx else 0.0, mt(cache_path(info.dir)) if info else 0.0, mt(fd / "file.json"),
-             max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0]))
+    stamp = (str(xlsx), mt(xlsx) if xlsx else 0.0, mt(cache_path(info.dir)) if info else 0.0, _file_json_sig(fd),
+             _regions_sig(fd), max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0]))
     hit = _TRANSLATION_CARDS.get(str(fd))
     if hit and hit[0] == stamp:
         return hit[1]
@@ -2361,7 +2391,8 @@ def _review_file_rows(fd: Path) -> list[dict]:
             raw_e = (edits.get(pno) or {}).get(reg.name)
             now = e["ko"] if e else base
             conflict = ({"app": card_edits.norm(raw_e.get("ko")), "now": card_edits.norm(base)}
-                        if raw_e and not e else None)
+                        if raw_e and not e and card_edits.norm(raw_e.get("ko")) != card_edits.norm(base) else None)
+
             chk = _review_check(src, now, terms, ext)
             checked, checked_stale = review_marks.state(marks, pno, reg.name, now)
             rows.append({
@@ -2512,8 +2543,8 @@ _REVIEW_PROGRESS: dict = {}
 
 
 def _clear_review_caches() -> None:
+    """검수 표시·고친 번역이 바뀜: 진행 수만 다시 센다 (번역 읽기 캐시는 지문으로 알아서 맞춘다)."""
     _REVIEW_PROGRESS.clear()
-    _TRANSLATION_CARDS.clear()
 
 
 def review_progress(project_dir: Path | str) -> dict:
@@ -2533,7 +2564,8 @@ def review_progress(project_dir: Path | str) -> dict:
     fds = workspace.file_dirs(info)
     xl = _excel_info(fds, info)["path"]
     stamp = (str(info.dir), mt(cache_path(info.dir)), mt(glossary.glossary_path(info)), mt(Path(xl)) if xl else 0.0,
-             tuple((str(fd), mt(fd / "file.json"),
+             mt(info.dir / "project.json"),  # 시험 모드(card_limit)가 바뀌면 칸 수가 바뀐다
+             tuple((str(fd), mt(fd / "file.json"), _regions_sig(fd),
                     max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0])) for fd in fds))
     if _REVIEW_PROGRESS.get("stamp") == stamp:
         return _REVIEW_PROGRESS["value"]

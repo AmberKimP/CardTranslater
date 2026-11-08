@@ -191,6 +191,7 @@ class TranslateResult:
     retry_after: str | None = None
     equiv_usd: float = 0.0
     spent_usd: float = 0.0
+    excel_note: str = ""  # 이미 있던 검수 엑셀을 새 번역으로 다시 만들지 못했을 때 (열려 있음 등)
 
 
 def unique_sources(sources) -> list[tuple[str, str, str]]:

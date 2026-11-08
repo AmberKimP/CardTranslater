@@ -45,7 +45,14 @@ def _write(p: Path, data: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    for i in range(20):  # Windows: 다른 스레드(뒤에서 글자 지우기)가 마침 읽는 중이면 바꿔 쓰기를 거절한다
+        try:
+            tmp.replace(p)
+            return
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.05)
 
 
 def games_dir(root: Path = DEFAULT_ROOT) -> Path:

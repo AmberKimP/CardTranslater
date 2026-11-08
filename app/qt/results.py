@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
-from app.qt import worker
+from app.qt import bg_erase, worker
 from app.qt.dialogs import (
     ask_choice, card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
     show_error, show_failure, show_problem, subtitle,
@@ -575,7 +575,7 @@ class ResultViewer(QDialog):
                 self.regions.setCurrentRow(names.index(region) + 1)
 
         job = worker.Job(service.redo_file if erase_changed else service.recompose_file, fd)
-        worker.run_with_dialog(self, "다시 지우고 한글 넣기" if erase_changed else "한글 다시 넣기", job, done,
+        bg_erase.run_exclusive(self, "다시 지우고 한글 넣기" if erase_changed else "한글 다시 넣기", job, done,
                                lambda m: show_failure(self, "다시 넣지 못했습니다", m))
 
     redo_card = save_edit  # 예전 이름
@@ -745,23 +745,23 @@ class OutputActions:
             if auto and note:
                 self._erase_done(service.ProjectStepResult("done"))
                 return
-            QMessageBox.information(self.page, "글자 지우기", "이미 지웠습니다 (그 뒤 원문·영역 설정도 바뀌지 않았습니다).\n"
-                                    "카드 한 장만 다르게 지우려면 결과 보기에서 그 영역의 ‘지우기’를 바꾸세요.")
-            return
-        self.page.erasing = True  # 그동안 뒤에서 지우기는 쉰다 (같은 파일을 두 번 지우지 않게)
-        if bg is not None:
-            bg.stop()
-        job = worker.Job(service.erase_project, self.pdir, files=sorted(need))
-        worker.run_with_dialog(self.page, "글자 지우기", job, self._erase_done, self._erase_failed)
+            again = ask_choice(self.page, "글자 지우기", "이미 지웠습니다 (그 뒤 원문·영역 설정도 바뀌지 않았습니다).",
+                               [("확인", "accept"), ("그래도 다시 지우기", "destructive")], default=0,
+                               informative="카드 한 장만 다르게 지우려면 결과 보기에서 그 영역의 ‘지우기’를 바꾸세요.\n"
+                                           "‘그래도 다시 지우기’는 고른 범위를 처음부터 다시 지웁니다.")
+            if again != 1:
+                return
+            job = worker.Job(service.erase_project, self.pdir, redo=True, files=scope)
+        else:
+            job = worker.Job(service.erase_project, self.pdir, files=sorted(need))
+        bg_erase.run_exclusive(self.page, "글자 지우기", job, self._erase_done, self._erase_failed)
 
     def _erase_failed(self, m):
-        self.page.erasing = False
         show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m)
 
     def _erase_done(self, r):
         from app.qt.steps import state_label
 
-        self.page.erasing = False
         self.page.refresh()
         lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                  else f" — {f.get('reason', '')}") for f in r.files]
@@ -827,7 +827,7 @@ class OutputActions:
 
     def _run_compose(self, accept: bool):
         job = worker.Job(service.compose_project, self.pdir, accept_issues=accept, files=self.page.scope()[1])
-        worker.run_with_dialog(self.page, "한글 넣기", job, self._compose_done,
+        bg_erase.run_exclusive(self.page, "한글 넣기", job, self._compose_done,
                                lambda m: show_failure(self.page, "한글 넣기를 끝내지 못했습니다", m))
 
     def _compose_done(self, r):
@@ -941,7 +941,7 @@ class OutputActions:
         g = dlg.chosen()
         self.page.select_group(g)
         job = worker.Job(service.test_run_cards, [f["dir"] for f in g["files"]], dlg.cards())
-        worker.run_with_dialog(self.page, "시험 실행", job, self._test_done,
+        bg_erase.run_exclusive(self.page, "시험 실행", job, self._test_done,
                                lambda m: show_failure(self.page, "시험 실행을 끝내지 못했습니다", m))
 
     def _test_done(self, r):

@@ -251,7 +251,6 @@ class ProjectPage(QWidget):
         self.win = win
         self.project_dir: Path | None = None
         self.ov: dict = {}
-        self.erasing = False  # ⑦ 글자 지우기를 화면에서 돌리는 중 (그동안 뒤에서 지우기는 쉬게)
         from app.qt.bg_erase import BackgroundEraser
 
         self.bg = BackgroundEraser(self)  # 원문이 확정되면(④부터) 뒤에서 글자 지우기
@@ -1006,7 +1005,7 @@ class MainWindow(QMainWindow):
         ReleaseNotesDialog(self).exec()
 
     def closeEvent(self, ev):
-        self.project.bg.stop()  # 지우던 파일은 저장하지 않고 다음에 이어 한다
+        self.project.bg.shutdown()  # 지우던 파일은 저장하지 않고 다음에 이어 한다 (스레드가 끝나기를 기다림)
         super().closeEvent(ev)
 
     def open_settings(self):

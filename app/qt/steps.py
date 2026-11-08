@@ -1550,7 +1550,8 @@ class StepActions:
         if r.leftover:
             issues.append(f"일본어가 남은 번역 {len(r.leftover)}칸")
         summary = (f"서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
-                   f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else ""))
+                   f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else "")
+                   + (f"\n{r.excel_note}" if getattr(r, "excel_note", "") else ""))
         if getattr(self, "_then_erase", False):  # 묻지 않고 바로 ⑦ 글자 지우기 (결과는 지우기 끝에 함께)
             self._then_erase = False
             self.page.out.erase(auto=True, note=summary)

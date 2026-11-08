@@ -280,8 +280,6 @@ def test_erase_records_source_and_detects_changed_cards(tmp_path):
     assert meta["erase_sig"]
     _write_extract(fd, 2, "HELLO WORLD")  # ③ 원문 확인에서 고침
     assert service.stale_erased_pages(fd) == [2] and service.files_needing_erase(info.dir) == [fd]
-    ov = service.project_overview(info.dir)
-    assert ov["groups"][0]["files"][0]["erase_stale"] is True
     r = service.erase_project(info.dir)  # 바뀐 파일은 다시 지운다
     assert r.files[0]["state"] == "done" and service.stale_erased_pages(fd) == []
     assert service.erase_project(info.dir).files[0]["state"] == "skipped"

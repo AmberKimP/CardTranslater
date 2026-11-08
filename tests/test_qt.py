@@ -1046,7 +1046,7 @@ def test_screens_do_not_show_developer_words(qapp, tmp_path, monkeypatch):
     text = "\n".join(f"{t}\n{x}" for t, x in shown)
     for bad in ("done", "blocked", "skipped", "paused", "--redo", "erase-project", "cleared/", "translated/", "600dpi"):
         assert bad not in text, (bad, text)
-    assert "건너뜀" in text and "다시 지우려면 ‘모두 다시 지우기’" in text
+    assert "건너뜀" in text and "‘그래도 다시 지우기’" in text
     assert any("할 수 없음" in t for t, _x in shown)  # 창 제목도 한국어
 
 
@@ -1536,6 +1536,7 @@ def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, mo
 
     def fake_run(parent, title, job, done, fail, **k):
         seen["files"] = job.kwargs.get("files")
+        job.signals.done.emit(service.ProjectStepResult("done"))  # run_exclusive가 뒤에서 지우기를 놓아 준다
         done(service.ProjectStepResult("done"))
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
     monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: None)
@@ -1553,7 +1554,7 @@ def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, mo
     page.out.erase()
     assert seen["files"] == sorted(str(d) for d in all_dirs) and page.scope()[0] == "전체"
     page.out.erase()  # 전체를 고른 채면 묻지 않는다
-    assert answers == [] and not page.erasing
+    assert answers == [] and page.bg.holds == 0 and page.bg.idle
 
 
 def test_extract_asks_all_or_selected_and_moves_grid_to_all(qapp, tmp_path, monkeypatch):
@@ -2656,6 +2657,38 @@ def test_review_service_rows_save_same_source_marks_and_conflict(qapp, tmp_path)
     assert ov["review"]["must_left"] == 0 and ov["next_key"] == "compose"
 
 
+
+def test_review_no_conflict_when_excel_already_has_app_edit_and_progress_follows_card_limit(qapp, tmp_path):
+    """엑셀을 다시 만들어 앱에서 고친 번역이 엑셀에 들어갔으면 ‘엑셀과 앱이 다름’이 아니다. 시험 모드를 바꾸면 진행 수도 바뀐다."""
+    info, fd = _translated_project(tmp_path)
+    d = workspace.file_settings(fd)
+    d["card_edits"] = {"2": {"이름": {"ko": "안녕", "base": "옛 번역"}}}  # 앱 고침 = 지금 번역
+    workspace._write(fd / "file.json", d)
+    r2 = next(x for x in service.review_rows(info.dir, [fd])["rows"] if x["page"] == 2 and x["region"] == "이름")
+    assert r2["edit_conflict"] is None and r2["ko"] == "안녕"
+    total = service.review_progress(info.dir)["total"]
+    service.set_card_limit(info.dir, 1)
+    assert service.review_progress(info.dir)["total"] < total  # 캐시가 시험 모드를 따른다
+
+
+def test_translate_refreshes_existing_review_excel(tmp_path, monkeypatch):
+    """⑥ 전체 번역이 새로 번역하면, 이미 있는 검수 엑셀을 다시 만든다 (한글 넣기가 옛 번역을 쓰지 않게)."""
+    from app import translate
+
+    info, _fd = _translated_project(tmp_path)
+    made = []
+    monkeypatch.setattr(translate, "run_translate", lambda *a, **k: translate.TranslateResult("done", translated=1))
+    monkeypatch.setattr(service, "export_project_excel", lambda p, force=False: made.append(force))
+    assert service.translate_project(info.dir, client=object()).state == "done" and made == []  # 엑셀 없음: 만들지 않음
+    (info.game_dir / "번역_검수.xlsx").write_bytes(b"")
+    assert service.translate_project(info.dir, client=object()).state == "done" and made == [True]
+
+    def locked(p, force=False):
+        raise PermissionError("열려 있음")
+    monkeypatch.setattr(service, "export_project_excel", locked)
+    r = service.translate_project(info.dir, client=object())
+    assert r.state == "done" and "다시 만들지 못했습니다" in r.excel_note
+
 # ================================================================ 번역 검수 화면
 def _sync_workers(monkeypatch):
     """검수 창의 작업 스레드를 그 자리에서 돌려 테스트가 기다리지 않게 한다."""
@@ -2981,8 +3014,17 @@ def test_background_erase_starts_after_glossary_step_reerases_changed_and_boosts
     monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
     ran = []
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", lambda *a, **k: ran.append(a))
+    asked = []
+    monkeypatch.setattr(res_mod, "ask_choice", lambda _p, _t, text, *a, **k: asked.append(text) or 0)
     win.project.out.erase()
-    assert "이미 지웠습니다" in shown[-1] and not ran
+    assert "이미 지웠습니다" in asked[-1] and not ran
+    monkeypatch.setattr(res_mod, "ask_choice", lambda *a, **k: 1)  # ‘그래도 다시 지우기’
+    win.project.out.erase()
+    assert len(ran) == 1 and ran[0][2].kwargs.get("redo") is True
+    assert win.project.bg.holds == 1  # 다시 지우는 동안 뒤에서 지우기는 쉰다
+    ran[0][2].signals.cancelled.emit()  # 취소해도 놓아 준다
+    assert win.project.bg.holds == 0
+    ran.clear()
     # ⑦: 뒤에서 지우는 중이면 우선순위만 높인다
     bg = win.project.bg
     from types import SimpleNamespace
@@ -2994,3 +3036,31 @@ def test_background_erase_starts_after_glossary_step_reerases_changed_and_boosts
     bg.job = None
     bg.stop()
     assert not bg.active and win.bg_label.text() == ""
+
+
+def test_run_exclusive_waits_for_stopped_background_thread(qapp, tmp_path, monkeypatch):
+    """화면 작업(⑦·⑧·결과 보기)은 뒤에서 지우던 스레드가 정말 끝난 뒤에 시작하고, 끝나면(취소도) 뒤에서 지우기를 놓아 준다."""
+    from app.qt import bg_erase, worker
+
+    class Page:
+        project_dir = None
+        ov: dict = {}
+
+    from PySide6.QtWidgets import QWidget
+
+    holder = QWidget()
+    bg = bg_erase.BackgroundEraser(holder)
+    bg.page = Page()
+    old = worker.Job(lambda **k: None)
+    bg.job = old  # 지우는 중
+    bg.stop()
+    assert not bg.active and not bg.idle  # 멈추라고 했지만 스레드는 아직
+    started = []
+    monkeypatch.setattr(bg_erase.worker, "run_with_dialog", lambda *a, **k: started.append(a[2]))
+    fg = worker.Job(lambda **k: None)
+    bg_erase.run_exclusive(holder, "글자 지우기", fg, lambda r: None)
+    assert started == [] and bg.holds == 1  # 옛 스레드가 끝나기를 기다린다
+    bg._ended(old)  # 옛 스레드가 다음 쪽에서 멈춤
+    assert started == [fg] and bg.idle
+    fg.signals.cancelled.emit()
+    assert bg.holds == 0
