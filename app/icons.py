@@ -393,6 +393,50 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     return first
 
 
+def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int] | None:
+    """locate가 못 찾은 아이콘의 대략적인 자리 (사람이 직접 잡을 때 길잡이). 줄 띠와 줄 안 글자 비율로 짐작한다."""
+    try:
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+        k = -1
+        for li, ln in enumerate(lines):
+            toks = list(TOKEN_RE.finditer(ln))
+            if k + len(toks) >= index:
+                tok = toks[index - k - 1]
+                line_no, before = li, ln[: tok.start()]
+                break
+            k += len(toks)
+        else:
+            return None
+        H, W = img.shape[:2]
+        ink = _ink(img, H / max(1, len(lines)) * 0.6)
+        comps, rules = _text_components(ink)
+        bands = _bands_from(comps, rules)
+        band = None
+        if bands and len(bands) == len(lines):
+            band = bands[line_no]
+        elif bands:
+            bi = _match_line(lines, line_no, bands, comps)
+            if bi is None:  # 줄 수 비율로 가장 가까운 띠
+                cy = (line_no + 0.5) / len(lines) * H
+                bi = min(range(len(bands)), key=lambda i: abs((bands[i][0] + bands[i][1]) / 2 - cy))
+            band = bands[bi]
+        if band is None:
+            band = (int(line_no / len(lines) * H), int((line_no + 1) / len(lines) * H))
+        y0, y1 = band
+        bh = max(8, y1 - y0)
+        cs = [c for c in comps if y0 - bh * 0.2 <= c[1] + c[3] / 2 <= y1 + bh * 0.2]
+        lx0, lx1 = (min(c[0] for c in cs), max(c[0] + c[2] for c in cs)) if cs else (0, W)
+        seq = _line_cells(lines[line_no])
+        pos = min(_token_cell_index(lines[line_no], before), max(0, len(seq) - 1))
+        units = [1.1 if t == "■" else _units(t) for t in seq] or [1.0]
+        unit = (lx1 - lx0) / max(sum(units), 1e-6)
+        cx = lx0 + (sum(units[:pos]) + units[pos] / 2) * unit
+        half = max(bh, unit) * 0.9  # 짐작이라 넉넉하게
+        return (int(max(0, cx - half)), int(max(0, y0 - bh * 0.2)), int(min(W, cx + half)), int(min(H, y1 + bh * 0.2)))
+    except Exception:  # noqa: BLE001 - 짐작은 없어도 된다
+        return None
+
+
 # ---------------------------------------------------------------- 아이콘에 붙은 숫자 (예: 2[[coin]] -> 숫자까지 아이콘)
 _NUM_BEFORE = re.compile(r"(?<![0-9０-９])([+\-＋－]?[0-9０-９]+)[ 　]?$")
 _NUM_AFTER = re.compile(r"^[ 　]?([+\-＋－]?[0-9０-９]+)(?![0-9０-９ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ]|[ 　]?\[\[)")
@@ -1071,6 +1115,8 @@ class Occurrence:
     score: float = 0.0
     line: int = 0  # 원문에서 몇째 줄 (1부터)
     order: int = 0  # 그 줄에서 몇 번째 아이콘 (1부터)
+    box: list = field(default_factory=list)  # 영역 이미지(CROP_DPI)에서 잘라 낸 자리 [x0, y0, x1, y1]
+    manual: bool = False  # 사람이 카드 보기에서 직접 잡은 자리
 
 
 @dataclass
@@ -1160,6 +1206,7 @@ def scan(info, work: Path) -> ScanResult:
                             if nb is not None:
                                 box = nb
                                 strips.append((num[1], num[2]))
+                        oc.box = [int(v) for v in box]
                         rgba = cut_out(img, box)
                         png = work / "crops" / f"{oc.id}.png"
                         save_png(rgba, png)
@@ -1225,6 +1272,132 @@ def _save_scan(work: Path, res: ScanResult) -> None:
 def load_scan(work: Path) -> ScanResult:
     data = json.loads((Path(work) / "scan.json").read_text(encoding="utf-8"))
     return ScanResult([Occurrence(**o) for o in data["occurrences"]], data["groups"], data.get("auto", {}))
+
+
+# ---------------------------------------------------------------- 사람이 아이콘 자리 잡기 (카드 보기)
+def _occ_region(info, o: Occurrence) -> tuple[Path, np.ndarray, str]:
+    """그 자리의 (파일 폴더, 영역 이미지, 지금 원문)."""
+    import pymupdf
+
+    from app.extract import load_extracted
+    from app.project import load_project
+
+    fd = _occ_dir(info, o.file)
+    proj = load_project(fd)
+    reg = next(r for r in proj.template.regions_for(o.page) if r.name == o.region)
+    with pymupdf.open(next((fd / "source").glob("*.pdf"))) as doc:
+        img = region_image(doc[o.page - 1], reg)
+    src = (load_extracted(fd).get(o.page, {}).get(o.region) or {}).get("source")
+    return fd, img, src if isinstance(src, str) else ""
+
+
+def place_info(info, work: Path, occ_id: str) -> dict:
+    """카드 보기에서 자리를 잡는 데 필요한 것: {"image": RGB, "box": 지금 자리 | None, "guess": 예상 자리 | None,
+    "marks": [{"box", "name" | "group", "occ"}]} (같은 칸의 다른 아이콘 = 이미 찾은 것). 좌표는 image px."""
+    res = load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    _fd, img, text = _occ_region(info, o)
+    toks = list(TOKEN_RE.finditer(text))
+    ph = [ti for ti, t in enumerate(toks) if t.group(1) == "?"]  # 지금 원문의 j번째 [[?]] = index j인 자리
+    by_index = {x.index: x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)}
+    out = {"image": img, "box": None, "guess": None, "marks": []}
+    for ti, t in enumerate(toks):
+        if t.group(1) == "?":
+            j = ph.index(ti)
+            x = by_index.get(j)
+            if x is None:
+                continue
+            box = x.box or (list(locate(img, text, ti)[0] or []) if x.png else [])
+            if x.id == o.id:
+                out["box"] = box or None
+                if not box:
+                    out["guess"] = estimate(img, text, ti)
+            elif box:
+                out["marks"].append({"box": box, "group": x.group, "occ": x.id})
+        else:
+            box = locate(img, text, ti)[0]
+            if box is not None:
+                out["marks"].append({"box": list(box), "name": t.group(1)})
+    return out
+
+
+def _known_shapes(info) -> dict:
+    d = load_dictionary(info)
+    out = {}
+    for name, e in d["icons"].items():
+        p = icons_dir(info) / e.get("file", f"{name}.png")
+        if p.exists():
+            out[name] = shape_pair(load_png(p))
+    return out
+
+
+def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]) -> dict:
+    """사람이 잡은 자리로 그림을 다시 잘라 묶음을 다시 정한다.
+    {"group": 새 묶음, "old": 예전 묶음, "old_gone": 예전 묶음이 없어짐, "new_group": 새로 만든 묶음, "dict": 사전 이름}"""
+    work = Path(work)
+    res = load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    _fd, img, _text = _occ_region(info, o)
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = (int(round(v)) for v in box)
+    x0, x1 = sorted((max(0, min(W, x0)), max(0, min(W, x1))))
+    y0, y1 = sorted((max(0, min(H, y0)), max(0, min(H, y1))))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        raise ValueError("잡은 자리가 너무 작습니다")
+    rgba = cut_out(img, (x0, y0, x1, y1))
+    n = 1
+    while (work / "crops" / f"{o.id}_m{n}.png").exists():  # 화면이 예전 그림을 들고 있지 않게 새 이름
+        n += 1
+    png = work / "crops" / f"{o.id}_m{n}.png"
+    save_png(rgba, png)
+    o.png, o.box, o.manual, o.reason = str(png), [x0, y0, x1, y1], True, ""
+    # 예전 묶음에서 빼기
+    old = o.group
+    gi = res.groups.get(old, {})
+    gi["count"] = gi.get("count", 1) - 1
+    old_gone = gi["count"] <= 0
+    if old_gone:
+        res.groups.pop(old, None)
+    elif gi.get("rep") == o.id:
+        rest = [x for x in res.occurrences if x.group == old and x.id != o.id and x.png]
+        gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
+    # 모양이 같은 묶음에 넣거나 새 묶음
+    by_id = {x.id: x for x in res.occurrences}
+    sh = shape_pair(rgba)
+    best, best_s = None, SAME_SHAPE
+    for g, info_g in res.groups.items():
+        rep = by_id.get(info_g.get("rep") or "")
+        if rep is None or not rep.png:
+            continue
+        s = same_icon(sh, shape_pair(load_png(Path(rep.png))))
+        if s >= best_s:
+            best, best_s = g, s
+    match = ""
+    known = _known_shapes(info)
+    if known:
+        nm, s = max(((nm, same_icon(sh, ks)) for nm, ks in known.items()), key=lambda t: t[1])
+        if s >= SAME_SHAPE:
+            match = nm
+    if best is not None:
+        g = best
+        res.groups[g]["count"] += 1
+        if _area(str(png)) > _area(by_id[res.groups[g]["rep"]].png):
+            res.groups[g]["rep"] = o.id
+        new_group = False
+    else:
+        nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
+        g = f"g{max(nums, default=0) + 1:02d}"
+        res.groups[g] = {"rep": o.id, "count": 1}
+        if old_gone:  # 혼자 있던 줄을 옮긴 것: 적어 둔 제안·뜻은 그대로
+            for k in ("suggest", "meaning", "ko"):
+                if gi.get(k):
+                    res.groups[g][k] = gi[k]
+        if match:
+            res.groups[g]["dict"] = match
+        new_group = True
+    o.group = g
+    _save_scan(work, res)
+    return {"group": g, "old": old, "old_gone": old_gone, "new_group": new_group, "dict": match}
 
 
 # ---------------------------------------------------------------- 이름 제안 (모델)

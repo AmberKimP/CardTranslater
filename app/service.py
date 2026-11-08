@@ -1809,8 +1809,10 @@ def icon_review(project_dir: Path | str) -> dict | None:
                        "count": len(members),
                        "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
                        "where": [{"file_dir": icons._occ_dir(info, o.file), "page": o.page, "region": o.region, "line": o.line,
-                                  "png": o.png or None, "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
+                                  "png": o.png or None, "occ": o.id, "manual": o.manual,
+                                  "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
                                  for o in members],
+                       "dict": gi.get("dict", ""),
                        "reason": members[0].reason if members and not gi.get("rep") else "",
                        "first": min((res.occurrences.index(o) for o in members), default=len(res.occurrences))})
     for g in groups:  # 사람이 봐야 하는 것: 한국어 이름이 비어 있음 (창에서 노랑 칸)
@@ -1818,6 +1820,37 @@ def icon_review(project_dir: Path | str) -> dict | None:
     # 이슈가 있는 것을 맨 위로, 그 밖에는 원문에 처음 나온 순서
     groups.sort(key=lambda g: (not g["issue"], g["first"]))
     return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
+
+
+def icon_place(project_dir: Path | str, occ_id: str) -> dict:
+    """카드 보기에서 아이콘 자리를 잡는 화면용: {"png": 영역 그림 PNG, "size": (w, h), "box": 지금 자리 | None,
+    "guess": 예상 자리 | None, "marks": [{"box", "name" | "group", "occ"}]} (좌표는 그 그림의 px)."""
+    import cv2
+
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    p = icons.place_info(info, info.game_dir / "work" / "icons", occ_id)
+    img = p.pop("image")
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise OSError("영역 그림을 만들지 못함")
+    return {**p, "png": buf.tobytes(), "size": (img.shape[1], img.shape[0])}
+
+
+def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
+    """사람이 잡은 자리로 아이콘 그림을 다시 자르고 묶음을 다시 정한다 (검증 엑셀도 새로 만든다).
+    {"group", "old", "old_gone", "new_group", "dict"}. 자리가 너무 작으면 ValueError."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.set_manual_box(info, work, occ_id, tuple(box))
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:  # 엑셀이 열려 있으면 못 쓴다: 화면 확정에는 필요 없다
+        pass
+    return r
 
 
 def icon_dictionary(project_dir: Path | str) -> list[dict]:

@@ -320,3 +320,37 @@ def test_same_frame_different_content_or_number_are_different_icons():
     gold, red = icons.shape_pair(crate("coin")), icons.shape_pair(crate("potion"))
     assert icons.same_icon(gold, icons.shape_pair(crate("coin", 80))) > 0
     assert icons.same_icon(gold, red) == 0.0
+
+
+def test_manual_box_for_not_found_icon_regroups_and_shows_guess(tmp_path, monkeypatch):
+    """위치를 못 찾은 아이콘: 카드 보기에 예상 위치를 주고, 사람이 잡은 자리로 잘라 같은 모양 묶음에 넣는다."""
+    info, fd = _project(tmp_path, "1차")
+    real = icons.locate
+    calls = {"n": 0}
+
+    def flaky(img, text, index):  # 둘째 카드만 못 찾은 것처럼
+        calls["n"] += 1
+        return (None, "줄 수가 다름") if calls["n"] == 2 else real(img, text, index)
+
+    monkeypatch.setattr(icons, "locate", flaky)
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    review = service.icon_review(info.dir)
+    lost = next(g for g in review["groups"] if not g["image"])
+    found = next(g for g in review["groups"] if g["image"])
+    occ = lost["where"][0]["occ"]
+    p = service.icon_place(info.dir, occ)
+    assert p["box"] is None and p["guess"] is not None and p["png"][:4] == b"\x89PNG"
+    good = service.icon_place(info.dir, found["where"][0]["occ"])["box"]
+    gx = (p["guess"][0] + p["guess"][2]) / 2
+    assert good[0] - 40 <= gx <= good[2] + 40  # 예상 위치가 실제 아이콘 근처
+    with pytest.raises(ValueError):
+        service.set_icon_box(info.dir, occ, (10, 10, 12, 12))
+    r = service.set_icon_box(info.dir, occ, good)
+    assert r["group"] == found["group"] and r["old_gone"] and not r["new_group"]
+    review = service.icon_review(info.dir)
+    assert len(review["groups"]) == 1 and review["groups"][0]["count"] == 2
+    assert service.icon_place(info.dir, occ)["box"] == list(good)
+    res = service.confirm_icons(info.dir, [{"group": review["groups"][0]["group"], "name": "coin", "ko": "금화"}])
+    assert res.state == "confirmed" and res.replaced == 2
+    assert _source(fd, 1) == _source(fd, 2) == "AB[[coin]]CD"

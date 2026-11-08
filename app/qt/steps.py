@@ -12,10 +12,12 @@ import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -799,11 +801,234 @@ class IconDictionaryDialog(QDialog):
 
 
 # ================================================================ 아이콘 이름
+class IconPlaceView(QWidget):
+    """카드 영역 그림 위에 아이콘 자리를 보여 주고, 마우스로 끌어 새 자리를 잡는다.
+
+    초록 = 같은 칸에서 이미 찾은 아이콘, 파랑 = 이 아이콘의 지금 자리, 주황 점선 = 예상 위치(못 찾았을 때),
+    빨강 = 사람이 새로 잡은 자리. 좌표는 모두 그림 px."""
+
+    drawn = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._pm = QPixmap()
+        self.marks: list[tuple[list, str]] = []
+        self.box = self.guess = self.new = None
+        self._drag = None
+        self.setMinimumSize(300, 200)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setMouseTracking(False)
+
+    def set_data(self, pm: QPixmap, box, guess, marks: list[tuple[list, str]]):
+        self._pm, self.box, self.guess, self.marks, self.new, self._drag = pm, box, guess, marks, None, None
+        self.update()
+
+    def _geom(self):
+        w, h = self._pm.width(), self._pm.height()
+        if not w or not h:
+            return 1.0, 0.0, 0.0
+        s = min((self.width() - 16) / w, (self.height() - 16) / h, 3.0)
+        return s, (self.width() - w * s) / 2, (self.height() - h * s) / 2
+
+    def _to_img(self, p) -> tuple[float, float]:
+        s, ox, oy = self._geom()
+        return (min(max((p.x() - ox) / s, 0), self._pm.width()), min(max((p.y() - oy) / s, 0), self._pm.height()))
+
+    def _rect(self, b) -> QRectF:
+        s, ox, oy = self._geom()
+        return QRectF(ox + b[0] * s, oy + b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#FAFAFA"))
+        if self._pm.isNull():
+            return
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        s, ox, oy = self._geom()
+        p.drawPixmap(QRectF(ox, oy, self._pm.width() * s, self._pm.height() * s), self._pm, QRectF(self._pm.rect()))
+        f = p.font()
+        f.setBold(True)
+        p.setFont(f)
+
+        def frame(b, color, label="", dash=False, width=2):
+            r = self._rect(b)
+            pen = QPen(QColor(color), width)
+            if dash:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(r)
+            if label:
+                fm = p.fontMetrics()
+                tw, th = fm.horizontalAdvance(label) + 8, fm.height() + 2
+                ty = r.top() - th if r.top() - th >= 0 else r.bottom()
+                p.fillRect(QRectF(r.left(), ty, tw, th), QColor(color))
+                p.setPen(QColor("white"))
+                p.drawText(QRectF(r.left(), ty, tw, th), Qt.AlignmentFlag.AlignCenter, label)
+
+        for b, label in self.marks:
+            frame(b, "#2E8B57", label)
+        if self.guess and not self.new:
+            frame(self.guess, "#E67E22", "예상 위치", dash=True)
+        if self.box:
+            frame(self.box, "#1F6FEB", "지금 자리", width=3 if not self.new else 2)
+        if self.new:
+            frame(self.new, "#D62828", "새 자리", width=3)
+        p.end()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and not self._pm.isNull():
+            self._drag = self._to_img(e.position())
+            self.new = None
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None:
+            x, y = self._to_img(e.position())
+            x0, y0 = self._drag
+            self.new = [min(x0, x), min(y0, y), max(x0, x), max(y0, y)]
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._drag is None:
+            return
+        self._drag = None
+        if self.new and (self.new[2] - self.new[0] < 4 or self.new[3] - self.new[1] < 4):
+            self.new = None  # 그냥 누른 것
+        self.update()
+        self.drawn.emit()
+
+
+class IconPlaceDialog(QDialog):
+    """아이콘이 나온 카드 자리를 보며, 못 찾았거나 잘못 잘린 아이콘을 마우스로 감싸 직접 잡는다."""
+
+    def __init__(self, project_dir: Path, g: dict, row_label, on_saved, parent=None):
+        super().__init__(parent)
+        self.project_dir = Path(project_dir)
+        self.row_label = row_label  # 묶음 -> ‘3번’ 같은 화면 이름
+        self.on_saved = on_saved
+        self.setWindowTitle("카드 보기 · 아이콘 자리 잡기")
+        fit_to_screen(self, 1100, 720, maximize_below=0)
+        self.where = [dict(w) for w in g.get("where", [])]
+        self.combo = QComboBox()
+        for w in self.where:
+            self.combo.addItem(self._item_text(w), w["occ"])
+        self.view = IconPlaceView()
+        self.view.drawn.connect(self._drawn)
+        self.crop = QLabel()
+        self.crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.crop.setMinimumWidth(110)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        legend = QLabel('<span style="color:#2E8B57">■</span> 이미 찾은 아이콘 &nbsp; '
+                        '<span style="color:#1F6FEB">■</span> 이 아이콘의 지금 자리 &nbsp; '
+                        '<span style="color:#E67E22">■</span> 예상 위치(못 찾았을 때, 점선) &nbsp; '
+                        '<span style="color:#D62828">■</span> 새로 잡은 자리')
+        hint = hint_bar("아이콘을 마우스로 끌어 감싸세요 (테두리까지 조금 넉넉하게). 다시 끌면 새로 잡습니다.\n"
+                        "‘이 자리로 저장’을 누르면 그 자리로 그림을 다시 잘라 같은 모양끼리 다시 묶습니다.", "info")
+        self.save_btn = QPushButton("이 자리로 저장")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self._save)
+        close = QPushButton("닫기")
+        close.clicked.connect(self.accept)
+        side = QVBoxLayout()
+        side.addWidget(QLabel("잘라 낸 그림:"))
+        side.addWidget(self.crop)
+        side.addStretch(1)
+        mid = QHBoxLayout()
+        mid.addWidget(self.view, 1)
+        mid.addLayout(side)
+        btns = QHBoxLayout()
+        btns.addWidget(self.status, 1)
+        btns.addWidget(self.save_btn)
+        btns.addWidget(close)
+        lay = QVBoxLayout(self)
+        lay.addWidget(hint)
+        lay.addWidget(self.combo)
+        lay.addLayout(mid, 1)
+        lay.addWidget(legend)
+        lay.addLayout(btns)
+        self.combo.currentIndexChanged.connect(lambda _i: self._load())
+        first_missing = next((i for i, w in enumerate(self.where) if not w.get("png")), 0)
+        if first_missing:
+            self.combo.setCurrentIndex(first_missing)  # 신호가 _load를 부른다
+        else:
+            self._load()
+
+    @staticmethod
+    def _item_text(w: dict) -> str:
+        tag = " (직접 잡음)" if w.get("manual") else ("" if w.get("png") else " (위치 못 찾음)")
+        return w["label"] + tag
+
+    def _load(self):
+        i = self.combo.currentIndex()
+        if i < 0:
+            return
+        w = self.where[i]
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            p = service.icon_place(self.project_dir, w["occ"])
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            show_error(self, "카드를 보여 주지 못했습니다", e)
+            return
+        QApplication.restoreOverrideCursor()
+        pm = QPixmap()
+        pm.loadFromData(p["png"], "PNG")
+        marks = [(m["box"], f"[[{m['name']}]]" if m.get("name") else self.row_label(m.get("group", "")))
+                 for m in p["marks"]]
+        self.view.set_data(pm, p["box"], p["guess"], marks)
+        if w.get("png"):
+            self.crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.crop.setText("아직 없음")
+        if p["box"]:
+            self.status.setText("자리가 맞지 않으면 아이콘을 끌어 다시 잡으세요.")
+        elif p["guess"]:
+            self.status.setText("자동으로 찾지 못했습니다. 주황 점선(예상 위치) 근처의 아이콘을 끌어 감싸세요.")
+        else:
+            self.status.setText("자동으로 찾지 못했습니다. 아이콘을 끌어 감싸세요.")
+        self.save_btn.setEnabled(False)
+
+    def _drawn(self):
+        self.save_btn.setEnabled(self.view.new is not None)
+
+    def _save(self):
+        box = self.view.new
+        if not box:
+            return
+        i = self.combo.currentIndex()
+        w = self.where[i]
+        try:
+            r = service.set_icon_box(self.project_dir, w["occ"], box)
+        except ValueError as e:
+            show_problem(self, "자리를 저장하지 못했습니다", str(e), "아이콘을 조금 더 크게 감싸 주세요.")
+            return
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "자리를 저장하지 못했습니다", e)
+            return
+        self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (줄 번호가 바뀔 수 있음)
+        rev = service.icon_review(self.project_dir) or {"groups": []}
+        new = next((ww for gg in rev["groups"] for ww in gg["where"] if ww["occ"] == w["occ"]), None)
+        if new:
+            self.where[i] = dict(new)
+            self.combo.setItemText(i, self._item_text(new))
+        self._load()
+        if r.get("dict"):
+            msg = f"저장함. 사전의 [[{r['dict']}]]와 모양이 같아 ‘같은 아이콘’에 미리 골라 두었습니다."
+        elif not r.get("new_group"):
+            msg = f"저장함. 모양이 같은 {self.row_label(r['group'])} 줄로 합쳤습니다."
+        else:
+            msg = f"저장함. 새 아이콘 {self.row_label(r['group'])} 줄입니다. 이름을 정해 주세요."
+        self.status.setText(msg)
+
+
 class IconReviewDialog(QDialog):
     """새로 찾은 아이콘 묶음의 이름·뜻·한국어 이름을 정한다 (엑셀 대신).
 
     ‘같은 아이콘’ 칸에서 다른 줄(번호)이나 사전에 있는 아이콘을 고르면 그 아이콘과 하나로 합친다
-    (잘못 잘렸거나 작게 찍혀 따로 묶인 것). ‘카드 보기’로 그 아이콘이 나온 카드 자리를 확인한다."""
+    (잘못 잘렸거나 작게 찍혀 따로 묶인 것). ‘카드 보기’로 그 아이콘이 나온 카드 자리를 확인하고,
+    위치를 못 찾았거나 잘못 잘린 아이콘은 마우스로 직접 감싸 다시 잡는다."""
 
     COLS = ["그림", "같은 아이콘", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "등장", "카드", "예문"]
     NEW = "(새 아이콘)"
@@ -811,25 +1036,46 @@ class IconReviewDialog(QDialog):
     def __init__(self, project_dir: Path, review: dict, parent=None):
         super().__init__(parent)
         self.project_dir = Path(project_dir)
-        self.review = review
         self.result = None
         self.setWindowTitle("아이콘 이름 정하기")
         fit_to_screen(self, 1400, 640, maximize_below=0)
-        groups = review["groups"]
-        self.table = QTableWidget(len(groups), len(self.COLS))
+        self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.setIconSize(QSize(40, 40))
         self.table.setStyleSheet("QLineEdit, QComboBox, QDoubleSpinBox, QPushButton { margin: 5px 4px; }"
                                  " QLineEdit, QDoubleSpinBox { padding-top: 1px; padding-bottom: 1px; }"
                                  " QCheckBox { margin-left: 12px; }")
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
+        self.steps_text = hint_bar("", "info")
+        self.known_note = grey_note("")
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        set_ok_text(bb, "이름 확정")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
+        lay.addWidget(page_title("아이콘 이름 정하기", 14))
+        lay.addWidget(self.steps_text)
+        lay.addWidget(self.known_note)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(bb)
+        self._fill(review, {})
+
+    # ---- 표 채우기 (자리를 다시 잡으면 묶음이 바뀌어 다시 채운다; 적어 둔 값은 묶음별로 살린다)
+    def _fill(self, review: dict, keep: dict):
+        self.review = review
+        groups = review["groups"]
+        self.table.clearContents()
+        self.table.setRowCount(len(groups))
         self.widgets = []
         for i, g in enumerate(groups):
             img = QTableWidgetItem("" if g["image"] else "위치 못 찾음")
             if g["image"]:
                 img.setIcon(QIcon(QPixmap(g["image"])))
-            elif g.get("reason"):
-                img.setToolTip("못 찾은 이유: " + g["reason"])
+            else:
+                img.setToolTip("못 찾은 이유: " + (g.get("reason") or "-") + "\n‘카드 보기’에서 아이콘을 끌어 감싸면 잡을 수 있습니다")
+                img.setBackground(QBrush(QColor("#FFE066")))
             self.table.setItem(i, 0, img)
             same = QComboBox()
             same.addItem(self.NEW, None)
@@ -846,8 +1092,10 @@ class IconReviewDialog(QDialog):
             scale.setRange(0.3, 3.0)
             scale.setSingleStep(0.05)
             scale.setValue(1.1)
-            view = QPushButton("카드 보기")
-            view.clicked.connect(lambda _c=False, gg=g: self.show_cards(gg))
+            view = QPushButton("카드 보기" if g["image"] else "카드 보기 · 자리 잡기")
+            if not g["image"]:
+                view.setStyleSheet("font-weight: bold")
+            view.clicked.connect(lambda _c=False, gg=g["group"]: self.show_cards(gg))
             for j, w in ((1, same), (2, name), (3, meaning), (4, ko), (5, not_icon), (6, scale), (8, view)):
                 self.table.setCellWidget(i, j, w)
             self.table.setItem(i, 7, QTableWidgetItem(str(g["count"])))
@@ -855,34 +1103,75 @@ class IconReviewDialog(QDialog):
             ex.setToolTip("\n".join(g["examples"]))
             self.table.setItem(i, 9, ex)
             self.table.setRowHeight(i, 46)
+            self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
+        row_of = {g["group"]: i for i, g in enumerate(groups)}
+        for i, g in enumerate(groups):  # 적어 둔 값 되살리기, 사전과 모양이 같으면 미리 고르기
+            _g, name, meaning, ko, not_icon, scale, same = self.widgets[i]
+            k = keep.get(g["group"])
+            target = None
+            if k:
+                name.setText(k["name"])
+                meaning.setText(k["meaning"])
+                ko.setText(k["ko"])
+                not_icon.setChecked(k["not_icon"])
+                scale.setValue(k["scale"])
+                if k["same"] and k["same"][0] == "group" and k["same"][1] in row_of:
+                    target = ("row", row_of[k["same"][1]])
+                elif k["same"] and k["same"][0] == "known":
+                    target = k["same"]
+            elif g.get("dict"):
+                target = ("known", g["dict"])
+            if target is not None:
+                idx = same.findData(target)
+                if idx >= 0:
+                    same.setCurrentIndex(idx)
             same.currentIndexChanged.connect(lambda _x, r=i: self._sync_row(r))
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
-            self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
+            self._sync_row(i)
         self.table.resizeColumnToContents(1)
+        self.table.resizeColumnToContents(8)
         for col, w in ((2, 150), (3, 170), (4, 150), (6, 100)):  # 입력 칸 글이 잘리지 않게
             self.table.setColumnWidth(col, w)
         n_issue = sum(1 for g in groups if g.get("issue"))
-        steps_text = hint_bar(f"정할 아이콘 {len(groups)}개"
-                              + (f" · 한국어 이름이 빈 {n_issue}개(노랑)는 맨 위" if n_issue else "") + "\n"
-                              "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요.\n"
-                              "2. 같은 아이콘이 따로 묶였으면 ‘같은 아이콘’에서 그 줄 번호를 고르세요.\n"
-                              "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌).", "info")
-        known = grey_note("사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
+        n_lost = sum(1 for g in groups if not g["image"])
+        set_hint(self.steps_text,
+                 f"정할 아이콘 {len(groups)}개"
+                 + (f" · 한국어 이름이 빈 {n_issue}개(노랑)는 맨 위" if n_issue else "")
+                 + (f" · 위치 못 찾음 {n_lost}개: ‘카드 보기 · 자리 잡기’에서 아이콘을 끌어 감싸세요" if n_lost else "")
+                 + "\n"
+                 "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요.\n"
+                 "2. 같은 아이콘이 따로 묶였으면 ‘같은 아이콘’에서 그 줄 번호를 고르세요.\n"
+                 "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌).\n"
+                 "4. 그림이 잘못 잘렸으면 ‘카드 보기’에서 다시 잡으세요.", "info")
+        self.known_note.setText("사전에 이미 있는 이름: " + (", ".join(review["known"]) or "(없음)"))
         for w in self.widgets:  # 한국어 이름이 빈 줄은 노랑
             self._paint_ko_edit(w[3])
             w[3].textChanged.connect(lambda _t, e=w[3]: self._paint_ko_edit(e))
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        set_ok_text(bb, "이름 확정")
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 14, 18, 14)
-        lay.setSpacing(8)
-        lay.addWidget(page_title("아이콘 이름 정하기", 14))
-        lay.addWidget(steps_text)
-        lay.addWidget(known)
-        lay.addWidget(self.table, 1)
-        lay.addWidget(bb)
+
+    def _capture(self) -> dict:
+        """지금 표에 적힌 값 (묶음별). ‘같은 아이콘’의 줄 번호는 묶음 이름으로 바꿔 둔다."""
+        out = {}
+        for g, name, meaning, ko, not_icon, scale, same in self.widgets:
+            d = same.currentData()
+            if d and d[0] == "row":
+                d = ("group", self.widgets[d[1]][0])
+            out[g] = {"name": name.text(), "meaning": meaning.text(), "ko": ko.text(),
+                      "not_icon": not_icon.isChecked(), "scale": scale.value(), "same": d}
+        return out
+
+    def _row_label(self, group: str) -> str:
+        i = next((i for i, w in enumerate(self.widgets) if w[0] == group), None)
+        return f"{i + 1}번" if i is not None else "아이콘"
+
+    def _after_place(self, r: dict):
+        keep = self._capture()
+        if r.get("old_gone") and r.get("new_group") and r["old"] in keep:
+            keep[r["group"]] = keep.pop(r["old"])  # 혼자 있던 줄을 옮긴 것: 적어 둔 값 그대로
+            if r.get("dict"):
+                keep[r["group"]]["same"] = ("known", r["dict"])
+        review = service.icon_review(self.project_dir)
+        if review:
+            self._fill(review, keep)
 
     @staticmethod
     def _paint_ko_edit(edit: QLineEdit):
@@ -904,43 +1193,12 @@ class IconReviewDialog(QDialog):
         same.setEnabled(not not_icon.isChecked())
         not_icon.setEnabled(not merged)
 
-    def show_cards(self, g: dict):
-        """그 묶음이 나온 카드 자리(영역 이미지)를 차례로 보여 준다."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("카드 보기")
-        fit_to_screen(dlg, 1000, 640, maximize_below=0)
-        combo = QComboBox()
-        for w in g.get("where", []):
-            combo.addItem(w["label"], w)
-        pic = FitImage()  # 창 안에 다 보이게 줄인다 (스크롤 없음, 창 크기를 바꾸면 다시 맞춤)
-        dlg.pic = pic
-        crop = QLabel()
-        crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        def show(_i=0):
-            w = combo.currentData()
-            if not w:
-                return
-            pm = QPixmap()
-            pm.loadFromData(service.region_crop(w["file_dir"], w["page"], w["region"]), "PNG")
-            pic.set_image(pm)
-            if w.get("png"):
-                crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
-                crop.setToolTip("이 자리에서 잘라 낸 그림")
-            else:
-                crop.setText("이 자리에서는 아이콘 위치를 찾지 못했습니다")
-
-        combo.currentIndexChanged.connect(show)
-        close = QPushButton("닫기")
-        close.clicked.connect(dlg.accept)
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(combo)
-        lay.addWidget(pic, 1)
-        lay.addWidget(QLabel("잘라 낸 그림:"))
-        lay.addWidget(crop)
-        lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        show()
-        dlg.exec()
+    def show_cards(self, group: str):
+        """그 묶음이 나온 카드 자리를 보여 주고, 자리를 직접 잡게 한다."""
+        g = next((x for x in self.review["groups"] if x["group"] == group), None)
+        if g is None:
+            return
+        IconPlaceDialog(self.project_dir, g, self._row_label, self._after_place, self).exec()
 
     def rows(self) -> list[dict]:
         """합치기를 풀어 각 줄의 최종 이름으로. 합치기가 돌고 돌면 ValueError."""

@@ -2180,3 +2180,38 @@ def test_region_editor_skips_excluded_pages(qapp, tmp_path):
     ed2 = RegionEditor(Path(g["dir"]), [fd])
     assert ed2.page_spin.value() == 2
     ed.dirty = ed2.dirty = False
+
+
+def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path, monkeypatch):
+    from app import icons
+    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from tests.test_icons import _project as icon_project
+
+    info, _fd = icon_project(tmp_path, "1차")
+    real = icons.locate
+    calls = {"n": 0}
+
+    def flaky(img, text, index):
+        calls["n"] += 1
+        return (None, "줄 수가 다름") if calls["n"] == 2 else real(img, text, index)
+
+    monkeypatch.setattr(icons, "locate", flaky)
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    assert len(dlg.widgets) == 2
+    found_i = next(i for i, g in enumerate(dlg.review["groups"]) if g["image"])
+    lost = next(g for g in dlg.review["groups"] if not g["image"])
+    dlg.widgets[found_i][1].setText("coin")
+    dlg.widgets[found_i][3].setText("금화")
+    good = service.icon_place(info.dir, dlg.review["groups"][found_i]["where"][0]["occ"])["box"]
+    place = IconPlaceDialog(info.dir, lost, dlg._row_label, dlg._after_place, dlg)
+    assert place.view.guess is not None and place.view.box is None and not place.save_btn.isEnabled()
+    place.view.new = list(good)
+    place._drawn()
+    assert place.save_btn.isEnabled()
+    place._save()
+    assert "합쳤습니다" in place.status.text() and place.view.box == list(good)
+    assert len(dlg.widgets) == 1 and dlg.widgets[0][1].text() == "coin" and dlg.widgets[0][3].text() == "금화"
+    dlg.accept()
+    assert dlg.result.replaced == 2
