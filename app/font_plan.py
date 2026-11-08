@@ -71,15 +71,12 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
         data["sizes"] = {k: round(float(v), 3) for k, v in sizes.items() if v and abs(float(v) - 1.0) > 1e-6}
     if aligns is not None:
         data["aligns"] = {k: v for k, v in aligns.items() if v in ALIGNS}
-    if slots is not None:  # ‘문장마다 글꼴’ 영역의 문장 자리별 글꼴 (모든 카드)
+    if slots is not None:  # ‘문장마다 글꼴’ 영역: 기준 카드의 문장마다 고른 글꼴 (모든 카드에 펼침)
         clean_slots = {}
         for name, sl in slots.items():
-            c = {k: sl.get(k) for k in ("first", "last") if sl.get(k)}
-            mid = {str(int(j)): f for j, f in (sl.get("mid") or {}).items() if f}
-            if mid:
-                c["mid"] = mid
-            if c:
-                clean_slots[name] = c
+            ref = [f or None for f in (sl.get("ref") or [])]
+            if any(ref):
+                clean_slots[name] = {"ref": ref, **({"page": int(sl["page"])} if sl.get("page") else {})}
         data["sentence_slots"] = clean_slots
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = p.with_suffix(".tmp")
@@ -108,21 +105,20 @@ def set_card_font(file_dir: Path | str, page: int, region: str, font_file: str |
 
 
 def slot_fonts(slots: dict | None, n: int) -> dict[int, str]:
-    """문장 자리별 글꼴을 문장이 n개인 카드에 펼친다 {문장 번호: 글꼴}.
-    첫 문장·마지막 문장이 먼저 (문장이 하나면 첫 문장 글꼴). 가운데 j번째(1부터 = 둘째 문장)는 그 카드에 그 문장이
-    있을 때만 (마지막 문장 자리는 빼고). 정하지 않은 자리는 영역 글꼴."""
-    slots = slots or {}
-    out: dict[int, str] = {}
-    mids = slots.get("mid") or {}
+    """기준 카드(그 영역에서 문장이 가장 많은 카드)의 문장마다 고른 글꼴 slots={"ref": [f1, …, fR]}을 문장이 n개인 카드에 펼친다.
+    {문장 번호(0부터): 글꼴}. 첫 문장 ← 기준 첫 문장, 마지막 문장 ← 기준 마지막 문장 (이 둘이 먼저),
+    가운데 j번째 ← 기준 카드에 가운데 j번째 문장이 있으면 그것, 없으면 기준 첫 문장. 정하지 않은 문장(None)은 영역 글꼴.
+    예) 기준 1·2·3 → 두 문장 카드: 1←1, 2←3 / 기준 1 → 세 문장 카드: 모두 ←1 / 기준 1·2 → 세 문장 카드: 1←1, 2←1, 3←2."""
+    ref = list((slots or {}).get("ref") or [])
+    r = len(ref)
+    if not r or n < 1:
+        return {}
+    src = {0: 0}
+    if n > 1:
+        src[n - 1] = r - 1
     for j in range(1, n - 1):
-        f = mids.get(str(j))
-        if f:
-            out[j] = f
-    if n > 1 and slots.get("last"):
-        out[n - 1] = slots["last"]
-    if n >= 1 and slots.get("first"):
-        out[0] = slots["first"]
-    return out
+        src[j] = j if j <= r - 2 else 0
+    return {i: ref[k] for i, k in src.items() if ref[k]}
 
 
 def _ko_text(entry) -> str | None:
@@ -484,13 +480,14 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                 card["sentences"] = [{"idx": i, "text": t, "selected": chosen.get(i)}
                                      for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
             cards.append(card)
-        most = max(cards, key=lambda c: len(c["sentences"]), default=None)
+        # 기준 카드: 문장이 가장 많은 카드 (같으면 앞 카드). 그 카드의 모든 문장 자리를 정할 수 있게
+        ref = max((c for c in cards if c["sentences"]), key=lambda c: len(c["sentences"]), default=None)
         regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
                         "size_scale": float((data.get("sizes") or {}).get(name) or 1.0),
                         "align": align_choices(data).get(name, ""), "cards": cards,
                         "slots": (data.get("sentence_slots") or {}).get(name) or {},
-                        "max_sentences": len(most["sentences"]) if most else 0,
-                        "slot_page": most["page"] if most and most["sentences"] else None})
+                        "ref_sentences": len(ref["sentences"]) if ref else 0,
+                        "slot_page": ref["page"] if ref else None})
     used = [f for f in project_used_fonts(fd)]
     return {"file_dir": str(fd), "regions": regions, "used": [{"file": f, "label": label_for(f)} for f in used],
             "note": note}
