@@ -402,3 +402,25 @@ def test_text_line_with_background_drawing_is_not_dropped():
     assert len(out) == 4 and list(out[3]) == [508, 598]  # 글자 범위로 줄여 살린다
     # 그림 조각만 있는 띠는 여전히 뺀다
     assert len(icons._drop_sparse(bands[:3] + [[700, 800]], comps + [(5 + 60 * i, 700, 20, 90, 200) for i in range(20)])) == 3
+
+
+def test_edge_scraps_removed_so_side_by_side_icons_pair_in_order():
+    """줄 끝에 붙은 배경 그림 조각을 빼면 칸 수가 원문과 맞아, 붙어 있는 두 아이콘도 순서대로 짝짓는다
+    (이세길 A-097 ‘すべてのプレイヤーは[검][1 타일]を得る’: 전에는 위치 못 찾음 / 두 아이콘이 한 그림으로)."""
+    glyphs = [(111 + 58 * i, 700, 160 + 58 * i, 750) for i in range(10)]
+    icons2 = [(710, 681, 802, 773), (817, 679, 887, 775)]
+    tail = [(902, 701, 948, 752), (957, 700, 1013, 754), (1021, 704, 1076, 834)]
+    cells = [(0, 731, 23, 735)] + glyphs + icons2 + tail + [(1120, 767, 1124, 806), (1163, 718, 1185, 780)]
+    out = icons._trim_edge_scraps(cells, 15, 54.0)
+    assert len(out) == 15 and out[10:12] == icons2
+    # 글자 바로 옆의 작은 칸(ー 등)은 빼지 않는다 / 빼도 수가 안 맞으면 그대로
+    near = glyphs + [(glyphs[-1][2] + 8, 722, glyphs[-1][2] + 58, 731)]
+    assert icons._trim_edge_scraps(near, 10, 54.0) == near
+    assert icons._trim_edge_scraps(cells, 14, 54.0) == cells
+
+
+def test_band_trimmed_to_glyphs_when_drawing_hangs_below():
+    glyph = [(100 + 60 * i, 680, 50, 95, 2500) for i in range(6)]
+    junk = [(170, 740, 28, 108, 300), (1100, 770, 4, 39, 100)]  # 가늘고 속이 빈 그림 선
+    assert icons._trim_to_core([[679, 848]], glyph + junk) == [[679, 782]]
+    assert icons._trim_to_core([[679, 776]], glyph) == [[679, 776]]  # 붙은 그림이 없으면 그대로

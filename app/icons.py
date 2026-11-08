@@ -143,6 +143,21 @@ def _band_core(comps, y0, y1) -> tuple[int, int, list] | None:
     return min(c[1] for c in core), max(c[1] + c[3] for c in core), core
 
 
+def _trim_to_core(bands: list, comps) -> list:
+    """글자 줄에 배경 그림(집 그림 선 등)이 위아래로 붙어 길어진 띠를 글자·아이콘 크기 덩어리 범위로 줄인다
+    (붙은 그림 조각이 글자 칸으로 세어져 아이콘 자리를 잘못 짚지 않게)."""
+    out = []
+    for b in bands:
+        c = _band_core(comps, b[0], b[1])
+        if c is not None and len(c[2]) >= 2 and c[1] - c[0] < 0.8 * (b[1] - b[0]):
+            pad = int(0.08 * (c[1] - c[0]))
+            nb = [max(b[0], c[0] - pad), min(b[1], c[1] + pad)]
+            out.append(nb if isinstance(b, list) else tuple(nb))
+        else:
+            out.append(b)
+    return out
+
+
 def _drop_sparse(bands: list, comps) -> list:
     """잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다.
     다만 글자 줄에 배경 그림(집 그림 선 등)이 붙어 띠가 커지고 드문드문해 보일 수 있다: 그때는 글자 크기 덩어리만으로
@@ -186,7 +201,7 @@ def _bands_from(comps: list[tuple[int, int, int, int, int]],
     bands = [b for b in bands if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
-    bands = _drop_sparse(bands, comps)
+    bands = _drop_sparse(_trim_to_core(bands, comps), comps)
     hmax = max(b[1] - b[0] for b in bands)
     bands = [b for b in bands if b[1] - b[0] >= hmax * 0.35]  # 띠 테두리 같은 가는 줄
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
@@ -234,7 +249,7 @@ def _bands_text_first(comps: list[tuple[int, int, int, int, int]],
     bands = [b for b in merged if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
-    bands = _drop_sparse(bands, comps)
+    bands = _drop_sparse(_trim_to_core(bands, comps), comps)
     # 띠 테두리 같은 가는 줄: 보통 줄 높이(중앙값)의 35% 미만
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
     return [(a_, b_) for a_, b_ in bands if b_ - a_ >= hmed * 0.35]
@@ -347,6 +362,9 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
             return None, "그 줄에 잉크가 없음"
         seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
         cells = _glyph_cells(comps, em, (y0, y1))
+        if len(cells) > len(seq):  # 줄 양 끝에 붙은 배경 그림 조각(집 그림 선 등)을 빼면 맞는가
+            _hs = sorted(c[3] for c in comps if c[4] >= 30)
+            cells = _trim_edge_scraps(cells, len(seq), float(_hs[len(_hs) // 2]) * 1.15 if _hs else em)
         if len(cells) != len(seq):
             # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
             # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
@@ -695,6 +713,27 @@ def _not_black_text(img, lum, ink, box) -> bool:
     px = img[y0:y1, x0:x1][m].astype(np.float32)
     sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
     return float(np.median(lum[y0:y1, x0:x1][m])) >= 85 or float(np.median(sat)) >= 0.25
+
+
+def _trim_edge_scraps(cells: list, n_want: int, em_t: float) -> list:
+    """칸이 원문보다 많을 때, 줄 양 끝에서 글자와 떨어진 작은·가는 칸들(배경 그림 조각)을 뺀다.
+    빼서 원문 칸 수와 꼭 맞을 때만 쓴다 (아이콘끼리 붙은 줄도 순서대로 짝지을 수 있게)."""
+    def small(c):
+        return (c[2] - c[0]) < 0.5 * em_t or (c[3] - c[1]) < 0.3 * em_t
+
+    out = list(cells)
+    # 왼쪽 끝: 작은 칸이 이어진 묶음이 첫 글자와 떨어져 있으면 묶음째 뺀다
+    i = 0
+    while i < len(out) and small(out[i]):
+        i += 1
+    if 0 < i < len(out) and out[i][0] - out[i - 1][2] > 0.6 * em_t:
+        out = out[i:]
+    j = len(out)
+    while j > 0 and small(out[j - 1]):
+        j -= 1
+    if 0 < j < len(out) and out[j][0] - out[j - 1][2] > 0.6 * em_t:
+        out = out[:j]
+    return out if len(out) == n_want else cells
 
 
 def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float, img=None, lum=None, ink=None):
