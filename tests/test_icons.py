@@ -385,3 +385,20 @@ def test_manual_box_new_row_gets_name_suggestion(tmp_path, monkeypatch):
     r2 = service.set_icon_box(info.dir, lost["where"][0]["occ"], good)
     assert r2["old_gone"] and not r2["new_group"]
     assert len(service.icon_review(info.dir)["groups"]) == 1
+
+
+def test_text_line_with_background_drawing_is_not_dropped():
+    """글자 줄 밑에 배경 그림(집 그림 선)이 붙어 띠가 커져도 그 줄을 빼지 않는다.
+    (빼면 원문 줄과 이미지 줄이 한 줄씩 밀려 아이콘이 윗줄 그림으로 잘린다: 이세길 A-093 본문2)"""
+    label = [(100 + 70 * i, 10, 60, 70, 3000) for i in range(5)]
+    tile = [(300, 150, 140, 196, 25000)]  # 아이콘만 있는 줄 (속이 꽉 찬 큰 타일)
+    line = [(100 + 60 * i, 400, 50, 52, 1500) for i in range(8)] + [(600, 393, 86, 92, 4600)]
+    last = [(300 + 60 * i, 508, 50, 90, 1500) for i in range(5)]
+    junk = [(10 + 55 * i, 560 + (i % 5) * 20, 22, 79, 100) for i in range(20)]  # 가늘고 속이 빈 그림 선
+    junk += [(30 + 57 * i, 600 + (i % 7) * 10, 10, 10, 30) for i in range(20)]
+    comps = label + tile + line + last + junk
+    bands = [[0, 90], [150, 346], [393, 485], [508, 674]]
+    out = icons._drop_sparse(bands, comps)
+    assert len(out) == 4 and list(out[3]) == [508, 598]  # 글자 범위로 줄여 살린다
+    # 그림 조각만 있는 띠는 여전히 뺀다
+    assert len(icons._drop_sparse(bands[:3] + [[700, 800]], comps + [(5 + 60 * i, 700, 20, 90, 200) for i in range(20)])) == 3

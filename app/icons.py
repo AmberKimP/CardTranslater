@@ -125,6 +125,50 @@ def _text_components(ink: np.ndarray) -> tuple[list[tuple[int, int, int, int, in
     return keep, rules
 
 
+def _density(comps, y0, y1) -> float:
+    cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
+    if not cs:
+        return 0.0
+    x0, x1 = min(c[0] for c in cs), max(c[0] + c[2] for c in cs)
+    return sum(c[4] for c in cs) / max(1, (x1 - x0) * (y1 - y0))
+
+
+def _band_core(comps, y0, y1) -> tuple[int, int, list] | None:
+    """띠 안의 글자·아이콘 크기 덩어리(속이 찬 것)만의 세로 범위. 배경 그림의 가는 선·점은 뺀다."""
+    cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1 and c[4] >= 0.15 * c[2] * c[3]]
+    if not cs:
+        return None
+    hmax = max(c[3] for c in cs)
+    core = [c for c in cs if c[3] >= 0.5 * hmax]
+    return min(c[1] for c in core), max(c[1] + c[3] for c in core), core
+
+
+def _drop_sparse(bands: list, comps) -> list:
+    """잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다.
+    다만 글자 줄에 배경 그림(집 그림 선 등)이 붙어 띠가 커지고 드문드문해 보일 수 있다: 그때는 글자 크기 덩어리만으로
+    다시 재어, 글자가 둘 이상 빽빽하면 그 범위로 줄여 살린다 (빼면 아래 줄들이 한 줄씩 밀려 짝지어진다)."""
+    if len(bands) <= 1:
+        return bands
+    dens = [_density(comps, y0, y1) for y0, y1 in bands]
+    if max(dens) <= 0:
+        return bands
+    ok = [d >= 0.06 or d >= 0.4 * max(dens) for d in dens]
+    kept_h = sorted(b[1] - b[0] for b, k in zip(bands, ok) if k)
+    hmed = kept_h[len(kept_h) // 2] if kept_h else 0
+    out = []
+    for b, d, k in zip(bands, dens, ok):
+        if k:
+            out.append(b)
+            continue
+        c = _band_core(comps, b[0], b[1])
+        if c is None or len(c[2]) < 2 or c[1] - c[0] < 0.5 * hmed:
+            continue
+        dc = _density(c[2], c[0], c[1])
+        if dc >= 0.06 or dc >= 0.4 * max(dens):
+            out.append(type(b)([c[0], c[1]]) if isinstance(b, list) else (c[0], c[1]))
+    return out
+
+
 def _bands_from(comps: list[tuple[int, int, int, int, int]],
                 rules: list[tuple[int, int]] = (), min_rel_h: float = 0.5) -> list[tuple[int, int]]:
     """덩어리들을 세로로 겹치는 것끼리 묶어 줄 띠 (y0, y1)로. 구분선 높이에 걸친 띠는 뺀다."""
@@ -142,14 +186,7 @@ def _bands_from(comps: list[tuple[int, int, int, int, int]],
     bands = [b for b in bands if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
-    # 잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다
-    dens = []
-    for y0, y1 in bands:
-        cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
-        x0, x1 = min(c[0] for c in cs), max(c[0] + c[2] for c in cs)
-        dens.append(sum(c[4] for c in cs) / max(1, (x1 - x0) * (y1 - y0)))
-    if len(bands) > 1 and max(dens) > 0:
-        bands = [b for b, d in zip(bands, dens) if d >= 0.06 or d >= 0.4 * max(dens)]
+    bands = _drop_sparse(bands, comps)
     hmax = max(b[1] - b[0] for b in bands)
     bands = [b for b in bands if b[1] - b[0] >= hmax * 0.35]  # 띠 테두리 같은 가는 줄
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
@@ -197,17 +234,7 @@ def _bands_text_first(comps: list[tuple[int, int, int, int, int]],
     bands = [b for b in merged if not any(r0 < b[1] and r1 > b[0] for r0, r1 in rules)]
     if not bands:
         return []
-    # 잉크가 드문드문한 띠(배경 그림 조각만 모인 줄)는 글자 줄이 아니다
-    dens = []
-    for y0, y1 in bands:
-        cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
-        if not cs:
-            dens.append(0.0)
-            continue
-        x0, x1 = min(c[0] for c in cs), max(c[0] + c[2] for c in cs)
-        dens.append(sum(c[4] for c in cs) / max(1, (x1 - x0) * (y1 - y0)))
-    if len(bands) > 1 and max(dens) > 0:
-        bands = [b for b, d in zip(bands, dens) if d >= 0.06 or d >= 0.4 * max(dens)]
+    bands = _drop_sparse(bands, comps)
     # 띠 테두리 같은 가는 줄: 보통 줄 높이(중앙값)의 35% 미만
     hmed = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]
     return [(a_, b_) for a_, b_ in bands if b_ - a_ >= hmed * 0.35]
