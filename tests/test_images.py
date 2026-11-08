@@ -246,3 +246,86 @@ def test_compose_writes_sheet_images_for_image_input(tmp_path):
     assert res.sheet_images[0] == r.file_dir / "translated" / "images" / "s.png"
     assert Image.open(res.sheet_images[0]).size == Image.open(tmp_path / "in" / "s.png").size
 
+
+
+def test_cut_sheet_follows_touching_card_edges_off_grid(tmp_path):
+    """스캔처럼: 둥근 귀 카드 3×2가 회색 바탕 위에 거의 붙어 있고 고르게 놓이지 않음(줄·열마다 경계가 다름).
+    네 카드가 만나는 점(귀 사이 바탕)을 따라 자른다. 카드 안 인쇄 선(테두리)에 끌려가지 않는다."""
+    W, H = 900, 1200
+    im = Image.new("RGB", (W, H), (130, 130, 130))  # 스캐너 덮개
+    d = ImageDraw.Draw(im)
+    vx = [[312, 606], [310, 604]]  # 줄마다 세로 경계 (같은 간격이면 300, 600)
+    hy = [588, 593, 585]  # 열마다 가로 경계 (같은 간격이면 600)
+    rng = np.random.default_rng(3)
+    for r in range(2):
+        for c in range(3):
+            x0 = 0 if c == 0 else vx[r][c - 1]  # 틈 없이 붙어 있다 (바탕은 둥근 귀 사이로만 보인다)
+            x1 = W if c == 2 else vx[r][c]
+            y0 = 0 if r == 0 else hy[c]
+            y1 = H if r == 1 else hy[c]
+            d.rounded_rectangle([x0, y0, x1 - 1, y1 - 1], radius=14, fill=(205, 198, 175))
+            d.rectangle([x0 + 8, y0 + 8, x1 - 9, y1 - 9], outline=(60, 50, 40), width=3)  # 인쇄 테두리
+            for _ in range(40):  # 그림
+                cx, cy = int(rng.integers(x0 + 60, x1 - 60)), int(rng.integers(y0 + 60, y1 - 60))
+                d.ellipse([cx - 12, cy - 12, cx + 12, cy + 12], fill=tuple(int(v) for v in rng.integers(40, 200, 3)))
+    grain = rng.normal(0, 9, (H, W, 1))  # 종이 결·스캔 잡음
+    im = Image.fromarray(np.clip(np.asarray(im, np.float32) + grain, 0, 255).astype(np.uint8))
+    rgb = np.asarray(im)
+    # 네 카드가 만나는 점: 둥근 귀 사이 바탕
+    jx, jy = images._junction(rgb, 300, 600, 22, 40)
+    assert 304 <= jx <= 313 and 586 <= jy <= 594
+    # 같은 간격(300·600)에서 시작해 이웃 카드 사이마다 따로 고친 경계
+    vx, hy, moved, missing = images._refine_cuts(rgb, [0, 300, 300, 600, 600, 900], [0, 600, 600, 1200], 3, 2)
+    assert missing == 0 and moved > 0
+    assert all(abs(vx[r][1] - t) <= 7 for r, t in ((0, 312), (1, 310)))
+    assert all(abs(vx[r][2] - t) <= 7 for r, t in ((0, 606), (1, 604)))
+    assert all(abs(hy[c][1] - t) <= 7 for c, t in enumerate([588, 593, 585]))
+    assert vx[0][0] == 0 and vx[0][3] == 900 and hy[0][0] == 0 and hy[0][2] == 1200  # 바깥 끝은 그대로
+
+def _scan_with_extras(path: Path, n_cards: int = 9, card=(300, 420)) -> list[tuple[int, int, int, int]]:
+    """스캔처럼: 흰 바탕 왼쪽에 자(눈금·숫자), 아래쪽은 빈 종이, 카드는 3×3 자리에 n장(왼쪽 위부터, 틈 없이)."""
+    rng = np.random.default_rng(5)
+    left, top = 160, 0
+    W, H = left + 3 * card[0] + 20, 3 * card[1] + 600
+    im = Image.new("RGB", (W, H), (214, 222, 220))
+    d = ImageDraw.Draw(im)
+    d.rectangle([0, 200, 110, 900], fill=(200, 205, 203))  # 자
+    for y in range(210, 900, 8):
+        d.line([(0, y), (40 if y % 40 else 80, y)], fill=(20, 20, 20), width=3)
+    for y in range(240, 900, 80):
+        d.rectangle([85, y, 105, y + 25], fill=(20, 20, 20))  # 숫자
+    for y in range(950, H, 20):  # 모눈종이
+        d.line([(0, y), (W, y)], fill=(60, 60, 60), width=2)
+    for x in range(0, W, 20):
+        d.line([(x, 950), (x, H)], fill=(60, 60, 60), width=2)
+    boxes = []
+    for i in range(n_cards):
+        r, c = divmod(i, 3)
+        x0, y0 = left + c * card[0], top + r * card[1]
+        d.rounded_rectangle([x0, y0, x0 + card[0] - 1, y0 + card[1] - 1], radius=14,
+                            fill=(170 + 10 * c, 70, 80 + 10 * r))
+        d.rectangle([x0 + 30, y0 + 40, x0 + card[0] - 31, y0 + 120], fill=(235, 220, 200))
+        for _ in range(12):
+            cx, cy = int(rng.integers(x0 + 50, x0 + card[0] - 50)), int(rng.integers(y0 + 150, y0 + card[1] - 40))
+            d.ellipse([cx - 10, cy - 10, cx + 10, cy + 10], fill=tuple(int(v) for v in rng.integers(30, 220, 3)))
+        boxes.append((x0, y0, x0 + card[0], y0 + card[1]))
+    im.save(path)
+    return boxes
+
+
+def test_cut_sheet_ignores_ruler_and_paper_around_cards(tmp_path):
+    """자·모눈종이·빈 종이가 같이 찍힌 스캔: 카드가 있는 곳만 잘라 카드 9장."""
+    truth = _scan_with_extras(tmp_path / "ruler.png")
+    cut = images.cut_sheet(tmp_path / "ruler.png", 3, 3)
+    assert len(cut.boxes) == 9
+    assert max(abs(a - b) for bx, tb in zip(cut.boxes, truth) for a, b in zip(bx, tb)) <= 12
+    assert any("카드가 아닌 부분" in w for w in cut.warnings)
+
+
+def test_cut_sheet_skips_empty_slots(tmp_path):
+    """3×3 자리에 카드 7장만(마지막 줄 2칸 빔): 빈 자리는 쪽을 만들지 않는다."""
+    truth = _scan_with_extras(tmp_path / "seven.png", n_cards=7)
+    cut = images.cut_sheet(tmp_path / "seven.png", 3, 3)
+    assert len(cut.boxes) == 7
+    assert max(abs(a - b) for bx, tb in zip(cut.boxes, truth) for a, b in zip(bx, tb)) <= 12
+    assert any("7장" in w for w in cut.warnings)
