@@ -1802,7 +1802,8 @@ def test_project_page_layout_next_why_and_menu(qapp, tmp_path):
     page.tree.setCurrentItem(group)
     assert page.scope_label.text().startswith("작업 대상: 그룹") and "전체" in page.scope_hint.text()
     assert [e[0] if e else None for e in page._menu_items("group")] == [
-        "영역 지정", "폴더 열기", None, "초기화…", "삭제…"]
+        "영역 지정", "이름 바꾸기…", "폴더 열기", None, "초기화…", "삭제…"]
+    assert page.b_rename.isEnabled()  # 그룹을 고르면 이름 바꾸기 버튼이 켜진다
     assert [e[0] for e in page._menu_items("all") if e] == ["파일 넣기", "초기화…"]
     assert "영역 지정" in [e[0] for e in page._menu_items("file") if e]
     # 모두 끝난 뒤의 다음 할 일 문구
