@@ -155,6 +155,9 @@ class _FakePage:
     def scope(self):
         return (None, None)
 
+    def _selected(self):  # 한글을 넣을 수 있는 그룹을 고른 채 (한글 넣기가 그룹을 묻지 않게)
+        return ("group", {"name": "g", "files": [{"erased": True, "translated": True, "composed": False}]})
+
     def refresh(self):
         pass
 

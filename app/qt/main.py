@@ -380,8 +380,12 @@ class ProjectPage(QWidget):
         # 작업 대상: 목록 바로 위. 목록에서 고른 것이 위 단계 버튼의 범위가 된다
         self.scope_label = QLabel("작업 대상: 전체")
         self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
-        self.scope_label.setToolTip("아래 목록에서 고른 항목. 작업·결과 버튼(①③⑥⑦⑧·결과 보기·시험 실행)은 이 범위에 대해 합니다.\n"
-                                    "② 아이콘 정의 · ④ 용어집 만들기 · ⑤ 용어집 가져오기는 프로젝트(게임) 전체에 대해 합니다.")
+        self.scope_label.setToolTip("아래 목록에서 고른 항목.\n"
+                                    "① 글자 추출 · ⑥ 전체 번역 · ⑦ 글자 지우기: 보통 전체에 합니다 "
+                                    "(그룹·파일을 고른 채 누르면 전체/고른 항목만을 묻습니다).\n"
+                                    "③ 원문 확인: 고른 범위만 보여 줍니다.\n"
+                                    "⑧ 한글 넣기 · 결과 보기 · 시험 실행: 그룹마다 합니다 (전체를 고른 채 누르면 그룹을 고릅니다).\n"
+                                    "② 아이콘 정의 · ④ 용어집 만들기 · ⑤ 용어집 가져오기: 늘 프로젝트(게임) 전체에 합니다.")
         self.scope_hint = QLabel()
         self.scope_hint.setStyleSheet("color: #5F6B7A")
         scope_row = QHBoxLayout()
@@ -609,9 +613,10 @@ class ProjectPage(QWidget):
             "glossary": st in ("glossary_review", "glossary_confirmed", "translating", "translated"),
             "translate": st in ("glossary_confirmed", "translating", "translated"),
             "erase": ready,
-            "compose": any(f["erased"] for f in files) and st == "translated",
+            # 그룹만 번역·지우기를 끝내도 그 그룹은 한글을 넣을 수 있다
+            "compose": st in ("translating", "translated") and any(f["erased"] and f.get("translated") for f in files),
             "results": any(f["composed"] for f in files),
-            "test": ready and st == "translated",
+            "test": ready and st in ("translating", "translated") and any(f.get("translated") for f in files),
         }
         states = self.step_states()
         for k, b in self.step_buttons.items():
@@ -655,6 +660,17 @@ class ProjectPage(QWidget):
                     break
                 stack += [it.child(i) for i in range(it.childCount())]
         self.tree.setCurrentItem(target)
+
+    def select_group(self, g: dict):
+        """그리드에서 그 그룹을 고른다 (한글 넣기·결과 보기·시험 실행에서 고른 그룹을 목록에도 보이게)."""
+        stack = [self.all_item] if getattr(self, "all_item", None) is not None else []
+        while stack:
+            it = stack.pop()
+            d = it.data(0, Qt.ItemDataRole.UserRole)
+            if d and d[0] == "group" and str(d[1].get("dir")) == str(g["dir"]):
+                self.tree.setCurrentItem(it)
+                return
+            stack += [it.child(i) for i in range(it.childCount())]
 
     def select_all(self):
         """그리드에서 ‘전체’를 고른다."""
@@ -721,8 +737,9 @@ class ProjectPage(QWidget):
         if hasattr(self, "scope_label"):
             label = self.scope()[0]
             self.scope_label.setText(f"작업 대상: {label}")
-            self.scope_hint.setText(" — 목록에서 그룹이나 파일을 고르면 위 단계를 그것만 합니다" if label == "전체"
-                                    else " — ‘전체’를 고르면 모든 파일에 합니다")
+            self.scope_hint.setText(" — 추출·번역·지우기는 전체에, ⑧ 한글 넣기부터는 그룹마다 합니다 (목록에서 그룹을 고르면 그 그룹만)"
+                                    if label == "전체"
+                                    else " — ⑧ 한글 넣기·결과 보기는 이 범위에, 추출·번역·지우기는 누를 때 전체/이것만을 묻습니다")
         self.b_pages.setEnabled(bool(sel and sel[0] == "file"))
         self.b_regions.setEnabled(self._group_of_selection() is not None)
 

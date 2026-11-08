@@ -1537,11 +1537,18 @@ def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, mo
     def fake_run(parent, title, job, done, fail, **k):
         seen["files"] = job.kwargs.get("files")
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
+    import app.qt.dialogs as dlg_mod
+
+    answers = []
+    monkeypatch.setattr(dlg_mod, "ask_choice", lambda *a, **k: answers.pop(0))
+    answers.append(1)  # 파일을 고른 채 ⑦: 전체/고른 항목 중 ‘고른 항목만’
     page.out.erase()
     assert seen["files"] == dirs
-    page.select_all()
+    answers.append(0)  # ‘전체’를 고르면 목록 선택도 전체로
     page.out.erase()
-    assert seen["files"] is None
+    assert seen["files"] is None and page.scope()[0] == "전체"
+    page.out.erase()  # 전체를 고른 채면 묻지 않는다
+    assert seen["files"] is None and answers == []
 
 
 def test_extract_asks_all_or_selected_and_moves_grid_to_all(qapp, tmp_path, monkeypatch):
@@ -2011,16 +2018,68 @@ def test_result_viewer_colors_and_footer(qapp, tmp_path):
     assert "시험 결과입니다" in v2.footer.text() and "바꿀 수 없습니다" in v2.erase_hint.text()
 
 
-def test_test_run_dialog_needs_pages(qapp):
-    from PySide6.QtWidgets import QDialogButtonBox
+def _g(name, files):
+    return {"name": name, "dir": f"D/{name}", "files": files}
 
-    from app.qt.results import TestRunDialog
 
-    dlg = TestRunDialog([{"key": "a", "pages": 3, "dir": "x"}])
-    ok = dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
-    assert not ok.isEnabled() and dlg.minimumWidth() >= 420
-    dlg.pages.setText("1-2")
-    assert ok.isEnabled()
+def _f(**k):
+    return {"included": 3, "erased": False, "translated": False, "composed": False, "dir": "x", "key": "k", **k}
+
+
+def test_group_pick_dialog_only_ready_groups_and_card_count(qapp):
+    """한글 넣기·시험 실행의 그룹 고르기: 할 수 있는 그룹만 고를 수 있고, 시험 실행은 몇 장인지도 고른다."""
+    from app.qt.results import GroupPickDialog, OutputActions
+
+    ready = _g("카드", [_f(erased=True, translated=True), _f(erased=True, translated=True, composed=True)])
+    not_erased = _g("아이템", [_f(translated=True)])
+    dlg = GroupPickDialog("⑧ 한글 넣기", [not_erased, ready], OutputActions._can_compose)
+    assert not dlg.radios.button(0).isEnabled() and "⑦ 글자 지우기" in dlg.radios.button(0).text()
+    assert dlg.radios.button(1).isChecked() and dlg.chosen() is ready and "한글 1/2" in dlg.radios.button(1).text()
+    untranslated = _g("던전", [_f()])
+    t = GroupPickDialog("시험 실행", [untranslated, ready, not_erased], OutputActions._can_test, cards=True,
+                        current=not_erased)
+    assert not t.radios.button(0).isEnabled()  # 번역 전 그룹은 시험 못 함
+    assert t.chosen() is not_erased and t.n.maximum() == 3  # 목록에서 고른 그룹이 먼저 (시험은 스스로 지운다)
+    t.radios.button(1).setChecked(True)
+    assert t.chosen() is ready and t.n.maximum() == 6  # 3장 x 2파일
+    assert OutputActions._can_test(_g("빈", []))[0] is False
+
+
+def test_compose_picks_group_when_all_selected(qapp, tmp_path, monkeypatch):
+    """목록에서 ‘전체’를 고른 채 ⑧: 그룹이 하나면 묻지 않고 그 그룹으로, 둘이면 그룹 고르기 창."""
+    from app.qt import results as res_mod
+
+    class Page:
+        def __init__(self, groups):
+            self.ov = {"groups": groups}
+            self.picked = None
+
+        def _selected(self):
+            return ("all", None)
+
+        def select_group(self, g):
+            self.picked = g
+
+    one = _g("카드", [_f(erased=True, translated=True)])
+    page = Page([one])
+    acts = res_mod.OutputActions(page)
+    assert acts._pick_group("⑧ 한글 넣기", acts._can_compose) and page.picked is one
+    other = _g("아이템", [_f(translated=True)])
+    page2 = Page([other, one])
+    shown = {}
+
+    class Dlg:
+        def __init__(self, title, groups, check, parent=None, **k):
+            shown["n"] = len(groups)
+
+        def exec(self):
+            return True
+
+        def chosen(self):
+            return one
+    monkeypatch.setattr(res_mod, "GroupPickDialog", Dlg)
+    acts2 = res_mod.OutputActions(page2)
+    assert acts2._pick_group("⑧ 한글 넣기", acts2._can_compose) and shown["n"] == 2 and page2.picked is one
 
 
 # ---------------------------------------------------------------- 앱 전체 모양 (theme)
@@ -2443,3 +2502,71 @@ def test_result_viewer_keeps_each_cells_paragraph_fonts_and_preview_uses_region(
     service.card_preview(fd, 2, "이름", "하나.", None, None)
     a, _k = calls[-1]
     assert a[3] == SANS and a[4] == 1.0
+
+
+def test_compose_enabled_when_one_of_two_groups_translated_and_erased(qapp, tmp_path):
+    """그룹 2개 중 1개만 번역·지우기를 끝내도 ⑧ 한글 넣기가 켜진다 (프로젝트는 아직 ‘번역 중’)."""
+    from app import glossary
+    from app.extract_cc import ClaudeCodeClient
+    from app.qt.main import MainWindow
+    from tests.test_extract import FakeRunner
+    from tests.test_project_steps import _project as steps_project
+    from tests.test_service import GAEGU
+    from tests.test_translate import _write_extract
+
+    if not GAEGU.exists():
+        pytest.skip("fonts/ 없음")
+    info, fd = steps_project(tmp_path)
+    _write_extract(fd, 1, "HELLO")
+    _write_extract(fd, 2, "HELLO")
+    workspace.add_files(info, [next((fd / "source").glob("*.pdf"))], "둘째", new_group=True,
+                        regions_from=fd.parent.parent / "regions.json")
+    fd2 = next(d for d in workspace.file_dirs(info) if d.parent.parent.name == "둘째")
+    _write_extract(fd2, 1, "WORLD")
+    glossary.confirm(info, [{"source": "HELLO", "ko": "안녕", "category": "기타"}])
+    workspace.set_status(info, "glossary_confirmed")
+    r = service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=FakeRunner([])), files=[fd])
+    assert r.state == "done" and workspace.load_project_info(info.dir).status == "translating"
+    assert service.erase_project(info.dir, files=[fd]).state == "done"
+    ov = service.project_overview(info.dir)
+    by = {f["dir"].parent.parent.name: f for g in ov["groups"] for f in g["files"]}
+    assert by[fd.parent.parent.name]["translated"] and not by["둘째"]["translated"]
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    assert page.step_buttons["compose"].isEnabled() and page.step_buttons["test"].isEnabled()
+
+
+def test_scope_review_fixes(qapp, tmp_path, monkeypatch):
+    from app.qt import results as res_mod
+
+    # 같은 초의 시험 폴더는 겹치지 않는다
+    d1, _ = service._output_dirs(tmp_path, "translated", "compose", True, tmp_path / "t")
+    d1.mkdir(parents=True)
+    d2, _ = service._output_dirs(tmp_path, "translated", "compose", True, tmp_path / "t")
+    assert d2 != d1 and d2.name.endswith("-compose")
+    # 목록에서 고른 그룹이 아직 한글 넣기를 못 하면 알리고 멈춘다
+    shown = []
+    monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+
+    class Page:
+        ov = {"groups": []}
+
+        def _selected(self):
+            return ("group", {"name": "Y", "files": [{"erased": False, "translated": False, "composed": False}]})
+
+    acts = res_mod.OutputActions(Page())
+    assert acts._pick_group("⑧ 한글 넣기", acts._can_compose) is False and "⑥ 전체 번역" in shown[0]
+
+
+def test_file_without_text_counts_as_translated_when_extracted(tmp_path, monkeypatch):
+    from tests.test_project_steps import _project as steps_project
+    from tests.test_translate import _write_extract
+
+    info, fd = steps_project(tmp_path)
+    _write_extract(fd, 1, "HELLO")
+    _write_extract(fd, 2, "HELLO")
+    workspace.set_status(info, "translating")
+    monkeypatch.setattr(service, "_translated_files", lambda _i: {})  # 번역할 칸이 하나도 없는 경우
+    f = service.project_overview(info.dir)["groups"][0]["files"][0]
+    assert f["translated"] is True

@@ -639,49 +639,76 @@ class ResultViewer(QDialog):
             _open(pdf)
 
 
-class TestRunDialog(QDialog):
-    """고른 파일의 몇 쪽만 시험 폴더에서 지우기 -> 한글 넣기. 프로젝트 결과는 바뀌지 않는다."""
+def _group_cards(g: dict) -> int:
+    return sum(f["included"] for f in g["files"])
 
-    def __init__(self, files: list[dict], parent=None):
+
+class GroupPickDialog(QDialog):
+    """어느 그룹에 할지 고른다 (한글 넣기·결과 보기·시험 실행). 할 수 없는 그룹은 흐리게 이유와 함께.
+    groups: overview 그룹 dict, check(g) -> (할 수 있나, 설명). cards=True면 몇 장 할지도 고른다 (시험 실행)."""
+
+    def __init__(self, title: str, groups: list[dict], check, parent=None, cards: bool = False,
+                 current: dict | None = None):
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
+
         super().__init__(parent)
-        self.setWindowTitle("시험 실행")
-        self.setMinimumWidth(420)
-        self.file = QComboBox()
-        for f in files:
-            self.file.addItem(f"{file_label(f['key'])} ({f['pages']}쪽)", str(f["dir"]))
-        self.pages = QLineEdit()
-        self.pages.setPlaceholderText("예: 2-4 또는 3,7,9")
-        note = subtitle("고른 쪽만 따로 지우고 한글을 넣어 전후를 비교합니다. "
-                        "프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다.")
+        self.setWindowTitle(title)
+        self.setMinimumWidth(520)
+        self.groups = groups
+        self.radios = QButtonGroup(self)
+        box = QVBoxLayout()
+        first = None
+        for i, g in enumerate(groups):
+            ok, note = check(g)
+            rb = QRadioButton(f"{g['name']}    {note}")
+            rb.setEnabled(ok)
+            self.radios.addButton(rb, i)
+            box.addWidget(rb)
+            if ok and (first is None or (current is not None and str(g["dir"]) == str(current["dir"]))):
+                first = rb
+        if first is not None:
+            first.setChecked(True)
+        self.n = None
         form = QFormLayout()
-        form.setVerticalSpacing(10)
-        form.addRow("파일", self.file)
-        form.addRow("쪽", self.pages)
+        if cards:
+            self.n = QSpinBox()
+            self.n.setRange(1, 999)
+            self.n.setValue(3)
+            self.n.setSuffix(" 장")
+            self.n.setToolTip("그룹의 파일 순서대로, 처리할 카드 앞에서부터 이만큼만 시험합니다")
+            form.addRow("몇 장", self.n)
+            self.radios.idToggled.connect(lambda i, on: on and self._limit(i))
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        set_ok_text(bb, "시험 실행")
+        set_ok_text(bb, "시험 실행" if cards else "다음")
         self.ok_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
-        self.ok_btn.setEnabled(False)  # 쪽을 넣어야 켜진다
-        self.pages.textChanged.connect(lambda t: self.ok_btn.setEnabled(bool(t.strip())))
+        self.ok_btn.setEnabled(first is not None)
+        self.radios.idToggled.connect(lambda _i, _on: self.ok_btn.setEnabled(self.radios.checkedId() >= 0))
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
-        lay.addWidget(page_title("시험 실행 (몇 쪽만)", 14))
-        lay.addWidget(note)
-        lay.addWidget(card(form))
+        lay.addWidget(page_title(title, 14))
+        lay.addWidget(subtitle("어느 그룹에 할까요?" + (" 고른 그룹의 앞 몇 장만 따로 지우고 한글을 넣어 봅니다 "
+                                                    "(프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다)." if cards else "")))
+        lay.addLayout(box)
+        if cards:
+            lay.addLayout(form)
+            if self.radios.checkedId() >= 0:
+                self._limit(self.radios.checkedId())
         lay.addWidget(bb)
-        self.setMinimumWidth(480)
 
-    def accept(self):
-        if not self.pages.text().strip():
-            show_error(self, "시험할 쪽이 비어 있습니다", "어느 쪽을 시험할지 정하지 않았습니다.",
-                       "‘쪽’ 칸에 쪽 번호를 넣으세요 (예: 2-4 또는 3,7,9).")
-            return
-        super().accept()
+    def _limit(self, i: int):
+        n = max(1, _group_cards(self.groups[i]))
+        self.n.setMaximum(n)
+        self.n.setValue(min(self.n.value(), n))
 
-    def choice(self) -> tuple[Path, str]:
-        return Path(self.file.currentData()), self.pages.text().strip()
+    def chosen(self) -> dict | None:
+        i = self.radios.checkedId()
+        return self.groups[i] if i >= 0 else None
+
+    def cards(self) -> int:
+        return self.n.value() if self.n is not None else 0
 
 
 class OutputActions:
@@ -701,6 +728,8 @@ class OutputActions:
     # ---- 지우기
     def erase(self, auto: bool = False, note: str = ""):
         """auto=True: 번역에 이어서 부를 때. 묻지 않고 지운 파일은 건너뛴다. note는 끝 창 맨 위에 보인다."""
+        if not auto and self.page.steps.ask_scope("⑦ 글자 지우기") is False:  # 그룹·파일을 고른 채면 전체/고른 항목 (기본 전체)
+            return
         files = self._files()
         done = [f for f in files if f["erased"]]
         redo = False
@@ -740,6 +769,8 @@ class OutputActions:
         """한글 넣기. 처음 누르면 먼저 글꼴 고르기 창을 띄운다 (엑셀 확인 뒤 다시 부를 때는 묻지 않음)."""
         if accept:
             self._run_compose(True)
+            return
+        if not self._pick_group("⑧ 한글 넣기", self._can_compose):
             return
         job = worker.Job(service.font_plans, self.pdir, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "글꼴 추천 받는 중", job, self._fonts_ready,
@@ -790,8 +821,65 @@ class OutputActions:
         if box.clickedButton() is view:
             self.results()
 
+    # ---- 그룹 고르기 (한글 넣기부터는 그룹 단위)
+    @staticmethod
+    def _can_compose(g: dict) -> tuple[bool, str]:
+        files = g["files"]
+        n = len(files)
+        if not files:
+            return False, "파일 없음"
+        if not all(f.get("translated") for f in files):
+            return False, "아직 못 함: 먼저 ⑥ 전체 번역"
+        if not all(f["erased"] for f in files):
+            return False, "아직 못 함: 먼저 ⑦ 글자 지우기"
+        done = sum(1 for f in files if f["composed"])
+        return True, f"파일 {n}개 · 한글 {done}/{n}" + (" 완료" if done == n else "")
+
+    @staticmethod
+    def _can_view(g: dict) -> tuple[bool, str]:
+        done = sum(1 for f in g["files"] if f["composed"])
+        return (done > 0, f"한글 넣은 파일 {done}/{len(g['files'])}" if done else "아직 한글을 넣지 않음")
+
+    @staticmethod
+    def _can_test(g: dict) -> tuple[bool, str]:
+        if not g["files"] or not all(f.get("translated") for f in g["files"]):
+            return False, "아직 못 함: 먼저 ⑥ 전체 번역"
+        return True, f"카드 {_group_cards(g)}장"
+
+    def _pick_group(self, title: str, check) -> bool:
+        """목록에서 ‘전체’를 고른 채면 그룹을 고른다 (그룹이 하나면 묻지 않음). 고른 그룹을 목록에서도 고른다.
+        그룹·파일을 고른 채면 그대로. 진행하면 True."""
+        sel = self.page._selected()
+        if sel and sel[0] in ("group", "file"):  # 고른 그룹·파일 그대로, 다만 할 수 있는지는 본다
+            target = sel[1] if sel[0] == "group" else {"name": sel[1].get("key", ""), "files": [sel[1]]}
+            ok, note = check(target)
+            if not ok:
+                QMessageBox.information(self.page, title, f"{target.get('name', '')}: {note}")
+            return ok
+        groups = [g for g in self.page.ov["groups"] if g["files"]]
+        if not groups:
+            return False
+        if len(groups) == 1:
+            ok, note = check(groups[0])
+            if not ok:
+                QMessageBox.information(self.page, title, note)
+                return False
+            self.page.select_group(groups[0])
+            return True
+        if not any(check(g)[0] for g in groups):
+            QMessageBox.information(self.page, title, "할 수 있는 그룹이 없습니다\n\n"
+                                    + "\n".join(f"{g['name']}: {check(g)[1]}" for g in groups))
+            return False
+        dlg = GroupPickDialog(f"{title} — 그룹 고르기", groups, check, self.page)
+        if not dlg.exec() or dlg.chosen() is None:
+            return False
+        self.page.select_group(dlg.chosen())
+        return True
+
     # ---- 결과 보기
     def results(self):
+        if not self._pick_group("결과 보기", self._can_view):
+            return
         runs = [(f["key"], Path(f["dir"]) / "translated") for f in self._files() if f["composed"]]
         if not runs:
             QMessageBox.information(self.page, "결과 보기", "아직 한글을 넣은 파일이 없습니다")
@@ -800,14 +888,22 @@ class OutputActions:
 
     # ---- 시험 실행
     def test_run(self):
-        files = [f for f in self._files()]
-        if not files:
+        """시험 실행: 그룹을 고르고 그 그룹의 앞 몇 장만 시험 폴더에서 지우기 -> 한글 넣기."""
+        groups = [g for g in self.page.ov["groups"] if g["files"]]
+        if not groups:
             return
-        dlg = TestRunDialog(files, self.page)
-        if not dlg.exec():
+        sel = self.page._selected()
+        current = None
+        if sel and sel[0] == "group":
+            current = sel[1]
+        elif sel and sel[0] == "file":
+            current = next((g for g in groups if any(str(f["dir"]) == str(sel[1]["dir"]) for f in g["files"])), None)
+        dlg = GroupPickDialog("시험 실행 (몇 장만)", groups, self._can_test, self.page, cards=True, current=current)
+        if not dlg.exec() or dlg.chosen() is None:
             return
-        fd, pages = dlg.choice()
-        job = worker.Job(service.test_run, fd, pages)
+        g = dlg.chosen()
+        self.page.select_group(g)
+        job = worker.Job(service.test_run_cards, [f["dir"] for f in g["files"]], dlg.cards())
         worker.run_with_dialog(self.page, "시험 실행", job, self._test_done,
                                lambda m: show_failure(self.page, "시험 실행을 끝내지 못했습니다", m))
 
@@ -815,4 +911,5 @@ class OutputActions:
         if r.state != "done":
             show_problem(self.page, "시험 실행을 끝내지 못했습니다", r.reason or "")
             return
-        ResultViewer([(f"시험: {r.run_dir.name}", r.run_dir)], self.page, title="시험 실행 결과").exec()
+        runs = [(f"시험: {x.run_dir.name}", x.run_dir) for x in r.runs]
+        ResultViewer(runs, self.page, title="시험 실행 결과").exec()

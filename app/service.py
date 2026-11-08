@@ -105,6 +105,10 @@ def _output_dirs(project_root: Path, folder: str, kind: str, test: bool, out_roo
     stamp = time.strftime("%Y%m%d-%H%M%S")
     if test:
         d = Path(out_root).resolve() / f"{stamp}-{kind}"
+        n = 2
+        while d.exists():  # 같은 초에 여러 번 (그룹 시험 실행의 파일마다): 겹쳐 쓰지 않게
+            d = Path(out_root).resolve() / f"{stamp}-{n}-{kind}"
+            n += 1
         return d, d
     return project_root / folder, project_root / f".{folder}-{stamp}"
 
@@ -1284,6 +1288,7 @@ def project_overview(project_dir: Path | str) -> dict:
     from app.regions import load_template
 
     info = workspace.load_project_info(project_dir)
+    translated = _translated_files(info) if info.status == "translating" else {}
     groups = []
     for g in workspace.list_groups(info):
         files = []
@@ -1312,6 +1317,13 @@ def project_overview(project_dir: Path | str) -> dict:
             })
         n_regions = (len({r.get("name") for ps in (tdata.get("page_regions") or {}).values()
                           for r in ps.get("regions", [])}) if per_card else g["regions"])
+        for f in files:  # 파일마다 번역이 끝났나 (그룹만 번역해도 그 그룹은 한글 넣기를 할 수 있게)
+            if info.status == "translated":
+                f["translated"] = True
+            elif f["key"] in translated:
+                f["translated"] = translated[f["key"]]
+            else:  # 번역할 칸이 없는 파일(그림만 있는 카드 등): 추출이 끝났으면 번역할 것도 끝
+                f["translated"] = info.status == "translating" and f["included"] > 0 and f["extracted"] >= f["included"]
         groups.append({"name": g["name"], "dir": g["dir"], "regions": n_regions, "per_card": per_card,
                        "has_regions": rpath.exists() and (not per_card or any(
                            len(f["no_regions"]) < f["included"] for f in files)),
@@ -1321,6 +1333,46 @@ def project_overview(project_dir: Path | str) -> dict:
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
             "card_limit": workspace.card_limit(info),
             "next_step": _next_step(info, groups), "next_key": _next_key(info, groups)}
+
+
+_TRANSLATED_CACHE: dict = {}
+
+
+def _translated_files(info) -> dict[str, bool]:
+    """{파일 키: 처리할 칸이 모두 (지금 용어집으로) 번역됐나} (번역 캐시 기준). 그룹만 번역해 프로젝트가
+    ‘번역 중’일 때 쓴다. 번역할 칸이 없는 파일은 여기 없다 (현황에서 추출이 끝났으면 번역된 것으로 본다).
+    번역 캐시·용어집·추출 파일이 바뀌지 않았으면 다시 세지 않는다 (화면을 새로 고칠 때마다 부른다)."""
+    from app import glossary, workspace
+    from app.translate import _stale, cache_path, load_cache, lookup
+
+    def mt(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    try:
+        fds = workspace.file_dirs(info)
+        stamp = (str(info.dir), mt(cache_path(info.dir)), mt(glossary.glossary_path(info)),
+                 tuple((str(fd), max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [mt(fd / "file.json")]))
+                       for fd in fds))
+        if _TRANSLATED_CACHE.get("stamp") == stamp:
+            return _TRANSLATED_CACHE["value"]
+        cache = load_cache(info.dir)
+        terms = glossary.load_glossary(info).get("terms", [])
+        total: dict[str, int] = {}
+        done: dict[str, int] = {}
+        for s_ in glossary.collect_sources(info):
+            k = s_.key.split("#", 1)[0]
+            total[k] = total.get(k, 0) + 1
+            hit = lookup(cache, s_.text)
+            if hit is not None and not (isinstance(s_.text, str) and _stale(hit, s_.text, terms)):
+                done[k] = done.get(k, 0) + 1
+        value = {k: done.get(k, 0) >= n for k, n in total.items()}
+        _TRANSLATED_CACHE.update(stamp=stamp, value=value)
+        return value
+    except Exception:  # noqa: BLE001 - 현황 표시는 못 해도 화면은 열린다
+        return {}
 
 
 def _next_key(info, groups: list[dict]) -> str:
@@ -2150,6 +2202,43 @@ def redo_file(file_dir: Path | str, progress: ProgressFn | None = None,
     if xlsx:
         return compose(fd, excel=xlsx, accept_issues=True, progress=progress, cancel=cancel)
     return _compose_with_cards(fd, cards_from_translation(fd), progress, cancel)
+
+
+@dataclass
+class TestRunsResult:
+    state: str  # done | blocked
+    runs: list = field(default_factory=list)  # [TestRunResult]
+    reason: str = ""
+
+
+def test_run_cards(file_dirs: list, n: int, *, out_root: Path | str | None = None,
+                   progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> TestRunsResult:
+    """그룹(파일 목록)의 앞 n장만 시험 폴더에서 지우기 -> 한글 넣기. 파일 순서대로, 각 파일의 처리할 쪽에서 채운다.
+    프로젝트의 cleared/·translated/는 건드리지 않는다."""
+    from app import workspace
+
+    left = int(n)
+    runs = []
+    plan = []
+    for fd in file_dirs:  # 처리할 쪽 (시험 모드 card_limit 안: 추출·번역한 쪽과 같은 범위)
+        if left <= 0:
+            break
+        pages = workspace.included_pages(Path(fd))[:left]
+        if pages:
+            plan.append((fd, pages))
+            left -= len(pages)
+    for i, (fd, pages) in enumerate(plan):
+        def say(e, _i=i, _fd=fd):  # 파일마다 0%부터 다시 가지 않게 전체 몇 번째 파일인지 붙인다
+            if progress:
+                progress(ProgressEvent(e.stage, e.done, e.total,
+                                       f"{_i + 1}/{len(plan)} {workspace.file_key(Path(_fd))}: {e.message}", e.page))
+        r = test_run(fd, workspace.pages_spec(pages), out_root=out_root, progress=say, cancel=cancel)
+        if r.state != "done":
+            return TestRunsResult("blocked", runs, r.reason)
+        runs.append(r)
+    if not runs:
+        return TestRunsResult("blocked", reason="시험할 카드가 없습니다 (처리할 쪽이 없음)")
+    return TestRunsResult("done", runs)
 
 
 @dataclass

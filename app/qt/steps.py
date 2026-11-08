@@ -1494,9 +1494,13 @@ class StepActions:
         eng = self._engine()
         if eng is None:
             return
+        if self.ask_scope("⑥ 전체 번역") is False:  # 그룹·파일을 고른 채 누르면 전체/고른 항목을 묻는다 (기본 전체)
+            return
+        label, dirs = self.page.scope()
+        where = "모든 파일" if dirs is None else label
         box = QMessageBox(self.page)
         box.setWindowTitle("번역")
-        box.setText("확정 용어집을 기준으로 모든 파일의 원문을 번역합니다. 이미 번역한 칸은 다시 하지 않습니다.")
+        box.setText(f"확정 용어집을 기준으로 {where}의 원문을 번역합니다. 이미 번역한 칸은 다시 하지 않습니다.")
         box.setInformativeText("보통 번역으로 충분합니다. 정밀 번역은 느리고 사용량이 많습니다.")
         sonnet = box.addButton("보통 번역 (추천)", QMessageBox.ButtonRole.AcceptRole)
         opus = box.addButton("정밀 번역", QMessageBox.ButtonRole.AcceptRole)

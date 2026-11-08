@@ -764,8 +764,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
                 if t.get("label_rect_pt"):
                     r |= pymupdf.Rect(t["label_rect_pt"])
             clip = pymupdf.Rect(r.x0 - 3, r.y0 - 3, r.x1 + 3, r.y1 + 3) & sp.rect
-            img = report.stacked([(f"ORIGINAL p{pno} {sn} 600dpi", _render(sp, 600, clip)),
-                                  ("COMPOSED", _render(cp, 600, clip))], scale=1)
+            img = report.side_by_side(_render(sp, 600, clip), _render(cp, 600, clip),
+                                      (f"ORIGINAL p{pno} {sn} 600dpi", "COMPOSED"))  # 카드 전체와 같이 좌우로
             report.save(img, cdir / f"p{pno:03d}_{sn}.png")
         page_recs[i]["extracted_text"] = cp.get_text()
     chk.close()
