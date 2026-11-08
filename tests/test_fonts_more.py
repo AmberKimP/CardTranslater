@@ -202,7 +202,7 @@ def test_compose_button_ok_saves_then_composes(qapp, tmp_path, monkeypatch):
     cls, log = _hook(monkeypatch, _plan(), 1)
     cls(_FakePage(tmp_path)).compose()
     assert log["saved"] == [("D", {"이름": SANS_B}, {1: {"이름": SERIF}}, {1: {"이름": {0: GAEGU}}}, {"이름": 1.2},
-                             {"이름": "center"})]
+                             {"이름": "center"}, None)]
     assert len(log["compose"]) == 1 and log["compose"][0]["accept_issues"] is False
 
 

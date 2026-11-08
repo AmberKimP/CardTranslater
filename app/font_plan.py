@@ -45,7 +45,7 @@ def load(file_dir: Path | str) -> dict:
 
 
 def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentences: dict | None = None,
-         sizes: dict | None = None, aligns: dict | None = None) -> Path:
+         sizes: dict | None = None, aligns: dict | None = None, slots: dict | None = None) -> Path:
     """sizes: {영역: 크기 배율} (None이면 예전 것을 그대로, 1.0은 넣지 않는다).
     aligns: {영역: left | center | right} (None이면 예전 것을 그대로, 영역 설정대로인 영역은 넣지 않는다).
     고른 글꼴을 저장한다 (추천 기록은 그대로 둔다). cards: {쪽: {영역: 파일}} (영역 기본과 같으면 넣지 않는다).
@@ -71,6 +71,16 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
         data["sizes"] = {k: round(float(v), 3) for k, v in sizes.items() if v and abs(float(v) - 1.0) > 1e-6}
     if aligns is not None:
         data["aligns"] = {k: v for k, v in aligns.items() if v in ALIGNS}
+    if slots is not None:  # ‘문장마다 글꼴’ 영역의 문장 자리별 글꼴 (모든 카드)
+        clean_slots = {}
+        for name, sl in slots.items():
+            c = {k: sl.get(k) for k in ("first", "last") if sl.get(k)}
+            mid = {str(int(j)): f for j, f in (sl.get("mid") or {}).items() if f}
+            if mid:
+                c["mid"] = mid
+            if c:
+                clean_slots[name] = c
+        data["sentence_slots"] = clean_slots
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -97,10 +107,46 @@ def set_card_font(file_dir: Path | str, page: int, region: str, font_file: str |
     tmp.replace(p)
 
 
-def sentences_for_page(data: dict, page: int) -> dict:
-    """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}."""
+def slot_fonts(slots: dict | None, n: int) -> dict[int, str]:
+    """문장 자리별 글꼴을 문장이 n개인 카드에 펼친다 {문장 번호: 글꼴}.
+    첫 문장·마지막 문장이 먼저 (문장이 하나면 첫 문장 글꼴). 가운데 j번째(1부터 = 둘째 문장)는 그 카드에 그 문장이
+    있을 때만 (마지막 문장 자리는 빼고). 정하지 않은 자리는 영역 글꼴."""
+    slots = slots or {}
+    out: dict[int, str] = {}
+    mids = slots.get("mid") or {}
+    for j in range(1, n - 1):
+        f = mids.get(str(j))
+        if f:
+            out[j] = f
+    if n > 1 and slots.get("last"):
+        out[n - 1] = slots["last"]
+    if n >= 1 and slots.get("first"):
+        out[0] = slots["first"]
+    return out
+
+
+def _ko_text(entry) -> str | None:
+    ko = entry.get("ko") if isinstance(entry, dict) else entry
+    return ko if isinstance(ko, str) else None
+
+
+def sentences_for_page(data: dict, page: int, card: dict | None = None) -> dict:
+    """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}. card(그 쪽 번역)를 주면 문장 자리별 글꼴(sentence_slots)을
+    그 카드의 문장 수에 맞게 펼치고, 카드·문장마다 고른 것을 그 위에 덮는다."""
+    from app.typeset_layout import sentences as split_sentences
+
     regs = (data.get("sentences") or {}).get(str(page)) or {}
-    return {k: {int(i): f for i, f in v.items()} for k, v in regs.items()}
+    out = {k: {int(i): f for i, f in v.items()} for k, v in regs.items()}
+    if card:
+        for name, sl in (data.get("sentence_slots") or {}).items():
+            text = _ko_text(card.get(name))
+            if not text:
+                continue
+            m = slot_fonts(sl, len(split_sentences(text)))
+            m.update(out.get(name) or {})
+            if m:
+                out[name] = m
+    return out
 
 
 def region_font_modes(file_dir: Path) -> dict:
@@ -438,9 +484,13 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                 card["sentences"] = [{"idx": i, "text": t, "selected": chosen.get(i)}
                                      for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
             cards.append(card)
+        most = max(cards, key=lambda c: len(c["sentences"]), default=None)
         regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
                         "size_scale": float((data.get("sizes") or {}).get(name) or 1.0),
-                        "align": align_choices(data).get(name, ""), "cards": cards})
+                        "align": align_choices(data).get(name, ""), "cards": cards,
+                        "slots": (data.get("sentence_slots") or {}).get(name) or {},
+                        "max_sentences": len(most["sentences"]) if most else 0,
+                        "slot_page": most["page"] if most and most["sentences"] else None})
     used = [f for f in project_used_fonts(fd)]
     return {"file_dir": str(fd), "regions": regions, "used": [{"file": f, "label": label_for(f)} for f in used],
             "note": note}
@@ -564,7 +614,8 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
 
 
 def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
-                   align: str | None = None, sentence: int | None = None, text=None) -> bytes | None:
+                   align: str | None = None, sentence: int | None = None, text=None, slots: dict | None = None,
+                   base_font: str | None = None) -> bytes | None:
     """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
     원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
     text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
@@ -590,8 +641,17 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
         icon_style = icon_style_for(fd)
         if icon_style:
             style = {**icon_style, **style}
-        fonts = {region: font_file} if font_file and sentence is None else None
-        sent = {region: {int(sentence): font_file}} if font_file and sentence is not None else None
+        # 문장 자리별 글꼴(slots)은 이 카드의 문장 수에 맞게 펼치고, 고른 문장(sentence)은 그 위에
+        from app.typeset_layout import sentences as split_sentences
+
+        smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or ""))) if slots else {}
+        if sentence is not None:
+            if font_file:
+                smap[int(sentence)] = font_file
+            fonts = {region: base_font} if base_font else None
+        else:
+            fonts = {region: font_file} if font_file else None
+        sent = {region: smap} if smap else None
         al = {region: align} if align in ("left", "center", "right") else None
         with pymupdf.open(project.source_pdf) as sdoc, pymupdf.open(fd / "cleared" / "cleared.pdf") as cdoc:
             doc = pymupdf.open()

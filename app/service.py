@@ -1482,17 +1482,18 @@ def font_plans(project_dir: Path | str, group: str | None = None, files: list | 
 
 def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = None,
                       sentences: dict | None = None, sizes: dict | None = None,
-                      aligns: dict | None = None) -> Path:
+                      aligns: dict | None = None, slots: dict | None = None) -> Path:
     """sizes {영역: 글자 크기 배율} (1.0 = 원문 크기). aligns {영역: left | center | right} (영역 설정대로면 뺀다).
     글꼴 창에서 고른 것: regions {영역: 글꼴 파일}, cards {쪽: {영역: 글꼴 파일}} (영역 기본과 다를 때만),
     sentences {쪽: {영역: {문장 번호: 글꼴 파일}}} (‘문장마다 글꼴’ 영역)."""
     from app import font_plan
 
-    return font_plan.save(Path(file_dir), regions, cards, sentences, sizes, aligns)
+    return font_plan.save(Path(file_dir), regions, cards, sentences, sizes, aligns, slots)
 
 
 def font_preview(file_dir: Path | str, page: int, region: str, font_file: str | None,
-                 scale: float = 1.0, align: str | None = None, sentence: int | None = None) -> dict | None:
+                 scale: float = 1.0, align: str | None = None, sentence: int | None = None,
+                 sentence_slots: dict | None = None, base_font: str | None = None) -> dict | None:
     """글꼴 창 미리 보기: 원본·지운 카드의 그 영역 그림(PNG bytes, 같은 배율)과 한글 넣기에 쓸 글자 색·크기.
     {"original_png", "cleared_png", "composed_png" (한글 넣기와 똑같이 그린 그림, 못 그리면 None),
      "zoom" (px/pt), "w_pt", "h_pt", "color", "align", "size_pt" (고른 글꼴·배율), "kind"}. 만들 수 없으면 None.
@@ -1502,7 +1503,8 @@ def font_preview(file_dir: Path | str, page: int, region: str, font_file: str | 
     src = font_plan.preview_source(Path(file_dir), page, region)
     if src is None:
         return None
-    composed = font_plan.preview_render(Path(file_dir), page, region, font_file, scale, align, sentence)
+    composed = font_plan.preview_render(Path(file_dir), page, region, font_file, scale, align, sentence,
+                                        slots=sentence_slots, base_font=base_font)
     return {**src, "size_pt": font_plan.preview_size(src, font_file, scale), "composed_png": composed}
 
 

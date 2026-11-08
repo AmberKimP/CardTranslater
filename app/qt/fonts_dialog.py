@@ -257,7 +257,9 @@ class FontPlanDialog(QDialog):
         if level == "card":
             out.append(("(영역과 같음)", SAME, "이 영역에서 고른 글꼴을 씁니다"))
         elif level == "sentence":
-            out.append(("(카드와 같음)", SAME, "이 카드에서 고른 글꼴을 씁니다"))
+            out.append(("(위 설정대로)", SAME, "문장 자리(첫·가운데·마지막 문장)에서 고른 글꼴, 없으면 이 카드의 글꼴"))
+        elif level == "slot":
+            out.append(("(영역 글꼴대로)", SAME, "이 영역에서 고른 글꼴을 씁니다"))
         seen = set()
         for i, r in enumerate(reg["recommended"]):
             mark = "★ " if i == 0 else "    "
@@ -369,7 +371,8 @@ class FontPlanDialog(QDialog):
                 self._combo(it, pi, reg["name"], "region", reg["selected"])
                 picked = any(c["selected"] or any(x["selected"] for x in c.get("sentences") or [])
                              for c in reg["cards"])
-                if picked:  # 카드·문장별로 고른 것이 있으면 펼쳐 보인다
+                # 카드·문장별로 고른 것이 있거나 ‘문장마다’ 영역이면 펼쳐 보인다 (문장 자리 줄이 바로 보이게)
+                if picked or reg.get("font_mode") == "sentence":
                     it.setExpanded(True)
         top = self.tree.topLevelItem(0)
         if top is not None:
@@ -382,6 +385,8 @@ class FontPlanDialog(QDialog):
         if kind[0] == "region":
             _k, pi, name = kind
             reg = self._reg(pi, name)
+            if reg.get("font_mode") == "sentence":
+                self._add_slot_rows(item, pi, reg)
             for c in reg["cards"]:
                 ch = QTreeWidgetItem([f"{c['page']}쪽", "", c["text"][:80] or "(번역 없음)"])
                 ch.setData(0, ROLE_KIND, ("card", pi, name, c["page"]))
@@ -401,6 +406,56 @@ class FontPlanDialog(QDialog):
                 ch.setToolTip(2, x["text"])
                 item.addChild(ch)
                 self._combo(ch, pi, name, "sentence", x["selected"] or SAME)
+
+    def _slot_keys(self, reg: dict) -> list[tuple[str, str, int | None]]:
+        """문장 자리 [(키, 보이는 이름, 견본 카드의 문장 번호)]: 첫 문장, 가운데 j번째(있는 카드만), 마지막 문장."""
+        n = max(1, int(reg.get("max_sentences") or 1))
+        keys = [("first", "첫 문장 (모든 카드)", 0)]
+        for j in range(1, n - 1):
+            keys.append((f"mid:{j}", f"{j + 1}번째 문장 (그 문장이 있는 카드만)", j))
+        if n > 1:
+            keys.append(("last", "마지막 문장 (모든 카드)", n - 1))
+        return keys
+
+    def _add_slot_rows(self, item: QTreeWidgetItem, pi: int, reg: dict):
+        """‘문장마다’ 영역: 모든 카드에 쓸 문장 자리별 글꼴 줄 (카드 줄보다 위)."""
+        page = reg.get("slot_page")
+        card = next((c for c in reg["cards"] if c["page"] == page), None)
+        sents = [x["text"] for x in (card or {}).get("sentences") or []]
+        saved = reg.get("slots") or {}
+        for key, label, idx in self._slot_keys(reg):
+            sample = sents[idx] if idx is not None and idx < len(sents) else ""
+            ch = QTreeWidgetItem([label, "", (f"예: {sample}" if sample else "")[:80]])
+            ch.setData(0, ROLE_KIND, ("slot", pi, reg["name"], key))
+            ch.setToolTip(0, "모든 카드에 씁니다. 첫·마지막 문장이 먼저이고, 가운데 문장은 그 카드에 그 문장이 있을 때만 씁니다.\n"
+                             "아래 카드를 펼쳐 카드마다 문장 글꼴을 따로 고르면 그것이 먼저입니다.")
+            ch.setToolTip(2, sample)
+            ch.setForeground(0, QBrush(QColor("#0b5cad")))
+            item.addChild(ch)
+            sel = (saved.get("mid") or {}).get(key[4:]) if key.startswith("mid:") else saved.get(key)
+            self._combo(ch, pi, reg["name"], "slot", sel or SAME)
+
+    def _slots(self, pi: int, name: str) -> dict:
+        """그 영역의 지금 문장 자리별 글꼴 {"first", "last", "mid": {j: 글꼴}} (펼치지 않았으면 저장된 것)."""
+        out: dict = {}
+        found = False
+        for cb, level in self.combos:
+            if level != "slot" or cb.property("meta")[:2] != (pi, name):
+                continue
+            item = self._cb_item.get(cb)
+            kind = item.data(0, ROLE_KIND) if item is not None else None
+            if not kind:
+                continue
+            found = True
+            f = cb.currentData()
+            if f in (SAME, ADD, None):
+                continue
+            key = kind[3]
+            if key.startswith("mid:"):
+                out.setdefault("mid", {})[key[4:]] = f
+            else:
+                out[key] = f
+        return out if found else dict(self._reg(pi, name).get("slots") or {})
 
     # ---- 고르기
     def _changed(self, combo: QComboBox, item: QTreeWidgetItem):
@@ -467,6 +522,13 @@ class FontPlanDialog(QDialog):
             cards = self._reg(pi, name)["cards"]
             c = next((c for c in cards if c["text"]), cards[0] if cards else None)
             return pi, name, (c["page"] if c else None)
+        if kind[0] == "slot":  # 문장이 가장 많은 카드로 본다
+            reg = self._reg(pi, name)
+            page = reg.get("slot_page")
+            if page is None:
+                c = next((c for c in reg["cards"] if c["text"]), None)
+                page = c["page"] if c else None
+            return pi, name, page
         return pi, name, kind[3]
 
     def _size_changed(self, v: int):
@@ -511,8 +573,14 @@ class FontPlanDialog(QDialog):
             try:
                 kind = item.data(0, ROLE_KIND)
                 sent = kind[4] if kind and kind[0] == "sentence" else None
+                slots = self._slots(w[0], w[1]) if self._reg(w[0], w[1]).get("font_mode") == "sentence" else None
+                base = None
+                if kind and kind[0] == "slot":  # 문장 자리 줄: 영역 글꼴 위에 문장 자리 글꼴로 카드 전체를
+                    f = self._row_font(item.parent())
+                elif sent is not None:  # 카드의 한 문장: 그 카드 글꼴 위에 그 문장만
+                    base = self._row_font(item.parent())
                 info = service.font_preview(self.plans[w[0]]["file_dir"], w[2], w[1], f, scale,
-                                            al if not pills else None, sent)
+                                            al if not pills else None, sent, sentence_slots=slots, base_font=base)
             except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
                 info = None
         if info is not None and al and not pills:
@@ -569,6 +637,8 @@ class FontPlanDialog(QDialog):
             return f"{who}{name} 영역 (번역 있는 카드 없음)"
         if kind and kind[0] == "sentence":
             return f"{who}{name} 영역 · {page}쪽 · 문장 {kind[4] + 1}"
+        if kind and kind[0] == "slot":
+            return f"{who}{name} 영역 · 문장 자리 글꼴 (모든 카드) · {page}쪽 카드로 미리 봅니다"
         if kind and kind[0] == "card":
             return f"{who}{name} 영역 · {page}쪽 카드"
         return f"{who}{name} 영역 · {page}쪽 카드로 미리 봅니다"
@@ -652,9 +722,12 @@ class FontPlanDialog(QDialog):
                     for x in c.get("sentences") or []:
                         if x["selected"]:
                             sents.setdefault(c["page"], {}).setdefault(reg["name"], {})[x["idx"]] = x["selected"]
+            pi_ = len(out)
             out.append({"file_dir": plan["file_dir"], "regions": {}, "cards": cards, "sentences": sents,
-                        "sizes": {name: v for (pi, name), v in self.sizes.items() if pi == len(out)},
-                        "aligns": {name: v for (pi, name), v in self.aligns.items() if pi == len(out) and v}})
+                        "sizes": {name: v for (pi, name), v in self.sizes.items() if pi == pi_},
+                        "aligns": {name: v for (pi, name), v in self.aligns.items() if pi == pi_ and v},
+                        "slots": {r["name"]: self._slots(pi_, r["name"]) for r in plan["regions"]
+                                  if r.get("font_mode") == "sentence"}})
         it = self.tree.invisibleRootItem()
         stack = [it.child(i) for i in range(it.childCount())]
         while stack:
@@ -666,6 +739,8 @@ class FontPlanDialog(QDialog):
                 continue
             f = cb.currentData()
             keep = f not in (SAME, ADD, None)
+            if kind[0] == "slot":
+                continue  # 문장 자리는 위에서 모았다
             if kind[0] == "region":
                 out[kind[1]]["regions"][kind[2]] = f
             elif kind[0] == "card":

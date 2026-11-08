@@ -201,7 +201,7 @@ def test_font_dialog_defaults_and_choices(qapp):
     c1.setCurrentIndex(c1.findData(SANS_B))
     c2.setCurrentIndex(0)  # 영역과 같음으로 되돌림
     assert dlg.choices() == [{"file_dir": "C:/x", "regions": {"이름": GAEGU}, "cards": {1: {"이름": SANS_B}}, "sentences": {},
-                              "sizes": {"이름": 1.0}, "aligns": {}}]
+                              "sizes": {"이름": 1.0}, "aligns": {}, "slots": {}}]
 
 
 def test_font_dialog_align_choice(qapp):

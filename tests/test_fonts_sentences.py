@@ -132,16 +132,17 @@ def _sent_plan():
 
 
 def test_font_dialog_sentence_rows(qapp):
-    from app.qt.fonts_dialog import FontPlanDialog
+    from app.qt.fonts_dialog import ROLE_KIND, FontPlanDialog
 
     dlg = FontPlanDialog(_sent_plan())
     top = dlg.tree.topLevelItem(0)
     assert "(문장마다)" in top.text(0) and "고딕, 보통" in top.toolTip(0)
-    assert top.isExpanded()  # 문장별로 고른 것이 있으면 펼쳐 보인다
-    card = top.child(0)
+    assert top.isExpanded()  # ‘문장마다’ 영역은 펼쳐 보인다
+    assert top.child(0).data(0, ROLE_KIND)[0] == "slot"  # 문장 자리 줄이 카드보다 위
+    card = top.child(1)
     assert card.isExpanded() and card.childCount() == 2
     s0, s1 = (dlg.tree.itemWidget(card.child(i), 1) for i in range(2))
-    assert s0.currentText() == "(카드와 같음)" and s1.currentData() == GAEGU
+    assert s0.currentText() == "(위 설정대로)" and s1.currentData() == GAEGU
     dlg.tree.setCurrentItem(card.child(0))
     dlg._preview()
     assert dlg.sample_note.text().startswith("위와 같음")
@@ -342,3 +343,64 @@ faulthandler._sigsegv()
     assert r.returncode != 0
     crash = (tmp_path / "crash.log").read_text(encoding="utf-8", errors="replace")
     assert "=== 시작" in crash and "Fatal Python error" in crash and "File" in crash
+
+
+
+# ---------------------------------------------------------------- 문장 자리별 글꼴 (모든 카드)
+def test_slot_fonts_first_and_last_first_then_middle_if_present():
+    from app.font_plan import slot_fonts
+
+    sl = {"first": "A", "last": "Z", "mid": {"1": "B", "2": "C"}}
+    assert slot_fonts(sl, 4) == {0: "A", 1: "B", 2: "C", 3: "Z"}
+    assert slot_fonts(sl, 3) == {0: "A", 1: "B", 2: "Z"}  # 마지막 문장이 가운데 2번째보다 먼저
+    assert slot_fonts(sl, 2) == {0: "A", 1: "Z"}
+    assert slot_fonts(sl, 1) == {0: "A"}  # 한 문장이면 첫 문장 글꼴
+    assert slot_fonts({"mid": {"1": "B"}}, 5) == {1: "B"}  # 정하지 않은 자리는 영역 글꼴
+    assert slot_fonts(None, 3) == {}
+
+
+def test_sentences_for_page_spreads_slots_and_card_picks_win():
+    from app.font_plan import sentences_for_page
+
+    data = {"sentence_slots": {"본문": {"first": "A", "last": "Z"}},
+            "sentences": {"2": {"본문": {"1": "X"}}}}
+    card1 = {"page": 1, "본문": {"ko": "하나. 둘. 셋."}}
+    assert sentences_for_page(data, 1, card1) == {"본문": {0: "A", 2: "Z"}}
+    card2 = {"page": 2, "본문": {"ko": "하나. 둘."}}
+    assert sentences_for_page(data, 2, card2) == {"본문": {0: "A", 1: "X"}}  # 카드에서 고른 문장이 먼저
+    assert sentences_for_page(data, 2) == {"본문": {1: "X"}}  # 번역을 모르면 카드에서 고른 것만
+
+
+def test_font_dialog_slot_rows_saved_for_all_cards(qapp):
+    from app.qt.fonts_dialog import ROLE_KIND, FontPlanDialog
+
+    plan = _sent_plan()
+    plan[0]["regions"][0].update(max_sentences=3, slot_page=1,
+                                 slots={"last": GAEGU})
+    dlg = FontPlanDialog(plan)
+    top = dlg.tree.topLevelItem(0)
+    kinds = [top.child(i).data(0, ROLE_KIND) for i in range(top.childCount())]
+    assert [k[3] for k in kinds if k[0] == "slot"] == ["first", "mid:1", "last"]
+    combos = {top.child(i).data(0, ROLE_KIND)[3]: dlg.tree.itemWidget(top.child(i), 1)
+              for i in range(top.childCount()) if top.child(i).data(0, ROLE_KIND)[0] == "slot"}
+    assert combos["last"].currentData() == GAEGU and combos["first"].currentText() == "(영역 글꼴대로)"
+    combos["first"].setCurrentIndex(combos["first"].findData(GAEGU))
+    combos["mid:1"].setCurrentIndex(combos["mid:1"].findData(SANS))
+    out = dlg.choices()[0]
+    assert out["slots"] == {"본문": {"first": GAEGU, "mid": {"1": SANS}, "last": GAEGU}}
+
+
+def test_slot_fonts_saved_and_used_by_compose(tmp_path, monkeypatch):
+    from app import font_plan
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    font_plan.save(fd, {}, slots={"이름": {"first": GAEGU, "mid": {"3": SANS}}})
+    data = font_plan.load(fd)
+    assert data["sentence_slots"] == {"이름": {"first": GAEGU, "mid": {"3": SANS}}}
+    card = {"page": 1, "이름": {"ko": "첫 문장. 둘째 문장."}}
+    assert font_plan.sentences_for_page(data, 1, card) == {"이름": {0: GAEGU}}  # 4번째 문장은 없어 안 씀
+    cards = {1: {"이름": {"ko": "첫 문장. 둘째 문장."}}, 2: {"이름": {"ko": "하나뿐"}}}
+    assert service._compose_with_cards(fd, cards, None, None).state == "done"
+    rep = json.loads((fd / "translated" / "report.json").read_text(encoding="utf-8"))
+    assert rep["pages_detail"][0]["regions"]["이름"]["sentence_fonts"] == {"0": GAEGU}
+    assert rep["pages_detail"][1]["regions"]["이름"]["sentence_fonts"] == {"0": GAEGU}  # 다른 카드에도
