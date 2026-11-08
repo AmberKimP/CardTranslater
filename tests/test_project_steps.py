@@ -225,3 +225,38 @@ def test_glossary_review_is_game_wide(tmp_path):
                                   client=ClaudeCodeClient(exe="claude", runner=FakeRunner([(0, reply, ""), (0, assess, "")])))
     assert r.state == "review_ready" and r.review_xlsx == info.game_dir / "용어집_검증.xlsx"
     assert {p.status for p in workspace.game_projects(info)} == {"glossary_review"}
+
+
+def test_font_preview_draws_like_compose(tmp_path):
+    """글꼴 창 미리 보기는 한글 넣기와 똑같이 그린다 (예전: 화면이 줄바꿈·크기 맞춤 없이 따로 그려 결과와 많이 달랐다)."""
+    import numpy as np
+    import pymupdf
+
+    from tests.test_service import GAEGU
+
+    if not GAEGU.exists():
+        import pytest
+
+        pytest.skip("fonts/ 없음")
+    info, fd = _project(tmp_path)
+    workspace.set_excluded_pages(fd, [2])
+    _write_extract(fd, 1, "HELLO")
+    glossary.confirm(info, [{"source": "HELLO", "ko": "안녕", "category": "기타"}])
+    workspace.set_status(info, "glossary_confirmed")
+    service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=FakeRunner([])))
+    assert service.erase_project(info.dir).state == "done"
+    assert service.compose_project(info.dir).state == "done"
+    p = service.font_preview(fd, 1, "이름", None)
+    assert p is not None and p["composed_png"]
+    prev = pymupdf.Pixmap(p["composed_png"])
+    meta = json.loads((fd / "cleared" / "meta" / "page-001.json").read_text(encoding="utf-8"))
+    rect = pymupdf.Rect(next(r for r in meta["regions"] if r["name"] == "이름")["rect_pt"])
+    with pymupdf.open(fd / "translated" / "translated.pdf") as d:
+        real = d[0].get_pixmap(matrix=pymupdf.Matrix(p["zoom"], p["zoom"]), clip=rect, alpha=False)
+    a = np.frombuffer(prev.samples, np.uint8).reshape(prev.h, prev.w, prev.n)[..., :3].astype(int)
+    b = np.frombuffer(real.samples, np.uint8).reshape(real.h, real.w, real.n)[..., :3].astype(int)
+    assert a.shape == b.shape and (np.abs(a - b).max(axis=2) > 40).mean() < 0.01  # 결과와 같은 그림
+    # 번역이 없는 칸은 그리지 않는다 (화면이 예전처럼 간단히 그린다)
+    from app import font_plan
+
+    assert font_plan.preview_render(fd, 1, "없는 영역", None) is None

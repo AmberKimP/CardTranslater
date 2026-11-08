@@ -509,7 +509,10 @@ class FontPlanDialog(QDialog):
         info = None
         if w and w[2] is not None:
             try:
-                info = service.font_preview(self.plans[w[0]]["file_dir"], w[2], w[1], f, scale)
+                kind = item.data(0, ROLE_KIND)
+                sent = kind[4] if kind and kind[0] == "sentence" else None
+                info = service.font_preview(self.plans[w[0]]["file_dir"], w[2], w[1], f, scale,
+                                            al if not pills else None, sent)
             except Exception:  # noqa: BLE001 - 미리 보기를 못 만들어도 고르기는 된다
                 info = None
         if info is not None and al and not pills:
@@ -527,7 +530,12 @@ class FontPlanDialog(QDialog):
             op = QPixmap()
             op.loadFromData(info["original_png"])
             self._orig_pm = op
-            self._sample_pm = self._draw(info, text, fam)
+            if info.get("composed_png"):  # 한글 넣기와 똑같이 그린 그림 (줄 자리·줄바꿈·크기 맞춤·아이콘)
+                cp = QPixmap()
+                cp.loadFromData(info["composed_png"])
+                self._sample_pm = cp
+            else:  # 번역이 없거나 그리지 못하면 간단히
+                self._sample_pm = self._draw(info, text, fam)
             self.orig.setText("")
             self.sample.setText("")
             self._fit_previews()

@@ -189,6 +189,38 @@ def _metas(file_dir: Path) -> list[dict]:
     return out
 
 
+_raw_cache: dict = {}
+
+
+def _raw_cards(file_dir: Path) -> dict:
+    """{쪽: {영역: 칸 dict(ko·source·fixed_size_pt …)}}: 한글 넣기가 쓰는 그대로. 검수 엑셀이 있으면 그것,
+    없으면 초벌 번역. 엑셀·지우기 결과가 바뀌지 않았으면 다시 읽지 않는다."""
+    from app import service
+
+    fd = Path(file_dir)
+    xlsx = service.review_xlsx_for(fd)
+    stamp = (str(fd), _signature(fd), str(xlsx), xlsx.stat().st_mtime if xlsx and xlsx.exists() else 0)
+    if _raw_cache.get("key") == stamp:
+        return _raw_cache["cards"]
+    cards = {}
+    if xlsx:
+        try:
+            from app.excel_io import import_translation
+            from app.project import load_project
+
+            cards = import_translation(load_project(fd), xlsx).cards or {}
+        except Exception:  # noqa: BLE001 - 엑셀을 못 읽으면 초벌 번역으로
+            log.debug("검수 엑셀 읽기 실패", exc_info=True)
+    if not cards:
+        try:
+            cards = service.cards_from_translation(fd)
+        except Exception:  # noqa: BLE001
+            cards = {}
+    cards = {int(k): v for k, v in cards.items()}
+    _raw_cache.update(key=stamp, cards=cards)
+    return cards
+
+
 def card_texts(file_dir: Path) -> dict:
     """{쪽: {영역: 한글}}: 검수 엑셀이 있으면 그것, 없으면 초벌 번역."""
     from app import service
@@ -522,6 +554,55 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
            "kind": reg.get("kind", "text")}
     _preview_cache[key] = out
     return out
+
+
+def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
+                   align: str | None = None, sentence: int | None = None) -> bytes | None:
+    """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
+    원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
+    번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
+    import pymupdf
+
+    from app.project import load_project
+    from app.typeset import finalize
+    from app.typeset_compose import ROOT as T_ROOT, compose_page, icon_style_for
+
+    fd = Path(file_dir)
+    src = preview_source(fd, page, region)
+    entry = (_raw_cards(fd).get(int(page)) or {}).get(region)
+    if src is None or not entry:
+        return None
+    try:
+        m = json.loads((fd / "cleared" / "meta" / f"page-{int(page):03d}.json").read_text(encoding="utf-8"))
+        reg = next(r for r in m["regions"] if r["name"] == region)
+        project = load_project(fd)
+        tmpl = next((r for r in project.template.regions if r.name == region), None)
+        style = dict((tmpl.style if tmpl is not None else None) or {})
+        icon_style = icon_style_for(fd)
+        if icon_style:
+            style = {**icon_style, **style}
+        fonts = {region: font_file} if font_file and sentence is None else None
+        sent = {region: {int(sentence): font_file}} if font_file and sentence is not None else None
+        al = {region: align} if align in ("left", "center", "right") else None
+        with pymupdf.open(project.source_pdf) as sdoc, pymupdf.open(fd / "cleared" / "cleared.pdf") as cdoc:
+            doc = pymupdf.open()
+            idx = min(m.get("output_page_index", int(page) - 1), cdoc.page_count - 1)
+            doc.insert_pdf(cdoc, from_page=idx, to_page=idx)
+            compose_page(doc[0], sdoc[int(page) - 1], {**m, "regions": [reg]}, {region: entry}, T_ROOT,
+                         {region: style}, {region: tmpl.erase if tmpl is not None else None}, fonts, sent,
+                         {region: float(scale or 1.0)}, al)
+            finalize(doc)
+            data = doc.tobytes()
+            doc.close()
+        with pymupdf.open(stream=data, filetype="pdf") as out:
+            rect = pymupdf.Rect(reg["rect_pt"]) & out[0].rect
+            mat = pymupdf.Matrix(src["zoom"], src["zoom"])
+            if int(style.get("rotate", 0) or 0) % 360 == 180:
+                mat = mat.prerotate(180)
+            return out[0].get_pixmap(matrix=mat, clip=rect, alpha=False).tobytes("png")
+    except Exception:  # noqa: BLE001 - 미리 보기를 못 그려도 고르기는 된다
+        log.debug("미리 보기 그리기 실패", exc_info=True)
+        return None
 
 
 def preview_size(src: dict, font_file: str | None, scale: float = 1.0) -> float:

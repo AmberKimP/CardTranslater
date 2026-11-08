@@ -1492,16 +1492,18 @@ def save_font_choices(file_dir: Path | str, regions: dict, cards: dict | None = 
 
 
 def font_preview(file_dir: Path | str, page: int, region: str, font_file: str | None,
-                 scale: float = 1.0) -> dict | None:
+                 scale: float = 1.0, align: str | None = None, sentence: int | None = None) -> dict | None:
     """글꼴 창 미리 보기: 원본·지운 카드의 그 영역 그림(PNG bytes, 같은 배율)과 한글 넣기에 쓸 글자 색·크기.
-    {"original_png", "cleared_png", "zoom" (px/pt), "w_pt", "h_pt", "color", "align", "size_pt" (고른 글꼴·배율),
-     "kind"}. 만들 수 없으면 None."""
+    {"original_png", "cleared_png", "composed_png" (한글 넣기와 똑같이 그린 그림, 못 그리면 None),
+     "zoom" (px/pt), "w_pt", "h_pt", "color", "align", "size_pt" (고른 글꼴·배율), "kind"}. 만들 수 없으면 None.
+    align: 글꼴 창에서 고른 정렬 (없으면 영역 설정), sentence: ‘문장마다 글꼴’ 영역에서 그 글꼴을 쓸 문장 번호."""
     from app import font_plan
 
     src = font_plan.preview_source(Path(file_dir), page, region)
     if src is None:
         return None
-    return {**src, "size_pt": font_plan.preview_size(src, font_file, scale)}
+    composed = font_plan.preview_render(Path(file_dir), page, region, font_file, scale, align, sentence)
+    return {**src, "size_pt": font_plan.preview_size(src, font_file, scale), "composed_png": composed}
 
 
 def font_label(file: str) -> str:
