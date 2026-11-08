@@ -2122,9 +2122,21 @@ def self_check() -> dict:
     except Exception as e:  # noqa: BLE001
         out["typeset"] = f"실패: {e}"
     out["engine"] = engine_status()
-    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and not any(
+    out["release_notes"] = bool(release_notes())
+    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and not any(
         str(v).startswith("없음") for v in libs.values())
     return out
+
+
+def release_notes() -> str:
+    """릴리스 노트(CHANGELOG.md) 글. 설치본은 exe에 묶은 것, 개발 중에는 저장소 맨 위의 것. 없으면 ''."""
+    import sys
+
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    for f in (base / "CHANGELOG.md", Path(__file__).resolve().parent.parent / "CHANGELOG.md"):
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+    return ""
 
 
 # ---------------------------------------------------------------- 화면용: 지우기(휴지통) — 프로젝트·그룹·파일

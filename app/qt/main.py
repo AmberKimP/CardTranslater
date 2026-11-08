@@ -8,14 +8,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
+    QMenu, QMessageBox, QPushButton, QStackedWidget, QTextBrowser, QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
 from app.qt.dialogs import (
     BANNER_QSS, DONE_BG, EMPTY_QSS, NEXT_QSS, PRIMARY_QSS, AddFilesDialog, ExcludePagesDialog, NewProjectDialog,
-    SettingsDialog, card, file_label, grey_note, hint_bar, install_korean, make_danger, make_primary, page_title,
+    SettingsDialog, card, file_label, fit_to_screen, grey_note, hint_bar, install_korean, make_danger, make_primary, page_title,
     section_title, set_hint, show_error, show_problem, subtitle,
 )
 from app.qt.region_editor import RegionEditor
@@ -816,6 +816,32 @@ class ProjectPage(QWidget):
             open_path(d.resolve())
 
 
+class ReleaseNotesDialog(QDialog):
+    """도움말 > 릴리스 노트: 버전마다 새 기능·바뀐 점·고친 점 (CHANGELOG.md)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"릴리스 노트 — {APP_NAME} {service.VERSION}")
+        fit_to_screen(self, 900, 760, maximize_below=0)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(True)
+        text = service.release_notes()
+        if "\n## " in text:  # 맨 위 안내(개발용: 버전 규칙·태그)는 빼고 버전별 노트부터
+            text = text[text.index("\n## ") + 1:]
+        if text:
+            self.view.setMarkdown(text)
+        else:
+            self.view.setPlainText("릴리스 노트 파일을 찾지 못했습니다.")
+        self.view.setStyleSheet("QTextBrowser { padding: 10px 14px; }")
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(page_title(f"릴리스 노트 · 지금 버전 {service.VERSION}", 14))
+        lay.addWidget(self.view, 1)
+        lay.addWidget(bb)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, root: Path | None = None):
         super().__init__()
@@ -844,6 +870,10 @@ class MainWindow(QMainWindow):
         help_.addAction(act)
         act = QAction("로그 폴더 열기", self)
         act.triggered.connect(self.open_log_folder)
+        help_.addAction(act)
+        help_.addSeparator()
+        act = QAction("릴리스 노트…", self)
+        act.triggered.connect(self.show_release_notes)
         help_.addAction(act)
         st = service.engine_status()
         self.statusBar().showMessage(st["message"])
@@ -904,6 +934,9 @@ class MainWindow(QMainWindow):
         from app.qt.dialogs import open_log_folder
 
         open_log_folder(self)
+
+    def show_release_notes(self):
+        ReleaseNotesDialog(self).exec()
 
     def open_settings(self):
         if SettingsDialog(self).exec():

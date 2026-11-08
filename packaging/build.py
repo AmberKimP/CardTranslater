@@ -59,7 +59,8 @@ def build() -> Path:
             "--distpath", str(work / "dist"), "--workpath", str(work / "pyi"), "--specpath", str(work),
             "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts",
             "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets",  # 로그인 화면 그림
-            "--add-data", f"{info}{os.pathsep}."]
+            "--add-data", f"{info}{os.pathsep}.",
+            "--add-data", f"{ROOT / 'CHANGELOG.md'}{os.pathsep}."]  # 도움말 > 릴리스 노트
     for m in EXCLUDE:
         args += ["--exclude-module", m]
     args.append(str(ROOT / "packaging" / "launch.py"))
@@ -71,6 +72,7 @@ def build() -> Path:
     for child in out.iterdir():
         shutil.rmtree(child) if child.is_dir() else child.unlink()
     shutil.copytree(work / "dist" / NAME, out, dirs_exist_ok=True)
+    shutil.copy2(ROOT / "CHANGELOG.md", out / "릴리스 노트.md")  # 설치 폴더에서도 바로 열어 볼 수 있게
     exe = out / f"{NAME}.exe"
     print(f"[build] {exe}")
     return exe

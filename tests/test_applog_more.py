@@ -169,7 +169,7 @@ def test_도움말_메뉴와_로그_저장(qapp, tmp_path, monkeypatch, logdir):
     win = MainWindow(root=tmp_path)
     menus = {a.text(): a.menu() for a in win.menuBar().actions()}
     assert "도움말" in menus
-    assert [a.text() for a in menus["도움말"].actions()] == ["로그 묶어서 저장… (문제 보고용)", "로그 폴더 열기"]
+    assert [a.text() for a in menus["도움말"].actions()] == ["로그 묶어서 저장… (문제 보고용)", "로그 폴더 열기", "", "릴리스 노트…"]
 
     dest = tmp_path / "out" / "r.zip"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
