@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt import worker
 from app.qt.dialogs import (
-    card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
+    ask_choice, card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
     show_error, show_failure, show_problem, subtitle,
 )
 
@@ -730,35 +730,55 @@ class OutputActions:
         """auto=True: 번역에 이어서 부를 때. 묻지 않고 지운 파일은 건너뛴다. note는 끝 창 맨 위에 보인다."""
         if not auto and self.page.steps.ask_scope("⑦ 글자 지우기") is False:  # 그룹·파일을 고른 채면 전체/고른 항목 (기본 전체)
             return
-        files = self._files()
-        done = [f for f in files if f["erased"]]
-        redo = False
         self._note = note
-        if done and not auto:
-            box = QMessageBox(self.page)
-            box.setWindowTitle("글자 지우기")
-            box.setText(f"이미 지운 파일이 {len(done)}개 있습니다 ({', '.join(f['key'] for f in done)}).")
-            skip = box.addButton("지운 파일은 건너뛰기", QMessageBox.ButtonRole.AcceptRole)
-            again = box.addButton("모두 다시 지우기", QMessageBox.ButtonRole.DestructiveRole)
-            box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() not in (skip, again):
+        scope = self.page.scope()[1]
+        bg = getattr(self.page, "bg", None)
+        if bg is not None and bg.busy_with(scope):  # 뒤에서 지우는 중: 서두르게만 한다
+            bg.boost()
+            msg = f"{note}\n\n" if note else ""
+            QMessageBox.information(self.page, "글자 지우기",
+                                    msg + f"뒤에서 글자를 지우는 중입니다 ({bg.text or '진행 중'}).\n"
+                                    "우선순위를 높였습니다. 끝나면 목록의 ‘글자 지움’이 채워집니다.")
+            return
+        need = {str(d) for d in service.files_needing_erase(self.pdir, scope)}
+        if not need:  # 이미 다 지웠고 그 뒤 원문·설정도 그대로: 알리기만
+            if auto and note:
+                self._erase_done(service.ProjectStepResult("done"))
                 return
-            redo = box.clickedButton() is again
-        job = worker.Job(service.erase_project, self.pdir, redo=redo, files=self.page.scope()[1])
-        worker.run_with_dialog(self.page, "글자 지우기", job, self._erase_done,
-                               lambda m: show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m))
+            QMessageBox.information(self.page, "글자 지우기", "이미 지웠습니다 (그 뒤 원문·영역 설정도 바뀌지 않았습니다).\n"
+                                    "카드 한 장만 다르게 지우려면 결과 보기에서 그 영역의 ‘지우기’를 바꾸세요.")
+            return
+        self.page.erasing = True  # 그동안 뒤에서 지우기는 쉰다 (같은 파일을 두 번 지우지 않게)
+        if bg is not None:
+            bg.stop()
+        job = worker.Job(service.erase_project, self.pdir, files=sorted(need))
+        worker.run_with_dialog(self.page, "글자 지우기", job, self._erase_done, self._erase_failed)
+
+    def _erase_failed(self, m):
+        self.page.erasing = False
+        show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m)
 
     def _erase_done(self, r):
         from app.qt.steps import state_label
 
+        self.page.erasing = False
         self.page.refresh()
         lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                  else f" — {f.get('reason', '')}") for f in r.files]
         note, self._note = getattr(self, "_note", ""), ""
         if note:
             lines = ["⑥ 전체 번역", note, "", "글자 지우기"] + lines
-        if r.state in ("done", "skipped"):
+        if r.state in ("done", "skipped") and note:  # 번역에 이어 지운 경우: 바로 번역 검수로 갈 수 있게
+            box = QMessageBox(self.page)
+            box.setWindowTitle("글자 지우기")
+            box.setText("\n".join(lines) + (f"\n\n{r.reason}" if r.reason else "")
+                        + "\n\n‘번역 검수’에서 번역을 칸마다 확인하세요.")
+            openb = box.addButton("번역 검수 열기", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is openb:
+                self.page.steps.review_translation()
+        elif r.state in ("done", "skipped"):
             QMessageBox.information(self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
         else:
             show_problem(self.page, f"글자 지우기를 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
@@ -772,9 +792,26 @@ class OutputActions:
             return
         if not self._pick_group("⑧ 한글 넣기", self._can_compose):
             return
+        if not self._review_left_ok():
+            return
         job = worker.Job(service.font_plans, self.pdir, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "글꼴 추천 받는 중", job, self._fonts_ready,
                                lambda m: show_failure(self.page, "글꼴 추천을 받지 못했습니다", m))
+
+    def _review_left_ok(self) -> bool:
+        """고른 범위에 번역 검수에서 ‘꼭 고칠 칸’이 남았으면 묻는다. 넣어도 되면 True."""
+        try:
+            by_file = (service.review_progress(self.pdir) or {}).get("by_file") or {}
+        except Exception:  # noqa: BLE001 - 검수 숫자를 못 구해도 한글 넣기는 막지 않는다
+            return True
+        left = sum((by_file.get(f["key"]) or {}).get("must_left", 0) for f in self._files())
+        if not left:
+            return True
+        r = ask_choice(self.page, "번역 검수", f"꼭 고칠 칸이 {left}개 남았습니다. 그대로 한글을 넣을까요?",
+                       [("번역 검수 열기", "accept"), ("그대로 넣기", "accept"), ("취소", "reject")], default=0)
+        if r == 0:
+            self.page.steps.review_translation()
+        return r == 1
 
     def _fonts_ready(self, plans):
         from app.qt.fonts_dialog import FontPlanDialog

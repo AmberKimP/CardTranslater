@@ -201,6 +201,7 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> E
             "source_page": pno,
             "output_pdf": pdf_name,
             "output_page_index": i,
+            "erase_sig": erase_sig(project, pno, srcs, card_modes.get(str(pno))),
             **r.meta,
         })
         results.append(r)
@@ -968,8 +969,9 @@ class ProjectStepResult:
 
 def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bool = False,
                   progress: ProgressFn | None = None, cancel: CancelToken | None = None,
-                  files: list | None = None) -> ProjectStepResult:
-    """7단계를 모든 그룹·파일에. 이미 지운 파일(cleared/)은 건너뛴다(redo=True면 다시)."""
+                  files: list | None = None, stale: bool = True) -> ProjectStepResult:
+    """7단계를 모든 그룹·파일에. 이미 지운 파일(cleared/)은 건너뛴다(redo=True면 다시).
+    stale=True면 지운 뒤 원문·영역·카드별 지우기 방식이 바뀐 파일은 다시 지운다."""
     from app import workspace
 
     info = workspace.load_project_info(project_dir)
@@ -977,7 +979,8 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     for fd in scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
         pages = workspace.included_pages(fd)
-        if (fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd):
+        if ((fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd)
+                and not (stale and stale_erased_pages(fd))):
             out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ‘모두 다시 지우기’)"})
             continue
         if not pages:
@@ -994,6 +997,73 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
         if not r.ok:
             out.state, out.reason = "failed", f"{key}: {r.error}"
             return out
+    return out
+
+
+def erase_sig(project, page: int, sources: dict, modes: dict | None) -> str:
+    """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식). 바뀌면 다시 지워야 한다."""
+    import hashlib
+
+    regs = [{"name": r.name, "kind": r.kind, "rect": r.rect.to_dict(), "style": r.style, "erase": r.erase}
+            for r in project.template.regions_for(int(page))]
+    blob = json.dumps({"src": sources or {}, "regions": regs, "modes": modes or {}}, ensure_ascii=False,
+                      sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def stale_erased_pages(file_dir: Path | str) -> list[int]:
+    """지운 뒤 원문(③ 원문 확인·② 아이콘 정의)이나 영역·카드별 지우기 방식이 바뀌어 다시 지워야 하는 쪽.
+    예전 버전으로 지운 쪽(기록 없음)은 모르니 넣지 않는다."""
+    from app.extract import load_extracted
+    from app.workspace import file_settings
+
+    fd = Path(file_dir)
+    meta_dir = fd / "cleared" / "meta"
+    if not meta_dir.exists():
+        return []
+    try:
+        project = load_project(fd)
+        extracted = load_extracted(fd)
+    except Exception:  # noqa: BLE001
+        return []
+    modes = file_settings(fd).get("erase_modes", {})
+    out = []
+    for f in sorted(meta_dir.glob("page-*.json")):
+        try:
+            m = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        sig = m.get("erase_sig")
+        pno = int(m.get("source_page") or f.stem.split("-")[-1])
+        if not sig:
+            continue
+        srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
+        try:
+            now = erase_sig(project, pno, srcs, modes.get(str(pno)))
+        except Exception:  # noqa: BLE001 - 그 쪽 영역이 없어짐 등
+            continue
+        if now != sig:
+            out.append(pno)
+    return out
+
+
+def files_needing_erase(project_dir: Path | str, files: list | None = None) -> list[Path]:
+    """지워야 하는 파일 (아직 안 지움·처리할 쪽이 늘어남·지운 뒤 원문이나 설정이 바뀜). 뒤에서 지울 차례."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    out = []
+    for fd in scoped_file_dirs(info, None, files):
+        pages = workspace.included_pages(fd)
+        if not pages:
+            continue
+        try:
+            load_project(fd)
+        except FileNotFoundError:
+            continue  # 영역이 아직 없는 그룹
+        done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
+        if not done or stale_erased_pages(fd):
+            out.append(fd)
     return out
 
 
@@ -1311,6 +1381,7 @@ def project_overview(project_dir: Path | str) -> dict:
                 "included": len(inc), "excluded": sorted(set(range(1, n + 1)) - set(all_inc)),
                 "exclude_reason": workspace.file_settings(fd).get("exclude_reason", ""),
                 "extracted": len(done), "erased": (fd / "cleared" / "cleared.pdf").exists(),
+                "erase_stale": bool(stale_erased_pages(fd)) if (fd / "cleared" / "meta").exists() else False,
                 "composed": (fd / "translated" / "translated.pdf").exists(),
                 "review_xlsx": review_xlsx_for(fd),
                 "no_regions": no_regions,
@@ -1328,11 +1399,18 @@ def project_overview(project_dir: Path | str) -> dict:
                        "has_regions": rpath.exists() and (not per_card or any(
                            len(f["no_regions"]) < f["included"] for f in files)),
                        "files": files})
+    review = None
+    if info.status in ("translating", "translated"):
+        try:
+            review = review_progress(info.dir)
+        except Exception:  # noqa: BLE001 - 검수 진행을 못 세어도 화면은 열린다
+            review = None
     return {"name": info.name, "game": info.game, "dir": info.dir, "status": info.status,
             "status_label": STATUS_LABEL.get(info.status, info.status),
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
             "card_limit": workspace.card_limit(info),
-            "next_step": _next_step(info, groups), "next_key": _next_key(info, groups)}
+            "review": review,
+            "next_step": _next_step(info, groups, review), "next_key": _next_key(info, groups, review)}
 
 
 _TRANSLATED_CACHE: dict = {}
@@ -1375,7 +1453,7 @@ def _translated_files(info) -> dict[str, bool]:
         return {}
 
 
-def _next_key(info, groups: list[dict]) -> str:
+def _next_key(info, groups: list[dict], review: dict | None = None) -> str:
     """다음에 누를 단계 버튼 키 (화면의 ‘다음 할 일’ 버튼). _next_step 문장과 같은 순서로 판단한다.
     add | regions | extract | finish | glossary | translate | erase | compose | results"""
     if not groups or not any(g["files"] for g in groups):
@@ -1394,12 +1472,14 @@ def _next_key(info, groups: list[dict]) -> str:
     files = [f for g in groups for f in g["files"]]
     if not all(f["erased"] for f in files):
         return "erase"
+    if review and review.get("must_left") and not all(f["composed"] for f in files):
+        return "check"  # 꼭 고칠 칸이 남았으면 한글 넣기 전에 번역 검수
     if not all(f["composed"] for f in files):
         return "compose"
     return "results"
 
 
-def _next_step(info, groups: list[dict]) -> str:
+def _next_step(info, groups: list[dict], review: dict | None = None) -> str:
     if not groups or not any(g["files"] for g in groups):
         return "파일을 넣으세요"
     no_regions = [g["name"] for g in groups if not g["has_regions"]]
@@ -1419,6 +1499,9 @@ def _next_step(info, groups: list[dict]) -> str:
     files = [f for g in groups for f in g["files"]]
     if not all(f["erased"] for f in files):
         return "글자를 지우세요"
+    if review and review.get("must_left") and not all(f["composed"] for f in files):
+        return (f"번역을 검수하세요 (꼭 고칠 칸 {review['must_left']}개 · "
+                f"확인 {review.get('checked', 0)}/{review.get('total', 0)})")
     if not all(f["composed"] for f in files):
         return "한글을 넣으세요"
     return "결과를 확인하세요"
@@ -2111,9 +2194,36 @@ def split_paragraphs(text: str) -> list[str]:
     return paragraphs(text or "")
 
 
+_TRANSLATION_CARDS: dict = {}
+
+
 def _translation_cards(fd: Path) -> dict:
-    """한글 넣기가 쓰는 번역 (고친 것을 덮기 전): 검수 엑셀이 있으면 그것, 없으면 초벌 번역."""
+    """한글 넣기가 쓰는 번역 (고친 것을 덮기 전): 검수 엑셀이 있으면 그것, 없으면 초벌 번역.
+    엑셀·번역 캐시·추출·file.json이 바뀌지 않았으면 다시 읽지 않는다 (게임 검수 엑셀은 그림이 있어 느리다)."""
+    from app import workspace
+    from app.translate import cache_path
+
+    fd = Path(fd)
     xlsx = review_xlsx_for(fd)
+
+    def mt(p) -> float:
+        try:
+            return Path(p).stat().st_mtime
+        except OSError:
+            return 0.0
+
+    info = workspace.project_of(fd)
+    stamp = (str(xlsx), mt(xlsx) if xlsx else 0.0, mt(cache_path(info.dir)) if info else 0.0, mt(fd / "file.json"),
+             max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0]))
+    hit = _TRANSLATION_CARDS.get(str(fd))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    value = _translation_cards_read(fd, xlsx)
+    _TRANSLATION_CARDS[str(fd)] = (stamp, value)
+    return value
+
+
+def _translation_cards_read(fd: Path, xlsx) -> dict:
     if xlsx:
         from app.excel_io import import_translation
 
@@ -2140,6 +2250,10 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
         base = entry.get("ko") if isinstance(entry, dict) else None
         ko = [t.strip() for t in text.splitlines() if t.strip()] if isinstance(base, list) else text.strip()
         card_edits.set_text(fd, page, region, ko, base)
+        from app import review_marks
+
+        review_marks.mark(fd, page, region, ko)  # 결과 보기에서 고쳐 저장한 칸 = 사람이 본 칸
+        _clear_review_caches()
     if set_font:
         font_plan.set_card_font(fd, page, region, font or None)
     if set_size or set_align or paragraph_fonts is not None:
@@ -2174,6 +2288,267 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
     paras = paragraph_fonts if paragraph_fonts is not None else \
         {int(i): v for i, v in ((((data.get("sentences") or {}).get(str(int(page))) or {}).get(region)) or {}).items()}
     return font_plan.preview_render(fd, page, region, f, scale, al or None, None, ko, slots=slots, para_fonts=paras)
+
+
+# ---------------------------------------------------------------- 화면용: 번역 검수
+REVIEW_STATUS = {  # 엔진 상태 -> (화면 문구, 등급)
+    "빈 영역": ("번역 없음", "must"), "원문 글자 남음": ("일본어 남음", "must"), "아이콘 불일치": ("아이콘 불일치", "must"),
+    "결론 못 냄": ("원문 결론 못 냄", "must"), "용어 불일치": ("용어 불일치", "look"), "확인 필요": ("원문 불확실", "look"),
+}
+
+
+def _review_check(source, ko, terms: list[dict], ext: dict | None) -> dict:
+    """번역 글 검사 (모델을 부르지 않음): {"status": [화면 문구], "level", "missing_terms", "terms"}."""
+    from app.card_edits import norm
+    from app.extract import verification_label
+    from app.translate import check, ko_term_used, terms_in
+
+    src, text = norm(source), norm(ko)
+    raw: list[str] = []
+    missing: list[str] = []
+    if not text:
+        raw.append("빈 영역")
+    else:
+        st, missing = check(src, text, terms)
+        raw += st
+    if ext is not None and verification_label(ext) == "결론 못 냄":
+        raw.append("결론 못 냄")
+    elif ext is not None and ext.get("uncertain"):
+        raw.append("확인 필요")
+    labels = [REVIEW_STATUS[s][0] for s in raw if s in REVIEW_STATUS]
+    levels = {REVIEW_STATUS[s][1] for s in raw if s in REVIEW_STATUS}
+    level = "must" if "must" in levels else "look" if "look" in levels else "ok"
+    term_list = [{"source": t["source"], "ko": t["ko"], "ok": bool(text) and ko_term_used(t["ko"], text)}
+                 for t in terms_in(src, terms)]
+    return {"status": labels, "level": level, "missing_terms": list(missing), "terms": term_list}
+
+
+def _review_file_rows(fd: Path) -> list[dict]:
+    """파일 하나의 검수 줄 (아래 review_rows의 줄 모양, same_source 빼고)."""
+    import hashlib
+
+    from app import card_edits, review_marks, workspace
+    from app.excel_io import _project_translation, source_of
+    from app.extract import load_extracted, verification_label
+    from app.translate import lookup
+
+    proj = load_project(fd)
+    extracted = load_extracted(fd)
+    cache, terms = _project_translation(fd)
+    base_cards = _translation_cards(fd)
+    edits = card_edits.load(fd)
+    marks = review_marks.load(fd)
+    key = workspace.file_key(fd)
+    group = workspace.group_names(fd.parent.parent)
+    gname = json.loads((fd.parent.parent / "group.json").read_text(encoding="utf-8")).get("name") \
+        if (fd.parent.parent / "group.json").exists() else fd.parent.parent.name
+    erased = (fd / "cleared" / "cleared.pdf").exists()
+    composed = (fd / "translated" / "translated.pdf").exists()
+    rows = []
+    for pno in workspace.included_pages(fd):
+        for reg in proj.template.regions_for(pno):
+            if reg.kind not in ("text", "tag_pills"):
+                continue
+            src, _unsure = source_of(proj, extracted, pno, reg.name)
+            if src is None or not card_edits.norm(src):
+                continue
+            ext = (extracted.get(pno) or {}).get(reg.name)
+            hit = lookup(cache, src) if cache else None
+            draft = card_edits.norm(hit["ko"]) if hit else ""
+            entry = (base_cards.get(pno) or {}).get(reg.name)
+            base = entry.get("ko") if isinstance(entry, dict) else None
+            e = card_edits.edit_for(edits, pno, reg.name, base)
+            raw_e = (edits.get(pno) or {}).get(reg.name)
+            now = e["ko"] if e else base
+            conflict = ({"app": card_edits.norm(raw_e.get("ko")), "now": card_edits.norm(base)}
+                        if raw_e and not e else None)
+            chk = _review_check(src, now, terms, ext)
+            checked, checked_stale = review_marks.state(marks, pno, reg.name, now)
+            rows.append({
+                "id": f"{key}#p{pno}#{reg.name}", "file_dir": fd, "file_key": key, "group": gname,
+                "group_names": sorted(group), "page": pno, "region": reg.name, "kind": reg.kind,
+                "source": card_edits.norm(src), "source_check": verification_label(ext),
+                "draft": draft, "base": card_edits.norm(base), "excel_changed": card_edits.norm(base) != draft,
+                "ko": card_edits.norm(now), "edited": bool(e), "edit_conflict": conflict,
+                **chk, "source_id": hashlib.sha1(card_edits.norm(src).encode("utf-8")).hexdigest()[:12],
+                "checked": checked, "checked_stale": checked_stale, "erased": erased, "composed": composed,
+            })
+    return rows
+
+
+def _review_counts(rows: list[dict]) -> dict:
+    return {"total": len(rows), "checked": sum(1 for r in rows if r["checked"]),
+            "edited": sum(1 for r in rows if r["edited"]),
+            "must_left": sum(1 for r in rows if r["level"] == "must" and not r["checked"]),
+            "look_left": sum(1 for r in rows if r["level"] == "look" and not r["checked"])}
+
+
+def _excel_info(fds: list[Path], info) -> dict:
+    path = next((p for p in (review_xlsx_for(fd) for fd in fds) if p), None)
+    if path is None and info is not None:
+        g = info.game_dir / "번역_검수.xlsx"
+        path = g if g.exists() else None
+    is_open = bool(path) and (Path(path).parent / f"~${Path(path).name}").exists()
+    return {"path": str(path) if path else None, "open": is_open}
+
+
+def review_rows(project_dir: Path | str, files: list | None = None) -> dict:
+    """번역 검수 화면의 칸 목록 (범위: files = 파일 폴더 목록, None이면 프로젝트 전체; 처리할 쪽의 글·태그 칸).
+    {"rows": [{id, file_dir, file_key, group, page, region, kind, source, source_check, draft, base, excel_changed,
+               ko(한글 넣기가 쓸 글), edited, edit_conflict, status[화면 문구], level(must|look|ok), missing_terms,
+               terms[{source, ko, ok}], source_id, same_source, checked, checked_stale, erased, composed}],
+     "excel": {"path", "open"}, "counts": {total, checked, edited, must_left, look_left}}. 모델은 부르지 않는다."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    fds = scoped_file_dirs(info, None, files)
+    rows: list[dict] = []
+    for fd in fds:
+        try:
+            rows += _review_file_rows(fd)
+        except FileNotFoundError:
+            continue  # 영역 템플릿이 없는 그룹
+    seen: dict[tuple, int] = {}
+    for r in rows:
+        k = (r["source"], r["ko"])
+        seen[k] = seen.get(k, 0) + 1
+    for r in rows:
+        r["same_source"] = seen[(r["source"], r["ko"])] - 1
+    return {"rows": rows, "excel": _excel_info(fds, info), "counts": _review_counts(rows)}
+
+
+def _review_row(fd: Path, page: int, region: str) -> dict | None:
+    return next((r for r in _review_file_rows(Path(fd)) if r["page"] == int(page) and r["region"] == region), None)
+
+
+def check_review_text(file_dir: Path | str, page: int, region: str, text: str) -> dict:
+    """입력 중 검사 (모델을 부르지 않음): {"status", "level", "missing_terms", "terms"}. 태그 칸은 한 줄에 태그 하나."""
+    from app.excel_io import _project_translation, source_of
+    from app.extract import load_extracted
+
+    fd = Path(file_dir)
+    proj = load_project(fd)
+    extracted = load_extracted(fd)
+    src, _u = source_of(proj, extracted, int(page), region)
+    _cache, terms = _project_translation(fd)
+    return _review_check(src, text, terms, (extracted.get(int(page)) or {}).get(region))
+
+
+def save_review(file_dir: Path | str, page: int, region: str, text: str | None, *, checked: bool = True,
+                same_source: bool = False, scope_files: list | None = None) -> list[dict]:
+    """검수에서 고친 번역 저장(결과 보기와 같은 card_edits)·확인 표시. text가 None이면 확인 표시만.
+    same_source=True면 범위(scope_files, None이면 이 파일) 안에서 원문이 같고 지금 번역도 같은 칸에도 같은 글을 넣고
+    확인한다 (다른 번역을 쓰던 칸은 그대로). 바뀐 칸들의 새 줄을 돌려준다."""
+    from app import card_edits, review_marks, workspace
+
+    fd = Path(file_dir)
+    me = _review_row(fd, page, region)
+    if me is None:
+        raise KeyError(f"검수할 칸이 없습니다: {page}쪽 {region}")
+    targets = [(fd, int(page), region)]
+    if same_source and text is not None:
+        info = workspace.project_of(fd)
+        scope = [Path(x) for x in (scope_files or [fd])]
+        for d in scope:
+            for r in (_review_file_rows(d) if info is not None else []):
+                if (r["source"] == me["source"] and r["ko"] == me["ko"]
+                        and not (Path(r["file_dir"]) == fd and r["page"] == int(page) and r["region"] == region)):
+                    targets.append((Path(r["file_dir"]), r["page"], r["region"]))
+    for d, p_, reg in targets:
+        if text is not None:
+            entry = (_translation_cards(d).get(p_) or {}).get(reg) or {}
+            base = entry.get("ko") if isinstance(entry, dict) else None
+            ko = [t.strip() for t in text.splitlines() if t.strip()] if isinstance(base, list) else text.strip()
+            card_edits.set_text(d, p_, reg, ko, base)
+            final = ko
+        else:
+            final = me["ko"] if (d, p_, reg) == targets[0] else None
+        if checked and final is not None:
+            review_marks.mark(d, p_, reg, final)
+    _clear_review_caches()
+    out = []
+    for d, p_, reg in targets:
+        r = _review_row(d, p_, reg)
+        if r is not None:
+            out.append(r)
+    return out
+
+
+def set_review_checked(file_dir: Path | str, page: int, region: str, checked: bool) -> dict:
+    """확인 표시/취소. 새 줄을 돌려준다."""
+    from app import review_marks
+
+    fd = Path(file_dir)
+    r = _review_row(fd, page, region)
+    if r is None:
+        raise KeyError(f"검수할 칸이 없습니다: {page}쪽 {region}")
+    review_marks.mark(fd, page, region, r["ko"] if checked else None)
+    _clear_review_caches()
+    return _review_row(fd, page, region)
+
+
+def resolve_review_conflict(file_dir: Path | str, page: int, region: str, keep: str) -> dict:
+    """앱에서 고친 뒤 엑셀·재번역으로 번역이 바뀐 칸: keep="app"이면 앱에서 고친 글을 지금 번역 위에 다시 쓰고,
+    "now"면 앱에서 고친 것을 지운다 (바뀐 번역을 씀). 새 줄을 돌려준다."""
+    from app import card_edits
+
+    fd = Path(file_dir)
+    r = _review_row(fd, page, region)
+    if r is None or not r["edit_conflict"]:
+        return r
+    entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
+    base = entry.get("ko") if isinstance(entry, dict) else None
+    if keep == "app":
+        app_ko = r["edit_conflict"]["app"]
+        ko = [t for t in app_ko.splitlines() if t.strip()] if isinstance(base, list) else app_ko
+        card_edits.set_text(fd, page, region, ko, base)
+    else:
+        card_edits.set_text(fd, page, region, base, base)  # 같으면 고친 것을 지운다
+    _clear_review_caches()
+    return _review_row(fd, page, region)
+
+
+_REVIEW_PROGRESS: dict = {}
+
+
+def _clear_review_caches() -> None:
+    _REVIEW_PROGRESS.clear()
+    _TRANSLATION_CARDS.clear()
+
+
+def review_progress(project_dir: Path | str) -> dict:
+    """검수 진행 {"total", "checked", "must_left", "look_left", "by_file": {파일 키: 같은 키들}}.
+    프로젝트 화면을 새로 고칠 때마다 부르므로 번역 캐시·용어집·엑셀·file.json·추출 파일 시각으로 캐시한다."""
+    from app import glossary, workspace
+    from app.translate import cache_path
+
+    info = workspace.load_project_info(project_dir)
+
+    def mt(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    fds = workspace.file_dirs(info)
+    xl = _excel_info(fds, info)["path"]
+    stamp = (str(info.dir), mt(cache_path(info.dir)), mt(glossary.glossary_path(info)), mt(Path(xl)) if xl else 0.0,
+             tuple((str(fd), mt(fd / "file.json"),
+                    max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0])) for fd in fds))
+    if _REVIEW_PROGRESS.get("stamp") == stamp:
+        return _REVIEW_PROGRESS["value"]
+    by_file = {}
+    allrows: list[dict] = []
+    for fd in fds:
+        try:
+            rows = _review_file_rows(fd)
+        except FileNotFoundError:
+            continue
+        by_file[workspace.file_key(fd)] = _review_counts(rows)
+        allrows += rows
+    value = {**_review_counts(allrows), "by_file": by_file}
+    _REVIEW_PROGRESS.update(stamp=stamp, value=value)
+    return value
 
 
 def recompose_file(file_dir: Path | str, progress: ProgressFn | None = None,

@@ -373,7 +373,7 @@ def test_project_step_buttons_follow_status(qapp, tmp_path):
     win.open_project(info.dir)
     on = {k: b.isEnabled() for k, b in win.project.step_buttons.items()}
     assert on == {"extract": True, "review": True, "icons": True, "finish": True, "glossary": False,
-                  "translate": False, "erase": True, "compose": False, "results": False,
+                  "translate": False, "check": False, "erase": True, "compose": False, "results": False,
                   "test": False}
     workspace.set_status(workspace.load_project_info(info.dir), "glossary_confirmed")
     win.project.refresh()
@@ -1536,19 +1536,24 @@ def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, mo
 
     def fake_run(parent, title, job, done, fail, **k):
         seen["files"] = job.kwargs.get("files")
+        done(service.ProjectStepResult("done"))
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
+    monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: None)
+    all_dirs = [f["dir"] for g in page.ov["groups"] for f in g["files"]]
+    monkeypatch.setattr(service, "files_needing_erase",  # 아직 안 지운 파일들 (지울 것만 지운다)
+                        lambda _p, files=None: [str(d) for d in (files if files is not None else all_dirs)])
     import app.qt.dialogs as dlg_mod
 
     answers = []
     monkeypatch.setattr(dlg_mod, "ask_choice", lambda *a, **k: answers.pop(0))
     answers.append(1)  # 파일을 고른 채 ⑦: 전체/고른 항목 중 ‘고른 항목만’
     page.out.erase()
-    assert seen["files"] == dirs
+    assert seen["files"] == sorted(str(d) for d in dirs)
     answers.append(0)  # ‘전체’를 고르면 목록 선택도 전체로
     page.out.erase()
-    assert seen["files"] is None and page.scope()[0] == "전체"
+    assert seen["files"] == sorted(str(d) for d in all_dirs) and page.scope()[0] == "전체"
     page.out.erase()  # 전체를 고른 채면 묻지 않는다
-    assert seen["files"] is None and answers == []
+    assert answers == [] and not page.erasing
 
 
 def test_extract_asks_all_or_selected_and_moves_grid_to_all(qapp, tmp_path, monkeypatch):
@@ -2178,7 +2183,7 @@ def test_theme_survives_unwritable_temp_dir(qapp, tmp_path, monkeypatch):
 
 
 def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
-    """⑥ 번역 질문 창의 ‘끝나면 바로 ⑦ 글자 지우기’: 엑셀이 끝나면 묻지 않고 지우고, 결과를 한 창에 보인다."""
+    """⑥ 번역 질문 창의 ‘끝나면 바로 ⑦ 글자 지우기’: 엑셀 없이 바로 지우고, 결과를 한 창에 보인다. 엑셀은 자동으로 안 만든다."""
     from types import SimpleNamespace
 
     from app.qt import results as res_mod
@@ -2199,17 +2204,50 @@ def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
     def fake_run(parent, title, job, done, fail, **k):
         seen.update(title=title, redo=job.kwargs.get("redo"), done=done)
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
-    shown = []
-    monkeypatch.setattr(res_mod.QMessageBox, "information", lambda p, t, text: shown.append(text))
+    monkeypatch.setattr("app.qt.steps.worker.run_with_dialog", fake_run)
+    monkeypatch.setattr(service, "files_needing_erase", lambda _p, files=None: ["F"])  # 지울 파일이 있음
+    exported = []
+    monkeypatch.setattr(service, "export_project_excel", lambda *a, **k: exported.append(1) or [])
     opened = []
-    monkeypatch.setattr("app.qt.main.open_path", lambda p: opened.append((p, seen.get("title"))))
+    monkeypatch.setattr("app.qt.main.open_path", lambda p: opened.append(p))
+    done = SimpleNamespace(state="done", reason="", cells=3, translated=3, from_glossary=0, cached=0,
+                           term_mismatch=[], icon_mismatch=[], leftover=[])
     page.steps._then_erase = True
-    page.steps._translate_summary = "서로 다른 원문 3칸"
-    page.steps._excel_done([str(tmp_path / "G_검수.xlsx")])  # 엑셀 창 없이 바로 지우기
-    assert seen["title"] == "글자 지우기" and seen["redo"] is False and not page.steps._then_erase
-    assert len(opened) == 1 and opened[0][0].name == "G_검수.xlsx" and opened[0][1] is None  # 지우기 전에 엑셀을 연다
+    page.steps._translate_done(done)  # 엑셀 없이 바로 지우기
+    assert seen["title"] == "글자 지우기" and not seen["redo"] and not page.steps._then_erase
+    assert not exported and not opened  # 검수 엑셀을 만들지도 열지도 않는다
+    # 지우기 끝: 번역 요약과 ‘번역 검수 열기’ 버튼
+    boxes = []
+
+    class Box:
+        class ButtonRole:
+            AcceptRole, RejectRole = 0, 1
+
+        def __init__(self, parent=None):
+            boxes.append(self)
+            self.buttons = []
+            self.objs = {}
+
+        def setWindowTitle(self, t): pass
+        def setText(self, t): self.text = t
+        def addButton(self, t, role):
+            self.buttons.append(t)
+            self.objs[t] = object()
+            return self.objs[t]
+        def exec(self): pass
+        def clickedButton(self): return self.objs["번역 검수 열기"]
+    monkeypatch.setattr(res_mod, "QMessageBox", Box)
+    called = []
+    monkeypatch.setattr(page.steps, "review_translation", lambda: called.append(1))
     seen["done"](SimpleNamespace(state="done", reason="", files=[{"file": "a", "state": "done", "pages": 2, "warnings": 0}]))
-    assert len(shown) == 1 and "서로 다른 원문 3칸" in shown[0] and "G_검수.xlsx" in shown[0] and "a:" in shown[0]
+    assert "서로 다른 원문 3칸" in boxes[0].text
+    assert "a:" in boxes[0].text and boxes[0].buttons == ["번역 검수 열기", "닫기"] and called == [1]
+    # 번역이 끝나면 엑셀 없이 안내 창만 (‘번역 검수 열기’)
+    monkeypatch.setattr("app.qt.steps.QMessageBox", Box)
+    boxes.clear()
+    page.steps._translate_done(done)
+    assert not exported and "번역 검수" in boxes[0].text and "엑셀은 다른 사람에게" in boxes[0].text
+    assert boxes[0].buttons == ["번역 검수 열기", "닫기"] and called == [1, 1]
     # 번역이 끝나지 못하면 이어서 지우지 않는다
     page.steps._then_erase = True
     monkeypatch.setattr("app.qt.steps.show_problem", lambda *a, **k: None)
@@ -2570,3 +2608,389 @@ def test_file_without_text_counts_as_translated_when_extracted(tmp_path, monkeyp
     monkeypatch.setattr(service, "_translated_files", lambda _i: {})  # 번역할 칸이 하나도 없는 경우
     f = service.project_overview(info.dir)["groups"][0]["files"][0]
     assert f["translated"] is True
+
+
+def test_review_service_rows_save_same_source_marks_and_conflict(qapp, tmp_path):
+    """번역 검수 service: 칸 목록·검사·저장(같은 원문 함께)·확인 표시·엑셀과 다름 해결·진행·다음 할 일."""
+    from app import card_edits, review_marks
+
+    info, fd = _translated_project(tmp_path)
+    data = service.review_rows(info.dir)
+    rows = [r for r in data["rows"] if r["region"] == "이름"]
+    assert len(rows) == 2 and all(r["ko"] == "안녕" and r["level"] == "ok" for r in rows)
+    assert rows[0]["same_source"] == 1 and data["counts"]["total"] >= 2 and data["excel"]["path"] is None
+    chk = service.check_review_text(fd, 1, "이름", "HELLO 안녕")
+    assert "일본어 남음" not in chk["status"]  # 영어는 일본어가 아님
+    chk = service.check_review_text(fd, 1, "이름", "")
+    assert chk["status"] == ["번역 없음"] and chk["level"] == "must"
+    chk = service.check_review_text(fd, 1, "이름", "こんにちは")
+    assert "일본어 남음" in chk["status"] and any(not t["ok"] for t in chk["terms"])  # 용어 HELLO→안녕 빠짐
+    out = service.save_review(fd, 1, "이름", "반가워", same_source=True)
+    assert {(r["page"], r["ko"], r["checked"]) for r in out} == {(1, "반가워", True), (2, "반가워", True)}
+    assert card_edits.load(fd)[2]["이름"]["ko"] == "반가워"
+    # 확인만 (글 그대로), 확인 취소
+    r = service.set_review_checked(fd, 1, "이름", False)
+    assert not r["checked"]
+    r = service.save_review(fd, 1, "이름", None)[0]
+    assert r["checked"] and r["ko"] == "반가워"
+    # 확인한 뒤 글이 바뀌면 ‘확인 안 함’ + 바뀜 표시
+    review_marks.mark(fd, 2, "이름", "다른 글")
+    r2 = next(x for x in service.review_rows(info.dir, [fd])["rows"] if x["page"] == 2 and x["region"] == "이름")
+    assert not r2["checked"] and r2["checked_stale"]
+    # 엑셀·재번역으로 바탕 번역이 바뀐 칸: edit_conflict, 해결
+    d = workspace.file_settings(fd)
+    d["card_edits"]["2"]["이름"]["base"] = "옛 번역"
+    workspace._write(fd / "file.json", d)
+    service._clear_review_caches()
+    r2 = next(x for x in service.review_rows(info.dir, [fd])["rows"] if x["page"] == 2 and x["region"] == "이름")
+    assert r2["edit_conflict"] == {"app": "반가워", "now": "안녕"} and r2["ko"] == "안녕"
+    r2 = service.resolve_review_conflict(fd, 2, "이름", "app")
+    assert r2["ko"] == "반가워" and not r2["edit_conflict"]
+    # 진행·다음 할 일: 지운 뒤 꼭 고칠 칸이 남으면 ‘check’
+    service.save_review(fd, 1, "이름", "", checked=False)  # 비움 -> 번역 없음 (꼭 고칠 칸)
+    assert service.erase_project(info.dir).state == "done"
+    ov = service.project_overview(info.dir)
+    assert ov["review"]["must_left"] >= 1 and ov["next_key"] == "check" and "번역을 검수하세요" in ov["next_step"]
+    service.save_review(fd, 1, "이름", "안녕")
+    ov = service.project_overview(info.dir)
+    assert ov["review"]["must_left"] == 0 and ov["next_key"] == "compose"
+
+
+# ================================================================ 번역 검수 화면
+def _sync_workers(monkeypatch):
+    """검수 창의 작업 스레드를 그 자리에서 돌려 테스트가 기다리지 않게 한다."""
+    from app.qt import review
+
+    def run(parent, title, job, done, fail=None, **k):
+        job.signals.done.connect(done)
+        if fail:
+            job.signals.failed.connect(fail)
+        job.run()
+
+    monkeypatch.setattr(review.worker, "run_with_dialog", run)
+    monkeypatch.setattr(review.worker, "start", lambda job: job.run())
+
+
+def _review(tmp_path, monkeypatch, preset=None):
+    from app.qt.review import TranslationReviewDialog
+
+    _sync_workers(monkeypatch)
+    info, fd = _translated_project(tmp_path)
+    return info, fd, TranslationReviewDialog(info.dir, None, preset)
+
+
+def _answers(monkeypatch, *answers):
+    """검수 창이 묻는 말에 차례로 답하고 (제목, 글, 버튼들)을 모은다."""
+    from app.qt import review
+
+    asked, it = [], iter(answers)
+
+    def fake(parent, title, text, buttons, default=None, informative=""):
+        asked.append((title, text, [b[0] for b in buttons]))
+        return next(it)
+    monkeypatch.setattr(review, "ask_choice", fake)
+    return asked
+
+
+def test_review_button_follows_translation_and_shows_progress(qapp, tmp_path):
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    b = win.project.step_buttons["check"]
+    assert b.text() == "번역 검수" and not b.isEnabled() and "먼저 ⑥ 전체 번역" in b.toolTip()
+    win.close()
+    info2, _fd = _translated_project(tmp_path / "t")
+    win = MainWindow(root=tmp_path / "t")
+    win.open_project(info2.dir)
+    b = win.project.step_buttons["check"]
+    assert b.isEnabled() and "확인 0/2칸" in b.toolTip() and "꼭 고칠 칸 0" in b.toolTip()
+    keys = list(win.project.step_buttons)
+    assert keys.index("check") == keys.index("translate") + 1
+    win.close()
+
+
+def test_review_dialog_defaults_edit_and_confirm_next(qapp, tmp_path, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    assert dlg.view.currentData() == "unchecked"  # 꼭 고칠·확인해 볼 칸이 없으면 ‘확인 안 한 칸’부터
+    assert len(dlg.view_ids) == 2 and dlg.table.rowCount() == 2 and dlg.table.currentRow() == 0
+    assert dlg.same_box.text() == "같은 원문 칸 1개에도 똑같이 넣기" and not dlg.same_box.isHidden()
+    assert dlg.pill.text().startswith("확인 0/2")
+    assert dlg.table.item(0, 3).text() == "안녕" and dlg.table.item(0, 1).text() == "1쪽"  # 파일이 하나라 쪽만
+    dlg.show()
+    dlg.activateWindow()
+    QTest.qWaitForWindowActive(dlg)
+    dlg.edit.setFocus()
+    dlg.edit.setPlainText("안녕하세요")
+    QTest.keyClick(dlg.edit, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert [card_edits.load(fd)[p]["이름"]["ko"] for p in (1, 2)] == ["안녕하세요", "안녕하세요"]
+    rows = {r["page"]: r for r in service.review_rows(info.dir)["rows"]}
+    assert rows[1]["checked"] and rows[2]["checked"] and rows[1]["edited"]  # 같은 원문 칸도 함께
+    assert dlg.counts["checked"] == 2 and dlg.pill.text().startswith("확인 2/2")
+    assert dlg.current_row()["page"] == 2 and dlg.table.currentRow() == 1  # 지금 목록의 다음 줄
+    assert dlg.table.item(0, 3).background().color().name().upper() == "#CFE2F3"  # 고친 번역은 하늘색
+    assert "2개" in dlg.closing_message() and "다음 ⑧" in dlg.closing_message()
+    dlg.done(0)
+
+
+def test_review_confirm_without_change_only_marks_checked(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    asked = _answers(monkeypatch)
+    dlg.confirm_next()
+    assert not asked
+    rows = {r["page"]: r for r in service.review_rows(info.dir)["rows"]}
+    assert rows[1]["checked"] and not rows[1]["edited"] and not rows[2]["checked"]
+    assert not dlg.closing_message() and dlg.current_row()["page"] == 2
+    dlg.done(0)
+
+
+def test_review_same_source_box_can_be_turned_off(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    dlg.edit.setPlainText("다르게")
+    dlg.same_box.setChecked(False)
+    dlg.confirm_next()
+    assert list(card_edits.load(fd)) == [1]
+    dlg.done(0)
+
+
+def test_review_asks_before_confirming_must_or_empty_text(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    asked = _answers(monkeypatch, 1, 1, 0)
+    dlg.edit.setPlainText("こんにちは")  # 일본어가 남음 = 꼭 고칠 칸
+    dlg.confirm_next()
+    assert "일본어 남음" in asked[0][1] and asked[0][2] == ["이대로 확인", "돌아가 고치기"] and not card_edits.load(fd)
+    dlg.edit.setPlainText("")
+    dlg.confirm_next()
+    assert "번역이 비어 있습니다" in asked[1][1] and not card_edits.load(fd)
+    dlg.confirm_next()  # 이번에는 ‘비운 채로 두기’
+    assert card_edits.load(fd)[1]["이름"]["ko"] == ""
+    assert next(r for r in service.review_rows(info.dir)["rows"] if r["page"] == 1)["checked"]
+    dlg.done(0)
+
+
+def test_review_unsaved_text_asks_before_moving_or_closing(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    asked = _answers(monkeypatch, 2, 1, 0, 2, 1)
+    dlg.edit.setPlainText("고침")
+    dlg.table.setCurrentCell(1, 0)  # 취소: 그 자리에
+    assert dlg.table.currentRow() == 0 and dlg.edit.toPlainText() == "고침" and asked[0][2] == ["저장", "버리기", "취소"]
+    dlg.table.setCurrentCell(1, 0)  # 버리기: 옮기고 저장 안 함
+    assert dlg.table.currentRow() == 1 and not card_edits.load(fd) and dlg.edit.toPlainText() == "안녕"
+    dlg.edit.setPlainText("둘째")
+    dlg.same_box.setChecked(False)
+    dlg.table.setCurrentCell(0, 0)  # 저장
+    assert dlg.table.currentRow() == 0 and card_edits.load(fd)[2]["이름"]["ko"] == "둘째"
+    # 거르기를 바꿔 보던 칸이 사라질 때도, 닫을 때도 묻는다
+    dlg.edit.setPlainText("또")
+    dlg.view.setCurrentIndex(4)  # 확인한 칸: 지금 칸이 빠진다 -> 취소
+    assert dlg.view.currentData() == "unchecked" and dlg.edit.toPlainText() == "또"
+    dlg.done(0)  # 버리고 닫기
+    assert dlg._closed and len(asked) == 5
+
+
+def test_review_revert_and_use_base(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    dlg.edit.setPlainText("고침")
+    dlg.same_box.setChecked(False)
+    dlg.save_here()
+    assert card_edits.load(fd)[1]["이름"]["ko"] == "고침" and dlg.current_row()["edited"]
+    dlg.edit.setPlainText("또 고침")
+    dlg.use_base()  # 편집 칸만 초벌로
+    assert dlg.edit.toPlainText() == "안녕" and card_edits.load(fd)[1]["이름"]["ko"] == "고침"
+    dlg.revert_to_base(dlg.current_row()["id"])
+    assert not card_edits.load(fd) and not dlg.current_row()["edited"] and dlg.edit.toPlainText() == "안녕"
+    dlg.done(0)
+
+
+def test_review_edit_conflict_buttons(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    assert dlg.conflict.isHidden()
+    for keep, want in (("now", None), ("app", "앱고침")):
+        card_edits.set_text(fd, 1, "이름", "앱고침", "옛번역")  # 앱에서 고친 뒤 번역이 바뀐 칸
+        service._clear_review_caches()
+        dlg.load()
+        dlg.status.setCurrentIndex(7)  # 엑셀과 앱이 다름
+        assert dlg.view_ids and dlg.current_row()["edit_conflict"] == {"app": "앱고침", "now": "안녕"}
+        assert not dlg.conflict.isHidden() and dlg.edit.toPlainText() == "안녕"
+        (dlg.keep_now if keep == "now" else dlg.keep_app).click()
+        got = card_edits.load(fd).get(1, {}).get("이름")
+        assert (got["ko"] if got else None) == want
+        assert dlg.conflict.isHidden() and dlg.current_row()["edit_conflict"] is None
+        dlg.status.setCurrentIndex(0)
+    dlg.done(0)
+
+
+def test_review_filters_and_search(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    dlg.edit.setPlainText("안녕하세요")
+    dlg.same_box.setChecked(False)
+    dlg.save_here()
+    assert len(dlg.view_ids) == 2  # 저장한 줄은 바로 사라지지 않는다
+    dlg.view.setCurrentIndex(3)  # 사람이 고친 칸
+    assert len(dlg.view_ids) == 1
+    dlg.view.setCurrentIndex(4)  # 확인한 칸
+    assert len(dlg.view_ids) == 1
+    dlg.view.setCurrentIndex(2)
+    dlg.search.setText("하세요")
+    dlg._on_filter_changed()
+    assert len(dlg.view_ids) == 1
+    dlg.search.setText("없는말")
+    dlg._on_filter_changed()
+    assert not dlg.view_ids and not dlg.edit.isEnabled() and "맞는 칸이 없습니다" in dlg.head.text()
+    dlg.search.setText("")
+    dlg._on_filter_changed()
+    dlg.status.setCurrentIndex(1)  # 번역 없음: 없다
+    assert not dlg.view_ids
+    dlg.done(0)
+
+
+def test_review_preview_only_for_erased_cards(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(service, "card_preview", lambda *a, **k: calls.append(a) or None)
+    dlg.request_preview()
+    assert not calls and "글자를 지운 뒤에" in dlg.pv_note.text()  # 지운 카드가 없으면 그리지 않는다
+    dlg.current_row()["erased"] = True
+    dlg.edit.setPlainText("그릴 글")
+    dlg.request_preview()
+    assert len(calls) == 1 and calls[0][3] == "그릴 글" and "그려 볼 번역이 없습니다" in dlg.pv_note.text()
+    dlg.done(0)
+
+
+def test_review_stale_preview_result_is_dropped(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    dlg._pv_gen = 5
+    dlg.pv_note.setText("그리는 중…")
+    dlg._preview_done(4, None)  # 옛 결과는 버린다
+    assert dlg.pv_note.text() == "그리는 중…"
+    dlg.done(0)
+    dlg._preview_done(dlg._pv_gen, None)  # 닫은 뒤에 와도 죽지 않는다
+
+
+def test_review_excel_row_and_export(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    assert dlg.excel_label.text() == "검수 엑셀: 없음" and dlg.b_xl_make.text() == "엑셀로 내보내기…"
+    assert dlg.b_xl_open.isHidden()
+    dlg.export_excel()
+    assert dlg.excel["path"] and Path(dlg.excel["path"]).exists()
+    assert "검수 엑셀이 있습니다" in dlg.excel_label.text() and dlg.b_xl_make.text() == "엑셀 다시 만들기"
+    assert not dlg.b_xl_open.isHidden() and dlg.excel_hint.isHidden()
+    dlg.excel["open"] = True
+    dlg._sync_excel()
+    assert not dlg.excel_hint.isHidden() and "한쪽에서만" in dlg.excel_hint.text()
+    dlg.done(0)
+
+
+def test_review_layout_fits_small_screen(qapp, tmp_path, monkeypatch):
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    assert dlg.minimumSizeHint().width() <= 1366 and dlg.table.parentWidget().minimumWidth() >= 420
+    for c in (dlg.scope, dlg.view, dlg.status, dlg.region):
+        assert c.sizeAdjustPolicy() == c.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    dlg.done(0)
+
+
+def test_review_opens_from_next_step_with_selected_scope(qapp, tmp_path, monkeypatch):
+    from app.qt import review
+    from app.qt.main import MainWindow
+
+    _sync_workers(monkeypatch)
+    info, fd = _translated_project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    page = win.project
+    shown = []
+    monkeypatch.setattr(review.TranslationReviewDialog, "exec", lambda self: shown.append(self.scope.currentText()) or 0)
+    page.ov["next_key"] = "check"
+    page.do_next()
+    assert shown == ["모든 그룹"]
+    page.tree.setCurrentItem(page.all_item.child(0))  # 그룹을 고른 채 열면 범위를 미리 고른다
+    page.ov["next_key"] = "check"
+    page.do_next()
+    assert shown[1].startswith("그룹 ")
+    win.close()
+
+
+def test_compose_asks_when_must_cards_left(qapp, tmp_path, monkeypatch):
+    from app.qt import results as res_mod
+    from app.qt.main import MainWindow
+
+    info, fd = _translated_project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    out = win.project.out
+    key = win.project.scoped_files()[0]["key"]
+    monkeypatch.setattr(service, "review_progress", lambda p: {"by_file": {key: {"must_left": 0}}})
+    got = []
+    monkeypatch.setattr(res_mod, "ask_choice", lambda *a, **k: got.append(a[2]) or 0)
+    assert out._review_left_ok() and not got  # 남은 칸이 없으면 묻지 않는다
+    monkeypatch.setattr(service, "review_progress", lambda p: {"by_file": {key: {"must_left": 12}}})
+    opened = []
+    monkeypatch.setattr(win.project.steps, "review_translation", lambda: opened.append(1))
+    assert out._review_left_ok() is False and opened == [1] and "12개" in got[0]  # 번역 검수 열기
+    monkeypatch.setattr(res_mod, "ask_choice", lambda *a, **k: 1)
+    assert out._review_left_ok() is True  # 그대로 넣기
+    monkeypatch.setattr(res_mod, "ask_choice", lambda *a, **k: 2)
+    assert out._review_left_ok() is False  # 취소
+    win.close()
+
+
+def test_background_erase_starts_after_glossary_step_reerases_changed_and_boosts(qapp, tmp_path, monkeypatch):
+    """뒤에서 글자 지우기: ④부터 저절로, 원문이 바뀐 파일은 다시, ⑦을 누르면 서두르거나 이미 지웠다고 알린다."""
+    from app.qt import bg_erase
+    from app.qt import results as res_mod
+    from app.qt.main import MainWindow
+    from tests.test_translate import _write_extract
+
+    monkeypatch.delenv("CARDTRANSLATER_NO_BG_ERASE", raising=False)
+    started = []
+
+    def run_now(job):  # 작업 스레드 대신 바로 (테스트가 기다리지 않게)
+        started.append(job)
+        job.run()
+        return job
+    monkeypatch.setattr(bg_erase.worker, "start", run_now)
+    info, fd = _translated_project(tmp_path)
+    workspace.set_status(info, "extracting")
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    assert not started and not (fd / "cleared" / "cleared.pdf").exists()  # ④ 전에는 하지 않는다
+    workspace.set_status(info, "glossary_review")  # ④ 용어집 만들기를 누름
+    win.project.refresh()
+    assert len(started) == 1 and (fd / "cleared" / "cleared.pdf").exists() and not win.project.bg.active
+    assert win.bg_label.text() == "" and service.files_needing_erase(info.dir) == []
+    _write_extract(fd, 2, "HELLO AGAIN")  # ③ 원문 확인에서 고침
+    win.project.refresh()
+    assert len(started) == 2 and service.stale_erased_pages(fd) == []  # 바뀐 파일을 다시 지움
+    # ⑦: 다 지웠으면 알리기만
+    shown = []
+    monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    ran = []
+    monkeypatch.setattr(res_mod.worker, "run_with_dialog", lambda *a, **k: ran.append(a))
+    win.project.out.erase()
+    assert "이미 지웠습니다" in shown[-1] and not ran
+    # ⑦: 뒤에서 지우는 중이면 우선순위만 높인다
+    bg = win.project.bg
+    from types import SimpleNamespace
+
+    bg.job, bg._current, bg.queue = SimpleNamespace(thread=None, cancel=lambda: None), fd, []  # 지우는 중인 척
+    bg.text = "뒤에서 글자 지우기 1/1 파일 (천천히)"
+    win.project.out.erase()
+    assert bg.boosted and "우선순위를 높였습니다" in shown[-1] and not ran
+    bg.job = None
+    bg.stop()
+    assert not bg.active and win.bg_label.text() == ""

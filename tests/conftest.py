@@ -4,6 +4,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_background_erase(monkeypatch):
+    """프로젝트 화면을 여는 테스트가 뒤에서 글자 지우기를 시작하지 않게 (그것을 보는 테스트만 켠다)."""
+    monkeypatch.setenv("CARDTRANSLATER_NO_BG_ERASE", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_claude(monkeypatch):
     def refuse(*a, **k):
         raise RuntimeError("테스트에서 실제 claude 명령을 실행하려 했습니다. 가짜 runner를 넣으세요")

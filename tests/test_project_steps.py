@@ -260,3 +260,28 @@ def test_font_preview_draws_like_compose(tmp_path):
     from app import font_plan
 
     assert font_plan.preview_render(fd, 1, "없는 영역", None) is None
+
+
+def test_erase_records_source_and_detects_changed_cards(tmp_path):
+    """지운 뒤 원문이 바뀐 카드를 알아채고(다시 지울 차례), 지우기를 다시 하면 그 표시가 없어진다."""
+    from tests.test_service import GAEGU
+
+    if not GAEGU.exists():
+        import pytest
+
+        pytest.skip("fonts/ 없음")
+    info, fd = _project(tmp_path)
+    _write_extract(fd, 1, "HELLO")
+    _write_extract(fd, 2, "HELLO")
+    assert service.files_needing_erase(info.dir) == [fd]  # 아직 안 지움
+    assert service.erase_project(info.dir).state == "done"
+    assert service.stale_erased_pages(fd) == [] and service.files_needing_erase(info.dir) == []
+    meta = json.loads((fd / "cleared" / "meta" / "page-001.json").read_text(encoding="utf-8"))
+    assert meta["erase_sig"]
+    _write_extract(fd, 2, "HELLO WORLD")  # ③ 원문 확인에서 고침
+    assert service.stale_erased_pages(fd) == [2] and service.files_needing_erase(info.dir) == [fd]
+    ov = service.project_overview(info.dir)
+    assert ov["groups"][0]["files"][0]["erase_stale"] is True
+    r = service.erase_project(info.dir)  # 바뀐 파일은 다시 지운다
+    assert r.files[0]["state"] == "done" and service.stale_erased_pages(fd) == []
+    assert service.erase_project(info.dir).files[0]["state"] == "skipped"

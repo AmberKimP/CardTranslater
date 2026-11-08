@@ -292,7 +292,7 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
             e = card_edits.edit_for(edits, pno, reg.name, vals["번역"])
             if e:  # 엑셀 값이 고칠 때 그대로면 결과 보기에서 고친 번역을 엑셀에도 넣는다
                 vals["번역"] = _to_cell(e["ko"])
-                vals["메모"] = " / ".join(x for x in (vals.get("메모"), "결과 보기에서 고침") if x)
+                vals["메모"] = " / ".join(x for x in (vals.get("메모"), "앱에서 고침") if x)
             drafts[vals["key"]] = vals["번역"] or draft
             for h, v in vals.items():
                 ws.cell(row, COL[h], v)

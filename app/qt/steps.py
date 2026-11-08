@@ -1525,12 +1525,12 @@ class StepActions:
         if not files or all(f.get("erased") for f in files):
             return None
         cb = QCheckBox("끝나면 바로 ‘⑦ 글자 지우기’까지 하기")
-        cb.setToolTip("번역과 검수 엑셀이 끝나면 이어서 글자를 지웁니다. 이미 지운 파일은 건너뜁니다.")
+        cb.setToolTip("번역이 끝나면 이어서 글자를 지웁니다. 이미 지운 파일은 건너뜁니다.")
         cb.setChecked(True)
         return cb
 
     def _translate_done(self, r):
-        """번역이 끝나면 검수 엑셀까지 이어서 만든다 (따로 누르는 단계 없음)."""
+        """번역이 끝나면 요약과 ‘번역 검수 열기’를 보인다 (검수 엑셀은 자동으로 만들지 않는다)."""
         self.page.refresh()
         if r.state != "done":
             self._then_erase = False
@@ -1549,39 +1549,32 @@ class StepActions:
             issues.append(f"아이콘 불일치 {len(r.icon_mismatch)}칸")
         if r.leftover:
             issues.append(f"일본어가 남은 번역 {len(r.leftover)}칸")
-        self._translate_summary = (f"서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
-                                   f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else ""))
-        self.export_excel()
-
-    def export_excel(self):
-        job = worker.Job(service.export_project_excel, self.pdir, force=True, with_progress=False)
-        worker.run_with_dialog(self.page, "번역 검수 엑셀 만드는 중", job, self._excel_done,
-                               _fail_as(self.page, "검수 엑셀을 만들지 못했습니다"), cancellable=False)
-
-    def _excel_done(self, paths):
-        from app.qt.main import open_path
-
-        self.page.refresh()
-        head = getattr(self, "_translate_summary", "")
-        self._translate_summary = ""
-        if getattr(self, "_then_erase", False):  # 엑셀을 먼저 열고, 묻지 않고 바로 ⑦ 글자 지우기 (결과는 지우기 끝에 함께)
+        summary = (f"서로 다른 원문 {r.cells}칸: 이번에 번역 {r.translated}, 용어집으로 바로 {r.from_glossary}, "
+                   f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else ""))
+        if getattr(self, "_then_erase", False):  # 묻지 않고 바로 ⑦ 글자 지우기 (결과는 지우기 끝에 함께)
             self._then_erase = False
-            if paths:
-                open_path(Path(paths[0]).resolve())
-            self.page.out.erase(auto=True, note=(head + "\n" if head else "")
-                                + "검수 엑셀: " + ", ".join(Path(p).name for p in paths))
+            self.page.out.erase(auto=True, note=summary)
             return
         box = QMessageBox(self.page)
         box.setWindowTitle("⑥ 전체 번역")
-        box.setText((head + "\n\n" if head else "")
-                    + "검수 엑셀을 만들었습니다 (게임에 하나, 그룹마다 시트, 사람이 고친 칸은 그대로):\n"
-                    + "\n".join(str(p) for p in paths)
-                    + "\n\n같은 게임의 다른 프로젝트도 이 엑셀에 함께 들어 있습니다.")
-        openx = box.addButton("엑셀 열기", QMessageBox.ButtonRole.AcceptRole)
-        openf = box.addButton("폴더 열기", QMessageBox.ButtonRole.ActionRole)
+        box.setText(summary + "\n\n번역을 마쳤습니다. ‘번역 검수’에서 칸마다 확인하세요. "
+                    "엑셀은 다른 사람에게 검수를 맡길 때 씁니다.")
+        openb = box.addButton("번역 검수 열기", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
         box.exec()
-        if paths and box.clickedButton() is openx:
-            open_path(Path(paths[0]).resolve())
-        elif paths and box.clickedButton() is openf:
-            open_path(Path(paths[0]).resolve().parent)
+        if box.clickedButton() is openb:
+            self.review_translation()
+
+    # ---- 번역 검수
+    def review_translation(self):
+        """번역 검수 창. 목록에서 고른 그룹·파일이 있으면 범위를 그것으로 미리 고른다."""
+        from app.qt.review import TranslationReviewDialog
+
+        sel = self.page._selected()
+        preset = (sel[0], sel[1]["dir"]) if sel and sel[0] in ("group", "file") else None
+        dlg = TranslationReviewDialog(self.pdir, self.page, preset)
+        dlg.exec()
+        msg = dlg.closing_message()
+        self.page.refresh()
+        if msg and getattr(self.page, "win", None) is not None:
+            self.page.win.statusBar().showMessage(msg)

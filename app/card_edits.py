@@ -67,6 +67,8 @@ def apply(file_dir: Path | str, cards: dict, source_of=None) -> tuple[dict, list
             card = out.setdefault(page, {"page": page})
             entry = card.get(region) if isinstance(card.get(region), dict) else None
             cur = entry.get("ko") if entry else None
+            if norm(cur) == norm(e.get("ko")):
+                continue  # 엑셀을 다시 만들어 고친 번역이 이미 들어 있다 (알릴 것 없음)
             if norm(cur) != norm(e.get("base")):
                 notes.append(f"{page}쪽 {region}: 검수 엑셀에서 그 뒤에 고쳐 결과 보기에서 고친 번역은 쓰지 않음")
                 continue

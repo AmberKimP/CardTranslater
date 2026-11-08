@@ -44,8 +44,9 @@ STEP_INFO = {
     "finish": ("④ 용어집 만들기", "용어 후보를 모아 용어집 엑셀을 만듭니다", "먼저 ① 글자 추출을 하세요"),
     "glossary": ("⑤ 용어집 가져오기", "엑셀에서 고친 용어집을 가져와 확정합니다",
                  "먼저 ④ 용어집 만들기로 용어집 엑셀을 만드세요"),
-    "translate": ("⑥ 전체 번역", "확정한 용어집으로 번역하고 검수 엑셀까지 만듭니다",
+    "translate": ("⑥ 전체 번역", "확정한 용어집으로 번역합니다",
                   "먼저 ⑤ 용어집을 가져와 확정하세요"),
+    "check": ("번역 검수", "번역을 칸마다 원문과 비교해 고치고 확인합니다", "먼저 ⑥ 전체 번역을 하세요"),
     "erase": ("⑦ 글자 지우기", "카드에서 원문 글자를 지웁니다", "먼저 파일을 넣고 영역을 지정하세요"),
     "compose": ("⑧ 한글 넣기", "지운 카드에 번역한 한글을 넣습니다", "먼저 ⑥ 전체 번역과 ⑦ 글자 지우기를 끝내세요"),
     "results": ("결과 보기", "한글을 넣은 카드를 원본과 나란히 봅니다", "아직 한글을 넣은 파일이 없습니다 (⑧ 한글 넣기)"),
@@ -250,6 +251,11 @@ class ProjectPage(QWidget):
         self.win = win
         self.project_dir: Path | None = None
         self.ov: dict = {}
+        self.erasing = False  # ⑦ 글자 지우기를 화면에서 돌리는 중 (그동안 뒤에서 지우기는 쉬게)
+        from app.qt.bg_erase import BackgroundEraser
+
+        self.bg = BackgroundEraser(self)  # 원문이 확정되면(④부터) 뒤에서 글자 지우기
+        self.bg.file_done.connect(self.refresh)
         self.title = page_title("", 17)
         self.sub = subtitle("")
         # 시험 모드 띠 (파일마다 앞 몇 장만)
@@ -359,7 +365,8 @@ class ProjectPage(QWidget):
                 ("review", self.steps.review_sources),
                 ("finish", self.steps.finish),
                 ("glossary", self.steps.import_glossary),
-                ("translate", self.steps.translate))):
+                ("translate", self.steps.translate),
+                ("check", self.steps.review_translation))):
             if i:
                 steps.addWidget(self._arrow())
             steps.addWidget(self._step_button(key, fn))
@@ -561,6 +568,7 @@ class ProjectPage(QWidget):
         self.body.setCurrentWidget(self.tree if o["groups"] else self.empty)
         self._sync_buttons()
         self._sync_steps()
+        self.bg.kick()  # 지워야 할 파일이 있으면 뒤에서 지운다 (④ 용어집 만들기부터, 원문이 바뀐 카드도)
 
     def step_states(self) -> dict[str, str]:
         """단계 버튼마다 ‘done’(끝남) · ‘now’(다음에 할 일) · ‘todo’. overview 값으로만 판단한다."""
@@ -573,12 +581,18 @@ class ProjectPage(QWidget):
             "review": past_extract, "icons": past_extract, "finish": past_extract,
             "glossary": st in ("glossary_confirmed", "translating", "translated"),
             "translate": st == "translated",
+            "check": self._review_done(),
             "erase": bool(files) and all(f["erased"] for f in files),
             "compose": bool(files) and all(f["composed"] for f in files),
             "results": False, "test": False,
         }
         nxt = o.get("next_key")
         return {k: "now" if k == nxt else ("done" if done[k] else "todo") for k in self.step_buttons}
+
+    def _review_done(self) -> bool:
+        """번역 검수 끝남: 확인할 칸(꼭 고칠·확인해 볼)을 모두 확인함."""
+        rv = self.ov.get("review")
+        return bool(rv and rv.get("total", 0) > 0 and not rv.get("must_left") and not rv.get("look_left"))
 
     def do_next(self):
         """‘다음 할 일’ 큰 버튼: next_key에 맞는 단계를 부른다."""
@@ -612,6 +626,7 @@ class ProjectPage(QWidget):
             # 확정 뒤에도 고친 엑셀을 다시 가져올 수 있다 (바뀐 용어가 든 칸만 다시 번역됨)
             "glossary": st in ("glossary_review", "glossary_confirmed", "translating", "translated"),
             "translate": st in ("glossary_confirmed", "translating", "translated"),
+            "check": st in ("translating", "translated") and any(f.get("translated") for f in files),
             "erase": ready,
             # 그룹만 번역·지우기를 끝내도 그 그룹은 한글을 넣을 수 있다
             "compose": st in ("translating", "translated") and any(f["erased"] and f.get("translated") for f in files),
@@ -626,6 +641,10 @@ class ProjectPage(QWidget):
             b.setText(text + (" ✓" if stt == "done" else ""))
             if not on[k]:
                 b.setToolTip(f"{what}\n지금은 쓸 수 없음: {why}")
+            elif k == "check" and o.get("review"):
+                rv = o["review"]
+                b.setToolTip(f"{what}\n확인 {rv['checked']}/{rv['total']}칸 · 꼭 고칠 칸 {rv['must_left']} · "
+                             f"확인해 볼 칸 {rv['look_left']}")
             elif stt == "done":
                 b.setToolTip(f"{what}\n끝난 단계입니다 (다시 할 수도 있습니다)")
             else:
@@ -895,6 +914,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.home = HomePage(self)
         self.project = ProjectPage(self)
+        self.bg_label = QLabel()  # 상태 줄 오른쪽: 뒤에서 글자 지우기 진행
+        self.bg_label.setStyleSheet("color: #5F6B7A; padding-right: 8px")
+        self.statusBar().addPermanentWidget(self.bg_label)
+        self.project.bg.changed.connect(self.bg_label.setText)
         self.stack.addWidget(self.home)
         self.stack.addWidget(self.project)
         self.setCentralWidget(self.stack)
@@ -981,6 +1004,10 @@ class MainWindow(QMainWindow):
 
     def show_release_notes(self):
         ReleaseNotesDialog(self).exec()
+
+    def closeEvent(self, ev):
+        self.project.bg.stop()  # 지우던 파일은 저장하지 않고 다음에 이어 한다
+        super().closeEvent(ev)
 
     def open_settings(self):
         if SettingsDialog(self).exec():
