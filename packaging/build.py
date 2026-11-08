@@ -72,7 +72,10 @@ def build() -> Path:
     for child in out.iterdir():
         shutil.rmtree(child) if child.is_dir() else child.unlink()
     shutil.copytree(work / "dist" / NAME, out, dirs_exist_ok=True)
-    shutil.copy2(ROOT / "CHANGELOG.md", out / "릴리스 노트.md")  # 설치 폴더에서도 바로 열어 볼 수 있게
+    from app.release_notes import install_copy
+
+    # 설치 폴더에서도 바로 열어 볼 수 있게 (앱 화면과 같은 내용: 개발용 안내는 뺀다)
+    (out / "릴리스 노트.md").write_text(install_copy(ROOT / "CHANGELOG.md"), encoding="utf-8")
     exe = out / f"{NAME}.exe"
     print(f"[build] {exe}")
     return exe

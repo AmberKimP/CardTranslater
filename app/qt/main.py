@@ -825,9 +825,7 @@ class ReleaseNotesDialog(QDialog):
         fit_to_screen(self, 900, 760, maximize_below=0)
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)
-        text = service.release_notes()
-        if "\n## " in text:  # 맨 위 안내(개발용: 버전 규칙·태그)는 빼고 버전별 노트부터
-            text = text[text.index("\n## ") + 1:]
+        text = service.release_notes()  # 개발용 안내는 service가 빼고 준다
         if text:
             self.view.setMarkdown(text)
         else:

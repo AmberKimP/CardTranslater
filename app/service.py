@@ -2129,14 +2129,10 @@ def self_check() -> dict:
 
 
 def release_notes() -> str:
-    """릴리스 노트(CHANGELOG.md) 글. 설치본은 exe에 묶은 것, 개발 중에는 저장소 맨 위의 것. 없으면 ''."""
-    import sys
+    """사용자용 릴리스 노트 글(버전별 새 기능·고친 점, 최신이 위). 없거나 읽지 못하면 ''."""
+    from app import release_notes as rn
 
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    for f in (base / "CHANGELOG.md", Path(__file__).resolve().parent.parent / "CHANGELOG.md"):
-        if f.exists():
-            return f.read_text(encoding="utf-8")
-    return ""
+    return rn.load()
 
 
 # ---------------------------------------------------------------- 화면용: 지우기(휴지통) — 프로젝트·그룹·파일

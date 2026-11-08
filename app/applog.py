@@ -53,8 +53,9 @@ class _MaskFilter(logging.Filter):
 
 def build_info() -> dict:
     """빌드할 때 넣은 정보(build_info.json: 버전·커밋·시각). 개발 중에는 {"version": "dev"}."""
-    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    p = root / "build_info.json"
+    from app.settings import resource_root
+
+    p = resource_root() / "build_info.json"
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):

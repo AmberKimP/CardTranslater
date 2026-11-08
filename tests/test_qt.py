@@ -2222,13 +2222,13 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     assert dlg.result.replaced == 2
 
 
-def test_release_notes_menu_shows_changelog(qapp):
+def test_release_notes_menu_shows_changelog(qapp, tmp_path):
     from app import version
     from app.qt.main import MainWindow, ReleaseNotesDialog
 
     text = service.release_notes()
-    assert f"## {version.VERSION}" in text  # 지금 버전의 노트가 있다
-    win = MainWindow()
+    assert text.startswith(f"## {version.VERSION}")  # 지금 버전의 노트가 맨 위
+    win = MainWindow(root=tmp_path)
     help_menu = next(a.menu() for a in win.menuBar().actions() if a.text() == "도움말")
     assert "릴리스 노트…" in [a.text() for a in help_menu.actions()]
     dlg = ReleaseNotesDialog(win)

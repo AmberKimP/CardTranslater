@@ -39,6 +39,11 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def resource_root() -> Path:
+    """앱과 함께 묶은 파일(build_info.json·CHANGELOG.md 등)이 있는 곳: exe는 묶음 폴더, 개발 중에는 저장소."""
+    return Path(getattr(sys, "_MEIPASS", REPO_ROOT))
+
+
 def default_data_dir() -> Path:
     if is_frozen():
         return Path.home() / "Documents" / "CardTranslater"
