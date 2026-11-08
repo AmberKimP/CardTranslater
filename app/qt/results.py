@@ -453,7 +453,7 @@ class OutputActions:
                                                  else f" — {f.get('reason', '')}") for f in r.files]
         note, self._note = getattr(self, "_note", ""), ""
         if note:
-            lines = ["번역 · 검수 엑셀", note, "", "글자 지우기"] + lines
+            lines = ["⑥ 전체 번역", note, "", "글자 지우기"] + lines
         if r.state in ("done", "skipped"):
             QMessageBox.information(self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
         else:

@@ -38,11 +38,11 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
-# 화면 (PySide6): 프로젝트·파일·그룹·뺄 쪽·영역 지정 + 추출·원문 확인·아이콘 이름·용어집·번역·검수 엑셀 + 지우기·한글 넣기·결과 보기·시험 실행
+# 화면 (PySide6): 프로젝트·파일·그룹·뺄 쪽·영역 지정 + 추출·원문 확인·아이콘 정의·용어집 만들기·전체 번역 + 지우기·한글 넣기·결과 보기·시험 실행
 .venv/Scripts/python -m app.qt          # 시작할 때 로그인 방식(Claude 구독 / API 키) 고르기. --no-login 으로 건너뜀
 # exe 빌드 -> dist/CardTranslater/CardTranslater.exe (폴더째 배포. 빌드 뒤 자가 점검 --selftest)
 .venv/Scripts/python packaging/build.py
-# 0~8단계 전체: 게임·프로젝트·그룹 -> 추출 -> ‘추출 완료’ -> 용어집 검증·확정 -> 번역 -> 검수 -> 지우기 -> 한글 넣기 (projects/, games/ 는 git에 올리지 않음)
+# 0~8단계 전체: 게임·프로젝트·그룹 -> 추출 -> ‘용어집 만들기’ -> 용어집 검증·확정 -> 번역 -> 검수 -> 지우기 -> 한글 넣기 (projects/, games/ 는 git에 올리지 않음)
 .venv/Scripts/python -m app.cli new-project --name "Dungeon 1차" --game Dungeon
 .venv/Scripts/python -m app.cli add-files --project "projects/Dungeon 1차" --files Items.pdf   # 그룹 목록을 보여 주고 고르게 함
 .venv/Scripts/python -m app.cli extract-project --project "projects/Dungeon 1차"
@@ -85,7 +85,7 @@ Items.pdf(텍스트 레이어 없는 스캔, 위아래 반쪽 카드) 2~16쪽도
 
 화면(PySide6) 3차: ⑧ 글자 지우기(이미 지운 파일 건너뛰기/다시) ⑨ 한글 넣기(검수 엑셀 확인 항목은 묻고 계속) · 결과 보기(쪽마다 원본·결과 비교, 영역 600dpi 확대, 문제 있는 쪽만) · 시험 실행(몇 쪽만 시험 폴더에서, 프로젝트 결과는 그대로) · 마지막 프로젝트 이어 열기 · 영역 편집기에서 다른 그룹으로 이동·쓰는 글꼴을 목록 맨 위에 굵게 · exe 빌드(PyInstaller onedir).
 
-화면(PySide6) 2차: ① 글자 추출(그룹·모드·엔진, 진행률·취소, 한도로 멈추면 그 시각에 자동 이어 하기) ② 원문 확인(결론 못 냄·읽지 않은 칸을 카드 이미지·두 모델 결과와 비교해 고침) ③ 아이콘 이름(엑셀 없이 확정) ④ 추출 완료→용어집 검증 ⑤ 용어집 가져오기 ⑥ 번역 ⑦ 검수 엑셀.
+화면(PySide6) 2차: ① 글자 추출(그룹·모드·엔진, 진행률·취소, 한도로 멈추면 그 시각에 자동 이어 하기) ③ 원문 확인(결론 못 냄·읽지 않은 칸을 카드 이미지·두 모델 결과와 비교해 고침) ② 아이콘 정의(엑셀 없이 확정) ④ 용어집 만들기(용어집 검증) ⑤ 용어집 가져오기 ⑥ 전체 번역(번역 + 검수 엑셀).
 
 화면(PySide6) 1차: 프로젝트 목록·새 프로젝트, 파일 넣기(기존/새 그룹), 뺄 쪽, 영역 지정 편집기(그리기·옮기기·크기·회전·글꼴·지우기 옵션, 모르는 항목 보존), 설정(데이터 폴더·엔진). exe 빌드는 3차.
 

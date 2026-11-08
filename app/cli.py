@@ -297,7 +297,7 @@ def cmd_finish_extraction(args: argparse.Namespace) -> int:
         print(f"[finish-extraction] {r.state}: {r.reason}.{when}", file=sys.stderr)
         return 3 if r.state == "paused" else 1
     if r.state == "icons_review":
-        print(f"[finish-extraction] 먼저 아이콘 이름을 정해야 합니다: {r.reason}")
+        print(f"[finish-extraction] 먼저 아이콘 정의(이름 정하기)를 해야 합니다: {r.reason}")
         print(f"[finish-extraction] 아이콘 검증 엑셀: {r.review_xlsx}")
         print("  이름·뜻·한국어 이름을 확인한 뒤 import-icons 로 가져오고 finish-extraction 을 다시 실행하세요.")
         return 2

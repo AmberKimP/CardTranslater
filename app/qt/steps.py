@@ -43,7 +43,7 @@ LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽�
 
 STATE_LABEL = {"done": "끝남", "skipped": "건너뜀", "blocked": "할 수 없음", "failed": "실패",
                "paused": "사용 한도로 멈춤", "needs_confirmation": "확인 필요", "cancelled": "취소함",
-               "icons_review": "아이콘 이름 필요", "waiting_batch": "처리 기다리는 중"}
+               "icons_review": "아이콘 정의 필요", "waiting_batch": "처리 기다리는 중"}
 
 
 def state_label(s: str) -> str:
@@ -525,7 +525,7 @@ class SourceReviewDialog(QDialog):
         elif n_unread:
             set_hint(self.guide, f"아직 읽지 않은 칸이 {n_unread}개 있습니다. 프로젝트 화면에서 ‘① 글자 추출’을 다시 누르면 이어서 읽습니다.", "info")
         else:
-            set_hint(self.guide, "확인할 칸이 없습니다. 창을 닫고 ‘④ 추출 완료 → 용어집’으로 넘어가세요.", "done")
+            set_hint(self.guide, "확인할 칸이 없습니다. 창을 닫고 ‘④ 용어집 만들기’로 넘어가세요.", "done")
         self._busy = True
         try:
             self.table.setRowCount(len(self.cells))
@@ -1063,7 +1063,7 @@ class IconReviewDialog(QDialog):
         super().__init__(parent)
         self.project_dir = Path(project_dir)
         self.result = None
-        self.setWindowTitle("아이콘 이름 정하기")
+        self.setWindowTitle("② 아이콘 정의")
         fit_to_screen(self, 1400, 640, maximize_below=0)
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
@@ -1081,7 +1081,7 @@ class IconReviewDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
         lay.setSpacing(8)
-        lay.addWidget(page_title("아이콘 이름 정하기", 14))
+        lay.addWidget(page_title("② 아이콘 정의", 14))
         lay.addWidget(self.steps_text)
         lay.addWidget(self.known_note)
         lay.addWidget(self.table, 1)
@@ -1442,11 +1442,11 @@ class StepActions:
     def _finish_done(self, r):
         self.page.refresh()
         if r.state == "needs_confirmation":
-            if _ask_list(self.page, "추출 완료 확인", "아래 항목이 남아 있습니다.", r.issues, "그래도 용어집을 만들까요?"):
+            if _ask_list(self.page, "용어집 만들기 확인", "아래 항목이 남아 있습니다.", r.issues, "그래도 용어집을 만들까요?"):
                 self.finish(accept=True)
             return
         if r.state == "icons_review":
-            QMessageBox.information(self.page, "아이콘 먼저", f"먼저 아이콘 이름을 정해야 합니다: {r.reason}")
+            QMessageBox.information(self.page, "아이콘 먼저", f"먼저 ‘② 아이콘 정의’를 해야 합니다: {r.reason}")
             review = service.icon_review(self.pdir)
             if review and self._open_icon_review(review):
                 self.finish(accept=True)
@@ -1532,7 +1532,7 @@ class StepActions:
             self._then_erase = False
         if r.state == "cancelled":
             QMessageBox.information(self.page, "번역을 멈췄습니다",
-                                    "번역한 칸은 저장했습니다. ‘⑥ 번역 · 검수 엑셀’을 다시 누르면 남은 칸부터 이어서 합니다.")
+                                    "번역한 칸은 저장했습니다. ‘⑥ 전체 번역’을 다시 누르면 남은 칸부터 이어서 합니다.")
             return
         if r.state != "done":
             show_problem(self.page, f"번역을 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
@@ -1568,7 +1568,7 @@ class StepActions:
                                 + "검수 엑셀: " + ", ".join(Path(p).name for p in paths))
             return
         box = QMessageBox(self.page)
-        box.setWindowTitle("번역 · 검수 엑셀")
+        box.setWindowTitle("⑥ 전체 번역")
         box.setText((head + "\n\n" if head else "")
                     + "검수 엑셀을 만들었습니다 (게임에 하나, 그룹마다 시트, 사람이 고친 칸은 그대로):\n"
                     + "\n".join(str(p) for p in paths)
