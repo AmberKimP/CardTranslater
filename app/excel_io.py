@@ -263,6 +263,9 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
     tr_cache, gl_terms = _project_translation(project.root)
     group = group_of(project)
     fonts = {r.name: font_label(r.style) for r in project.template.regions}
+    from app import card_edits
+
+    edits = card_edits.load(project.root)  # 결과 보기에서 고친 번역
     drafts: dict = {}
     for pno in pages:
         card = project.samples.get(pno) or {}
@@ -286,6 +289,10 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
             kept = (keep or {}).get(vals["key"])
             if kept:
                 vals.update({h: v for h, v in kept.items() if h in KEEP_COLS})
+            e = card_edits.edit_for(edits, pno, reg.name, vals["번역"])
+            if e:  # 엑셀 값이 고칠 때 그대로면 결과 보기에서 고친 번역을 엑셀에도 넣는다
+                vals["번역"] = _to_cell(e["ko"])
+                vals["메모"] = " / ".join(x for x in (vals.get("메모"), "결과 보기에서 고침") if x)
             drafts[vals["key"]] = vals["번역"] or draft
             for h, v in vals.items():
                 ws.cell(row, COL[h], v)

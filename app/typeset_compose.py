@@ -675,6 +675,19 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     sha_src_before = sha256_file(src_path)
     sha_erased_before = sha256_file(erased_path)
     cards = project.samples if cards is None else cards
+    # 결과 보기에서 고친 번역 (검수 엑셀이 그 뒤에 바뀐 칸은 엑셀이 우선)
+    from app import card_edits
+    from app.excel_io import source_of
+    from app.extract import load_extracted
+
+    _ext: dict = {}
+
+    def _src(pno, rname):
+        if "x" not in _ext:
+            _ext["x"] = load_extracted(project.root)
+        return source_of(project, _ext["x"], pno, rname)[0]
+
+    cards, edit_notes = card_edits.apply(project.root, cards, _src)
 
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -782,6 +795,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         "output_pdf": str(out_pdf),
         "size_rule": "원문 글자 높이 기준: 시작크기 = 원문 잉크 높이 / 글꼴 보정 배율, min = 시작크기 x 0.8 (한글 글자 높이가 원문의 80% 아래로 가지 않음). 잉크 높이를 모르면 min = max(원문pt x 0.8, min(6pt, 원문pt))",
         "status_summary": summary,
+        "card_edit_notes": edit_notes,
         "pages_detail": page_recs,
     }
     (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")

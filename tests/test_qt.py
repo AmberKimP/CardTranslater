@@ -1182,7 +1182,9 @@ def test_card_erase_mode_override_and_redo(qapp, tmp_path):
     assert info2["mode"] is None and not info2["text_mask"]  # 다른 카드는 영역 설정대로 (예전 방식)
     v = ResultViewer([("카드/cards", fd / "translated")])
     v.regions.setCurrentRow(1)
-    assert v.redo_btn.isEnabled() and v.erase_mode.currentData() == "rect_avg"
+    assert v.erase_mode.currentData() == "rect_avg" and not v.redo_btn.isEnabled()  # 고친 것이 없으면 꺼짐
+    v.erase_mode.setCurrentIndex(0)
+    assert v.redo_btn.isEnabled()
     assert "지우기: 사각형으로 덮기" in v.regions.item(1).text()
     service.set_card_erase_mode(fd, 1, region, None)  # 영역 설정대로 되돌리기
     assert "erase_modes" not in workspace.file_settings(fd)
@@ -2000,7 +2002,7 @@ def test_result_viewer_colors_and_footer(qapp, tmp_path):
     service.erase_project(info.dir)
     service.compose_project(info.dir)
     v = ResultViewer([("카드/cards", fd / "translated")])
-    assert v.info.property("hint_kind") == "done" and "검수 엑셀" in v.footer.text()
+    assert v.info.property("hint_kind") == "done" and "번역·글꼴·지우기 방식을 고치고 저장" in v.footer.text()
     assert v.only.text() == "문제 있는 쪽만 보기"
     assert v.regions.count() >= 1
     r = service.test_run(fd, "2", out_root=tmp_path / "runs")
@@ -2235,3 +2237,67 @@ def test_release_notes_menu_shows_changelog(qapp, tmp_path):
     assert version.VERSION in dlg.windowTitle() and version.VERSION in dlg.view.toPlainText()
     assert "app/version.py" not in dlg.view.toPlainText()  # 개발용 안내는 빼고 보여 준다
     assert service.self_check()["release_notes"] is True
+
+
+
+def test_result_viewer_edits_translation_and_font_then_recomposes(qapp, tmp_path, monkeypatch):
+    """결과 보기에서 한 카드의 번역·글꼴을 고쳐 저장하면 그 파일에 한글만 다시 넣는다 (검수 엑셀은 그대로)."""
+    import pymupdf
+
+    from app import card_edits
+    from app.qt import results as qres
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    names = [r["name"] for r in v.current()["regions"]]
+    v.regions.setCurrentRow(names.index("이름") + 1)
+    assert v.edit_form.isVisible() or v.edit_text.toPlainText() == "안녕"
+    assert v.edit_text.toPlainText() == "안녕" and not v.redo_btn.isEnabled()
+    v.edit_text.setPlainText("반가워")
+    font = next(f["file"] for f in service.font_choices() if "gaegu" in f["file"].lower())
+    v.edit_font.setCurrentIndex(v.edit_font.findData(font))
+    assert v.redo_btn.isEnabled() and "저장하지 않은" in v.edit_note.text()
+    png = service.card_preview(fd, 1, "이름", "반가워", font)
+    assert png and png[1:4] == b'PNG'
+    ran = {}
+
+    def run_now(_parent, _title, job, on_done, _on_fail=None, cancellable=True):  # 작업 스레드 대신 바로
+        ran["fn"] = job.fn
+        on_done(job.fn(*job.args, **job.kwargs))
+
+    monkeypatch.setattr(qres.worker, "run_with_dialog", run_now)
+    v.save_edit()
+    assert ran["fn"] is service.recompose_file  # 지우기 방식은 그대로라 다시 지우지 않는다
+    assert card_edits.load(fd) == {1: {"이름": {"ko": "반가워", "base": "안녕"}}}
+    with pymupdf.open(fd / "translated" / "translated.pdf") as d:
+        assert "반가워" in d[0].get_text() and "안녕" in d[1].get_text()  # 2쪽은 그대로
+    rep = json.loads((fd / "translated" / "report.json").read_text(encoding="utf-8"))
+    assert rep["pages_detail"][0]["regions"]["이름"]["font_file"] == font
+    again = service.card_edit_info(fd, 1, "이름")
+    assert again["ko"] == "반가워" and again["edited"] and again["base"] == "안녕" and again["font"] == font
+    # 원래대로 저장하면 고친 것을 지운다
+    service.save_card_edit(fd, 1, "이름", text="안녕", font=None, set_font=True)
+    assert card_edits.load(fd) == {} and service.card_edit_info(fd, 1, "이름")["font"] == ""
+
+
+def test_card_edit_yields_to_newer_excel_edit(tmp_path):
+    """결과 보기에서 고친 뒤 검수 엑셀에서 같은 칸을 고치면 엑셀이 우선 (몰래 덮지 않는다)."""
+    from app import card_edits
+
+    cards = {1: {"page": 1, "이름": {"source": "HELLO", "ko": "안녕"}}}
+    fd = tmp_path / "f"
+    fd.mkdir()
+    card_edits.set_text(fd, 1, "이름", "반가워", "안녕")
+    out, notes = card_edits.apply(fd, cards)
+    assert out[1]["이름"]["ko"] == "반가워" and out[1]["이름"]["source"] == "HELLO" and not notes
+    assert cards[1]["이름"]["ko"] == "안녕"  # 원래 dict는 그대로
+    newer = {1: {"page": 1, "이름": {"source": "HELLO", "ko": "어서 와"}}}
+    out, notes = card_edits.apply(fd, newer)
+    assert out[1]["이름"]["ko"] == "어서 와" and notes
+    # 번역이 아예 없던 칸에도 넣는다 (원문은 찾아서)
+    card_edits.set_text(fd, 2, "이름", "새 번역", None)
+    out, _ = card_edits.apply(fd, {}, lambda p, r: "SRC")
+    assert out[2]["이름"] == {"source": "SRC", "ko": "새 번역"}

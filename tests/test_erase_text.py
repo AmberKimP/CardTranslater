@@ -165,3 +165,40 @@ def test_widest_line_of_centered_block_stays_centered():
     left = [{"bbox": [10, 0, 60, 10], "align": "left"}, {"bbox": [10, 20, 90, 30], "align": "left"}]
     erase_text._center_widest(left, 0, 100, [])
     assert [ln["align"] for ln in left] == ["left", "left"]  # 왼쪽 정렬 글은 그대로
+
+
+def test_tight_lines_are_split_and_thin_bits_join_their_line():
+    """줄 사이가 2~3px뿐인 본문도 줄마다 나눈다 (엘프 A 5쪽: 세 줄이 한 줄로 잡혀 한글이 25pt로 넘침).
+    탁점·점처럼 얇은 조각은 가까운 줄에 붙는다."""
+    bands = [[89, 120], [123, 153], [157, 184]]
+    assert erase_text._merge_thin_bands(bands, 25.0, 3) == bands  # 두꺼운 줄끼리는 붙이지 않는다
+    with_dots = [[60, 64], [66, 95], [99, 128]]  # 위 탁점(5px) + 두 줄
+    assert erase_text._merge_thin_bands(with_dots, 25.0, 3) == [[60, 95], [99, 128]]
+    far = [[10, 14], [40, 70]]  # 멀리 떨어진 얇은 조각은 그대로 (뒤에서 걸러진다)
+    assert erase_text._merge_thin_bands(far, 25.0, 3) == far
+
+
+def test_text_row_group_found_when_frame_shares_text_color():
+    """상자 바로 밖(띠 테두리·카드 검은 테두리)에 글자색이 많아도, 한 줄로 늘어선 색 묶음은 글자다 (엘프 A 제목)."""
+    def comp(x, y, w, h):
+        m = np.zeros((120, 520), bool)
+        m[y:y + h, x:x + w] = True
+        return (m, np.array([30.0, 25, 20]), int(m.sum()), max(w, h))
+
+    text = {"color": np.array([30.0, 25, 20]), "items": [comp(150 + 50 * i, 45, 40, 42) for i in range(5)],
+            "area": 5 * 40 * 42}
+    art = {"color": np.array([200.0, 180, 150]), "items": [comp(30, 20, 30, 80), comp(300, 10, 20, 90)], "area": 4200}
+    box = (24, 24, 500, 110)
+    assert erase_text._text_row_group([art, text], box) is text
+    edge = {**text, "items": text["items"] + [comp(24, 50, 20, 30)]}  # 왼쪽 끝에 걸친 조각이 있으면 아니다
+    assert erase_text._text_row_group([edge], box) is None
+
+
+def test_single_inset_line_is_centered():
+    """묶음에 줄이 하나이고 양옆이 비면 가운데 정렬 (영역을 한쪽으로 넓게 그려도: 엘프 A 제목)."""
+    img = _paper(120, 520)
+    _text(img, (120, 80), (40, 40, 40), 1.6, 5, "TITLE")
+    box = (20, 20, 500, 110)
+    tm = erase_text.text_mask(img, box)
+    lay = erase_text.text_layout(img, tm, box)
+    assert len(lay["lines"]) == 1 and lay["lines"][0]["align"] == "center"

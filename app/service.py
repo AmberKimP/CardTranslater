@@ -2017,6 +2017,81 @@ def set_card_erase_mode(file_dir: Path | str, page: int, region: str, mode: str 
     workspace._write(fd / "file.json", data)
 
 
+def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
+    """결과 보기에서 고칠 칸의 지금 값: {"ko": 쓰는 번역(글, 태그 칸은 줄마다), "base": 엑셀·초벌 번역 그대로,
+    "edited": 결과 보기에서 고쳤나, "font": 이 카드만 고른 글꼴(없으면 ''), "region_font": 영역 글꼴, "kind"}."""
+    from app import card_edits, font_plan
+
+    fd = Path(file_dir)
+    font_plan._raw_cache.clear()  # 엑셀·고친 것이 바뀌었을 수 있다
+    base_cards = _translation_cards(fd)
+    entry = (base_cards.get(int(page)) or {}).get(region) or {}
+    base = entry.get("ko") if isinstance(entry, dict) else None
+    e = card_edits.edit_for(card_edits.load(fd), page, region, base)
+    data = font_plan.load(fd)
+    region_font = (data.get("regions") or {}).get(region) or ""
+    card_font = ((data.get("cards") or {}).get(str(int(page))) or {}).get(region) or ""
+    reg = next((r for r in load_project(fd).template.regions_for(int(page)) if r.name == region), None)
+    return {"ko": card_edits.norm(e["ko"] if e else base), "base": card_edits.norm(base), "edited": bool(e),
+            "font": card_font, "region_font": region_font, "kind": reg.kind if reg else "text"}
+
+
+def _translation_cards(fd: Path) -> dict:
+    """한글 넣기가 쓰는 번역 (고친 것을 덮기 전): 검수 엑셀이 있으면 그것, 없으면 초벌 번역."""
+    xlsx = review_xlsx_for(fd)
+    if xlsx:
+        from app.excel_io import import_translation
+
+        imp = import_translation(load_project(fd), xlsx)
+        if not imp.blocking:
+            return {int(k): v for k, v in (imp.cards or {}).items()}
+    return {int(k): v for k, v in cards_from_translation(fd).items()}
+
+
+def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | None = None,
+                   font: str | None = None, set_font: bool = False) -> None:
+    """결과 보기에서 고친 것을 저장한다 (반영은 recompose_file·redo_file로).
+    text: 고친 번역 (None이면 그대로, 엑셀·초벌 번역과 같으면 고친 것을 지움). 태그 칸은 줄마다 태그 하나.
+    set_font=True면 font(None·''이면 영역 글꼴을 따름)를 이 카드의 이 영역 글꼴로."""
+    from app import card_edits, font_plan
+
+    fd = Path(file_dir)
+    if text is not None:
+        entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
+        base = entry.get("ko") if isinstance(entry, dict) else None
+        ko = [t.strip() for t in text.splitlines() if t.strip()] if isinstance(base, list) else text.strip()
+        card_edits.set_text(fd, page, region, ko, base)
+    if set_font:
+        font_plan.set_card_font(fd, page, region, font or None)
+    font_plan._raw_cache.clear()
+
+
+def card_preview(file_dir: Path | str, page: int, region: str, text: str | None, font: str | None) -> bytes | None:
+    """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None."""
+    from app import font_plan
+
+    fd = Path(file_dir)
+    data = font_plan.load(fd)
+    f = font or font_plan.overrides_for_page(data, int(page)).get(region)
+    entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
+    ko = text
+    if text is not None and isinstance(entry.get("ko"), list):
+        ko = [t.strip() for t in text.splitlines() if t.strip()]
+    return font_plan.preview_render(fd, page, region, f, font_plan.size_scales(data).get(region, 1.0),
+                                    font_plan.align_choices(data).get(region), None, ko)
+
+
+def recompose_file(file_dir: Path | str, progress: ProgressFn | None = None,
+                   cancel: CancelToken | None = None) -> ComposeResult:
+    """파일 하나에 한글만 다시 넣는다 (지우기는 그대로). 고친 번역·글꼴을 반영할 때.
+    검수 엑셀이 있으면 그것(확인 항목은 이미 본 것으로 봄), 없으면 초벌 번역."""
+    fd = Path(file_dir)
+    xlsx = review_xlsx_for(fd)
+    if xlsx:
+        return compose(fd, excel=xlsx, accept_issues=True, progress=progress, cancel=cancel)
+    return _compose_with_cards(fd, cards_from_translation(fd), progress, cancel)
+
+
 def redo_file(file_dir: Path | str, progress: ProgressFn | None = None,
               cancel: CancelToken | None = None) -> ComposeResult:
     """파일 하나를 다시 지우고(지금 설정·카드별 방식으로) 한글을 다시 넣는다. 지운 쪽은 그대로.

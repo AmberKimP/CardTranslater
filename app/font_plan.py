@@ -79,6 +79,24 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
     return p
 
 
+def set_card_font(file_dir: Path | str, page: int, region: str, font_file: str | None) -> None:
+    """이 카드의 이 영역만 쓸 글꼴 (None·빈 값이면 영역 글꼴을 따름). 다른 선택은 그대로 둔다."""
+    p = Path(file_dir) / FILE_NAME
+    data = load(file_dir)
+    cards = data.setdefault("cards", {})
+    card = cards.setdefault(str(int(page)), {})
+    if font_file and font_file != (data.get("regions") or {}).get(region):
+        card[region] = font_file
+    else:
+        card.pop(region, None)
+    if not card:
+        cards.pop(str(int(page)), None)
+    data["updated"] = time.strftime("%Y-%m-%d %H:%M")
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
 def sentences_for_page(data: dict, page: int) -> dict:
     """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}."""
     regs = (data.get("sentences") or {}).get(str(page)) or {}
@@ -199,7 +217,9 @@ def _raw_cards(file_dir: Path) -> dict:
 
     fd = Path(file_dir)
     xlsx = service.review_xlsx_for(fd)
-    stamp = (str(fd), _signature(fd), str(xlsx), xlsx.stat().st_mtime if xlsx and xlsx.exists() else 0)
+    fj = fd / "file.json"
+    stamp = (str(fd), _signature(fd), str(xlsx), xlsx.stat().st_mtime if xlsx and xlsx.exists() else 0,
+             fj.stat().st_mtime if fj.exists() else 0)
     if _raw_cache.get("key") == stamp:
         return _raw_cache["cards"]
     cards = {}
@@ -217,29 +237,16 @@ def _raw_cards(file_dir: Path) -> dict:
         except Exception:  # noqa: BLE001
             cards = {}
     cards = {int(k): v for k, v in cards.items()}
+    from app import card_edits
+
+    cards, _notes = card_edits.apply(fd, cards)  # 결과 보기에서 고친 번역
     _raw_cache.update(key=stamp, cards=cards)
     return cards
 
 
 def card_texts(file_dir: Path) -> dict:
-    """{쪽: {영역: 한글}}: 검수 엑셀이 있으면 그것, 없으면 초벌 번역."""
-    from app import service
-
-    cards = {}
-    xlsx = service.review_xlsx_for(file_dir)
-    if xlsx:
-        try:
-            from app.excel_io import import_translation
-            from app.project import load_project
-
-            cards = import_translation(load_project(file_dir), xlsx).cards or {}
-        except Exception:  # noqa: BLE001 - 엑셀을 못 읽으면 초벌 번역으로
-            log.debug("검수 엑셀 읽기 실패", exc_info=True)
-    if not cards:
-        try:
-            cards = service.cards_from_translation(file_dir)
-        except Exception:  # noqa: BLE001
-            cards = {}
+    """{쪽: {영역: 한글}}: 검수 엑셀이 있으면 그것, 없으면 초벌 번역 (결과 보기에서 고친 번역 포함)."""
+    cards = _raw_cards(Path(file_dir))
     out = {}
     for page, regs in cards.items():
         row = {}
@@ -557,10 +564,10 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
 
 
 def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
-                   align: str | None = None, sentence: int | None = None) -> bytes | None:
+                   align: str | None = None, sentence: int | None = None, text=None) -> bytes | None:
     """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
     원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
-    번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
+    text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
     import pymupdf
 
     from app.project import load_project
@@ -570,7 +577,9 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
     fd = Path(file_dir)
     src = preview_source(fd, page, region)
     entry = (_raw_cards(fd).get(int(page)) or {}).get(region)
-    if src is None or not entry:
+    if text is not None:  # 결과 보기에서 고치는 중인 번역
+        entry = {**(entry or {}), "ko": text}
+    if src is None or not entry or not entry.get("ko"):
         return None
     try:
         m = json.loads((fd / "cleared" / "meta" / f"page-{int(page):03d}.json").read_text(encoding="utf-8"))

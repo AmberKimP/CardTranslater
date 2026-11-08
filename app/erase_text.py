@@ -288,6 +288,13 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         lined = [g for g in groups if g["outlined"] >= 0.5 and g["area"] >= 0.3 * max(gg["area"] for gg in groups)]
         if lined:
             best = max(lined, key=lambda g: g["area"] * g["outlined"])
+        if not lined:
+            # 상자 바로 밖에 글자와 같은 색(띠 테두리선·카드 검은 테두리)이 많으면 ‘드묾’으로는 못 고른다 (못 고르거나
+            # 작은 장식 조각을 고른다). 그때는 한 줄 글자처럼 늘어선 색 묶음을 글자로
+            row = _text_row_group(groups, (x0, y0, x1, y1))
+            if row is not None and row is not best and (best is None or best["area"] < 0.3 * row["area"]):
+                best = row
+                notes.append("상자 밖에 글자색이 많아 한 줄로 늘어선 색을 글자로 봄")
         for g in groups:
             if g is best or g["rare"] < 0.005:
                 for c in g["items"]:
@@ -313,6 +320,31 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     if protect is not None:
         grown &= ~protect
     return TextMask(grown, keep, busy, texture, glyph, notes, dividers)
+
+
+def _text_row_group(groups: list[dict], box: tuple[int, int, int, int]) -> dict | None:
+    """색 묶음 중 한 줄 글자처럼 늘어선 가장 큰 것 (없으면 None).
+    조각 3개 이상, 조각들의 세로 범위가 보통 조각 높이의 2.5배 이내(한 줄), 가로 폭이 세로의 2배 이상,
+    상자 왼쪽·오른쪽 끝에 닿는 조각이 없다 (그림·테두리 조각은 흩어져 있거나 끝에 걸친다. 위·아래는 영역을
+    빠듯하게 그리면 글자가 걸칠 수 있어 본다)."""
+    x0, y0, x1, y1 = box
+    for g in sorted(groups, key=lambda g: -g["area"]):
+        items = [c for c in g["items"] if c[2] >= 20]
+        if len(items) < 3:
+            continue
+        boxes = []
+        for c in items:
+            ys, xs = np.nonzero(c[0])
+            boxes.append((xs.min(), ys.min(), xs.max(), ys.max()))
+        if any(b[0] <= x0 + 2 or b[2] >= x1 - 3 for b in boxes):
+            continue
+        hs = sorted(b[3] - b[1] + 1 for b in boxes)
+        h_med = hs[len(hs) // 2]
+        uy0, uy1 = min(b[1] for b in boxes), max(b[3] for b in boxes)
+        ux0, ux1 = min(b[0] for b in boxes), max(b[2] for b in boxes)
+        if uy1 - uy0 + 1 <= 2.5 * h_med and ux1 - ux0 >= 2 * (uy1 - uy0 + 1):
+            return g
+    return None
 
 
 def background_kind(img: np.ndarray, tm: TextMask) -> str:
@@ -402,6 +434,30 @@ def _bands(rows: np.ndarray, gap: int) -> list[list[int]]:
     return out
 
 
+def _merge_thin_bands(bands: list[list[int]], glyph: float, gap: int) -> list[list[int]]:
+    """얇은 띠(글자 높이의 45% 미만)를 gap 안의 가까운 이웃 띠에 붙인다. 두꺼운 띠끼리는 붙이지 않는다."""
+    out = [list(b) for b in bands]
+    thin = lambda b: b[1] - b[0] + 1 < 0.45 * glyph  # noqa: E731
+    changed = True
+    while changed and len(out) > 1:
+        changed = False
+        for i, b in enumerate(out):
+            if not thin(b):
+                continue
+            prev_d = b[0] - out[i - 1][1] - 1 if i > 0 else None
+            next_d = out[i + 1][0] - b[1] - 1 if i + 1 < len(out) else None
+            cands = [(d, j) for d, j in ((prev_d, i - 1), (next_d, i + 1)) if d is not None and d <= gap + 1]
+            if not cands:
+                continue
+            _d, j = min(cands)
+            lo, hi = min(i, j), max(i, j)
+            out[lo] = [out[lo][0], out[hi][1]]
+            del out[hi]
+            changed = True
+            break
+    return out
+
+
 def _seg_height(m: np.ndarray) -> float | None:
     """빈 세로줄로 나뉜 조각의 높이 중 큰 쪽(75%) = 대표 글자 높이 (작은 ー・、 를 피함)."""
     rows_all = np.nonzero(m.any(1))[0]
@@ -440,7 +496,10 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
         return {"lines": [], "dividers": divs}
     glyph = tm.glyph_px or 10.0
     rows = core.sum(1)
-    bands = _bands(rows >= max(1, 0.04 * rows.max()), max(2, int(glyph * 0.12)))  # 작은 티끌이 줄을 잇지 않게
+    on = rows >= max(1, 0.04 * rows.max())  # 작은 티끌이 줄을 잇지 않게
+    # 줄 사이가 2~3px뿐인 빽빽한 글(줄 간격 좁은 본문)도 줄마다 나눈다: 빈 행에서 모두 나눈 뒤,
+    # 글자 높이의 45%보다 얇은 조각(탁점·점·위로 튀어나온 획)만 가까운 이웃 줄에 붙인다
+    bands = _merge_thin_bands(_bands(on, 0), glyph, max(2, int(glyph * 0.12)))
     hmax = max(b - a + 1 for a, b in bands)
     bands = [b for b in bands if b[1] - b[0] + 1 >= 0.25 * hmax]
     bg_px = I[inbox & ~tm.mask]
@@ -527,6 +586,10 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
         same = [o for o in lines if section(o) == section(ln)]
         lmin = min(o["bbox"][0] for o in same)
         if abs(mid - cx) <= 0.06 * bw and (left - lmin > 0.04 * bw or len(same) == 1):
+            ln["align"] = "center"
+        elif len(same) == 1 and min(left - x0, x1 - right) > 0.1 * bw:
+            # 묶음에 줄이 하나이고 양옆이 다 비었다: 영역을 글자보다 한쪽으로 넓게 그렸어도 그 줄은 가운데 정렬
+            # (한글 넣기가 원문 줄의 가운데에 맞춘다. 왼쪽 정렬로 보면 한글 길이만큼 한쪽으로 쏠린다)
             ln["align"] = "center"
         elif right >= x1 - 0.04 * bw and left - lmin > 0.15 * bw:
             ln["align"] = "right"

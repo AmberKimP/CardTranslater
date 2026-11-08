@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app import service
@@ -102,19 +102,51 @@ class ResultViewer(QDialog):
         self.image.setMinimumSize(1, 1)
         self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다. 휠은 이전/다음 쪽
         self.scroll.setToolTip("마우스 휠: 위로 이전 쪽, 아래로 다음 쪽")
-        # 이 카드의 이 영역만 다른 방식으로 지우기 (그림 배경 등)
+        # 이 카드의 이 영역 고치기: 번역·글꼴·지우기 방식 (다른 카드는 그대로)
+        self.edit_text = QPlainTextEdit()
+        self.edit_text.setPlaceholderText("이 칸에 넣을 한글 (줄을 바꾸면 그 자리에서 줄을 바꿉니다)")
+        self.edit_text.setMaximumHeight(96)
+        self.edit_text.setToolTip("검수 엑셀은 바꾸지 않습니다. 저장하면 이 파일의 한글 넣기에 쓰고, 검수 엑셀을 다시 만들면 들어갑니다.\n"
+                                  "그 뒤 검수 엑셀에서 같은 칸을 고치면 엑셀 쪽을 씁니다.")
+        self.edit_font = QComboBox()
+        self.edit_font.setToolTip("이 카드의 이 영역만 쓸 글꼴. 다른 카드는 글꼴 창에서 고른 영역 글꼴 그대로입니다.")
         self.erase_mode = QComboBox()
         self.erase_mode.setToolTip("이 카드의 고른 영역만 다른 방식으로 지웁니다. 다른 카드는 영역 설정대로입니다.")
-        self.redo_btn = QPushButton("이 방식으로 다시 지우고 한글 넣기")
-        self.redo_btn.clicked.connect(self.redo_card)
+        form = QFormLayout()
+        form.addRow("번역", self.edit_text)
+        form.addRow("글꼴", self.edit_font)
+        form.addRow("지우기", self.erase_mode)
+        self.preview_btn = QPushButton("미리 보기")
+        self.preview_btn.setToolTip("저장하기 전에 이 칸을 한글 넣기와 똑같이 그려 봅니다 (지우기 방식 바꾼 것은 저장해야 보입니다)")
+        self.preview_btn.clicked.connect(self.preview_edit)
+        self.reset_btn = QPushButton("원래대로")
+        self.reset_btn.setToolTip("번역은 검수 엑셀(없으면 초벌 번역) 그대로, 글꼴·지우기는 영역 설정대로 돌려 놓습니다 (저장해야 반영)")
+        self.reset_btn.clicked.connect(self.reset_edit)
+        self.redo_btn = QPushButton("저장하고 다시 넣기")
+        make_primary(self.redo_btn)
+        self.redo_btn.setAutoDefault(False)
+        self.redo_btn.clicked.connect(self.save_edit)
         erow = QHBoxLayout()
-        erow.addWidget(self.erase_mode, 1)
+        self.edit_note = grey_note("")
+        erow.addWidget(self.edit_note, 1)
+        erow.addWidget(self.reset_btn)
+        erow.addWidget(self.preview_btn)
         erow.addWidget(self.redo_btn)
         self.erase_hint = grey_note("")
-        self.erase_box = QGroupBox("이 카드의 이 영역만 다르게 지우기")
+        self.erase_box = QGroupBox("이 카드의 이 영역 고치기")
         egl = QVBoxLayout(self.erase_box)
         egl.addWidget(self.erase_hint)
-        egl.addLayout(erow)
+        self.edit_form = QWidget()
+        fl = QVBoxLayout(self.edit_form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addLayout(form)
+        fl.addLayout(erow)
+        egl.addWidget(self.edit_form)
+        self._edit = None  # 고치는 칸: {"page", "region", "info", "erase", "erase_ok"}
+        self._sel = (-1, -1)  # 저장 안 한 고침이 있을 때 되돌릴 (쪽 줄, 영역 줄)
+        self.edit_text.textChanged.connect(self._mark_dirty)
+        self.edit_font.currentIndexChanged.connect(lambda _i: self._mark_dirty())
+        self.erase_mode.currentIndexChanged.connect(lambda _i: self._mark_dirty())
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -169,7 +201,7 @@ class ResultViewer(QDialog):
             set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 {n_bad} — 주황 쪽을 먼저 보세요", "warn")
         else:
             set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 0", "done")
-        self.footer.setText("번역을 고치려면 검수 엑셀을 고친 뒤 프로젝트 화면에서 ‘⑧ 한글 넣기’를 다시 누르세요."
+        self.footer.setText("영역을 고르면 아래에서 그 칸의 번역·글꼴·지우기 방식을 고치고 저장할 수 있습니다."
                             if self.file_dir() is not None
                             else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다.")
         self.items = [p for p in allp if self.problems(p["status"])] if self.only.isChecked() else allp
@@ -220,6 +252,14 @@ class ResultViewer(QDialog):
         except RuntimeError:  # 창이 이미 닫혀 지워졌을 때
             pass
 
+    def _set_pixmap(self, pm: QPixmap):
+        """파일이 아닌 그림(저장 전 미리 보기)을 보여 준다."""
+        self._img_path = None
+        room = self.scroll.viewport().size() - QSize(10, 10)
+        if room.width() > 50 and room.height() > 50 and (pm.width() > room.width() or pm.height() > room.height()):
+            pm = pm.scaled(room, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.image.setPixmap(pm)
+
     def _set_image(self, path: Path | None):
         self._img_path = path
         if not path:
@@ -232,7 +272,25 @@ class ResultViewer(QDialog):
             pm = pm.scaled(room, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.image.setPixmap(pm)  # 원본보다 크게 키우지 않는다
 
+    def _leave_ok(self) -> bool:
+        """저장하지 않은 고침이 있으면 버리고 넘어갈지 묻는다. 아니요면 고르던 칸으로 돌아간다."""
+        if not self._dirty():
+            return True
+        r = QMessageBox.question(self, "저장하지 않은 고침", "이 칸에서 고친 번역·글꼴·지우기 방식을 저장하지 않았습니다.\n"
+                                 "저장하지 않고 다른 칸으로 넘어갈까요?")
+        if r == QMessageBox.StandardButton.Yes:
+            self._edit = None
+            return True
+        pr, rr = self._sel
+        for w, row in ((self.pages, pr), (self.regions, rr)):
+            w.blockSignals(True)
+            w.setCurrentRow(row)
+            w.blockSignals(False)
+        return False
+
     def _show_page(self):
+        if not self._leave_ok():
+            return
         p = self.current()
         if p is None:
             return
@@ -261,14 +319,45 @@ class ResultViewer(QDialog):
         self.regions.blockSignals(False)
         self._sync_erase()
 
-    def _sync_erase(self):
+    def _region_name(self) -> str | None:
         p, r = self.current(), self.regions.currentRow() - 1
-        name = p["regions"][r]["name"] if p and 0 <= r < len(p["regions"]) else None
+        return p["regions"][r]["name"] if p and 0 <= r < len(p["regions"]) else None
+
+    def _sync_erase(self):
+        """고른 칸의 지금 값(번역·글꼴·지우기 방식)을 고치기 칸에 채운다."""
+        p, name, fd = self.current(), self._region_name(), self.file_dir()
         ei = (getattr(self, "_erase_info", {}) or {}).get(name) if name else None
-        ok = bool(ei) and ei.get("kind") == "text"
-        self.erase_mode.blockSignals(True)
+        self._edit = None
+        info = None
+        if p and name and fd:
+            try:
+                info = service.card_edit_info(fd, p["page"], name)
+            except Exception as e:  # noqa: BLE001 - 고치기는 못 해도 보기는 된다
+                self.erase_hint.setText(f"이 칸의 번역을 읽지 못했습니다: {e}")
+        ok = info is not None
+        self.edit_form.setVisible(ok)
+        self.erase_hint.setVisible(not ok)
+        self._sel = (self.pages.currentRow(), self.regions.currentRow())
+        if not ok:
+            if not (p and name and fd):
+                self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 칸의 번역·글꼴·지우기 방식을 고칠 수 있습니다."
+                                        if fd else "시험 결과에서는 바꿀 수 없습니다.")
+            return
+        for w in (self.edit_text, self.edit_font, self.erase_mode):
+            w.blockSignals(True)
+        self.edit_text.setPlainText(info["ko"])
+        self.edit_font.clear()
+        rf = info["region_font"]
+        self.edit_font.addItem(f"영역 글꼴대로 ({service.font_label(rf) if rf else '영역 설정'})", "")
+        files = [f["file"] for f in service.font_choices()]
+        if info["font"] and info["font"] not in files:
+            files.append(info["font"])
+        for f in files:
+            self.edit_font.addItem(service.font_label(f), f)
+        self.edit_font.setCurrentIndex(max(0, self.edit_font.findData(info["font"])) if info["font"] else 0)
         self.erase_mode.clear()
-        if ok:
+        erase_ok = bool(ei) and ei.get("kind") == "text"
+        if erase_ok:
             labels = dict(erase_modes())
             used = f", 이번에 쓴 방식: {labels.get(ei['used'], ei['used'])}" if ei.get("used") else ""
             self.erase_mode.addItem(f"영역 설정대로 ({labels.get(ei['default'], ei['default'])}{used})", None)
@@ -276,26 +365,85 @@ class ResultViewer(QDialog):
                 if k != "auto":
                     self.erase_mode.addItem(t, k)
             self.erase_mode.setCurrentIndex(max(0, self.erase_mode.findData(ei.get("mode"))) if ei.get("mode") else 0)
-        self.erase_mode.blockSignals(False)
-        for w in (self.erase_mode, self.redo_btn):
-            w.setEnabled(ok)
-            w.setVisible(ok)
-        self.erase_hint.setVisible(not ok)
-        if not ok:
-            self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 영역의 지우기 방식을 바꿀 수 있습니다."
-                                    if self.file_dir() else "시험 결과에서는 바꿀 수 없습니다.")
+        self.erase_mode.setEnabled(erase_ok)
+        for w in (self.edit_text, self.edit_font, self.erase_mode):
+            w.blockSignals(False)
+        self._edit = {"page": p["page"], "region": name, "info": info,
+                      "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok}
+        self._mark_dirty()
 
-    def redo_card(self):
-        p, r = self.current(), self.regions.currentRow() - 1
-        fd = self.file_dir()
-        if not (p and fd and 0 <= r < len(p["regions"])):
+    def _dirty(self) -> bool:
+        e = getattr(self, "_edit", None)
+        if not e:
+            return False
+        return (self.edit_text.toPlainText().strip() != e["info"]["ko"].strip()
+                or (self.edit_font.currentData() or "") != e["info"]["font"]
+                or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"]))
+
+    def _mark_dirty(self):
+        e = self._edit
+        if not e:
             return
-        page, region = p["page"], p["regions"][r]["name"]
-        service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())
+        bits = []
+        if e["info"]["edited"]:
+            bits.append("번역: 결과 보기에서 고친 것")
+        if e["info"]["font"]:
+            bits.append("글꼴: 이 카드만 따로")
+        if self._dirty():
+            bits.append("저장하지 않은 고침 있음")
+        self.edit_note.setText(" · ".join(bits))
+        self.redo_btn.setEnabled(self._dirty())
+
+    def reset_edit(self):
+        e = self._edit
+        if not e:
+            return
+        self.edit_text.setPlainText(e["info"]["base"])
+        self.edit_font.setCurrentIndex(0)
+        if e["erase_ok"]:
+            self.erase_mode.setCurrentIndex(0)
+
+    def preview_edit(self):
+        e, fd = self._edit, self.file_dir()
+        if not (e and fd):
+            return
+        try:
+            png = service.card_preview(fd, e["page"], e["region"], self.edit_text.toPlainText(),
+                                       self.edit_font.currentData() or None)
+        except Exception as ex:  # noqa: BLE001
+            show_error(self, "미리 보기를 만들지 못했습니다", ex)
+            return
+        if not png:
+            show_problem(self, "미리 보기를 만들지 못했습니다", "이 칸은 그려 볼 수 없습니다 (번역이 비었거나 지운 결과가 없음).")
+            return
+        pm = QPixmap()
+        pm.loadFromData(png, "PNG")
+        self._set_pixmap(pm)
+        self.edit_note.setText("위 그림은 저장 전 미리 보기입니다 (지우기 방식을 바꾼 것은 저장해야 보입니다)")
+
+    def save_edit(self):
+        """고친 번역·글꼴·지우기 방식을 저장하고 이 파일에 다시 넣는다 (지우기 방식을 바꿨을 때만 다시 지운다)."""
+        e, fd = self._edit, self.file_dir()
+        if not (e and fd and self._dirty()):
+            return
+        page, region = e["page"], e["region"]
+        text = self.edit_text.toPlainText()
+        erase_changed = bool(e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
+        try:
+            service.save_card_edit(fd, page, region,
+                                   text=text if text.strip() != e["info"]["ko"].strip() else None,
+                                   font=self.edit_font.currentData() or None,
+                                   set_font=(self.edit_font.currentData() or "") != e["info"]["font"])
+            if erase_changed:
+                service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())
+        except Exception as ex:  # noqa: BLE001
+            show_error(self, "저장하지 못했습니다", ex)
+            return
+        self._edit = None
 
         def done(res):
             if res.state != "done":
-                show_problem(self, "이 카드를 다시 만들지 못했습니다", res.error or "\n".join(res.blocking) or res.state)
+                show_problem(self, "다시 넣지 못했습니다", res.error or "\n".join(res.blocking) or res.state)
             row = next((i for i, it in enumerate(self.items) if it["page"] == page), 0)
             self.reload()
             self.pages.setCurrentRow(min(row, max(0, len(self.items) - 1)))
@@ -303,11 +451,15 @@ class ResultViewer(QDialog):
             if region in names:
                 self.regions.setCurrentRow(names.index(region) + 1)
 
-        job = worker.Job(service.redo_file, fd)
-        worker.run_with_dialog(self, "다시 지우고 한글 넣기", job, done,
-                               lambda m: show_failure(self, "이 카드를 다시 만들지 못했습니다", m))
+        job = worker.Job(service.redo_file if erase_changed else service.recompose_file, fd)
+        worker.run_with_dialog(self, "다시 지우고 한글 넣기" if erase_changed else "한글 다시 넣기", job, done,
+                               lambda m: show_failure(self, "다시 넣지 못했습니다", m))
+
+    redo_card = save_edit  # 예전 이름
 
     def _show_region(self):
+        if not self._leave_ok():
+            return
         self._sync_erase()
         p, r = self.current(), self.regions.currentRow() - 1  # 0번 줄은 ‘카드 전체’
         if p is None:
