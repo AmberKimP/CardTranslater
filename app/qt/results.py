@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app import service
@@ -18,6 +18,7 @@ from app.qt.dialogs import (
     show_error, show_failure, show_problem, subtitle,
 )
 
+ALIGN_TEXT = [("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
 STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임"}  # 엔진 상태 낱말을 화면용으로
 
@@ -112,15 +113,43 @@ class ResultViewer(QDialog):
         self.edit_font.setToolTip("이 카드의 이 영역만 쓸 글꼴. 다른 카드는 글꼴 창에서 고른 영역 글꼴 그대로입니다.")
         self.erase_mode = QComboBox()
         self.erase_mode.setToolTip("이 카드의 고른 영역만 다른 방식으로 지웁니다. 다른 카드는 영역 설정대로입니다.")
+        # 글자 크기·정렬: 이 카드만 (맨 아래 값 = 글꼴 창의 영역 설정대로)
+        self.edit_size = QSpinBox()
+        self.edit_size.setRange(49, 200)
+        self.edit_size.setSingleStep(5)
+        self.edit_size.setSuffix(" %")
+        self.edit_size.setMinimumWidth(240)  # ‘영역 설정대로 (100 %)’가 잘리지 않게
+        self.edit_size.setToolTip("원본 글자 크기 대비 배율 (이 카드의 이 영역만). 맨 아래로 내리면 글꼴 창의 영역 설정대로입니다.\n"
+                                  "한글 넣기는 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
+        self.edit_align = QComboBox()
+        self.edit_align.setToolTip("이 카드의 이 영역만 한글을 놓는 방법")
+        srow = QHBoxLayout()
+        srow.addWidget(self.edit_size)
+        srow.addSpacing(16)
+        srow.addWidget(QLabel("정렬"))
+        srow.addWidget(self.edit_align, 1)
+        # 문단마다 글꼴 (‘문단마다’ 영역만): 번역을 고치면 문단 목록도 바뀐다
+        self.para_box = QWidget()
+        self.para_form = QFormLayout(self.para_box)
+        self.para_form.setContentsMargins(0, 0, 0, 0)
+        self._para_combos: list[QComboBox] = []
+        self._para_picks: dict = {}
+        self._para_timer = QTimer(self)
+        self._para_timer.setSingleShot(True)
+        self._para_timer.setInterval(400)
+        self._para_timer.timeout.connect(self._rebuild_paragraphs)
         form = QFormLayout()
         form.addRow("번역", self.edit_text)
         form.addRow("글꼴", self.edit_font)
+        self.para_label = QLabel("문단 글꼴")
+        form.addRow(self.para_label, self.para_box)
+        form.addRow("글자 크기", srow)
         form.addRow("지우기", self.erase_mode)
         self.preview_btn = QPushButton("미리 보기")
         self.preview_btn.setToolTip("저장하기 전에 이 칸을 한글 넣기와 똑같이 그려 봅니다 (지우기 방식 바꾼 것은 저장해야 보입니다)")
         self.preview_btn.clicked.connect(self.preview_edit)
         self.reset_btn = QPushButton("원래대로")
-        self.reset_btn.setToolTip("번역은 검수 엑셀(없으면 초벌 번역) 그대로, 글꼴·지우기는 영역 설정대로 돌려 놓습니다 (저장해야 반영)")
+        self.reset_btn.setToolTip("번역은 검수 엑셀(없으면 초벌 번역) 그대로, 글꼴·문단 글꼴·크기·정렬·지우기는 영역 설정대로 돌려 놓습니다 (저장해야 반영)")
         self.reset_btn.clicked.connect(self.reset_edit)
         self.redo_btn = QPushButton("저장하고 다시 넣기")
         make_primary(self.redo_btn)
@@ -145,8 +174,11 @@ class ResultViewer(QDialog):
         self._edit = None  # 고치는 칸: {"page", "region", "info", "erase", "erase_ok"}
         self._sel = (-1, -1)  # 저장 안 한 고침이 있을 때 되돌릴 (쪽 줄, 영역 줄)
         self.edit_text.textChanged.connect(self._mark_dirty)
+        self.edit_text.textChanged.connect(lambda: self._para_timer.start())
         self.edit_font.currentIndexChanged.connect(lambda _i: self._mark_dirty())
         self.erase_mode.currentIndexChanged.connect(lambda _i: self._mark_dirty())
+        self.edit_size.valueChanged.connect(lambda _v: self._mark_dirty())
+        self.edit_align.currentIndexChanged.connect(lambda _i: self._mark_dirty())
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -201,7 +233,7 @@ class ResultViewer(QDialog):
             set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 {n_bad} — 주황 쪽을 먼저 보세요", "warn")
         else:
             set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 0", "done")
-        self.footer.setText("영역을 고르면 아래에서 그 칸의 번역·글꼴·지우기 방식을 고치고 저장할 수 있습니다."
+        self.footer.setText("영역을 고르면 아래에서 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고치고 저장할 수 있습니다."
                             if self.file_dir() is not None
                             else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다.")
         self.items = [p for p in allp if self.problems(p["status"])] if self.only.isChecked() else allp
@@ -340,12 +372,20 @@ class ResultViewer(QDialog):
         self._sel = (self.pages.currentRow(), self.regions.currentRow())
         if not ok:
             if not (p and name and fd):
-                self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 칸의 번역·글꼴·지우기 방식을 고칠 수 있습니다."
+                self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고칠 수 있습니다."
                                         if fd else "시험 결과에서는 바꿀 수 없습니다.")
             return
-        for w in (self.edit_text, self.edit_font, self.erase_mode):
+        for w in (self.edit_text, self.edit_font, self.erase_mode, self.edit_size, self.edit_align):
             w.blockSignals(True)
         self.edit_text.setPlainText(info["ko"])
+        self.edit_size.setSpecialValueText(f"영역 설정대로 ({round(info['region_size'] * 100)} %)")
+        self.edit_size.setValue(round(info["size"] * 100) if info["size"] else self.edit_size.minimum())
+        self.edit_align.clear()
+        ra = dict(ALIGN_TEXT).get(info["region_align"], "원문 줄을 따라감")
+        self.edit_align.addItem(f"영역 설정대로 ({ra})", "")
+        for k, t in ALIGN_TEXT:
+            self.edit_align.addItem(t, k)
+        self.edit_align.setCurrentIndex(max(0, self.edit_align.findData(info["align"])) if info["align"] else 0)
         self.edit_font.clear()
         rf = info["region_font"]
         self.edit_font.addItem(f"영역 글꼴대로 ({service.font_label(rf) if rf else '영역 설정'})", "")
@@ -366,19 +406,65 @@ class ResultViewer(QDialog):
                     self.erase_mode.addItem(t, k)
             self.erase_mode.setCurrentIndex(max(0, self.erase_mode.findData(ei.get("mode"))) if ei.get("mode") else 0)
         self.erase_mode.setEnabled(erase_ok)
-        for w in (self.edit_text, self.edit_font, self.erase_mode):
+        for w in (self.edit_text, self.edit_font, self.erase_mode, self.edit_size, self.edit_align):
             w.blockSignals(False)
         self._edit = {"page": p["page"], "region": name, "info": info,
                       "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok}
+        self._para_picks = dict(info["paragraph_fonts"])
+        self._rebuild_paragraphs()
         self._mark_dirty()
+
+    # ---- 문단 글꼴 (‘문단마다’ 영역)
+    def _rebuild_paragraphs(self):
+        """번역 글의 문단마다 글꼴 칸을 다시 만든다 (고른 것은 문단 번호로 지킨다)."""
+        e = self._edit
+        on = bool(e and e["info"]["paragraph_mode"])
+        self.para_label.setVisible(on)
+        self.para_box.setVisible(on)
+        if not on:
+            return
+        for i, cb in enumerate(self._para_combos):  # 지금 고른 것을 기억
+            self._para_picks[i] = cb.currentData() or None
+        while self.para_form.rowCount():
+            self.para_form.removeRow(0)
+        self._para_combos = []
+        paras = service.split_paragraphs(self.edit_text.toPlainText())
+        files = [f["file"] for f in service.font_choices()]
+        files += [f for f in self._para_picks.values() if f and f not in files]
+        for i, t in enumerate(paras):
+            cb = QComboBox()
+            cb.addItem("(기준 카드 문단 설정대로)", "")
+            for f in files:
+                cb.addItem(service.font_label(f), f)
+            pick = self._para_picks.get(i)
+            cb.setCurrentIndex(max(0, cb.findData(pick)) if pick else 0)
+            cb.setToolTip("이 카드의 이 문단만 쓸 글꼴. ‘기준 카드 문단 설정대로’는 글꼴 창에서 정한 문단 글꼴(없으면 영역 글꼴)")
+            cb.currentIndexChanged.connect(lambda _i: self._mark_dirty())
+            lab = QLabel(f"{i + 1}. {t[:28]}{'…' if len(t) > 28 else ''}")
+            lab.setToolTip(t)
+            self.para_form.addRow(lab, cb)
+            self._para_combos.append(cb)
+        self._mark_dirty()
+
+    def _para_fonts(self) -> dict:
+        """지금 고른 문단 글꼴 {문단 번호: 글꼴} (‘설정대로’는 빠짐)."""
+        return {i: cb.currentData() for i, cb in enumerate(self._para_combos) if cb.currentData()}
+
+    def _size_value(self) -> float | None:
+        v = self.edit_size.value()
+        return None if v == self.edit_size.minimum() else v / 100.0
 
     def _dirty(self) -> bool:
         e = getattr(self, "_edit", None)
         if not e:
             return False
-        return (self.edit_text.toPlainText().strip() != e["info"]["ko"].strip()
-                or (self.edit_font.currentData() or "") != e["info"]["font"]
-                or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"]))
+        info = e["info"]
+        return (self.edit_text.toPlainText().strip() != info["ko"].strip()
+                or (self.edit_font.currentData() or "") != info["font"]
+                or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
+                or self._size_value() != info["size"]
+                or (self.edit_align.currentData() or "") != info["align"]
+                or (info["paragraph_mode"] and self._para_fonts() != info["paragraph_fonts"]))
 
     def _mark_dirty(self):
         e = self._edit
@@ -389,6 +475,10 @@ class ResultViewer(QDialog):
             bits.append("번역: 결과 보기에서 고친 것")
         if e["info"]["font"]:
             bits.append("글꼴: 이 카드만 따로")
+        if e["info"]["size"] or e["info"]["align"]:
+            bits.append("크기·정렬: 이 카드만 따로")
+        if e["info"]["paragraph_fonts"]:
+            bits.append("문단 글꼴: 이 카드만 따로")
         if self._dirty():
             bits.append("저장하지 않은 고침 있음")
         self.edit_note.setText(" · ".join(bits))
@@ -400,6 +490,11 @@ class ResultViewer(QDialog):
             return
         self.edit_text.setPlainText(e["info"]["base"])
         self.edit_font.setCurrentIndex(0)
+        self.edit_size.setValue(self.edit_size.minimum())
+        self.edit_align.setCurrentIndex(0)
+        self._para_picks = {}
+        for cb in self._para_combos:
+            cb.setCurrentIndex(0)
         if e["erase_ok"]:
             self.erase_mode.setCurrentIndex(0)
 
@@ -409,7 +504,9 @@ class ResultViewer(QDialog):
             return
         try:
             png = service.card_preview(fd, e["page"], e["region"], self.edit_text.toPlainText(),
-                                       self.edit_font.currentData() or None)
+                                       self.edit_font.currentData() or None, self._size_value(),
+                                       self.edit_align.currentData() or "",
+                                       self._para_fonts() if e["info"]["paragraph_mode"] else None)
         except Exception as ex:  # noqa: BLE001
             show_error(self, "미리 보기를 만들지 못했습니다", ex)
             return
@@ -430,10 +527,17 @@ class ResultViewer(QDialog):
         text = self.edit_text.toPlainText()
         erase_changed = bool(e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
         try:
+            info = e["info"]
+            paras = self._para_fonts() if info["paragraph_mode"] else None
             service.save_card_edit(fd, page, region,
-                                   text=text if text.strip() != e["info"]["ko"].strip() else None,
+                                   text=text if text.strip() != info["ko"].strip() else None,
                                    font=self.edit_font.currentData() or None,
-                                   set_font=(self.edit_font.currentData() or "") != e["info"]["font"])
+                                   set_font=(self.edit_font.currentData() or "") != info["font"],
+                                   size=self._size_value(), set_size=self._size_value() != info["size"],
+                                   align=self.edit_align.currentData() or "",
+                                   set_align=(self.edit_align.currentData() or "") != info["align"],
+                                   paragraph_fonts=paras if paras is not None and paras != info["paragraph_fonts"]
+                                   else None)
             if erase_changed:
                 service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())
         except Exception as ex:  # noqa: BLE001

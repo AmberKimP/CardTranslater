@@ -306,6 +306,9 @@ class ProjectPage(QWidget):
         self.b_regions.clicked.connect(self.edit_regions)
         self.b_pages = QPushButton("뺄 쪽")
         self.b_pages.clicked.connect(self.exclude_pages)
+        self.b_rename = QPushButton("이름 바꾸기…")
+        self.b_rename.setToolTip("고른 그룹의 이름을 바꿉니다 (그룹 안 파일·결과는 그대로)")
+        self.b_rename.clicked.connect(self.rename_group)
         self.b_folders = QToolButton()
         self.b_folders.setText("폴더 ▾")
         self.b_folders.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -339,7 +342,7 @@ class ProjectPage(QWidget):
         edit.setSpacing(6)
         edit.addWidget(section_title("카드 파일"))
         edit.addSpacing(8)
-        for b in (self.b_add, self.b_regions, self.b_pages):
+        for b in (self.b_add, self.b_regions, self.b_pages, self.b_rename):
             edit.addWidget(b)
         edit.addStretch(1)
         edit.addWidget(self.b_reset)
@@ -447,7 +450,7 @@ class ProjectPage(QWidget):
             return [("영역 지정", self.edit_regions), ("뺄 쪽…", self.exclude_pages), ("폴더 열기", self.open_folder),
                     None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
         if kind == "group":
-            return [("영역 지정", self.edit_regions), ("폴더 열기", self.open_folder),
+            return [("영역 지정", self.edit_regions), ("이름 바꾸기…", self.rename_group), ("폴더 열기", self.open_folder),
                     None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
         return [("파일 넣기", self.add_files), ("초기화…", self.reset_selected)]
 
@@ -707,6 +710,8 @@ class ProjectPage(QWidget):
     def _sync_buttons(self):
         sel = self._selected()
         self.b_delete.setEnabled(bool(sel) and sel[0] != "all")
+        if hasattr(self, "b_rename"):
+            self.b_rename.setEnabled(bool(sel) and sel[0] == "group")
         self._sync_next_why()
         if hasattr(self, "b_reset"):
             self.b_reset.setEnabled(bool(self.ov.get("groups")))
@@ -772,6 +777,30 @@ class ProjectPage(QWidget):
             return
         self.win.statusBar().showMessage(f"{label}: 결과 {len(res['moved'])}개를 휴지통으로 옮겼습니다")
         self.refresh()
+
+    def rename_group(self):
+        """고른 그룹의 이름을 바꾼다."""
+        from PySide6.QtWidgets import QInputDialog, QLineEdit
+
+        sel = self._selected()
+        if not sel or sel[0] != "group":
+            QMessageBox.information(self, "그룹 고르기", "이름을 바꿀 그룹을 목록에서 고르세요")
+            return
+        d = sel[1]
+        new, ok = QInputDialog.getText(self, "그룹 이름 바꾸기", f"‘{d['name']}’ 그룹의 새 이름:", QLineEdit.EchoMode.Normal,
+                                       d["name"])
+        new = (new or "").strip()
+        if not ok or not new or new == d["name"]:
+            return
+        try:
+            gdir = service.rename_group(self.project_dir, d["name"], new)
+        except (OSError, KeyError, ValueError) as e:
+            show_problem(self, "그룹 이름을 바꾸지 못했습니다", str(e),
+                         "이 그룹의 엑셀·PDF가 열려 있으면 닫고 다시 하세요." if isinstance(e, OSError) else "다른 이름을 쓰세요.")
+            return
+        self.win.statusBar().showMessage(f"그룹 이름을 ‘{d['name']}’에서 ‘{new}’(으)로 바꿨습니다")
+        self.refresh()
+        self._restore_selection(("group", str(gdir)))
 
     def delete_selected(self):
         sel = self._selected()

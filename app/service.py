@@ -877,7 +877,8 @@ def review_xlsx_for(file_dir: Path | str) -> Path | None:
         if gx.exists():
             files = game_files(gx) or []
             pdf = next((fd / "source").glob("*.pdf"), None)
-            if any(f["프로젝트"] == info.name and f["그룹"] == fd.parent.parent.name and pdf and f["원본 파일"] == pdf.name
+            names = workspace.group_names(fd.parent.parent)  # 이름을 바꾼 그룹은 예전 이름도
+            if any(f["프로젝트"] == info.name and f["그룹"] in names and pdf and f["원본 파일"] == pdf.name
                    for f in files):
                 return gx
     legacy = fd / "번역_검수.xlsx"
@@ -2021,7 +2022,10 @@ def set_card_erase_mode(file_dir: Path | str, page: int, region: str, mode: str 
 
 def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
     """결과 보기에서 고칠 칸의 지금 값: {"ko": 쓰는 번역(글, 태그 칸은 줄마다), "base": 엑셀·초벌 번역 그대로,
-    "edited": 결과 보기에서 고쳤나, "font": 이 카드만 고른 글꼴(없으면 ''), "region_font": 영역 글꼴, "kind"}."""
+    "edited": 결과 보기에서 고쳤나, "font": 이 카드만 고른 글꼴(없으면 ''), "region_font": 영역 글꼴, "kind",
+    "size": 이 카드만 정한 글자 크기 배율(없으면 None), "region_size": 영역 배율, "align": 이 카드만 정한 정렬(없으면 ''),
+    "region_align": 영역 정렬(글꼴 창, 없으면 ''), "paragraph_mode": 문단마다 글꼴 영역인가,
+    "paragraph_fonts": {문단 번호: 이 카드에서 고른 글꼴}}."""
     from app import card_edits, font_plan
 
     fd = Path(file_dir)
@@ -2031,11 +2035,27 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
     base = entry.get("ko") if isinstance(entry, dict) else None
     e = card_edits.edit_for(card_edits.load(fd), page, region, base)
     data = font_plan.load(fd)
+    pg = str(int(page))
     region_font = (data.get("regions") or {}).get(region) or ""
-    card_font = ((data.get("cards") or {}).get(str(int(page))) or {}).get(region) or ""
+    card_font = ((data.get("cards") or {}).get(pg) or {}).get(region) or ""
     reg = next((r for r in load_project(fd).template.regions_for(int(page)) if r.name == region), None)
+    card_size = ((data.get("card_sizes") or {}).get(pg) or {}).get(region)
+    card_align = ((data.get("card_aligns") or {}).get(pg) or {}).get(region) or ""
+    paras = ((data.get("sentences") or {}).get(pg) or {}).get(region) or {}
+    mode = font_plan.region_font_modes(fd).get(region) == "sentence" and (reg is None or reg.kind == "text")
     return {"ko": card_edits.norm(e["ko"] if e else base), "base": card_edits.norm(base), "edited": bool(e),
-            "font": card_font, "region_font": region_font, "kind": reg.kind if reg else "text"}
+            "font": card_font, "region_font": region_font, "kind": reg.kind if reg else "text",
+            "size": float(card_size) if card_size else None,
+            "region_size": float((data.get("sizes") or {}).get(region) or 1.0),
+            "align": card_align, "region_align": font_plan.align_choices(data).get(region, ""),
+            "paragraph_mode": mode, "paragraph_fonts": {int(i): f for i, f in paras.items() if f}}
+
+
+def split_paragraphs(text: str) -> list[str]:
+    """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙)."""
+    from app.typeset_layout import paragraphs
+
+    return paragraphs(text or "")
 
 
 def _translation_cards(fd: Path) -> dict:
@@ -2051,10 +2071,14 @@ def _translation_cards(fd: Path) -> dict:
 
 
 def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | None = None,
-                   font: str | None = None, set_font: bool = False) -> None:
+                   font: str | None = None, set_font: bool = False, size: float | None = None,
+                   set_size: bool = False, align: str | None = None, set_align: bool = False,
+                   paragraph_fonts: dict | None = None) -> None:
     """결과 보기에서 고친 것을 저장한다 (반영은 recompose_file·redo_file로).
     text: 고친 번역 (None이면 그대로, 엑셀·초벌 번역과 같으면 고친 것을 지움). 태그 칸은 줄마다 태그 하나.
-    set_font=True면 font(None·''이면 영역 글꼴을 따름)를 이 카드의 이 영역 글꼴로."""
+    set_font=True면 font(None·''이면 영역 글꼴을 따름)를 이 카드의 이 영역 글꼴로.
+    set_size·set_align: 이 카드만의 글자 크기 배율·정렬 (None·''이면 글꼴 창의 영역 설정).
+    paragraph_fonts: {문단 번호: 글꼴 | None} — 이 카드의 문단마다 글꼴 (주면 그것으로 바꾼다)."""
     from app import card_edits, font_plan
 
     fd = Path(file_dir)
@@ -2065,11 +2089,17 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
         card_edits.set_text(fd, page, region, ko, base)
     if set_font:
         font_plan.set_card_font(fd, page, region, font or None)
+    if set_size or set_align or paragraph_fonts is not None:
+        font_plan.set_card_style(fd, page, region, size=size, align=align, set_size=set_size,
+                                 set_align=set_align, paragraphs=paragraph_fonts)
     font_plan._raw_cache.clear()
 
 
-def card_preview(file_dir: Path | str, page: int, region: str, text: str | None, font: str | None) -> bytes | None:
-    """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None."""
+def card_preview(file_dir: Path | str, page: int, region: str, text: str | None, font: str | None,
+                 size: float | None = None, align: str | None = None,
+                 paragraph_fonts: dict | None = None) -> bytes | None:
+    """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None.
+    size·align: 이 카드만의 크기 배율·정렬 (None이면 저장된 것), paragraph_fonts: 이 카드의 문단마다 글꼴."""
     from app import font_plan
 
     fd = Path(file_dir)
@@ -2079,8 +2109,17 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
     ko = text
     if text is not None and isinstance(entry.get("ko"), list):
         ko = [t.strip() for t in text.splitlines() if t.strip()]
-    return font_plan.preview_render(fd, page, region, f, font_plan.size_scales(data).get(region, 1.0),
-                                    font_plan.align_choices(data).get(region), None, ko)
+    scale = size if size else font_plan.size_scales_for_page(data, int(page)).get(region, 1.0)
+    if align:  # 이 카드만 고른 정렬
+        al = align
+    elif align == "":  # ‘영역 설정대로’: 글꼴 창의 영역 정렬
+        al = font_plan.align_choices(data).get(region)
+    else:  # 저장된 것 (카드별 위에 영역)
+        al = font_plan.aligns_for_page(data, int(page)).get(region)
+    slots = (data.get("sentence_slots") or {}).get(region)
+    paras = paragraph_fonts if paragraph_fonts is not None else \
+        {int(i): v for i, v in ((((data.get("sentences") or {}).get(str(int(page))) or {}).get(region)) or {}).items()}
+    return font_plan.preview_render(fd, page, region, f, scale, al or None, None, ko, slots=slots, para_fonts=paras)
 
 
 def recompose_file(file_dir: Path | str, progress: ProgressFn | None = None,
@@ -2263,6 +2302,13 @@ def reset_files(project_dir: Path | str, files: list | None = None, what: str = 
     if what == "all" and fds and info.status != "extracting":
         workspace.set_status(info, "extracting")
     return {"moved": moved, "files": len(fds)}
+
+
+def rename_group(project_dir: Path | str, old: str, new: str) -> Path:
+    """그룹 이름을 바꾼다 (새 그룹 폴더). 검수 엑셀은 다시 만들기 전까지 예전 이름으로도 찾는다."""
+    from app import workspace
+
+    return workspace.rename_group(workspace.load_project_info(project_dir), old, new)
 
 
 def delete_group(project_dir: Path | str, group: str) -> Path:

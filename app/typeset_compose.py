@@ -730,7 +730,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
                            font_plan.overrides_for_page(font_data, pno),
                            font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
-                           font_plan.size_scales(font_data), font_plan.align_choices(font_data))
+                           font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno))
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]

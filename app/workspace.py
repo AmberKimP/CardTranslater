@@ -226,6 +226,41 @@ def group_dir(info: ProjectInfo, group: str) -> Path:
     return groups_dir(info) / _safe(group)
 
 
+def group_names(gdir: Path) -> set[str]:
+    """그룹의 이름들: 지금 폴더 이름과 예전 폴더 이름(이름을 바꾸기 전). 검수 엑셀이 예전 이름으로 적혀 있어도 찾게."""
+    g = Path(gdir)
+    names = {g.name}
+    f = g / "group.json"
+    if f.exists():
+        names |= set(_read(f).get("old_names") or [])
+    return names
+
+
+def rename_group(info: ProjectInfo, old: str, new: str) -> Path:
+    """그룹 이름을 바꾼다 (폴더도 새 이름으로). 예전 폴더 이름은 group.json에 남겨 검수 엑셀이 계속 찾게 한다.
+    같은 이름의 다른 그룹이 있거나 이름이 비면 ValueError. 파일이 열려 있어 폴더를 못 옮기면 OSError."""
+    new = (new or "").strip()
+    src = group_dir(info, old)
+    if not (src / "group.json").exists():
+        raise KeyError(f"그룹이 없습니다: {old}")
+    if not new:
+        raise ValueError("새 이름이 비었습니다")
+    dst = group_dir(info, new)
+    if dst != src and dst.exists():
+        raise ValueError(f"같은 이름의 그룹이 이미 있습니다: {new}")
+    data = _read(src / "group.json")
+    olds = [n for n in (data.get("old_names") or []) if n != dst.name]
+    if src.name != dst.name and src.name not in olds:
+        olds.append(src.name)
+    data["name"] = new
+    if olds:
+        data["old_names"] = olds
+    if dst != src:
+        src.rename(dst)
+    _write(dst / "group.json", data)
+    return dst
+
+
 def add_files(info: ProjectInfo, files: list[Path | str], group: str, *, new_group: bool = False,
               regions_from: Path | str | None = None) -> dict:
     """파일을 그룹에 넣는다. new_group=True면 그룹을 새로 만든다 (이미 있으면 FileExistsError).

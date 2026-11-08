@@ -2002,7 +2002,7 @@ def test_result_viewer_colors_and_footer(qapp, tmp_path):
     service.erase_project(info.dir)
     service.compose_project(info.dir)
     v = ResultViewer([("카드/cards", fd / "translated")])
-    assert v.info.property("hint_kind") == "done" and "번역·글꼴·지우기 방식을 고치고 저장" in v.footer.text()
+    assert v.info.property("hint_kind") == "done" and "번역·글꼴·크기·정렬·지우기 방식을 고치고 저장" in v.footer.text()
     assert v.only.text() == "문제 있는 쪽만 보기"
     assert v.regions.count() >= 1
     r = service.test_run(fd, "2", out_root=tmp_path / "runs")
@@ -2301,3 +2301,78 @@ def test_card_edit_yields_to_newer_excel_edit(tmp_path):
     card_edits.set_text(fd, 2, "이름", "새 번역", None)
     out, _ = card_edits.apply(fd, {}, lambda p, r: "SRC")
     assert out[2]["이름"] == {"source": "SRC", "ko": "새 번역"}
+
+
+def test_rename_group_keeps_review_excel_working(qapp, tmp_path):
+    """그룹 이름을 바꿔도 폴더·결과가 따라가고, 예전 이름으로 만든 게임 검수 엑셀을 계속 찾는다."""
+    from app.excel_io import import_translation
+    from app.project import load_project
+
+    info, fd = _translated_project(tmp_path)
+    old = fd.parent.parent.name
+    service.export_excel(fd)
+    assert service.review_xlsx_for(fd) is not None
+    with pytest.raises(ValueError):
+        service.rename_group(info.dir, old, "  ")
+    gdir = service.rename_group(info.dir, old, "새 그룹")
+    assert gdir.name == "새 그룹" and not (fd.parent.parent).exists()
+    assert json.loads((gdir / "group.json").read_text(encoding="utf-8"))["old_names"] == [old]
+    names = [g["name"] for g in service.project_overview(info.dir)["groups"]]
+    assert "새 그룹" in names and old not in names
+    nfd = gdir / "files" / fd.name
+    x = service.review_xlsx_for(nfd)
+    assert x is not None and not import_translation(load_project(nfd), x).blocking  # 예전 이름으로 적힌 엑셀
+    workspace.add_files(info, [next((nfd / "source").glob("*.pdf"))], "다른 그룹", new_group=True)
+    with pytest.raises(ValueError):
+        service.rename_group(info.dir, "새 그룹", "다른 그룹")  # 이미 있는 이름
+
+
+def test_result_viewer_card_size_align_and_recompose(qapp, tmp_path, monkeypatch):
+    """결과 보기에서 이 카드만 글자 크기·정렬을 바꿔 저장하면 그 카드만 그 크기·정렬로 다시 넣는다."""
+    from app import font_plan
+    from app.qt import results as qres
+    from app.qt.results import ResultViewer
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    before = json.loads((fd / "translated" / "report.json").read_text(encoding="utf-8"))
+    s1 = before["pages_detail"][0]["regions"]["이름"]["start_size_pt"]
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    names = [r["name"] for r in v.current()["regions"]]
+    v.regions.setCurrentRow(names.index("이름") + 1)
+    assert v.edit_size.value() == v.edit_size.minimum() and "영역 설정대로" in v.edit_size.specialValueText()
+    assert not v.para_box.isVisible() or not v._para_combos  # 문단마다 영역이 아니면 문단 글꼴 없음
+    v.edit_size.setValue(150)
+    v.edit_align.setCurrentIndex(v.edit_align.findData("right"))
+    assert v.redo_btn.isEnabled()
+    monkeypatch.setattr(qres.worker, "run_with_dialog",
+                        lambda _p, _t, job, on_done, _f=None, cancellable=True: on_done(job.fn(*job.args, **job.kwargs)))
+    v.save_edit()
+    data = font_plan.load(fd)
+    assert data["card_sizes"] == {"1": {"이름": 1.5}} and data["card_aligns"] == {"1": {"이름": "right"}}
+    after = json.loads((fd / "translated" / "report.json").read_text(encoding="utf-8"))
+    r1, r2 = after["pages_detail"][0]["regions"]["이름"], after["pages_detail"][1]["regions"]["이름"]
+    assert r1["start_size_pt"] > s1 * 1.3 and abs(r2["start_size_pt"] - s1) < 0.01  # 2쪽은 그대로
+    info1 = service.card_edit_info(fd, 1, "이름")
+    assert info1["size"] == 1.5 and info1["align"] == "right"
+    service.save_card_edit(fd, 1, "이름", size=None, set_size=True, align="", set_align=True)  # 영역 설정대로
+    assert "card_sizes" not in font_plan.load(fd) and "card_aligns" not in font_plan.load(fd)
+
+
+def test_result_viewer_paragraph_fonts_for_paragraph_region(qapp, tmp_path, monkeypatch):
+    from app import font_plan
+    from tests.test_fonts_sentences import GAEGU, _project_with_mode
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    cards = {1: {"이름": {"ko": "첫 문단.\n둘째 문단."}}}
+    assert service._compose_with_cards(fd, cards, None, None).state == "done"
+    monkeypatch.setattr(service, "_translation_cards", lambda _fd: cards)
+    i0 = service.card_edit_info(fd, 1, "이름")
+    assert i0["paragraph_mode"] and i0["paragraph_fonts"] == {}
+    assert service.split_paragraphs("첫 문단.\n둘째 문단.") == ["첫 문단.", "둘째 문단."]
+    service.save_card_edit(fd, 1, "이름", paragraph_fonts={1: GAEGU})
+    assert font_plan.load(fd)["sentences"] == {"1": {"이름": {"1": GAEGU}}}
+    assert service.card_edit_info(fd, 1, "이름")["paragraph_fonts"] == {1: GAEGU}
+    png = service.card_preview(fd, 1, "이름", "첫 문단.\n둘째 문단.", None, paragraph_fonts={1: GAEGU})
+    assert png and png[1:4] == b"PNG"

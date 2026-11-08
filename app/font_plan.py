@@ -156,6 +156,52 @@ def region_font_modes(file_dir: Path) -> dict:
     return {r.name: ((r.style or {}).get("font_mode") or "cell") for r in regs}
 
 
+def size_scales_for_page(data: dict, page: int) -> dict:
+    """그 쪽의 {영역: 글자 크기 배율}: 영역 설정 위에 카드별 (결과 보기에서 고친 것)."""
+    return {**size_scales(data), **{k: float(v) for k, v in ((data.get("card_sizes") or {}).get(str(int(page))) or {}).items() if v}}
+
+
+def aligns_for_page(data: dict, page: int) -> dict:
+    """그 쪽의 {영역: 정렬}: 영역 설정 위에 카드별."""
+    card = {k: v for k, v in ((data.get("card_aligns") or {}).get(str(int(page))) or {}).items() if v in ALIGNS}
+    return {**align_choices(data), **card}
+
+
+def set_card_style(file_dir: Path | str, page: int, region: str, *, size: float | None = None,
+                   align: str | None = None, set_size: bool = False, set_align: bool = False,
+                   paragraphs: dict | None = None) -> None:
+    """이 카드의 이 영역만: 글자 크기 배율(size, None이면 영역 설정), 정렬(align, ''·None이면 영역 설정),
+    문단마다 글꼴(paragraphs {문단 번호: 글꼴 | None}, 주면 그 카드의 문단 선택을 이것으로 바꾼다)."""
+    p = Path(file_dir) / FILE_NAME
+    data = load(file_dir)
+    pg = str(int(page))
+
+    def put(key, value, keep):
+        d = data.setdefault(key, {})
+        card = d.setdefault(pg, {})
+        if keep:
+            card[region] = value
+        else:
+            card.pop(region, None)
+        if not card:
+            d.pop(pg, None)
+        if not d:
+            data.pop(key, None)
+
+    if set_size:
+        region_size = float((data.get("sizes") or {}).get(region) or 1.0)
+        put("card_sizes", round(float(size), 3) if size else None, bool(size) and abs(float(size) - region_size) > 1e-6)
+    if set_align:
+        put("card_aligns", align, align in ALIGNS)
+    if paragraphs is not None:
+        picks = {str(int(i)): f for i, f in paragraphs.items() if f}
+        put("sentences", picks, bool(picks))
+    data["updated"] = time.strftime("%Y-%m-%d %H:%M")
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
 def size_scales(data: dict) -> dict:
     """{영역: 글자 크기 배율} (정하지 않은 영역은 빠짐 = 1.0)."""
     return {k: float(v) for k, v in (data.get("sizes") or {}).items() if v}
@@ -612,7 +658,7 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
 
 def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
                    align: str | None = None, sentence: int | None = None, text=None, slots: dict | None = None,
-                   base_font: str | None = None) -> bytes | None:
+                   base_font: str | None = None, para_fonts: dict | None = None) -> bytes | None:
     """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
     원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
     text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
@@ -642,6 +688,7 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
         from app.typeset_layout import paragraphs as split_sentences
 
         smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or ""))) if slots else {}
+        smap.update({int(k): v for k, v in (para_fonts or {}).items() if v})  # 이 카드에서 문단마다 고른 것
         if sentence is not None:
             if font_file:
                 smap[int(sentence)] = font_file

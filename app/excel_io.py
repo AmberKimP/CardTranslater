@@ -475,8 +475,11 @@ def import_translation(project: Project, xlsx_path: Path) -> ImportResult:
     wb = load_workbook(xlsx_path, data_only=True)
     if files is not None:  # 게임 검수 엑셀: 이 파일의 그룹 시트에서 이 파일의 행만
         pinfo = project_of(project.root)
+        from app.workspace import group_names
+
         pname, group, pdf_name = (pinfo.name if pinfo else "-"), group_of(project), project.source_pdf.name
-        info = next((f for f in files if f["프로젝트"] == pname and f["그룹"] == group and f["원본 파일"] == pdf_name),
+        names = group_names(project.root.parent.parent) if pinfo else {group}  # 이름을 바꾼 그룹은 예전 이름도
+        info = next((f for f in files if f["프로젝트"] == pname and f["그룹"] in names and f["원본 파일"] == pdf_name),
                     None)
         if info is None:
             res.blocking.append(f"게임 검수 엑셀에 이 파일이 없습니다 ({pname} / {group} / {pdf_name}). 검수 엑셀을 다시 만드세요")
