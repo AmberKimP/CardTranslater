@@ -410,7 +410,15 @@ def export_game(game: str, entries: list[dict], out_path: Path, keep: dict | Non
             rows[ws.title] = 2
             font_groups.append((e["project"], label))
         ws = sheets[sk]
-        k = {key.split("|", 1)[1]: v for key, v in (keep or {}).items() if key.split("|", 1)[0] == ws.title}
+        # 이름을 바꾼 그룹: 예전 이름으로 만든 시트의 사람 고침도 이어받는다
+        olds = {_sheet_title(o if len(names[e["group"]]) == 1 else f"{e['project_name']}·{o}", set())
+                for o in e.get("old_groups") or []}
+        k = {}
+        for key, v in (keep or {}).items():
+            sheet, rest = key.split("|", 1)
+            if sheet in olds:
+                k.setdefault(rest, v)
+        k.update({key.split("|", 1)[1]: v for key, v in (keep or {}).items() if key.split("|", 1)[0] == ws.title})
         rows[ws.title], drafts = _write_rows(ws, e["project"], e["pages"], k, rows[ws.title])
         all_drafts.update(drafts)
         icon_files.append((e["project"], load_extracted(e["project"].root), e["pages"]))

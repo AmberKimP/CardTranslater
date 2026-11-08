@@ -2377,3 +2377,69 @@ def test_result_viewer_paragraph_fonts_for_paragraph_region(qapp, tmp_path, monk
     assert service.card_edit_info(fd, 1, "이름")["paragraph_fonts"] == {1: GAEGU}
     png = service.card_preview(fd, 1, "이름", "첫 문단.\n둘째 문단.", None, paragraph_fonts={1: GAEGU})
     assert png and png[1:4] == b"PNG"
+
+
+def test_rename_group_keeps_reviewer_edits_links_and_case_only(qapp, tmp_path):
+    """이름을 바꾼 그룹: 검수 엑셀을 다시 만들어도 사람 고침이 남고, 다른 그룹의 쪽 연결도 새 이름, 대소문자만 바꿔도 된다."""
+    from openpyxl import load_workbook
+
+    from app.excel_io import game_files
+
+    info, fd = _translated_project(tmp_path)
+    old = fd.parent.parent.name
+    x = service.export_project_excel(info.dir)[0]  # 게임 검수 엑셀
+    files = game_files(x)
+    wb = load_workbook(x)
+    ws = wb[files[0]["시트"]]
+    head = [c.value for c in ws[1]]
+    ws.cell(2, head.index("번역") + 1, "사람이 고침")
+    for s_ in wb.worksheets:
+        s_._images = []
+    wb.save(x)
+    # 다른 그룹 파일이 이 그룹을 이름으로 가리키는 연결
+    other = workspace.add_files(info, [next((fd / "source").glob("*.pdf"))], "B", new_group=True)
+    ofd = next(d for d in workspace.file_dirs(info) if d.parent.parent.name == "B")
+    data = workspace.file_settings(ofd)
+    data["pages_in_groups"] = {old: [1]}
+    workspace._write(ofd / "file.json", data)
+    gdir = service.rename_group(info.dir, old, "Monster")
+    assert workspace.file_settings(ofd)["pages_in_groups"] == {"Monster": [1]}
+    nfd = gdir / "files" / fd.name
+    x2 = service.export_project_excel(info.dir, force=True)[0]
+    wb2 = load_workbook(x2, data_only=True)
+    f2 = next(f for f in game_files(x2) if f["그룹"] == "Monster")
+    vals = [r[head.index("번역")] for r in wb2[f2["시트"]].iter_rows(min_row=2, values_only=True)]
+    assert "사람이 고침" in vals  # 예전 이름 시트의 고침을 이어받음
+    g3 = service.rename_group(info.dir, "Monster", "monster")  # 대소문자만
+    assert g3.name == "monster" and (g3 / "group.json").exists()
+    assert [p.name for p in g3.parent.iterdir() if p.name.lower() == "monster"] == ["monster"]
+
+
+def test_result_viewer_keeps_each_cells_paragraph_fonts_and_preview_uses_region(qapp, tmp_path, monkeypatch):
+    from app import font_plan
+    from app.qt.results import ResultViewer
+    from tests.test_fonts_sentences import GAEGU, SANS, _project_with_mode
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    cards = {1: {"이름": {"ko": "가.\nB."}}, 2: {"이름": {"ko": "하나.\n둘.\n셋."}}}
+    assert service._compose_with_cards(fd, cards, None, None).state == "done"
+    monkeypatch.setattr(service, "_translation_cards", lambda _fd: cards)
+    service.save_card_edit(fd, 2, "이름", paragraph_fonts={0: GAEGU})
+    v = ResultViewer([("이미지", fd / "translated")])
+    v.pages.setCurrentRow(0)
+    v.regions.setCurrentRow(1)
+    assert len(v._para_combos) == 2 and not v.redo_btn.isEnabled()
+    v.pages.setCurrentRow(1)  # 다른 카드: 앞 카드의 문단 칸이 이 카드의 저장된 문단 글꼴을 덮지 않는다
+    v.regions.setCurrentRow(1)
+    assert v._para_combos[0].currentData() == GAEGU and not v.redo_btn.isEnabled()
+    v.edit_size.setValue(v.edit_size.minimum())
+    v.edit_size.stepUp()
+    assert v.edit_size.value() == 50  # 영역 설정대로 다음은 50 %
+    # 미리 보기: font·size None = 영역 글꼴·크기 (저장된 이 카드 값이 아님)
+    font_plan.save(fd, {"이름": SANS})
+    service.save_card_edit(fd, 2, "이름", font=GAEGU, set_font=True, size=1.6, set_size=True)
+    calls = []
+    monkeypatch.setattr(font_plan, "preview_render", lambda *a, **k: calls.append((a, k)) or b"x")
+    service.card_preview(fd, 2, "이름", "하나.", None, None)
+    a, _k = calls[-1]
+    assert a[3] == SANS and a[4] == 1.0

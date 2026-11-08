@@ -18,7 +18,9 @@ from app.qt.dialogs import (
     show_error, show_failure, show_problem, subtitle,
 )
 
-ALIGN_TEXT = [("left", "왼쪽"), ("center", "가운데"), ("right", "오른쪽")]
+from app.qt.fonts_dialog import ALIGN_CHOICES  # noqa: E402 (글꼴 창과 같은 정렬 이름)
+
+ALIGN_TEXT = [(k, t) for k, t in ALIGN_CHOICES if k]
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
 STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임"}  # 엔진 상태 낱말을 화면용으로
 
@@ -115,7 +117,7 @@ class ResultViewer(QDialog):
         self.erase_mode.setToolTip("이 카드의 고른 영역만 다른 방식으로 지웁니다. 다른 카드는 영역 설정대로입니다.")
         # 글자 크기·정렬: 이 카드만 (맨 아래 값 = 글꼴 창의 영역 설정대로)
         self.edit_size = QSpinBox()
-        self.edit_size.setRange(49, 200)
+        self.edit_size.setRange(45, 200)  # 맨 아래(45) = 영역 설정대로, 올리면 50·55·…
         self.edit_size.setSingleStep(5)
         self.edit_size.setSuffix(" %")
         self.edit_size.setMinimumWidth(240)  # ‘영역 설정대로 (100 %)’가 잘리지 않게
@@ -134,6 +136,7 @@ class ResultViewer(QDialog):
         self.para_form.setContentsMargins(0, 0, 0, 0)
         self._para_combos: list[QComboBox] = []
         self._para_picks: dict = {}
+        self._fonts: list[tuple[str, str]] | None = None  # (파일, 이름): 창에서 한 번만 만든다
         self._para_timer = QTimer(self)
         self._para_timer.setSingleShot(True)
         self._para_timer.setInterval(400)
@@ -389,11 +392,11 @@ class ResultViewer(QDialog):
         self.edit_font.clear()
         rf = info["region_font"]
         self.edit_font.addItem(f"영역 글꼴대로 ({service.font_label(rf) if rf else '영역 설정'})", "")
-        files = [f["file"] for f in service.font_choices()]
-        if info["font"] and info["font"] not in files:
-            files.append(info["font"])
-        for f in files:
-            self.edit_font.addItem(service.font_label(f), f)
+        fonts = list(self._font_list())
+        if info["font"] and all(f != info["font"] for f, _l in fonts):
+            fonts.append((info["font"], service.font_label(info["font"])))
+        for f, label in fonts:
+            self.edit_font.addItem(label, f)
         self.edit_font.setCurrentIndex(max(0, self.edit_font.findData(info["font"])) if info["font"] else 0)
         self.erase_mode.clear()
         erase_ok = bool(ei) and ei.get("kind") == "text"
@@ -411,31 +414,42 @@ class ResultViewer(QDialog):
         self._edit = {"page": p["page"], "region": name, "info": info,
                       "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok}
         self._para_picks = dict(info["paragraph_fonts"])
-        self._rebuild_paragraphs()
+        self._rebuild_paragraphs(load=True)
         self._mark_dirty()
 
     # ---- 문단 글꼴 (‘문단마다’ 영역)
-    def _rebuild_paragraphs(self):
-        """번역 글의 문단마다 글꼴 칸을 다시 만든다 (고른 것은 문단 번호로 지킨다)."""
+    def _font_list(self) -> list[tuple[str, str]]:
+        if self._fonts is None:
+            self._fonts = [(f["file"], service.font_label(f["file"])) for f in service.font_choices()]
+        return self._fonts
+
+    def _rebuild_paragraphs(self, load: bool = False):
+        """번역 글의 문단마다 글꼴 칸을 다시 만든다 (고른 것은 문단 번호로 지킨다).
+        load=True: 새 칸을 열 때 (앞 칸의 문단 칸 값을 이어받지 않는다)."""
         e = self._edit
         on = bool(e and e["info"]["paragraph_mode"])
         self.para_label.setVisible(on)
         self.para_box.setVisible(on)
         if not on:
+            while self.para_form.rowCount():
+                self.para_form.removeRow(0)
+            self._para_combos = []
             return
-        for i, cb in enumerate(self._para_combos):  # 지금 고른 것을 기억
-            self._para_picks[i] = cb.currentData() or None
+        if not load:
+            for i, cb in enumerate(self._para_combos):  # 글을 고치는 중: 지금 고른 것을 기억
+                self._para_picks[i] = cb.currentData() or None
         while self.para_form.rowCount():
             self.para_form.removeRow(0)
         self._para_combos = []
         paras = service.split_paragraphs(self.edit_text.toPlainText())
-        files = [f["file"] for f in service.font_choices()]
-        files += [f for f in self._para_picks.values() if f and f not in files]
+        fonts = list(self._font_list())
+        fonts += [(f, service.font_label(f)) for f in set(self._para_picks.values())
+                  if f and all(f != x for x, _l in fonts)]
         for i, t in enumerate(paras):
             cb = QComboBox()
             cb.addItem("(기준 카드 문단 설정대로)", "")
-            for f in files:
-                cb.addItem(service.font_label(f), f)
+            for f, label in fonts:
+                cb.addItem(label, f)
             pick = self._para_picks.get(i)
             cb.setCurrentIndex(max(0, cb.findData(pick)) if pick else 0)
             cb.setToolTip("이 카드의 이 문단만 쓸 글꼴. ‘기준 카드 문단 설정대로’는 글꼴 창에서 정한 문단 글꼴(없으면 영역 글꼴)")
@@ -445,6 +459,11 @@ class ResultViewer(QDialog):
             self.para_form.addRow(lab, cb)
             self._para_combos.append(cb)
         self._mark_dirty()
+
+    def _saved_paras(self) -> dict:
+        """저장된 문단 글꼴 중 지금 글에 있는 문단만 (글이 짧아져 없는 문단은 비교하지 않는다)."""
+        n = len(self._para_combos)
+        return {i: f for i, f in ((self._edit or {}).get("info") or {}).get("paragraph_fonts", {}).items() if i < n}
 
     def _para_fonts(self) -> dict:
         """지금 고른 문단 글꼴 {문단 번호: 글꼴} (‘설정대로’는 빠짐)."""
@@ -464,7 +483,7 @@ class ResultViewer(QDialog):
                 or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
                 or self._size_value() != info["size"]
                 or (self.edit_align.currentData() or "") != info["align"]
-                or (info["paragraph_mode"] and self._para_fonts() != info["paragraph_fonts"]))
+                or (info["paragraph_mode"] and self._para_fonts() != self._saved_paras()))
 
     def _mark_dirty(self):
         e = self._edit
@@ -536,7 +555,7 @@ class ResultViewer(QDialog):
                                    size=self._size_value(), set_size=self._size_value() != info["size"],
                                    align=self.edit_align.currentData() or "",
                                    set_align=(self.edit_align.currentData() or "") != info["align"],
-                                   paragraph_fonts=paras if paras is not None and paras != info["paragraph_fonts"]
+                                   paragraph_fonts=paras if paras is not None and paras != self._saved_paras()
                                    else None)
             if erase_changed:
                 service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())

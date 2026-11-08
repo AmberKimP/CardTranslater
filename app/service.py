@@ -905,7 +905,8 @@ def export_project_excel(project_dir: Path | str, force: bool = False) -> list[P
                 continue  # 영역 템플릿이 없는 그룹
             pages = workspace.included_pages(fd)
             if pages:
-                entries.append({"project_name": p_.name, "group": group_of(proj), "project": proj, "pages": pages})
+                entries.append({"project_name": p_.name, "group": group_of(proj), "project": proj, "pages": pages,
+                                "old_groups": sorted(workspace.group_names(fd.parent.parent) - {group_of(proj)})})
     path = export_game(info.game, entries, out, keep=keep)
     _retire_legacy(info, [], per_file=True)
     return [path]
@@ -2099,17 +2100,18 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
                  size: float | None = None, align: str | None = None,
                  paragraph_fonts: dict | None = None) -> bytes | None:
     """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None.
-    size·align: 이 카드만의 크기 배율·정렬 (None이면 저장된 것), paragraph_fonts: 이 카드의 문단마다 글꼴."""
+    화면에서 고른 그대로 그린다: font·size가 None이면 영역 글꼴·영역 크기, align ''이면 영역 정렬
+    (None이면 저장된 정렬), paragraph_fonts: 이 카드의 문단마다 글꼴 (None이면 저장된 것)."""
     from app import font_plan
 
     fd = Path(file_dir)
     data = font_plan.load(fd)
-    f = font or font_plan.overrides_for_page(data, int(page)).get(region)
+    f = font or (data.get("regions") or {}).get(region)  # 없으면 영역 글꼴 (화면이 ‘영역 글꼴대로’를 고른 것)
     entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
     ko = text
     if text is not None and isinstance(entry.get("ko"), list):
         ko = [t.strip() for t in text.splitlines() if t.strip()]
-    scale = size if size else font_plan.size_scales_for_page(data, int(page)).get(region, 1.0)
+    scale = size if size else font_plan.size_scales(data).get(region, 1.0)  # 없으면 영역 크기
     if align:  # 이 카드만 고른 정렬
         al = align
     elif align == "":  # ‘영역 설정대로’: 글꼴 창의 영역 정렬

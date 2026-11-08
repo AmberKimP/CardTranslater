@@ -246,18 +246,37 @@ def rename_group(info: ProjectInfo, old: str, new: str) -> Path:
     if not new:
         raise ValueError("새 이름이 비었습니다")
     dst = group_dir(info, new)
-    if dst != src and dst.exists():
+    same_folder = src.name.casefold() == dst.name.casefold()  # 대소문자만 바뀜 (Windows는 같은 폴더로 본다)
+    if not same_folder and dst.exists():
         raise ValueError(f"같은 이름의 그룹이 이미 있습니다: {new}")
     data = _read(src / "group.json")
+    old_display = data.get("name") or src.name
     olds = [n for n in (data.get("old_names") or []) if n != dst.name]
     if src.name != dst.name and src.name not in olds:
         olds.append(src.name)
     data["name"] = new
     if olds:
         data["old_names"] = olds
-    if dst != src:
-        src.rename(dst)
+    if src.name != dst.name:
+        if same_folder:  # 대소문자만 다르면 임시 이름을 거쳐 바꾼다
+            tmp = src.with_name(src.name + ".renaming")
+            src.rename(tmp)
+            tmp.rename(dst)
+        else:
+            src.rename(dst)
     _write(dst / "group.json", data)
+    # 다른 그룹 파일이 이 그룹을 이름으로 가리키는 연결(쪽을 다른 그룹으로 옮긴 것)도 새 이름으로
+    for fj in groups_dir(info).glob("*/files/*/file.json"):
+        fdata = _read(fj)
+        links = fdata.get("pages_in_groups") or {}
+        changed = False
+        for key in list(links):
+            if key in (old, old_display, src.name):
+                links[new] = sorted(set(links.get(new, [])) | set(links.pop(key)))
+                changed = True
+        if changed:
+            fdata["pages_in_groups"] = links
+            _write(fj, fdata)
     return dst
 
 
