@@ -96,6 +96,7 @@ class TextStyle:
     rotate: int = 0
     pivot: tuple | None = None
     respect_manual: bool = True
+    join_two: bool = True  # 딱 두 줄로 된 문장이 같은 크기로 한 줄에 들어가면 한 줄로
 
     @classmethod
     def from_region_style(cls, style: dict, base_dir: str | Path = ROOT, **overrides) -> "TextStyle":
@@ -122,7 +123,7 @@ class TextStyle:
             kw["tag_fonts"] = {k: str(Path(v) if Path(v).is_absolute() else Path(base_dir) / v)
                                for k, v in style["tag_fonts"].items()}
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
-                  "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales", "size_scale"):
+                  "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales", "size_scale", "join_two"):
             if k in style:
                 kw[k] = style[k]
         kw.update(overrides)
@@ -436,7 +437,7 @@ def typeset_region(page: pymupdf.Page, rect, text: str | None, style: TextStyle,
         box_w=rect.width, box_h=box_h, start_size=start, fixed_size=style.fixed_size_pt,
         min_ratio=style.min_ratio, floor_pt=style.floor_for_fit(), max_tracking=style.max_tracking,
         base_tracking=style.tracking,
-        line_pitch=style.line_pitch_pt, respect_manual=style.respect_manual,
+        line_pitch=style.line_pitch_pt, respect_manual=style.respect_manual, join_two=style.join_two,
     )
     fit: FitResult = fit_text(atoms, params, m)
     size, t = fit.size, fit.tracking

@@ -276,3 +276,39 @@ def test_region_align_modes_for_line_slots():
     assert abs(orig[1][0] - 40) < 1  # 그 줄의 원문 시작점
     assert all(abs((b[0] + b[2]) / 2 - 90) < 1.5 for b in center)  # 영역 가운데
     assert all(abs(b[2] - 150) < 1.5 for b in right[:2])  # 글 칸 오른쪽 끝(150)
+
+
+def _plain_lines(*ys, bold=False):
+    return {"lines": [{"bbox_pt": [20.0, y, 150.0, y + 8], "glyph_h_pt": 8.0, "color": "#303030", "stroke_color": None,
+                       "stroke_pt": 0.0, "weight": 0.2, "bold": bold, "align": "left", "accents": []} for y in ys],
+            "dividers_pt": []}
+
+
+def test_compose_layout_joins_two_line_sentence_into_one_line():
+    """원문 두 줄이 한 문장이고 한글이 한 줄에 들어가면 한 줄로 (첫 줄 자리에서, 다음 문장은 바로 아래 줄로)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    rec = compose_layout_region(page, (10, 10, 170, 100), "카드를\n한 장 뽑는다.\n버린다.", {}, _plain_lines(20, 32, 44))
+    assert rec["line_modes"] == ["joined"] and rec["lines"] == ["카드를 한 장 뽑는다.", "버린다."]
+    b = rec["line_boxes_pt"]
+    assert abs((b[0][1] + b[0][3]) / 2 - 24) < 2.5 and abs((b[1][1] + b[1][3]) / 2 - 36) < 2.5
+    assert "두 줄 문장을 한 줄로" in rec["warnings"][0] and not rec["overflow_text"]
+
+
+def test_compose_layout_keeps_lines_when_not_two_line_sentence_or_too_long():
+    doc = pymupdf.open()
+    lay = _plain_lines(20, 32, 44)
+    # 세 줄 문장: 그대로
+    rec = compose_layout_region(doc.new_page(width=180, height=110), (10, 10, 170, 100),
+                                "카드를\n한 장\n뽑는다.", {}, lay)
+    assert rec["line_modes"] == ["slot"] * 3
+    # 두 줄 문장이지만 이으면 한 줄 폭을 넘음: 그대로
+    long = "아주 길고 긴 한국어 번역 문장이 여기에\n이어지는 두 번째 줄도 길게 쓴다.\n끝."
+    rec = compose_layout_region(doc.new_page(width=180, height=110), (10, 10, 170, 100), long, {}, lay)
+    assert rec["line_modes"] == ["slot"] * 3
+    # 굵기가 다른 줄이 섞인 묶음: 줄 모양을 지키려 그대로
+    mixed = _plain_lines(20, 32, 44)
+    mixed["lines"][1]["bold"] = True
+    rec = compose_layout_region(doc.new_page(width=180, height=110), (10, 10, 170, 100),
+                                "카드를\n한 장 뽑는다.\n버린다.", {}, mixed)
+    assert rec["line_modes"] == ["slot"] * 3

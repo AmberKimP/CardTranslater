@@ -398,6 +398,44 @@ def wrap_paragraph(para: list[Atom], max_w: float, size: float, tracking: float,
     return lines
 
 
+# 문장이 끝난 줄: 마침표류·닫는 괄호/따옴표·콜론, 또는 ‘…다’
+_LINE_END = re.compile(r"(?:[.!?。．！？…」』”’)）\]］:：]|다)\s*$")
+_WORDY_CH = re.compile(r"[가-힣A-Za-z0-9]")
+_TAG_OR_ICON = re.compile(r"</?[a-z0-9]+>|\[\[[^\]]*\]\]")
+
+
+def soft_break(prev: str, nxt: str) -> bool:
+    """두 줄이 한 문장으로 이어지는가: 앞 줄이 문장 중간에서 끝났고 두 줄 모두 글자가 있는 줄
+    (아이콘·기호만 있는 줄, 아이콘으로 끝난 줄은 따로 둔다). 태그·[[아이콘]]이 든 글이어도 된다."""
+    p, n = _TAG_OR_ICON.sub("", prev).strip(), _TAG_OR_ICON.sub("", nxt).strip()
+    if not (_WORDY_CH.search(p) and _WORDY_CH.search(n)):
+        return False
+    return not _LINE_END.search(prev.strip()) and not prev.rstrip().endswith("]]")
+
+
+def two_line_sentences(lines: list[str]) -> list[int]:
+    """딱 두 줄로 된 문장의 첫 줄 번호들 (앞 줄은 문장이 끝났고, 둘째 줄에서 문장이 끝남)."""
+    n = len(lines)
+    return [i for i in range(n - 1)
+            if soft_break(lines[i], lines[i + 1])
+            and not (i > 0 and soft_break(lines[i - 1], lines[i]))
+            and not (i + 2 < n and soft_break(lines[i + 1], lines[i + 2]))]
+
+
+def join_lines_at(lines: list[str], firsts: list[int]) -> list[str]:
+    """firsts의 줄을 다음 줄과 빈칸으로 잇는다."""
+    out, skip = [], set(firsts)
+    i = 0
+    while i < len(lines):
+        if i in skip and i + 1 < len(lines):
+            out.append(lines[i].rstrip() + " " + lines[i + 1].lstrip())
+            i += 2
+        else:
+            out.append(lines[i])
+            i += 1
+    return out
+
+
 def wrap_text(atoms: list[Atom], max_w: float, size: float, tracking: float, m: Measurer,
               respect_manual: bool = True) -> list[Line]:
     """사람이 넣은 줄바꿈이 있으면 그 줄을 그대로 쓰고 자동 줄바꿈하지 않는다 (PRD 4장)."""
@@ -429,6 +467,8 @@ class FitParams:
     size_step: float = 0.05
     line_pitch: float | None = None  # start_size에서의 줄 간격(pt). None이면 1.2 x 크기
     respect_manual: bool = True
+    # 사람이 넣은 줄바꿈을 지킬 때도, 딱 두 줄로 된 문장이 같은 크기로 한 줄에 들어가면 한 줄로 넣는다
+    join_two: bool = True
 
     def min_size(self) -> float:
         return min_size_rule(self.start_size, self.min_ratio, self.floor_pt)
@@ -496,6 +536,32 @@ def _size_ladder(p: FitParams) -> list[float]:
 
 
 def fit_text(atoms: list[Atom], p: FitParams, m: Measurer) -> FitResult:
+    res = _fit_text(atoms, p, m)
+    if not (p.respect_manual and p.join_two):
+        return res
+    paras = split_paragraphs(atoms)
+    if len(paras) < 2:
+        return res
+    texts = ["".join(a.display for a in q) for q in paras]
+    joinable = []
+    for i in two_line_sentences(texts):  # 두 줄 문장: 이으면 지금 크기로 한 줄 폭 안에 드는 것만
+        one = _trim(paras[i]) + [Atom("space", " ")] + _trim(paras[i + 1])
+        if _width(one, res.size, res.tracking, m) <= p.box_w + 1e-6:
+            joinable.append(i)
+    if not joinable:
+        return res
+    nls = [a for a in atoms if a.kind == "newline"]
+    alt_atoms: list[Atom] = _trim(paras[0])
+    for i in range(1, len(paras)):
+        alt_atoms.append(Atom("space", " ", nls[i - 1].fmt) if (i - 1) in joinable else nls[i - 1])
+        alt_atoms.extend(_trim(paras[i]))
+    alt = _fit_text(alt_atoms, p, m)
+    if STATUS_OVERFLOW not in alt.status and alt.size >= res.size - 1e-9:
+        return alt
+    return res
+
+
+def _fit_text(atoms: list[Atom], p: FitParams, m: Measurer) -> FitResult:
     top, bottom = m.ink_extent([a for a in atoms if a.kind in ("char", "icon")])
     n_track = int(round(p.max_tracking / p.tracking_step))
     trackings = [p.base_tracking - i * p.tracking_step for i in range(n_track + 1)]

@@ -336,3 +336,34 @@ def test_single_brackets_are_text_double_brackets_are_icons():
     assert texts[-3:] == ["[", "炎", "]"]
     assert [a.text for a in atoms if a.kind == "icon"] == ["coin"]
     assert icon_names("[4층] [[coin]] [[gem_red]]") == ["coin", "gem_red"]
+
+
+# ---------------------------------------------------------------- 두 줄 문장을 한 줄로
+def test_two_line_sentence_rules():
+    from app.typeset_layout import join_lines_at, soft_break, two_line_sentences
+
+    assert soft_break("카드를 한 장", "뽑는다.")
+    assert not soft_break("카드를 뽑는다.", "그다음 버린다")  # 문장 끝
+    assert not soft_break("피해를 준다", "그다음")  # ‘…다’로 끝난 줄
+    assert not soft_break("공격력 +", "[[sword]][[sword]]")  # 아이콘만 있는 줄
+    assert not soft_break("공격 시 [[coin]]", "을 얻는다")  # 아이콘으로 끝난 줄
+    assert soft_break("<b>강한</b>", "<c1>공격</c1>을 한다.")
+    # 딱 두 줄로 된 문장만 (세 줄 문장은 그대로)
+    assert two_line_sentences(["카드를", "뽑는다.", "그다음", "한 장을", "버린다."]) == [0]
+    assert two_line_sentences(["끝.", "카드를", "뽑는다."]) == [1]
+    assert join_lines_at(["카드를", "뽑는다.", "끝."], [0]) == ["카드를 뽑는다.", "끝."]
+
+
+def test_fit_joins_two_line_sentence_only_when_it_fits_one_line():
+    # "카드를 한 장 뽑는다." = 9글자 + 빈칸 3 = 105: 폭 120이면 한 줄로
+    r = _fit("카드를 한\n장 뽑는다.", 120, 40, 10)
+    assert r.line_texts == ["카드를 한 장 뽑는다."] and r.size == 10 and r.status == []
+    # 한 줄 폭을 넘으면 원래 두 줄 그대로 (글자를 줄여 합치지 않는다)
+    r = _fit("카드를 한\n장 뽑는다.", 100, 40, 10)
+    assert r.line_texts == ["카드를 한", "장 뽑는다."] and r.size == 10
+    # 세 줄 문장은 줄이지 않는다
+    assert _fit("가나\n다라\n마바.", 200, 60, 10).line_texts == ["가나", "다라", "마바."]
+    # 문장이 끝난 줄바꿈은 그대로, 뒤의 두 줄 문장만 한 줄로
+    assert _fit("끝났다.\n카드를\n뽑는다.", 200, 60, 10).line_texts == ["끝났다.", "카드를 뽑는다."]
+    # 끄면 예전처럼 사람이 넣은 줄 그대로
+    assert _fit("카드를 한\n장 뽑는다.", 120, 40, 10, join_two=False).line_texts == ["카드를 한", "장 뽑는다."]

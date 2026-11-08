@@ -23,7 +23,7 @@ from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.erase_text import is_icon_line
-from app.typeset_layout import wrap_sentence_fonts
+from app.typeset_layout import STATUS_OVERFLOW, join_lines_at, two_line_sentences, wrap_sentence_fonts
 from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
 
@@ -433,7 +433,9 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
     # 아이콘만 있는 줄(큰 칼 두 개 등)은 원본 그대로 남겼다: 글 줄 수가 남은 줄 자리와 맞으면 그 줄들은 빼고 넣는다
     ko_text = [t for t in ko_lines if not is_icon_line(t)]
+    icon_lines_out = False  # 아이콘 줄을 뺐으면 그 앞뒤 줄은 이어진 문장이 아니다 (두 줄 합치기 안 함)
     if len(ko_text) < len(ko_lines) and len(ko_text) == sum(1 for ln in lines_all if not ln.get("keep")):
+        icon_lines_out = True
         ko_lines = ko_text
         lines_all = [ln for ln in lines_all if not ln.get("keep")]
         if not lines_all:
@@ -478,10 +480,59 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     results: list[tuple[TypesetResult, str]] = []
     slots = []  # (줄 모양, 번역, 사각형, 서식, 위)
     slot_k = 1.6 * max(1.0, float(style_d.get("size_scale") or 1.0))  # 크기를 키우면 줄 자리도 높게
+    def paragraph(src: list[dict], sec: dict):
+        """묶음 전체를 한 글 칸으로: (사각형, 서식, 첫 줄 위)."""
+        ln0 = dict(src[0])
+        ln0["glyph_h_pt"] = float(np.median([ln["glyph_h_pt"] for ln in src]))
+        aligns = [ln.get("align", "left") for ln in src]
+        ln0["align"] = max(set(aligns), key=aligns.count)
+        pitch = (float(np.median([src[i + 1]["bbox_pt"][1] - src[i]["bbox_pt"][1] for i in range(len(src) - 1)]))
+                 if len(src) > 1 else None)
+        st = _line_style(style_d, base_dir, ln0, region_accents, pivot, icon_fit, line_pitch_pt=pitch)
+        gh = ln0["glyph_h_pt"]
+        top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
+        bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)
+        if (style_d.get("align") or "") == "center":
+            st.align = "center"
+            r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + slot_k * gh))
+        else:
+            x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
+            r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + slot_k * gh))
+        return r, st, top
+
+    def join_two(src: list[dict], sec: dict, kos: list[str]):
+        """딱 두 줄로 된 문장이 원래 크기로 한 줄에 들어가면 한 줄로 이은 (줄 목록, 칸, 서식, 위). 못 하면 None.
+        한 묶음의 줄이 모두 같은 모양(색·크기·굵기)이고 아이콘만 남긴 줄이 없을 때만 한다."""
+        if (icon_lines_out or len(src) < 2 or (style_d.get("align") or "") == "original" or any(ln.get("keep") for ln in src)
+                or len({ln["_g"] for ln in src}) > 1 or len({bool(ln.get("bold")) for ln in src}) > 1):
+            return None
+        firsts = two_line_sentences(kos)
+        if not firsts:
+            return None
+        r, st, top = paragraph(src, sec)
+        start = st.start_size()
+        ok: list[int] = []
+        for i in firsts:  # 하나씩: 이은 줄이 원래 크기로 칸 폭에 들어가는 것만
+            st.fixed_size_pt = start
+            trial = typeset_region(page, r, "\n".join(join_lines_at(kos, ok + [i])), st, top_anchor=top, draw=False)
+            st.fixed_size_pt = None
+            if not trial.overflow_text and STATUS_OVERFLOW not in trial.status:
+                ok.append(i)
+        if not ok:
+            return None
+        return join_lines_at(kos, ok), r, st, top
+
+    joined_note: list[str] = []
     for sec, kos in zip(secs, parts):
         if not kos:
             continue
         src = sec["lines"]
+        jt = join_two(src, sec, kos) if len(kos) == len(src) else None
+        if jt is not None:
+            new_kos, r, st, top = jt
+            results.append((typeset_region(page, r, "\n".join(new_kos), st, top_anchor=top), "joined"))
+            joined_note.append(f"{len(kos)}줄 → {len(new_kos)}줄")
+            continue
         if len(kos) == len(src):
             block_of = sentence_blocks(src, kos)
             for ln, ko in zip(src, kos):
@@ -526,23 +577,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                     r = pymupdf.Rect(r.x0, r.y0 - extra, r.x1, max(r.y1, r.y0 - extra + s_ * gh * 1.2))
                 slots.append((ln, ko, r, st, top))
         else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
-            ln0 = dict(src[0])
-            ln0["glyph_h_pt"] = float(np.median([ln["glyph_h_pt"] for ln in src]))
-            aligns = [ln.get("align", "left") for ln in src]
-            ln0["align"] = max(set(aligns), key=aligns.count)
-            pitch = (float(np.median([src[i + 1]["bbox_pt"][1] - src[i]["bbox_pt"][1] for i in range(len(src) - 1)]))
-                     if len(src) > 1 else None)
-            st = _line_style(style_d, base_dir, ln0, region_accents, pivot, icon_fit, line_pitch_pt=pitch)
-            gh = ln0["glyph_h_pt"]
-            top = (src[0]["bbox_pt"][1] + src[0]["bbox_pt"][3]) / 2 - gh / 2
-            bottom = sec["y1"] - (0.3 * gh if sec["y1"] < rect.y1 else 0)
-            mode = style_d.get("align") or ""
-            if mode == "center":
-                st.align = "center"
-                r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + slot_k * gh))
-            else:
-                x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
-                r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + slot_k * gh))
+            r, st, top = paragraph(src, sec)
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}
@@ -585,6 +620,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         errors_note = f"번역 {len(ko_lines)}줄, 원문 {len(lines_all)}줄: 묶음 안에서 줄바꿈"
     else:
         errors_note = ""
+    if joined_note:
+        errors_note = "; ".join(filter(None, [errors_note, "두 줄 문장을 한 줄로 (" + ", ".join(joined_note) + ")"]))
     return {
         "layout": "lines", "sections": len(secs), "line_modes": [m for _, m in results],
         "status": status, "size_pt": round(float(np.median(sizes)), 3) if sizes else None,
