@@ -257,7 +257,7 @@ def test_font_dialog_preview_is_above_list(qapp):
     assert dlg.split.widget(1) is dlg.tree
     top = dlg.split.widget(0)
     assert top.isAncestorOf(dlg.orig) and top.isAncestorOf(dlg.sample) and not top.isAncestorOf(dlg.tree)
-    assert dlg.tree.headerItem().text(0) == "영역 / 카드 / 문장"
+    assert dlg.tree.headerItem().text(0) == "영역 / 카드 / 문단"
     item = dlg.tree.topLevelItem(0)
     dlg.tree.setCurrentItem(item)
     assert "이름 영역" in dlg.where.text()

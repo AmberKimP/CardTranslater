@@ -129,7 +129,7 @@ def _ko_text(entry) -> str | None:
 def sentences_for_page(data: dict, page: int, card: dict | None = None) -> dict:
     """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}. card(그 쪽 번역)를 주면 문장 자리별 글꼴(sentence_slots)을
     그 카드의 문장 수에 맞게 펼치고, 카드·문장마다 고른 것을 그 위에 덮는다."""
-    from app.typeset_layout import sentences as split_sentences
+    from app.typeset_layout import paragraphs as split_sentences
 
     regs = (data.get("sentences") or {}).get(str(page)) or {}
     out = {k: {int(i): f for i, f in v.items()} for k, v in regs.items()}
@@ -460,7 +460,7 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
         for r in m["regions"]:
             if r["name"] not in [n for n, _k in names]:
                 names.append((r["name"], r.get("kind", "text")))
-    from app.typeset_layout import sentences as split_sentences
+    from app.typeset_layout import paragraphs as split_sentences
 
     modes = region_font_modes(fd)
     raw = texts
@@ -639,7 +639,7 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
         if icon_style:
             style = {**icon_style, **style}
         # 문장 자리별 글꼴(slots)은 이 카드의 문장 수에 맞게 펼치고, 고른 문장(sentence)은 그 위에
-        from app.typeset_layout import sentences as split_sentences
+        from app.typeset_layout import paragraphs as split_sentences
 
         smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or ""))) if slots else {}
         if sentence is not None:

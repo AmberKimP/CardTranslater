@@ -29,7 +29,7 @@ def test_sentence_split_keeps_tags_icons_and_quotes():
 
 
 def test_wrap_sentence_fonts_balanced_per_line_and_crossing_tags():
-    t = "첫 문장이다. 둘째는 <b>굵게\n이어진다.</b> 셋째."
+    t = "첫 문단이다.\n둘째는 <b>굵게\n이어진다.</b>\n셋째."  # 문단: 줄이 문장 끝으로 끝날 때 나뉜다
     w, keys = wrap_sentence_fonts(t, {1: GAEGU, "2": GAEGU})
     assert keys == {"f1": GAEGU}  # 같은 글꼴은 태그 하나로
     assert w.count("<f1>") == 3 and w.count("</f1>") == 3
@@ -47,7 +47,7 @@ def test_wrap_sentence_fonts_balanced_per_line_and_crossing_tags():
 def test_typeset_draws_each_sentence_in_its_font():
     doc = pymupdf.open()
     page = doc.new_page(width=300, height=120)
-    text, keys = wrap_sentence_fonts("고딕 문장이다. 개구 문장이다.", {1: GAEGU})
+    text, keys = wrap_sentence_fonts("고딕 문단이다.\n개구 문단이다.", {1: GAEGU})
     st = TextStyle.from_region_style({"font": {"file": SANS}, "tag_fonts": keys}, ROOT, size_pt=12)
     res = typeset_region(page, (10, 10, 290, 110), text, st)
     assert res.drawn and not res.errors
@@ -73,12 +73,12 @@ def _project_with_mode(tmp_path, mode):
 
 def test_sentence_mode_plan_save_and_compose(tmp_path, monkeypatch):
     info, fd = _project_with_mode(tmp_path, "sentence")
-    texts = {1: {"이름": "첫 문장. 둘째 문장."}, 2: {"이름": "하나뿐"}}
+    texts = {1: {"이름": "첫 문단.\n둘째 문단."}, 2: {"이름": "하나뿐"}}
     monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: texts)
     plan = service.font_plans(info.dir)[0]
     reg = plan["regions"][0]
     assert reg["font_mode"] == "sentence"
-    assert [x["text"] for x in reg["cards"][0]["sentences"]] == ["첫 문장.", "둘째 문장."]
+    assert [x["text"] for x in reg["cards"][0]["sentences"]] == ["첫 문단.", "둘째 문단."]
     service.save_font_choices(fd, {"이름": SANS}, {}, {1: {"이름": {1: GAEGU}}})
     assert font_plan.load(fd)["sentences"] == {"1": {"이름": {"1": GAEGU}}}
     assert font_plan.sentences_for_page(font_plan.load(fd), 1) == {"이름": {1: GAEGU}}
@@ -136,7 +136,7 @@ def test_font_dialog_sentence_rows(qapp):
 
     dlg = FontPlanDialog(_sent_plan())
     top = dlg.tree.topLevelItem(0)
-    assert "(문장마다)" in top.text(0) and "고딕, 보통" in top.toolTip(0)
+    assert "(문단마다)" in top.text(0) and "고딕, 보통" in top.toolTip(0)
     assert top.isExpanded()  # ‘문장마다’ 영역은 펼쳐 보인다
     assert top.child(0).data(0, ROLE_KIND)[0] == "slot"  # 문장 자리 줄이 카드보다 위
     card = top.child(1)
@@ -379,9 +379,9 @@ def test_sentences_for_page_spreads_ref_and_card_picks_win():
 
     data = {"sentence_slots": {"본문": {"ref": ["A", None, "Z"]}},
             "sentences": {"2": {"본문": {"1": "X"}}}}
-    card1 = {"page": 1, "본문": {"ko": "하나. 둘. 셋."}}
+    card1 = {"page": 1, "본문": {"ko": "하나.\n둘.\n셋."}}
     assert sentences_for_page(data, 1, card1) == {"본문": {0: "A", 2: "Z"}}
-    card2 = {"page": 2, "본문": {"ko": "하나. 둘."}}
+    card2 = {"page": 2, "본문": {"ko": "하나.\n둘."}}
     assert sentences_for_page(data, 2, card2) == {"본문": {0: "A", 1: "X"}}  # 카드에서 고른 문장이 먼저
     assert sentences_for_page(data, 2) == {"본문": {1: "X"}}  # 번역을 모르면 카드에서 고른 것만
 
@@ -394,7 +394,7 @@ def test_font_dialog_ref_rows_saved_for_all_cards(qapp):
     dlg = FontPlanDialog(plan)
     top = dlg.tree.topLevelItem(0)
     rows = [top.child(i) for i in range(top.childCount()) if top.child(i).data(0, ROLE_KIND)[0] == "slot"]
-    assert [r.text(0) for r in rows] == ["1번째 문장 (첫 문장)", "2번째 문장 (마지막 문장)"]
+    assert [r.text(0) for r in rows] == ["1번째 문단 (첫 문단)", "2번째 문단 (마지막 문단)"]
     assert "첫." in rows[0].text(2) and "둘." in rows[1].text(2)  # 기준 카드의 문장 견본
     c0, c1 = (dlg.tree.itemWidget(r, 1) for r in rows)
     assert c0.currentText() == "(영역 글꼴대로)" and c1.currentData() == GAEGU
@@ -421,10 +421,27 @@ def test_ref_fonts_saved_and_used_by_compose(tmp_path, monkeypatch):
 
 def test_ref_card_is_the_one_with_most_sentences(tmp_path, monkeypatch):
     info, fd = _project_with_mode(tmp_path, "sentence")
-    texts = {1: {"이름": "하나뿐"}, 2: {"이름": "첫. 둘. 셋."}, 3: {"이름": "가. 나. 다."}}
+    texts = {1: {"이름": "하나뿐"}, 2: {"이름": "첫.\n둘.\n셋."}, 3: {"이름": "가.\n나.\n다."}}
     monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: texts)
     monkeypatch.setattr("app.font_plan._raw_cards", lambda _fd: {p: {"이름": {"ko": t["이름"]}} for p, t in texts.items()})
     reg = service.font_plans(info.dir)[0]["regions"][0]
     if not any(c["page"] == 2 for c in reg["cards"]):
         pytest.skip("견본 프로젝트에 2쪽이 없음")
     assert reg["slot_page"] == 2 and reg["ref_sentences"] == 3  # 문장이 가장 많은 카드 (같으면 앞 카드)
+
+
+
+def test_paragraphs_follow_card_text_structure():
+    """문단: 문장 중간에서 바뀐 줄은 같은 문단, 문장 끝으로 끝난 줄·‘공포: 1’ 머리 줄·빈 줄·‘——이름’에서 나뉜다."""
+    from app.typeset_layout import paragraph_spans, paragraphs
+
+    t10 = ("공포: 1\n누군가 『탐험가』 「앞면」을 플레이했을 때 [[gold]]1\n을 획득한다.\n"
+           "여기서 일어난 일은 전부 제게 알려 주세요. 보수는 교회에서 지급\n됩니다!\n——탐험가")
+    assert len(paragraphs(t10)) == 4 and paragraphs(t10)[2].startswith("여기서") and paragraphs(t10)[3] == "——탐험가"
+    t2 = "공포: 1\n차례 시작 시 [[gold]]1을 지불하고 덱에서 카\n드를 1장 뽑을 수 있다.\n돈으로 해결할 수 있다면 그보다 편한 일은 없지. ——노예상"
+    assert paragraphs(t2)[2:] == ["돈으로 해결할 수 있다면 그보다 편한 일은 없지.", "——노예상"]  # 같은 줄의 말한 사람도 문단
+    t3 = "이 카드가 자신의 영지에 있는 동안, 자신이\n소유한 다른 [[hammer]] 카드는 파괴되지 않는다.\n이방인들의 첫 집."
+    assert len(paragraphs(t3)) == 2
+    assert paragraphs("첫 줄\n\n다음") == ["첫 줄", "다음"] and paragraph_spans("  ") == []
+    # 한 줄 안의 여러 문장은 한 문단 (설명 글이 두 문장이어도 하나)
+    assert paragraphs("알려 주세요. 보수는 교회에서 지급 됩니다!") == ["알려 주세요. 보수는 교회에서 지급 됩니다!"]

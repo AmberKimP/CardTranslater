@@ -597,10 +597,10 @@ class RegionEditor(QDialog):
             cb.setMinimumContentsLength(12)
         self.f_font_mode = QComboBox()
         self.f_font_mode.addItem("한 칸 모두 같은 글꼴", "cell")
-        self.f_font_mode.addItem("문장마다 글꼴 지정", "sentence")
+        self.f_font_mode.addItem("문단마다 글꼴 지정", "sentence")
         self.f_font_mode.setToolTip("한글 넣기 전 글꼴 창에서 글꼴을 고르는 단위\n"
                                     "한 칸 모두 같은 글꼴: 카드의 이 칸 전체를 한 글꼴로 (기본)\n"
-                                    "문장마다 글꼴 지정: 칸 안의 문장마다 다른 글꼴을 고를 수 있음")
+                                    "문단마다 글꼴 지정: 칸 안의 문단(효과·설명·말한 사람 등)마다 다른 글꼴을 고를 수 있음")
         self.f_keep_tall = QDoubleSpinBox()
         self.f_keep_tall.setRange(0, 200)
         self.f_keep_tall.setDecimals(1)
