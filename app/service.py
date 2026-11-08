@@ -1853,6 +1853,37 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     return r
 
 
+def suggest_icon_name(project_dir: Path | str, group: str, *, engine: str | None = None, client=None) -> dict:
+    """한 묶음(직접 잡아 새로 생긴 줄)만 이름·뜻·한국어 이름을 제안 받아 저장한다.
+    {"suggest", "meaning", "ko"} (못 받으면 빈 값과 "note")."""
+    from app import icons, workspace
+    from app.extract import make_client
+    from app.extract_cc import ClaudeCodeClient
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    res = icons.load_scan(work)
+    gi = res.groups.get(group)
+    if not gi or not gi.get("rep"):
+        return {"suggest": "", "meaning": "", "ko": "", "note": "그림이 없는 줄"}
+    one = icons.ScanResult([o for o in res.occurrences if o.id == gi["rep"]], {group: dict(gi)})
+    try:
+        if client is None:
+            eng = engine or get_settings().engine
+            client = ClaudeCodeClient() if eng == "claude-code" else make_client()
+        icons.suggest_names(one, client, ICON_SUGGEST_MODEL, work / "suggest")
+    except Exception as e:  # noqa: BLE001 - 제안 없이도 직접 적으면 된다
+        return {"suggest": "", "meaning": "", "ko": "", "note": f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"}
+    res = icons.load_scan(work)  # 그사이 바뀌었을 수 있어 다시 읽고 이 줄만 고친다
+    if group in res.groups:
+        for k in ("suggest", "meaning", "ko"):
+            if one.groups[group].get(k):
+                res.groups[group][k] = one.groups[group][k]
+        icons._save_scan(work, res)
+    g = one.groups[group]
+    return {"suggest": g.get("suggest", ""), "meaning": g.get("meaning", ""), "ko": g.get("ko", "")}
+
+
 def icon_dictionary(project_dir: Path | str) -> list[dict]:
     """게임 아이콘 사전: [{"name", "image", "ko", "meaning", "scale", "uses"}] (이름 순)."""
     from app import icons, workspace

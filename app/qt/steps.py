@@ -949,9 +949,11 @@ class IconPlaceDialog(QDialog):
         lay.addWidget(legend)
         lay.addLayout(btns)
         self.combo.currentIndexChanged.connect(lambda _i: self._load())
-        first_missing = next((i for i, w in enumerate(self.where) if not w.get("png")), 0)
-        if first_missing:
-            self.combo.setCurrentIndex(first_missing)  # 신호가 _load를 부른다
+        # 처음 볼 자리: 못 찾은 것 -> 직접 잡은 것(다시 고치러 왔을 때) -> 첫째
+        first = next((i for i, w in enumerate(self.where) if not w.get("png")),
+                     next((i for i, w in enumerate(self.where) if w.get("manual")), 0))
+        if first:
+            self.combo.setCurrentIndex(first)  # 신호가 _load를 부른다
         else:
             self._load()
 
@@ -1021,6 +1023,30 @@ class IconPlaceDialog(QDialog):
         else:
             msg = f"저장함. 새 아이콘 {self.row_label(r['group'])} 줄입니다. 이름을 정해 주세요."
         self.status.setText(msg)
+        gg = next((x for x in rev["groups"] if x["group"] == r["group"]), {})
+        if r.get("new_group") and not r.get("dict") and not gg.get("suggest"):
+            self._suggest(r["group"])
+
+    def _suggest(self, group: str):
+        """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다)."""
+        eng = service.get_settings().engine
+        if not service.engine_status().get(eng):
+            self.status.setText(self.status.text() + " (Claude에 연결할 수 없어 이름 제안은 건너뜀)")
+            return
+        label = self.row_label(group)
+
+        def done(res):
+            self.on_saved({})  # 표를 다시 채워 제안을 넣는다 (적어 둔 값은 그대로)
+            if res.get("suggest"):
+                self.status.setText(f"저장함. 새 아이콘 {label} 줄에 이름을 제안 받았습니다: "
+                                    f"{res['suggest']} ({res.get('ko') or '-'}). 확인해 주세요.")
+            else:
+                self.status.setText(f"저장함. 새 아이콘 {label} 줄입니다. {res.get('note') or '이름을 정해 주세요.'}")
+
+        job = worker.Job(service.suggest_icon_name, self.project_dir, group, engine=eng, with_progress=False)
+        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done,
+                               lambda m: self.status.setText(f"저장함. 이름 제안을 받지 못했습니다: {m}"),
+                               cancellable=False)
 
 
 class IconReviewDialog(QDialog):
@@ -1092,7 +1118,8 @@ class IconReviewDialog(QDialog):
             scale.setRange(0.3, 3.0)
             scale.setSingleStep(0.05)
             scale.setValue(1.1)
-            view = QPushButton("카드 보기" if g["image"] else "카드 보기 · 자리 잡기")
+            view = QPushButton("카드 보기 · 자리 잡기")  # 찾은 아이콘도 자리를 다시 잡을 수 있다
+            view.setToolTip("그 아이콘이 나온 카드를 보고, 위치가 틀리면 마우스로 끌어 다시 잡습니다")
             if not g["image"]:
                 view.setStyleSheet("font-weight: bold")
             view.clicked.connect(lambda _c=False, gg=g["group"]: self.show_cards(gg))
@@ -1110,9 +1137,9 @@ class IconReviewDialog(QDialog):
             k = keep.get(g["group"])
             target = None
             if k:
-                name.setText(k["name"])
-                meaning.setText(k["meaning"])
-                ko.setText(k["ko"])
+                for edit, key in ((name, "name"), (meaning, "meaning"), (ko, "ko")):
+                    if k[key].strip():  # 빈 칸은 새로 받은 제안을 살린다
+                        edit.setText(k[key])
                 not_icon.setChecked(k["not_icon"])
                 scale.setValue(k["scale"])
                 if k["same"] and k["same"][0] == "group" and k["same"][1] in row_of:

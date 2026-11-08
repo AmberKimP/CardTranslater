@@ -2200,6 +2200,8 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     monkeypatch.setattr(icons, "locate", real)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
     assert len(dlg.widgets) == 2
+    views = [dlg.table.cellWidget(i, 8).text() for i in range(2)]
+    assert views == ["카드 보기 · 자리 잡기"] * 2  # 찾은 줄도 자리를 다시 잡을 수 있다
     found_i = next(i for i, g in enumerate(dlg.review["groups"]) if g["image"])
     lost = next(g for g in dlg.review["groups"] if not g["image"])
     dlg.widgets[found_i][1].setText("coin")
@@ -2213,5 +2215,8 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     place._save()
     assert "합쳤습니다" in place.status.text() and place.view.box == list(good)
     assert len(dlg.widgets) == 1 and dlg.widgets[0][1].text() == "coin" and dlg.widgets[0][3].text() == "금화"
+    # 다시 열면 직접 잡은 자리부터 보여 준다
+    again = IconPlaceDialog(info.dir, dlg.review["groups"][0], dlg._row_label, dlg._after_place, dlg)
+    assert again.where[again.combo.currentIndex()]["manual"] and again.view.box == list(good)
     dlg.accept()
     assert dlg.result.replaced == 2

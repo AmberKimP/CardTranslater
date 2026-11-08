@@ -354,3 +354,34 @@ def test_manual_box_for_not_found_icon_regroups_and_shows_guess(tmp_path, monkey
     res = service.confirm_icons(info.dir, [{"group": review["groups"][0]["group"], "name": "coin", "ko": "금화"}])
     assert res.state == "confirmed" and res.replaced == 2
     assert _source(fd, 1) == _source(fd, 2) == "AB[[coin]]CD"
+
+
+def test_manual_box_new_row_gets_name_suggestion(tmp_path, monkeypatch):
+    """직접 잡아 새 줄이 생기면 그 줄만 이름 제안을 받는다 (전에는 이름이 비어 있었다)."""
+    info, _fd = _project(tmp_path, "1차")
+    real = icons.locate
+    calls = {"n": 0}
+
+    def flaky(img, text, index):
+        calls["n"] += 1
+        return (None, "줄 수가 다름") if calls["n"] == 2 else real(img, text, index)
+
+    monkeypatch.setattr(icons, "locate", flaky)
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    review = service.icon_review(info.dir)
+    lost = next(g for g in review["groups"] if not g["image"])
+    good = service.icon_place(info.dir, next(g for g in review["groups"] if g["image"])["where"][0]["occ"])["box"]
+    # 아이콘 왼쪽 글자(AB)를 잘못 감쌈 -> 모양이 달라 새 줄
+    wrong = (max(0, good[0] - 3 * (good[2] - good[0])), good[1], good[0] - 2, good[3])
+    r = service.set_icon_box(info.dir, lost["where"][0]["occ"], wrong)
+    assert r["new_group"]
+    run = FakeRunner([_suggest([{"group": r["group"], "name": "Coin", "meaning": "coin", "ko": "동전"}])])
+    s = service.suggest_icon_name(info.dir, r["group"], client=ClaudeCodeClient(exe="claude", runner=run))
+    assert s["suggest"] == "coin" and s["ko"] == "동전"
+    g = next(x for x in service.icon_review(info.dir)["groups"] if x["group"] == r["group"])
+    assert g["suggest"] == "coin" and g["ko"] == "동전"
+    # 잘못 잡은 자리를 다시 고치면 같은 모양 줄로 합쳐지고 제안 받은 새 줄은 없어진다
+    r2 = service.set_icon_box(info.dir, lost["where"][0]["occ"], good)
+    assert r2["old_gone"] and not r2["new_group"]
+    assert len(service.icon_review(info.dir)["groups"]) == 1
