@@ -180,8 +180,17 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             med = np.median(rp, axis=0)
             if paper0 is not None and float(np.abs(med - paper0).max()) < 40:
                 return False  # 둘레가 종이색이면 라벨이 아니다 (종이 위 글자는 원래 규칙대로)
-            return (float((np.abs(rp - med).max(axis=1) < 30).mean()) >= 0.75
-                    and float(np.abs(med - c[1]).max()) >= 90)
+            if not (float((np.abs(rp - med).max(axis=1) < 30).mean()) >= 0.75
+                    and float(np.abs(med - c[1]).max()) >= 90):
+                return False
+            # 라벨은 가로 띠다: 글자 바로 위·아래 줄을 글자 폭의 다섯 배쯤 넓게 보면 대부분 띠 색이다.
+            # 동전·배지 위 숫자 ‘5’처럼 작은 둥근 그림 위의 것은 곧 다른 색이 나와 글자가 아니다
+            ys, xs = np.nonzero(c[0])
+            d = int(max(xs.max() - xs.min(), ys.max() - ys.min()) + 1)
+            a_, b_ = max(0, int(xs.min()) - 2 * d), min(W, int(xs.max()) + 1 + 2 * d)
+            strips = [I[max(0, ys.min() - 4):max(0, ys.min() - 1), a_:b_], I[ys.max() + 2:min(H, ys.max() + 5), a_:b_]]
+            px = np.concatenate([st_.reshape(-1, 3) for st_ in strips])
+            return len(px) > 0 and float((np.abs(px - med).max(axis=1) < 30).mean()) >= 0.6
 
         paper0 = np.median(I[sel], axis=0) if sel.sum() > 50 else None
         kept, dropped = [], []
@@ -200,8 +209,30 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         def thin_edge(c, _t) -> bool:
             ys, xs = np.nonzero(c[0])
             w, h = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
-            return bool(glyph) and max(w, h) > 1.5 * glyph and c[2] < 0.25 * w * h
+            if not (bool(glyph) and max(w, h) > 1.5 * glyph and c[2] < 0.25 * w * h):
+                return False
+            # 큰 글자의 가는 획(‘魔’의 广)은 같은 색 글자 조각을 품고, 가는 글자(‘ド’의 ト)는 같은 줄에 비슷한 높이의
+            # 같은 색 글자가 바로 옆에 있다: 테두리 조각이 아니다 (윗첨자(루비)가 있으면 글자 크기가 작게 잡혀 이렇게 걸린다)
+            bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max(), ys.max()
+            inner = 0
+            beside = False
+            for d in pieces:
+                if d is c or np.abs(d[1] - c[1]).max() >= 35:
+                    continue
+                dy, dx = np.nonzero(d[0])
+                cx_, cy_ = (dx.min() + dx.max()) / 2, (dy.min() + dy.max()) / 2
+                if bx0 <= cx_ <= bx1 and by0 <= cy_ <= by1 and d[2] >= 0.2 * c[2]:
+                    inner += d[2]
+                dh = dy.max() - dy.min() + 1
+                ov = min(by1, dy.max()) - max(by0, dy.min()) + 1
+                gap = max(dx.min() - bx1, bx0 - dx.max())
+                if dh >= 0.7 * h and ov >= 0.6 * min(h, dh) and gap <= max(w, h):
+                    beside = True
+            if not _t and beside and max(w, h) <= 2.5 * glyph:
+                return False
+            return inner < 0.3 * c[2]
 
+        pieces = [c for c, _t in kept] + [c for c, _t in dropped]
         kept = [c for c, t in kept if not thin_edge(c, t)]
         dropped = [(c, t) for c, t in dropped if not thin_edge(c, t)]
         # 종이 위 글자는 둘레가 종이색이다. 둘레가 그림(유리 조각·테두리)인 조각은 빼다
@@ -501,7 +532,25 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
             ln["align"] = "right"
         else:
             ln["align"] = "left"
-    return {"lines": lines, "dividers": divs}
+    _center_widest(lines, x0, x1, cuts)
+    return {"lines": lines, "dividers": divs, "box_x": [x0, x1], "cuts": cuts}
+
+
+def _center_widest(lines: list[dict], x0: float, x1: float, cuts: list) -> None:
+    """가운데 정렬 묶음의 가장 긴 줄: 다른 줄보다 들어가 있지 않아 ‘left’로 잡힌다. 그 줄도 상자 가운데에 있고
+    묶음의 다른 줄이 모두 가운데 정렬이면 가운데 정렬 (한글이 짧아져도 왼쪽으로 쏠리지 않게)."""
+    cx, bw = (x0 + x1) / 2, max(1.0, x1 - x0)
+
+    def section(ln):
+        return sum((ln["bbox"][1] + ln["bbox"][3]) / 2 > c for c in cuts)
+
+    for ln in lines:
+        if ln.get("align") != "left":
+            continue
+        others = [o for o in lines if o is not ln and section(o) == section(ln) and not o.get("keep")]
+        mid = (ln["bbox"][0] + ln["bbox"][2]) / 2
+        if others and all(o.get("align") == "center" for o in others) and abs(mid - cx) <= 0.06 * bw:
+            ln["align"] = "center"
 
 
 _WORD = __import__("re").compile(r"[ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ가-힣]")
@@ -655,6 +704,8 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
         x0, y0, x1, y1 = ln["bbox"]
         pad = int(max(3, 0.35 * ln["glyph_h"]))
         tm.mask[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)] = False
+    if lay.get("box_x"):  # 원문에 없는 줄·아이콘 조각을 뺀 뒤 정렬을 다시 본다
+        _center_widest(kept, lay["box_x"][0], lay["box_x"][1], lay.get("cuts") or [])
     out = dict(lay)
     out["lines"] = kept
     if extra:

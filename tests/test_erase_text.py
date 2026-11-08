@@ -121,3 +121,47 @@ def test_divider_ornament_kept_and_long_dash_on_picture_is_text():
     _text(g, (255, 78), (245, 245, 245), 1.5, 6, "M")
     tm = erase_text.text_mask(g, (40, 20, 380, 100))
     assert tm.busy and tm.mask[58:63, 112:178].mean() > 0.9
+
+
+def test_digit_on_small_coin_is_not_label_text():
+    """동전·배지 위 숫자(‘5’)는 색 라벨 위 글자가 아니다 (지우면 배지가 상하고 그 줄이 배지까지 넓게 잡혀
+    가운데 정렬 제목이 왼쪽 정렬로 잡힌다: 이세길 A-097 제목)."""
+    img = _paper(160, 420)
+    cv2.rectangle(img, (4, 0), (96, 92), (150, 170, 165), -1)  # 영역 위로 걸친 회청색 배지
+    cv2.circle(img, (60, 55), 24, (200, 165, 70), -1)  # 배지 위 금색 동전
+    cv2.putText(img, "5", (51, 67), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (250, 248, 225), 3, cv2.LINE_AA)
+    cv2.rectangle(img, (110, 95), (380, 140), (190, 60, 70), -1)  # 빨간 라벨 띠
+    _text(img, (150, 130), (250, 250, 250), 1.1, 3, "LABEL")
+    _text(img, (150, 70), (40, 40, 40), 1.2, 4, "TEXT")
+    box = (2, 20, 410, 152)
+    tm = erase_text.text_mask(img, box)
+    five = np.zeros(img.shape[:2], bool)
+    five[35:75, 40:80] = (img[35:75, 40:80].astype(int).min(axis=2) > 215)
+    assert tm.mask[five].mean() < 0.1  # 동전 위 숫자는 남긴다
+    dark = np.zeros(img.shape[:2], bool)
+    dark[40:75, 140:300] = img[40:75, 140:300].astype(int).max(axis=2) < 90
+    assert tm.mask[dark].mean() > 0.95  # 종이 위 글자는 지운다
+    lay = erase_text.text_layout(img, tm, box)
+    assert min(ln["bbox"][0] for ln in lay["lines"]) > 100  # 줄이 동전까지 넓어지지 않는다
+
+
+def test_thin_glyph_stroke_next_to_text_is_erased_with_ruby_above():
+    """윗첨자(루비)로 글자 크기가 작게 잡혀도, 글자 옆의 가는 획(‘ド’의 ト, ‘魔’의 广)은 테두리 조각이 아니라 글자다."""
+    img = _paper(200, 460)
+    _text(img, (120, 60), (40, 40, 40), 0.9, 2, "abcdefghijk")  # 루비 (본문 글자의 절반쯤)
+    cv2.line(img, (100, 118), (100, 165), (40, 40, 40), 3)  # 가는 획: 세로 + 짧은 가로
+    cv2.line(img, (100, 138), (122, 146), (40, 40, 40), 3)
+    _text(img, (130, 165), (40, 40, 40), 1.9, 5, "TEXT")
+    box = (20, 15, 440, 190)
+    tm = erase_text.text_mask(img, box)
+    assert tm.mask[120:163, 99:102].mean() > 0.9
+
+
+def test_widest_line_of_centered_block_stays_centered():
+    lines = [{"bbox": [40, 0, 60, 10], "align": "center"}, {"bbox": [10, 20, 90, 30], "align": "left"},
+             {"bbox": [35, 40, 65, 50], "align": "center"}]
+    erase_text._center_widest(lines, 0, 100, [])
+    assert [ln["align"] for ln in lines] == ["center"] * 3
+    left = [{"bbox": [10, 0, 60, 10], "align": "left"}, {"bbox": [10, 20, 90, 30], "align": "left"}]
+    erase_text._center_widest(left, 0, 100, [])
+    assert [ln["align"] for ln in left] == ["left", "left"]  # 왼쪽 정렬 글은 그대로
