@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from app.version import VERSION  # noqa: E402
 NAME = "CardTranslater"
 EXCLUDE = ["tkinter", "pytest", "_pytest", "matplotlib", "IPython", "PyQt5", "PyQt6",
            "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtQuick",
@@ -50,7 +52,7 @@ def build() -> Path:
     info = work / "build_info.json"  # 로그에 남길 버전 (app/applog.build_info)
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True)
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    info.write_text(json.dumps({"version": time.strftime("1.0.%Y%m%d"), "built": time.strftime("%Y-%m-%d %H:%M"),
+    info.write_text(json.dumps({"version": VERSION, "built": time.strftime("%Y-%m-%d %H:%M"),
                                 "commit": commit.stdout.strip() + ("+수정" if dirty else "")}, ensure_ascii=False),
                     encoding="utf-8")
     args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,

@@ -1,11 +1,14 @@
 ; CardTranslater 설치 파일 (Inno Setup 6)
 ;   1) .venv/Scripts/python packaging/build.py        -> dist/CardTranslater/
-;   2) .venv/Scripts/python packaging/make_installer.py  -> dist/CardTranslater-Setup-<버전>.exe
+;   2) .venv/Scripts/python packaging/make_installer.py  -> dist/CardTranslater-Setup-<버전>-<날짜>.exe
 ; 관리자 권한 없이 사용자 폴더(%LOCALAPPDATA%\Programs)에 설치한다. 데이터(프로젝트·게임)는 문서\CardTranslater에 따로
 ; 있으므로 지우기(제거)해도 남는다.
 
 #ifndef AppVersion
   #define AppVersion "1.0.0"
+#endif
+#ifndef SetupName
+  #define SetupName AppVersion
 #endif
 
 [Setup]
@@ -18,7 +21,7 @@ DefaultGroupName=CardTranslater
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=CardTranslater-Setup-{#AppVersion}
+OutputBaseFilename=CardTranslater-Setup-{#SetupName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

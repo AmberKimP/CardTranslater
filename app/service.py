@@ -27,6 +27,7 @@ from typing import Callable
 
 import numpy as np
 
+from app.version import VERSION  # noqa: F401 (화면이 버전을 service로 읽는다)
 from app import report
 from app.claude_setup import find_claude
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid

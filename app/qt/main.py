@@ -820,7 +820,7 @@ class MainWindow(QMainWindow):
     def __init__(self, root: Path | None = None):
         super().__init__()
         self.root = Path(root) if root else service.data_dir()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(f"{APP_NAME} {service.VERSION}")
         self.resize(1100, 720)
         self.stack = QStackedWidget()
         self.home = HomePage(self)

@@ -31,7 +31,7 @@ ICON_SHEET = "아이콘"
 DEFAULT_FONT = "fonts/notosanskr/NotoSansKR-Regular.ttf"
 # '원문 확인' 값: Sonnet 1회 | 두 번 확인 | 결론 못 냄 | Opus 1회 | 라벨 색 | 손 입력 (+ " (확인 필요)")
 COL = {h: i + 1 for i, h in enumerate(HEADERS)}
-APP_VERSION = "phase1"
+from app.version import VERSION as APP_VERSION  # noqa: E402
 
 
 def source_of(project: Project, extracted: dict, page: int, region: str):
