@@ -1858,7 +1858,13 @@ def validate_region_template(data: dict) -> list[str]:
                 out += [f"{key}: {m}" for m in validate_region_template(
                     {"regions": ps.get("regions", []), "protect_rects": ps.get("protect_rects", [])})]
         return out
-    return _validate_region_set(data)
+    out = _validate_region_set(data)
+    for key, ps in (data.get("page_regions") or {}).items():  # 공통 영역 그룹의 ‘이 카드만 따로 영역’
+        if ps.get("regions") or ps.get("protect_rects"):
+            out += [f"{key}: {m}" for m in _validate_region_set(
+                {"regions": ps.get("regions", []), "protect_rects": ps.get("protect_rects", [])})
+                if m != "영역이 하나도 없습니다"]
+    return out
 
 
 def _validate_region_set(data: dict) -> list[str]:
@@ -2219,7 +2225,8 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult
 # ---------------------------------------------------------------- 화면용: 결과 보기·테스트 실행 (3차)
 def result_pages(run_dir: Path | str) -> list[dict]:
     """한글 넣기 결과 폴더(translated/ 또는 시험 폴더)의 쪽마다: {"page", "card_png", "status": [..],
-    "regions": [{"name", "status", "png"}]}. 상태(넘침·글자 축소·아이콘 오류 등)가 있는 칸을 표시하는 데 쓴다."""
+    "regions": [{"name", "status", "png", "errors", "overflow"(넣지 못한 글자)}]}.
+    상태(넘침·글자 축소·아이콘 오류 등)가 있는 칸을 표시하는 데 쓴다."""
     from app.typeset_compose import safe_name
 
     d = Path(run_dir)
@@ -2238,7 +2245,8 @@ def result_pages(run_dir: Path | str) -> list[dict]:
             page_status.update(st)
             png = d / "compare" / f"p{pno:03d}_{safe_name(name, idx)}.png"
             regions.append({"name": name, "status": st, "png": png if png.exists() else None,
-                            "errors": rec.get("errors") or []})
+                            "errors": rec.get("errors") or [],
+                            "overflow": " ".join((rec.get("overflow_text") or "").split())})  # 넣지 못한 글자
         card = d / "compare" / f"p{pno:03d}_card.png"
         out.append({"page": pno, "card_png": card if card.exists() else None, "status": sorted(page_status),
                     "regions": regions})

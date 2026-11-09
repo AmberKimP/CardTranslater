@@ -3089,3 +3089,148 @@ def test_run_exclusive_waits_for_stopped_background_thread(qapp, tmp_path, monke
     assert started == [fg] and bg.idle
     fg.signals.cancelled.emit()
     assert bg.holds == 0
+
+
+# ================================================================ 영역 지정: 미리보기·이 카드만 따로 영역
+def _region_editor(tmp_path):
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)  # 3쪽
+    g = service.project_overview(info.dir)["groups"][0]
+    fd = Path(g["files"][0]["dir"])
+    service.save_region_template(g["dir"], {"regions": [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]})
+    return Path(g["dir"]), fd, RegionEditor(Path(g["dir"]), [fd])
+
+
+def test_region_preview_shows_cards_and_follows_edits(qapp, tmp_path):
+    _gdir, fd, ed = _region_editor(tmp_path)
+    ed.resize(1400, 900)
+    ed.show()
+    ed.preview_btn.setChecked(True)  # 미리보기 (G)
+    qapp.processEvents()
+    assert ed.preview.isVisible() and not ed.side_scroll.isVisible()
+    vis = [t for t in ed.preview.thumbs if t.isVisible()]
+    assert [t.page for t in vis] == [1, 2, 3] and "지금 카드" in vis[0].num.text()
+    it = ed.items()[0]  # 왼쪽에서 영역을 옮기면 다른 카드 미리보기에도 같은 비율로
+    r = it.rect()
+    r.translate(r.width() * 0.5, 0)
+    it.set_scene_rect(r)
+    assert abs(ed._preview_regions(2)[0]["rect"]["x"] - ed.ratio_of(it)["x"]) < 1e-6
+    ed.preview._on_menu(3, "open")  # 카드를 누르면 왼쪽에서 그 카드
+    assert ed.page_spin.value() == 3
+    ed.preview_btn.setChecked(False)
+    assert ed.side_scroll.isVisible() and not ed.preview.isVisible()
+    ed.dirty = False
+
+
+def test_region_override_one_card_saves_and_engine_uses_it(qapp, tmp_path):
+    """공통 영역 그룹에서 2쪽만 따로 영역: 저장하면 page_regions에, 다른 카드는 공통 그대로, 엔진도 그 카드만 따로."""
+    from app.regions import load_template
+    from app.qt.region_editor import RegionEditor
+
+    gdir, fd, ed = _region_editor(tmp_path)
+    ed.page_spin.setValue(2)
+    ed.override_btn.setChecked(True)  # 이 카드만 따로 영역
+    it = ed.items()[0]
+    r = it.rect()
+    it.set_scene_rect(r.adjusted(0, 0, 0, r.height()))  # 이 카드만 상자가 크다
+    tall = ed.ratio_of(it)["h"]
+    ed.page_spin.setValue(3)  # 다른 카드는 공통 영역
+    assert not ed.override_btn.isChecked() and abs(ed.ratio_of(ed.items()[0])["h"] - 0.1) < 1e-3
+    assert abs(ed._preview_regions(2)[0]["rect"]["h"] - tall) < 1e-6 and ed._preview_info(2)[2]
+    assert ed.save()
+    data = service.load_region_template(gdir)
+    key = f"{fd.name}/2"
+    assert data["regions"][0]["rect"]["h"] == 0.1 and list(data["page_regions"]) == [key]
+    assert data.get("layout") is None  # 공통 영역 그룹 그대로
+    tpl = load_template(gdir / "regions.json", file_name=fd.name)
+    assert abs(tpl.regions_for(2)[0].rect.h - tall) < 1e-3 and tpl.regions_for(3)[0].rect.h == 0.1
+    # 다시 열면 2쪽은 따로 영역, 되돌리면 page_regions가 빠진다
+    ed2 = RegionEditor(gdir, [fd])
+    ed2.page_spin.setValue(2)
+    assert ed2.override_btn.isChecked() and abs(ed2.ratio_of(ed2.items()[0])["h"] - tall) < 1e-3
+    ed2.override_btn.setChecked(False)
+    assert abs(ed2.ratio_of(ed2.items()[0])["h"] - 0.1) < 1e-3
+    assert ed2.save() and "page_regions" not in service.load_region_template(gdir)
+    ed.dirty = ed2.dirty = False
+
+
+def test_region_per_card_switch_keeps_overrides(qapp, tmp_path):
+    _gdir, fd, ed = _region_editor(tmp_path)
+    ed.page_spin.setValue(2)
+    ed.override_btn.setChecked(True)
+    it = ed.items()[0]
+    it.set_scene_rect(it.rect().adjusted(0, 0, 0, it.rect().height()))
+    tall = ed.ratio_of(it)["h"]
+    import app.qt.region_editor as rmod
+    from PySide6.QtWidgets import QMessageBox
+
+    orig = rmod.QMessageBox.question
+    rmod.QMessageBox.question = lambda *a, **k: QMessageBox.StandardButton.Yes
+    try:
+        ed.per_card.setChecked(True)  # 카드마다 영역으로: 따로 영역 카드는 그 영역, 나머지는 공통
+    finally:
+        rmod.QMessageBox.question = orig
+    cards = ed._cards()
+    assert abs(cards[f"{fd.name}/2"]["regions"][0]["rect"]["h"] - tall) < 1e-3
+    assert abs(cards[f"{fd.name}/1"]["regions"][0]["rect"]["h"] - 0.1) < 1e-3 and not ed.override_btn.isVisibleTo(ed)
+    ed.dirty = False
+
+
+def test_region_preview_excludes_and_restores_pages(qapp, tmp_path):
+    _gdir, fd, ed = _region_editor(tmp_path)
+    ed.page_spin.setValue(2)
+    ed.set_page_excluded(2, True)  # 미리보기의 [뺌]
+    assert service.shown_pages(fd) == [1, 3] and ed.page_spin.value() != 2 and ed._preview_info(2)[1]
+    ed._open_from_preview(2)  # 뺀 쪽은 편집으로 가지 않고 알린다
+    assert ed.page_spin.value() != 2 and "뺀 쪽" in ed.status.text()
+    ed.set_page_excluded(2, False)
+    assert service.shown_pages(fd) == [1, 2, 3]
+    ed.set_page_excluded(1, True)
+    ed.set_page_excluded(3, True)
+    ed.set_page_excluded(2, True)  # 모든 쪽은 뺄 수 없다
+    assert service.shown_pages(fd) == [2]
+    ed.dirty = False
+
+
+def test_region_preview_warning_measure():
+    """영역 안 줄이 밝은 줄과 어두운 줄로 섞이면 주의 (상자가 밝든 어둡든 한 가지면 주의 아님)."""
+    import numpy as np
+
+    from app.qt.region_preview import WARN_SHARE, mixed_share
+
+    img = np.full((100, 100), 240, np.uint8)
+    img[:50] = 30  # 위 절반은 어두운 그림
+    whole = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+    assert mixed_share(img, whole) >= WARN_SHARE
+    assert mixed_share(img, {"x": 0.0, "y": 0.6, "w": 1.0, "h": 0.4}) == 0.0  # 밝은 상자만
+    assert mixed_share(img, {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.45}) == 0.0  # 어두운 상자만 (흰 글자 상자)
+
+
+def test_region_override_keeps_empty_and_follows_common_style(qapp, tmp_path):
+    """따로 영역: 영역을 다 지워도 남는다(그 카드는 처리 안 함). 서식은 공통 영역을 따르고 위치만 따로. 저장 때 검사한다."""
+    from app.regions import load_template
+    from app.qt.region_editor import RegionEditor
+
+    gdir, fd, ed = _region_editor(tmp_path)
+    ed.page_spin.setValue(2)
+    ed.override_btn.setChecked(True)
+    ed.items()[0].setSelected(True)
+    ed.delete_selected()  # 이 카드만: 처리하지 않게 영역을 다 지움
+    ed.page_spin.setValue(3)
+    ed.page_spin.setValue(2)
+    assert ed.override_btn.isChecked() and ed.items() == []  # 공통 영역으로 돌아가지 않는다
+    assert ed.save()
+    data = service.load_region_template(gdir)
+    assert data["page_regions"][f"{fd.name}/2"]["regions"] == []
+    assert load_template(gdir / "regions.json", file_name=fd.name).regions_for(2) == []
+    # 서식은 공통 영역을 따른다
+    out = RegionEditor._override_with_common_style(
+        {"regions": [{"name": "이름", "rect": {"x": 0.2, "y": 0.2, "w": 0.3, "h": 0.2}, "style": {"align": "left"}}]},
+        [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}, "style": {"align": "center"}}])
+    assert out["regions"][0]["style"] == {"align": "center"} and out["regions"][0]["rect"]["x"] == 0.2
+    # 따로 영역도 저장 때 검사한다
+    bad = {"regions": [{"name": "이름", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}],
+           "page_regions": {f"{fd.name}/3": {"regions": [{"name": "", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]}}}
+    assert any("이름이 빈 영역" in m for m in service.validate_region_template(bad))
+    ed.dirty = False

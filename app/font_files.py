@@ -1,7 +1,7 @@
 """앱 글꼴 파일이 있는 곳: 프로그램에 들어 있는 기본 글꼴 + 따로 설치하는 글꼴 묶음.
 
 프로그램 설치 파일에는 기본 글꼴(catalog.json에서 "bundled": true인 계열, 본고딕)만 넣는다. 나머지 글꼴은
-글꼴 설치 파일(CardTranslater-Fonts-<묶음 버전>.exe)이 %LOCALAPPDATA%\\CardTranslater\\fontpack\\fonts 에 설치한다.
+글꼴 설치 파일(CardTranslater-Fonts-<묶음 버전>-<글꼴 수>fonts.exe, pack_file_name())이 %LOCALAPPDATA%\\CardTranslater\\fontpack\\fonts 에 설치한다.
 프로그램을 업데이트해도 글꼴 묶음은 그대로 남는다.
 
 프로젝트에는 글꼴을 'fonts/<계열>/<파일>' 상대 경로로 적는다. resolve()가 프로그램 폴더를 먼저, 없으면 글꼴 묶음을
@@ -64,6 +64,28 @@ def catalog() -> dict:
     return {**cat, "families": fams}
 
 
+def pack_files(cat: dict | None = None) -> list[str]:
+    """글꼴 설치 파일에 들어가는 글꼴 파일 '<계열>/<파일>' (bundled가 아닌 계열, 가변 글꼴은 굵기별 파일로)."""
+    cat = cat or catalog()
+    out = []
+    for fam in cat.get("families", []):
+        if fam.get("bundled"):
+            continue
+        for f in fam.get("source_files", []):
+            if "[" in f:
+                stem = f.split("[")[0]
+                out += [f"{fam['dir']}/{stem}-{w}.ttf" for w in (fam.get("static_weights") or {})]
+            else:
+                out.append(f"{fam['dir']}/{f}")
+    return out
+
+
+def pack_file_name(cat: dict | None = None) -> str:
+    """글꼴 설치 파일 이름: CardTranslater-Fonts-<묶음 버전>-<글꼴 수>fonts.exe (예: CardTranslater-Fonts-1-58fonts.exe)."""
+    cat = cat or catalog()
+    return f"CardTranslater-Fonts-{cat.get('pack_version')}-{len(pack_files(cat))}fonts.exe"
+
+
 def pack_version_installed() -> int | None:
     v = _read(pack_dir() / "pack.json").get("pack_version")
     return int(v) if isinstance(v, (int, float, str)) and str(v).isdigit() else None
@@ -83,4 +105,4 @@ def pack_status() -> dict:
             elif not any((d / f).exists() for d in family_dirs(fam["dir"])):
                 missing += 1
     return {"wanted": cat.get("pack_version"), "installed": pack_version_installed(), "missing": missing,
-            "ok": missing == 0}
+            "ok": missing == 0, "file_name": pack_file_name(cat)}

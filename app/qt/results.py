@@ -22,7 +22,8 @@ from app.qt.fonts_dialog import ALIGN_CHOICES  # noqa: E402 (글꼴 창과 같�
 
 ALIGN_TEXT = [(k, t) for k, t in ALIGN_CHOICES if k]
 OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
-STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임"}  # 엔진 상태 낱말을 화면용으로
+STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임", "넘침": "넘침(글자 빠짐)",
+               "줄 자리 대신 영역 전체": "줄 자리에 안 들어가 영역 전체에 넣음 — 위치 확인"}  # 엔진 상태 낱말을 화면용으로
 
 
 def status_text(st: list[str]) -> str:
@@ -342,9 +343,15 @@ class ResultViewer(QDialog):
                 text += f" · 지우기: {dict(erase_modes())[ei['mode']]}"
             elif ei.get("needs_choice"):
                 text += " · 그림 배경: 지우기 방식 확인"
+            if r.get("overflow"):  # 넣지 못해 카드에서 빠진 글자: 빨간 글자로 바로 보이게
+                text += f" — 빠진 글자: «{r['overflow'][:80]}{'…' if len(r['overflow']) > 80 else ''}»"
             if r["errors"]:
                 text += f" — {'; '.join(r['errors'])[:120]}"
             it = QListWidgetItem(text)
+            if r.get("overflow"):
+                it.setForeground(QColor("#B42318"))
+                it.setToolTip("카드에 들어가지 못한 글자: " + r["overflow"] +
+                              "\n영역이 글자 상자에 맞는지(영역 지정의 미리보기), 번역을 줄일 수 있는지 확인하세요")
             if self.problems(r["status"]):
                 it.setBackground(QColor("#F4B183"))
             elif not ei.get("mode") and ei.get("needs_choice"):

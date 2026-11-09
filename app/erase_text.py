@@ -11,6 +11,11 @@
      것(획이 빽빽한 한자)은 되살린다. 배경이 그림이면 덩어리를 색으로 묶어 ‘가장 넓고 상자 밖에 드문 색’ 묶음만 글자로 본다.
   4. 글자에 붙은 테두리·그림자(배경과 조금 다른 픽셀)를 몇 px 넓혀 포함하고, 글자 속 닫힌 빈칸(코인 아이콘 속 등)을 채운다.
 
+글자 상자로 좁히기 (``label_panel``)
+  영역이 밝고 고른 글자 상자(흰 띠·흰 박스)보다 크게 잡혀 그림·테두리까지 걸치면, 글자 찾기·지우기·줄 재기를
+  그 상자 안으로만 한다 (영역 위쪽의 그림·띠 밖 테두리를 글자로 읽지 않게). 상자가 영역 대부분이거나, 밝은 상자가
+  아니거나(흰 글자 + 어두운 띠), 상자 모양이 아니면 그대로 둔다.
+
 채우기 (``fill_text``) — 영역 설정 ``erase.mode``(카드별로 바꿀 수 있음)
   auto      배경을 보고 고름: 단색 -> solid, 무늬 -> pattern, 그림 -> inpaint (그림이면 ‘방식 확인’ 표시)
   solid     글자 자리를 주변 색(매끄러운 배경 추정)으로 덮음
@@ -50,6 +55,103 @@ def _lum(a: np.ndarray) -> np.ndarray:
     return a @ np.array([0.299, 0.587, 0.114], np.float32)
 
 
+PANEL_NARROW = True  # label_panel을 쓴다 (비교·되돌리기용 스위치)
+PANEL_MIN_LUM = 170.0  # 이보다 밝은 상자만 (흰·크림색 글자 상자)
+PANEL_COLOR_TOL = 40.0  # 상자 색과 이만큼 안이면 상자 바탕
+PANEL_SHRINK = 0.10  # 상자가 영역보다 이만큼(넓이 비율) 넘게 작을 때만 좁힌다
+PANEL_FILL = 0.85  # 가로·세로줄의 이만큼이 상자색이면 상자 몸통 (글자 자리는 구멍으로 메워 센다)
+PANEL_EDGE_ROW = 0.4  # 몸통 위·아래로 이만큼 상자색인 줄(가장자리에 붙은 글자 줄, 굵은 글자 줄은 0.45쯤)까지 넓힌다 (그림 줄은 0~0.3)
+PANEL_OUTSIDE_MAX = 0.35  # 빼는 부분에서 상자색이 이보다 많으면 좁히지 않는다 (흰 바탕 카드)
+PANEL_MIN_AREA = 0.30  # 상자가 영역의 이만큼은 돼야 한다
+
+
+def label_panel(img: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """영역 box 안의 밝고 고른 글자 상자. 영역이 상자보다 눈에 띄게 크면 상자 사각형을, 아니면 box 그대로."""
+    if not PANEL_NARROW:
+        return box
+    x0, y0, x1, y1 = (int(v) for v in box)
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+    sub = img[y0:y1, x0:x1].astype(np.float32)
+    h, w = sub.shape[:2]
+    if h < 12 or w < 12:
+        return box
+    lum = _lum(sub)
+    light = lum >= np.percentile(lum, 55)
+    paper = np.median(sub[light], axis=0)
+    if float(_lum(paper[None, :])[0]) < PANEL_MIN_LUM:
+        return box  # 어두운 띠(흰 글자) 등: 그대로
+    near = (np.abs(sub - paper).max(axis=2) < PANEL_COLOR_TOL).astype(np.uint8)
+    k = max(3, int(min(h, w) * 0.08)) | 1  # 글자 사이 틈을 잇는다 (상자 밖 그림과는 잇지 않을 만큼)
+    near = cv2.morphologyEx(near, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    n, lab, st, _c = cv2.connectedComponentsWithStats(near, connectivity=4)
+    if n <= 1:
+        return box
+    i = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    comp = (lab == i).astype(np.uint8)
+    # 글자 자리(구멍)를 메운다: 덩어리 바깥에서 채워 나가 닿지 않는 곳이 구멍
+    pad = np.pad(1 - comp, 1, constant_values=1)
+    ff = pad.copy()
+    cv2.floodFill(ff, np.zeros((ff.shape[0] + 2, ff.shape[1] + 2), np.uint8), (0, 0), 2)
+    filled = comp | (ff[1:-1, 1:-1] == 1).astype(np.uint8)
+    # 상자 몸통: 가로줄의 대부분(PANEL_FILL)이 상자인 줄들의 가장 긴 연속 구간, 그 안에서 같은 방법으로 세로줄
+    # (상자에 붙은 밝은 그림 조각·띠 밖 테두리는 줄의 일부만 차지하므로 빠진다)
+    def longest(good: np.ndarray) -> tuple[int, int] | None:
+        best, start = None, None
+        for j, g in enumerate(list(good) + [False]):
+            if g and start is None:
+                start = j
+            elif not g and start is not None:
+                if best is None or j - start > best[1] - best[0]:
+                    best = (start, j)
+                start = None
+        return best
+    rows = longest(filled.mean(axis=1) >= PANEL_FILL)
+    if rows is None:
+        return box
+    cols = longest(filled[rows[0]:rows[1]].mean(axis=0) >= PANEL_FILL)
+    if cols is None:
+        return box
+    px0, py0, px1, py1 = cols[0], rows[0], cols[1], rows[1]
+    # 상자 위·아래 끝에 붙은 글자 줄은 구멍이 닫히지 않아 몸통에서 빠질 수 있다: 상자색이 절반 넘는 줄까지 넓힌다
+    near_raw = np.abs(sub - paper).max(axis=2) < PANEL_COLOR_TOL
+    row_paper = np.convolve(near_raw[:, px0:px1].mean(axis=1), np.ones(3) / 3, mode="same")  # 3줄 평균 (굵은 글자 한 줄에서 멈추지 않게)
+    ny0, ny1 = py0, py1
+    while ny0 > 0 and row_paper[ny0 - 1] >= PANEL_EDGE_ROW:
+        ny0 -= 1
+    while ny1 < h and row_paper[ny1] >= PANEL_EDGE_ROW:
+        ny1 += 1
+    need = max(3, int(0.15 * (py1 - py0)))  # 글자 줄 하나쯤 늘 때만 (띠 가장자리 번짐 한두 줄은 넣지 않는다)
+    if py0 - ny0 >= need:
+        py0 = ny0
+    if ny1 - py1 >= need:
+        py1 = ny1
+    if (px1 - px0) * (py1 - py0) < PANEL_MIN_AREA * h * w:
+        return box
+    if (px1 - px0) * (py1 - py0) > (1 - PANEL_SHRINK) * h * w:
+        return box  # 영역이 이미 상자에 맞다
+    # 안전장치: 빼는 부분(영역 - 상자)이 대부분 상자색이면(흰 바탕 카드 등) 상자를 잘못 고른 것일 수 있다: 그대로
+    out = np.ones((h, w), bool)
+    out[py0:py1, px0:px1] = False
+    if float(near_raw[out].mean()) > PANEL_OUTSIDE_MAX:
+        return box
+    m = 0  # 여유를 두면 띠 가장자리(테두리)를 글자 줄로 읽는다 (몸통은 이미 글자 줄을 다 품는다)
+    return (x0 + max(0, px0 - m), y0 + max(0, py0 - m), x0 + min(w, px1 + m), y0 + min(h, py1 + m))
+
+
+def paint_outside(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+    """box(글자 상자) 밖을 상자 바탕색으로 칠한 사본: 글자 찾기의 바탕 추정(넓은 창)에 상자 밖 테두리·그림이 섞이지
+    않게 한다 (얇은 띠 위 글자가 띠 가장자리와 한 덩어리로 붙어 ‘상자 밖 그림’으로 빠지는 것을 막는다)."""
+    x0, y0, x1, y1 = (int(v) for v in box)
+    inside = img[y0:y1, x0:x1].astype(np.float32)
+    lum = _lum(inside)
+    paper = np.median(inside[lum >= np.percentile(lum, 55)], axis=0)
+    out = np.empty_like(img)
+    out[...] = paper.astype(img.dtype)
+    out[y0:y1, x0:x1] = img[y0:y1, x0:x1]
+    return out
+
+
 def _local_std(lum: np.ndarray, k: int = 15) -> np.ndarray:
     m1 = cv2.blur(lum, (k, k))
     m2 = cv2.blur(lum * lum, (k, k))
@@ -85,11 +187,15 @@ def _outlined(I: np.ndarray, c) -> bool:
     return bool(light_on_dark or dark_on_light)
 
 
-def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None) -> TextMask:
-    """img(H×W×3 uint8, 상자 둘레에 여유가 있는 자른 그림) 안 box(x0,y0,x1,y1)의 글자 픽셀."""
+def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None,
+              size_box: tuple[int, int, int, int] | None = None) -> TextMask:
+    """img(H×W×3 uint8, 상자 둘레에 여유가 있는 자른 그림) 안 box(x0,y0,x1,y1)의 글자 픽셀.
+    size_box: 크기 기준(너무 큰 덩어리·배경 창 크기)에 쓸 상자. 영역을 글자 상자(label_panel)로 좁혀 찾을 때 원래 영역을
+    넘긴다 (좁힌 상자 높이로 재면 그림에 붙은 큰 글자를 ‘큰 그림’으로 잘못 뺀다)."""
     x0, y0, x1, y1 = box
     H, W = img.shape[:2]
-    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    sb = size_box or box
+    bw, bh = max(1, sb[2] - sb[0]), max(1, sb[3] - sb[1])
     I = img.astype(np.float32)
     k = int(max(31, min(81, bh * 0.6))) | 1  # 글자 획보다 넓은 창
     med = np.dstack([cv2.medianBlur(np.ascontiguousarray(img[..., c]), k) for c in range(3)]).astype(np.float32)
@@ -667,10 +773,10 @@ def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
     return changed
 
 
-def _extra_lines(lines: list[dict], src: list[str]) -> list[dict]:
+def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None) -> list[dict]:
     """찾은 줄이 원문보다 많을 때 원문에 없는 줄을 고른다.
     줄 폭이 원문 줄 길이(글자 수)와 가장 잘 맞게 남는 줄을 뺀다 (원문이 빠뜨린 숫자 타일·카드 번호 등).
-    폭으로 가리지 못하면 글자가 작은 줄부터 (예전 방식)."""
+    폭이 같게 맞으면 상자 위·아래 끝에 붙은 줄(띠 안으로 들어온 그림 조각)을 먼저, 그다음 글자가 작은 줄부터 뺀다."""
     from itertools import combinations
 
     from app.icons import TOKEN_RE, _line_units
@@ -687,6 +793,9 @@ def _extra_lines(lines: list[dict], src: list[str]) -> list[dict]:
 
     if n_drop > 3 or len(lines) > 14:
         return smallest()
+
+    def at_edge(ln) -> bool:  # 상자 위·아래 끝에 닿은 줄: 글자 줄은 보통 상자 가장자리에 붙지 않는다
+        return box_y is not None and (ln["bbox"][1] <= box_y[0] + 1 or ln["bbox"][3] >= box_y[1] - 1)
     widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
     units = [_line_units(t) for t in src]
     icon_only = [bool(TOKEN_RE.findall(t)) and not TOKEN_RE.sub("", t).strip() for t in src]
@@ -696,7 +805,7 @@ def _extra_lines(lines: list[dict], src: list[str]) -> list[dict]:
         txt = [(i, j) for i, j in zip(keep, range(len(src))) if not icon_only[j]] or list(zip(keep, range(len(src))))
         r = sum(widths[i] for i, _j in txt) / max(sum(units[j] for _i, j in txt), 1e-6)
         err = sum(abs(widths[i] - units[j] * r) for i, j in txt) / max(sum(widths[i] for i, _j in txt), 1)
-        key = (round(err, 2), sum(lines[i]["glyph_h"] for i in drop))
+        key = (round(err, 2), sum(1 for i in keep if at_edge(lines[i])), sum(lines[i]["glyph_h"] for i in drop))
         if best_key is None or key < best_key:
             best, best_key = drop, key
     if best is None or best_key[0] >= 0.35:
@@ -738,7 +847,7 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
             src = src_text
         elif len(lines) == len(src_text):
             src = src_text
-    extra = _extra_lines(lines, src)
+    extra = _extra_lines(lines, src, lay.get("box_y"))
     kept = [ln for ln in lines if ln not in extra]
     restore = list(extra)
     if len(kept) == len(src):

@@ -202,3 +202,60 @@ def test_single_inset_line_is_centered():
     tm = erase_text.text_mask(img, box)
     lay = erase_text.text_layout(img, tm, box)
     assert len(lay["lines"]) == 1 and lay["lines"][0]["align"] == "center"
+
+
+# ---------------------------------------------------------------- 글자 상자로 좁히기 (엘프: 영역이 그림·테두리까지 걸침)
+def _card_with_box(h=200, w=400, box_top=120, art=(60, 30, 20), paper=(235, 232, 225)):
+    img = np.zeros((h, w, 3), np.uint8)
+    img[:] = art
+    rng = np.random.default_rng(3)
+    img[:box_top] = np.clip(np.array(art) + rng.integers(-25, 25, (box_top, w, 3)), 0, 255)  # 위쪽 그림
+    img[box_top:h - 10, 10:w - 10] = paper  # 밝은 글자 상자
+    cv2.putText(img, "TEXT LINE", (40, box_top + 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (20, 20, 20), 3, cv2.LINE_AA)
+    return img
+
+
+def test_label_panel_narrows_region_to_light_box_only_when_region_overhangs():
+    from app import erase_text as et
+
+    img = _card_with_box()
+    region = (5, 40, 395, 195)  # 위쪽 그림까지 걸친 영역
+    x0, y0, x1, y1 = et.label_panel(img, region)
+    assert abs(y0 - 120) <= 2 and y1 <= 195 and x0 >= 5  # 상자 위끝으로 좁힌다
+    tight = (10, 120, 390, 190)
+    assert et.label_panel(img, tight) == tight  # 이미 상자에 맞으면 그대로
+    dark = _card_with_box(paper=(40, 40, 60))
+    assert et.label_panel(dark, region) == region  # 어두운 띠(흰 글자)는 그대로
+    white_bg = _card_with_box(art=(240, 238, 232))
+    assert et.label_panel(white_bg, region) == region  # 흰 바탕 카드: 빼는 부분도 상자색이라 그대로
+    et.PANEL_NARROW = False
+    try:
+        assert et.label_panel(img, region) == region  # 스위치로 끌 수 있다
+    finally:
+        et.PANEL_NARROW = True
+
+
+def test_thin_title_bar_text_found_after_painting_outside():
+    """얇은 흰 띠 위아래가 검은 테두리: 상자 밖을 상자색으로 칠한 사본에서 찾으면 글자가 띠 가장자리와 붙지 않는다."""
+    from app import erase_text as et
+
+    img = np.full((110, 600, 3), 25, np.uint8)  # 검은 테두리
+    img[30:80, 20:580] = (232, 230, 226)  # 얇은 흰 띠
+    cv2.putText(img, "TITLE", (220, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (15, 15, 15), 4, cv2.LINE_AA)
+    region = (15, 15, 585, 95)
+    panel = et.label_panel(img, region)
+    assert panel != region and abs(panel[1] - 30) <= 2 and abs(panel[3] - 80) <= 2
+    look = et.paint_outside(img, panel)
+    tm = et.text_mask(look, panel, None, size_box=region)
+    lay = et.text_layout(look, tm, panel)
+    assert len(lay["lines"]) == 1 and 200 <= lay["lines"][0]["bbox"][0] <= 230
+
+
+def test_extra_line_at_box_edge_is_dropped_first():
+    """원문 한 줄인데 줄이 둘: 상자 아래 끝에 붙은 줄(띠 안으로 들어온 그림 조각)을 뺀다 (글자가 더 커 보여도)."""
+    from app.erase_text import _extra_lines
+
+    title = {"bbox": [386, 46, 474, 89], "glyph_h": 11.8}
+    art = {"bbox": [394, 88, 475, 103], "glyph_h": 14.0}
+    assert _extra_lines([title, art], ["延焼"], (35, 103)) == [art]
+    assert _extra_lines([title, art], ["延焼"]) == [title]  # 상자를 모르면 예전처럼 작은 줄부터

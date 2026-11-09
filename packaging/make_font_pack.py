@@ -1,7 +1,7 @@
 """글꼴 설치 파일 만들기 (Inno Setup 6의 ISCC.exe). 프로그램 설치 파일과 따로 둔다.
 
     .venv/Scripts/python scripts/fetch_fonts.py          # 먼저 fonts/에 글꼴을 받는다
-    .venv/Scripts/python packaging/make_font_pack.py     # dist/CardTranslater-Fonts-<묶음 버전>.exe
+    .venv/Scripts/python packaging/make_font_pack.py     # dist/CardTranslater-Fonts-<묶음 버전>-<글꼴 수>fonts.exe
 
 - 프로그램에 들어 있는 기본 글꼴(catalog.json의 "bundled": true)을 뺀 모든 글꼴 계열을 넣는다.
 - 설치 위치는 %LOCALAPPDATA%\\CardTranslater\\fontpack\\fonts (app/font_files.pack_dir). 프로그램을 업데이트해도 남는다.
@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "packaging"))
+sys.path.insert(0, str(ROOT))
 from build import font_families, stage_fonts  # noqa: E402
 from make_installer import find_iscc  # noqa: E402
 
@@ -42,14 +43,23 @@ def main() -> int:
         return 1
     stage = ROOT / "build" / "fontpack_stage"
     n = stage_fonts(stage, fams)
-    (stage / "pack.json").write_text(json.dumps({"pack_version": ver}), encoding="utf-8")
-    print(f"[font pack] 글꼴 계열 {len(fams)}개, 파일 {n}개 (묶음 버전 {ver})")
+    n_fonts = sum(1 for p in stage.rglob("*") if p.suffix.lower() in (".ttf", ".otf"))
+    from app.font_files import pack_file_name, pack_files
+
+    want = len(pack_files(cat))
+    if n_fonts != want:  # 앱이 안내하는 파일 이름(글꼴 수)과 실제 설치 파일이 같아야 한다
+        print(f"글꼴 수가 맞지 않습니다: 넣은 글꼴 {n_fonts}개, catalog.json 기준 {want}개")
+        return 1
+    (stage / "pack.json").write_text(json.dumps({"pack_version": ver, "fonts": n_fonts}), encoding="utf-8")
+    print(f"[font pack] 글꼴 계열 {len(fams)}개, 글꼴 {n_fonts}개, 파일 {n}개 (묶음 버전 {ver})")
     iscc = find_iscc()
     if iscc is None:
         print("Inno Setup이 없습니다: winget install JRSoftware.InnoSetup")
         return 1
-    subprocess.run([str(iscc), f"/DPackVersion={ver}", str(ROOT / "packaging" / "fontpack.iss")], check=True)
-    out = ROOT / "dist" / f"CardTranslater-Fonts-{ver}.exe"
+    name = pack_file_name(cat)
+    subprocess.run([str(iscc), f"/DPackVersion={ver}", f"/DOutputName={Path(name).stem}",
+                    str(ROOT / "packaging" / "fontpack.iss")], check=True)
+    out = ROOT / "dist" / name
     print(f"[font pack] {out} ({out.stat().st_size / 1e6:.1f} MB)")
     return 0
 

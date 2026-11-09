@@ -61,6 +61,16 @@ def test_font_dialog_warns_when_font_pack_missing(qapp, monkeypatch):
 
     monkeypatch.setattr(service, "font_pack_status", lambda: {"wanted": 1, "installed": None, "missing": 50, "ok": False})
     dlg = fonts_dialog.FontPlanDialog(_plan())
-    assert not dlg.pack_note.isHidden() and "CardTranslater-Fonts-1.exe" in dlg.pack_note.text()
+    assert not dlg.pack_note.isHidden() and "CardTranslater-Fonts-" in dlg.pack_note.text()
     monkeypatch.setattr(service, "font_pack_status", lambda: {"wanted": 1, "installed": 1, "missing": 0, "ok": True})
     assert fonts_dialog.FontPlanDialog(_plan()).pack_note.isHidden()
+
+
+def test_pack_file_name_has_font_count():
+    """글꼴 설치 파일 이름에 든 글꼴 수가 들어간다 (catalog.json 기준 = 실제로 받은 글꼴 파일 수)."""
+    files = font_files.pack_files()
+    assert files and not any(f.startswith("notosanskr/") for f in files)  # 프로그램에 든 기본 글꼴은 빼고
+    cat = font_files.catalog()
+    assert font_files.pack_file_name() == f"CardTranslater-Fonts-{cat['pack_version']}-{len(files)}fonts.exe"
+    present = [f for f in files if (REPO / "fonts" / f).exists()]
+    assert len(present) == len(files)  # 개발 폴더에 다 있다 (scripts/fetch_fonts.py)

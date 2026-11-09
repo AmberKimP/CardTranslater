@@ -3,6 +3,9 @@
 - 빈 곳을 끌면 새 영역, 영역 안을 끌면 옮기기, 가장자리를 끌면 크기 조절.
 - 화살표 키로 조금씩(Shift: 크게) 옮기기, Alt+화살표로 크기 조절, Delete로 지우기, Ctrl+휠로 확대.
 - 좌표는 카드 대비 비율로 저장한다. 손으로 쓴 regions.json의 모르는 항목은 그대로 둔다.
+- 미리보기(G): 오른쪽에 다른 카드 16장을 같은 영역으로 겹쳐 보여 준다 (app.qt.region_preview). 영역을 고치면 바로 반영.
+- 이 카드만 따로 영역: 공통 영역을 쓰는 그룹에서 상자 크기가 다른 카드만 따로 영역을 둔다 (regions.json page_regions,
+  엔진은 그 카드에서 공통 영역 대신 이것을 쓴다).
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt.dialogs import PRIMARY_QSS, ask_choice, erase_modes, fit_to_screen, grey_note, hint_bar, section_title, set_hint, show_problem
+from app.qt.region_preview import PreviewPanel
 
 KIND_LABELS = [("text", "글자"), ("tag_pills", "태그 라벨"), ("protect", "보호 영역(건드리지 않음)")]
 ALIGN_LABELS = [("", "자동 (원문 줄마다 따라감)"), ("left", "왼쪽 정렬"), ("center", "가운데 정렬"),
@@ -131,6 +135,9 @@ class RegionItem(QGraphicsRectItem):
             if "b" in mode:
                 r.setBottom(max(r0.bottom() + d.y(), r0.top() + MIN_SIZE))
         self.set_scene_rect(r)
+        sc = self.scene()
+        if hasattr(sc, "moving_item"):
+            sc.moving_item.emit(self)
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
@@ -163,6 +170,7 @@ class RegionItem(QGraphicsRectItem):
 
 class PageScene(QGraphicsScene):
     changed_item = Signal(object)  # 옮기거나 크기를 바꾼 영역
+    moving_item = Signal(object)  # 끄는 중 (미리보기를 따라 그리기)
     created_item = Signal(object)
 
     def __init__(self, parent=None):
@@ -359,7 +367,7 @@ class PageView(QGraphicsView):
             return
         plain = not (ev.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier))
         letters = {Qt.Key.Key_T: "add_text", Qt.Key.Key_L: "add_tag", Qt.Key.Key_P: "add_protect",
-                   Qt.Key.Key_O: "add_ocr_exclude",
+                   Qt.Key.Key_O: "add_ocr_exclude", Qt.Key.Key_G: "toggle_preview",
                    Qt.Key.Key_F: "fit", Qt.Key.Key_R: "rotate"}
         if plain and k in letters:
             self.key_action.emit(letters[k])
@@ -406,6 +414,8 @@ class RegionEditor(QDialog):
         self.fonts = service.font_choices()
         self.dirty = False
         self._loading = False
+        self._ov_key: str | None = None  # 공통 영역 그룹에서 지금 보는 카드가 ‘따로 영역’이면 그 카드 키
+        self._common: tuple[list, list] = ([], [])  # 따로 영역 카드를 보는 동안 넣어 둔 공통 영역
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}")
         fit_to_screen(self, 1400, 900, maximize_below=0)
 
@@ -420,6 +430,7 @@ class RegionEditor(QDialog):
         self._load_regions()
         self.scene.selectionChanged.connect(self._on_selection)
         self.scene.changed_item.connect(self._on_geometry)
+        self.scene.moving_item.connect(lambda _it: self.preview.schedule())
         self.scene.created_item.connect(self._on_created)
         self.view.nudged.connect(self._on_geometry)
         self.view.delete_pressed.connect(self.delete_selected)
@@ -495,6 +506,12 @@ class RegionEditor(QDialog):
         self.per_card.setChecked(self.template.get("layout") == "per_card")
         self.per_card.toggled.connect(self._toggle_per_card)
         tools.addWidget(self.per_card)
+        self.override_btn = QPushButton("이 카드만 따로 영역")
+        self.override_btn.setCheckable(True)
+        self.override_btn.setToolTip("이 카드만 영역의 위치·크기를 다르게 씁니다 (글자 상자 크기가 다른 카드). 서식·글꼴은 공통 영역을 따르고,\n"
+                                     "다른 카드는 공통 영역 그대로. 영역을 모두 지우면 이 카드는 처리하지 않습니다. 다시 누르면 공통 영역으로")
+        self.override_btn.setStyleSheet("QPushButton:checked { background: #FFF4CC; border: 2px solid #E0A800; font-weight: bold; }")
+        self.override_btn.toggled.connect(self._toggle_override)  # 아래 카드 정보 줄에 둔다 (창 최소 폭)
         self.copy_prev = QPushButton("이전 카드 영역 복사")
         self.copy_prev.setToolTip("앞 카드의 영역을 이 카드로 가져옵니다 (Ctrl+Shift+V)")
         self.copy_prev.clicked.connect(self.copy_previous_card)
@@ -517,6 +534,12 @@ class RegionEditor(QDialog):
         self.cards_row = cards
         self.cards_bar = QWidget()
         self.cards_bar.setLayout(cards)
+        self.preview_btn = QPushButton("미리보기 (G)")
+        self.preview_btn.setCheckable(True)
+        self.preview_btn.setStyleSheet("QPushButton:checked { background: #1E6FD9; color: white; font-weight: bold; }")
+        self.preview_btn.setToolTip("오른쪽에 다른 카드 16장을 같은 영역으로 보여 줍니다 — 영역이 그림·테두리에 걸치는 카드를 찾고,\n"
+                                    "카드를 빼거나 그 카드만 따로 영역을 정할 수 있습니다 (끄면 영역 설정 칸이 다시 보입니다)")
+        self.preview_btn.toggled.connect(self._toggle_preview)
         tools.addStretch(1)
         tools.addWidget(self.reset_btn)
         top.addStretch(1)
@@ -721,6 +744,13 @@ class RegionEditor(QDialog):
         split = QSplitter()
         split.addWidget(center)
         split.addWidget(side_scroll)
+        self.side_scroll = side_scroll
+        self.preview = PreviewPanel(self._preview_regions, self._preview_info)
+        self.preview.open_page.connect(self._open_from_preview)
+        self.preview.card_action.connect(self._preview_card_action)
+        self.preview.set_excluded.connect(self.set_page_excluded)
+        self.preview.setVisible(False)
+        split.addWidget(self.preview)
         split.setSizes([1000, 420])  # 처음에는 카드 칸을 넓게
         self.split = split
         split.setStretchFactor(0, 3)
@@ -735,7 +765,9 @@ class RegionEditor(QDialog):
         self.card_info = QLabel()
         self.card_info.setStyleSheet("color: #0b5cad; font-weight: bold")
         self.guide = hint_bar("", "info")  # 다음 할 일 안내 띠
-        srow = QHBoxLayout()
+        srow = QHBoxLayout()  # 아래 줄: 미리보기·따로 영역 (위 두 줄은 파일 이름·도구로 이미 넓다)
+        srow.addWidget(self.preview_btn)
+        srow.addWidget(self.override_btn)
         srow.addWidget(self.card_info)
         srow.addWidget(self.guide, 1)
         srow.addWidget(self.status)
@@ -824,6 +856,8 @@ class RegionEditor(QDialog):
         self.template = service.load_region_template(self.group_dir)
         if hasattr(self, "_card_store"):
             del self._card_store
+        self._ov_key = None
+        self.__dict__.pop("_shown_cache", None)
         self.per_card.blockSignals(True)
         self.per_card.setChecked(self.template.get("layout") == "per_card")
         self.per_card.blockSignals(False)
@@ -837,6 +871,7 @@ class RegionEditor(QDialog):
         self._update_title()
         self._update_form_enabled()
         self.view.fit()
+        self._sync_preview(force=True)
         self.status.setText(f"그룹: {g['name']}")
 
     def _toggle_help(self, shown: bool):
@@ -924,12 +959,31 @@ class RegionEditor(QDialog):
             self._current_key = self.card_key()
             self._load_card(self._current_key)
             self.view.fit()
+            self._sync_preview()
             return
+        leaving = self._ov_key
+        cur = self._items_to_dicts()
+        if leaving:  # 따로 영역을 보던 카드: 고친 것을 넣어 둔다
+            self._cards()[leaving] = {"regions": cur[0], "protect_rects": cur[1]}
+        else:
+            self._common = cur
         ratios = [(it, self.ratio_of(it)) for it in self.items()]
         self._load_page()
-        for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다
-            it.set_scene_rect(self.rect_from_ratio(r))
+        ov = self._cards().get(self.card_key())
+        if ov is not None:  # 이 카드만 따로 영역 (영역을 다 지운 빈 것도: 그 카드는 처리하지 않는다)
+            self._clear_items()
+            self._load_dicts(ov.get("regions", []), ov.get("protect_rects", []))
+            self._ov_key = self.card_key()
+        elif leaving:  # 따로 영역 카드에서 공통 영역 카드로
+            self._clear_items()
+            self._load_dicts(*self._common)
+            self._ov_key = None
+        else:
+            for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다
+                it.set_scene_rect(self.rect_from_ratio(r))
+        self._update_card_info()
         self.view.fit()
+        self._sync_preview()
 
     # ------------------------------------------------------------ 카드마다 영역
     def is_per_card(self) -> bool:
@@ -1012,8 +1066,15 @@ class RegionEditor(QDialog):
     def _update_card_info_impl(self):
         if hasattr(self, "cards_bar"):
             self.cards_bar.setVisible(self.is_per_card())
+        if hasattr(self, "override_btn"):
+            self.override_btn.setVisible(not self.is_per_card())
+            self._syncing_override = True
+            self.override_btn.setChecked(bool(getattr(self, "_ov_key", None)) and not self.is_per_card())
+            self._syncing_override = False
         if not self.is_per_card():
-            self.card_info.setText("")
+            n_ov = len(self.overrides())
+            self.card_info.setText(("이 카드: 따로 영역 · " if getattr(self, "_ov_key", None) else "")
+                                   + (f"따로 영역 카드 {n_ov}장" if n_ov else ""))
             for w in (self.copy_prev, self.copy_rest, self.sync_names):
                 w.setEnabled(False)
             return
@@ -1115,6 +1176,8 @@ class RegionEditor(QDialog):
             self._set_add_kind(None if self.scene.add_kind == kind else kind)
         elif act == "fit":
             self.view.fit_again()
+        elif act == "toggle_preview":
+            self.preview_btn.toggle()
         elif act == "rotate":
             it = self.selected()
             if it is not None and it.kind != "protect":
@@ -1219,16 +1282,24 @@ class RegionEditor(QDialog):
             self.per_card.blockSignals(False)
             return
         if on:
+            items = self._items_to_dicts()
+            common = self._common if self._ov_key else items
+            overrides = {k: v for k, v in self._cards().items() if v.get("regions") or v.get("protect_rects")}
+            if self._ov_key:
+                overrides[self._ov_key] = {"regions": items[0], "protect_rects": items[1]}
             self._card_store = {}
             self._current_key = self.card_key()
-            self._stash_card()
-            cur = self._cards().get(self._current_key)
-            if cur:  # 공통 영역을 쓰던 모든 카드(앞·뒤 카드 모두)에 그대로 남긴다
-                for k in self.all_card_keys():
-                    self._cards().setdefault(k, copy.deepcopy(cur))
+            self._ov_key = None
+            # 공통 영역을 쓰던 모든 카드에 그대로 남기고, 따로 영역을 둔 카드는 그 영역 그대로
+            for k in self.all_card_keys():
+                self._card_store[k] = copy.deepcopy(overrides.get(k)
+                                                    or {"regions": common[0], "protect_rects": common[1]})
+            self._card_store[self._current_key] = {"regions": items[0], "protect_rects": items[1]}
         else:
             self._card_store = {}
             self._current_key = None
+            self._ov_key = None
+            self._common = self._items_to_dicts()
         self._update_card_info()
         self._mark_dirty()
 
@@ -1240,11 +1311,14 @@ class RegionEditor(QDialog):
             self._load_card(self._current_key)
             return
         self._current_key = None
-        for r in self.template.get("regions", []):
-            self._add_item(copy.deepcopy(r), protect=False)
-        for r in self.template.get("protect_rects", []):
-            self._add_item(copy.deepcopy(r), protect=True)
-        self._rebuild_list()
+        self._ov_key = None
+        self._common = (copy.deepcopy(self.template.get("regions", [])), copy.deepcopy(self.template.get("protect_rects", [])))
+        ov = self._cards().get(self.card_key())
+        if ov is not None:  # 처음 보이는 카드에 따로 영역이 있으면 그것
+            self._load_dicts(ov.get("regions", []), ov.get("protect_rects", []))
+            self._ov_key = self.card_key()
+        else:
+            self._load_dicts(*self._common)
         self._update_card_info()
 
     def _add_item(self, data: dict, protect: bool) -> RegionItem:
@@ -1254,6 +1328,142 @@ class RegionEditor(QDialog):
         it.refresh()
         self._order.append(it)
         return it
+
+    def _load_dicts(self, regions: list[dict], protect: list[dict]):
+        for r in regions:
+            self._add_item(copy.deepcopy(r), protect=False)
+        for r in protect:
+            self._add_item(copy.deepcopy(r), protect=True)
+        self._rebuild_list()
+
+    # ------------------------------------------------------------ 이 카드만 따로 영역 (공통 영역 그룹)
+    def _toggle_override(self, on: bool):
+        if getattr(self, "_syncing_override", False) or self.is_per_card():
+            return
+        key = self.card_key()
+        if on and self._ov_key != key:
+            self._common = self._items_to_dicts()
+            regions, protect = self._common
+            self._cards()[key] = {"regions": copy.deepcopy(regions), "protect_rects": copy.deepcopy(protect)}
+            self._ov_key = key
+            self.status.setText(f"{self.page_spin.value()}쪽만 따로 영역을 씁니다. 이 카드에 맞게 영역을 고치세요")
+        elif not on and self._ov_key == key:
+            self._cards().pop(key, None)
+            self._clear_items()
+            self._load_dicts(*self._common)
+            self._ov_key = None
+            self.status.setText(f"{self.page_spin.value()}쪽을 공통 영역으로 되돌렸습니다")
+        self._mark_dirty()
+
+    @staticmethod
+    def _override_with_common_style(ov: dict, common: list[dict]) -> dict:
+        """따로 영역은 위치·크기만 따로: 같은 이름의 공통 영역이 있으면 서식·지우기 방식 등은 공통 영역 것을 쓴다
+        (공통 영역의 글꼴을 나중에 바꿔도 따로 영역 카드만 옛 글꼴로 남지 않게)."""
+        by = {r.get("name"): r for r in common}
+        regions = []
+        for r in ov.get("regions", []):
+            c = by.get(r.get("name"))
+            regions.append({**copy.deepcopy(c), "rect": r["rect"]} if c else r)
+        return {**ov, "regions": regions}
+
+    def overrides(self) -> list[str]:
+        """따로 영역을 둔 카드 키 (공통 영역 그룹)."""
+        if self.is_per_card():
+            return []
+        return list(self._cards())
+
+    # ------------------------------------------------------------ 미리보기 (오른쪽 4×4)
+    def _toggle_preview(self, on: bool):
+        self.side_scroll.setVisible(not on)
+        self.preview.setVisible(on)
+        w = max(800, self.split.width())
+        if on:
+            self.split.setSizes([int(w * 0.47), 0, int(w * 0.53)])
+            self._sync_preview(force=True)
+        else:
+            self.split.setSizes([int(w * 0.72), int(w * 0.28), 0])
+        self.view.fit_again()
+
+    def _sync_preview(self, force: bool = False):
+        if not hasattr(self, "preview") or not self.preview.isVisible():
+            return
+        fd = self.current_file()
+        if force or self.preview.file_dir != fd:
+            self.preview.set_file(fd, list(range(1, self._page_count(fd) + 1)), self.page_spin.value())
+        else:
+            self.preview.show_page(self.page_spin.value())
+
+    def _page_count(self, fd: Path) -> int:
+        cache = self.__dict__.setdefault("_count_cache", {})
+        if fd not in cache:
+            cache[fd] = service.page_count(fd)  # PDF를 연다: 미리보기를 그릴 때마다 열지 않게
+        return cache[fd]
+
+    def _excluded(self, fd: Path | None = None) -> set[int]:
+        fd = fd or self.current_file()
+        shown = set(self._shown(fd))
+        n = self._page_count(fd)
+        return set() if len(shown) >= n else set(range(1, n + 1)) - shown
+
+    def _preview_regions(self, page: int) -> list[dict]:
+        """미리보기에 그릴 그 카드의 영역 (지금 카드는 편집 중인 값). protect는 kind="protect"."""
+        if page == self.page_spin.value():
+            regions, protect = self._items_to_dicts()
+        else:
+            key = f"{self.current_file().name}/{page}"
+            ov = self._cards().get(key)
+            if self.is_per_card() or ov is not None:
+                regions, protect = (ov or {}).get("regions", []), (ov or {}).get("protect_rects", [])
+            elif self._ov_key:
+                regions, protect = self._common
+            else:
+                regions, protect = self._items_to_dicts()
+        return list(regions) + [{**p, "kind": "protect"} for p in protect]
+
+    def _preview_info(self, page: int) -> tuple[bool, bool, bool]:
+        key = f"{self.current_file().name}/{page}"
+        ov = not self.is_per_card() and key in self.overrides()
+        return page == self.page_spin.value(), page in self._excluded(), ov
+
+    def _open_from_preview(self, page: int):
+        if page in self._excluded():
+            self.status.setText(f"{page}쪽은 뺀 쪽입니다. 되살리면(뺌 체크 해제) 편집할 수 있습니다")
+            return
+        self.page_spin.setValue(page)
+        self.view.setFocus()
+
+    def _preview_card_action(self, page: int, act: str):
+        if self.is_per_card():
+            self.status.setText("카드마다 영역 지정 중에는 카드마다 이미 따로 영역입니다")
+            return
+        if page in self._excluded():
+            self.status.setText(f"{page}쪽은 뺀 쪽입니다")
+            return
+        if page != self.page_spin.value():
+            self.page_spin.setValue(page)
+        self.override_btn.setChecked(act == "override")
+
+    def set_page_excluded(self, page: int, on: bool):
+        """미리보기에서 뺄 쪽 바꾸기 (바로 file.json에 쓴다: 영역 저장과 따로)."""
+        fd = self.current_file()
+        excl = self._excluded(fd)
+        new = sorted(excl | {page}) if on else sorted(excl - {page})
+        if on and len(new) >= self._page_count(fd):
+            QMessageBox.information(self, "뺄 쪽", "모든 쪽을 뺄 수는 없습니다")
+            self.preview.refresh()
+            return
+        try:
+            service.set_pages(fd, new)
+        except ValueError as e:
+            show_problem(self, "뺄 쪽을 바꾸지 못했습니다", str(e))
+            return
+        self.__dict__.setdefault("_shown_cache", {}).pop(fd, None)
+        self.status.setText(f"{page}쪽을 뺐습니다" if on else f"{page}쪽을 되살렸습니다")
+        if on and page == self.page_spin.value():
+            self._change_page()  # 뺀 쪽에서는 가까운 보일 쪽으로
+        else:
+            self._load_page()  # ‘/ 20 (뺀 쪽 n개 건너뜀)’
+        self.preview.refresh()
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -1529,11 +1739,19 @@ class RegionEditor(QDialog):
             data.setdefault("source_language", "ja")
             return data
         data.pop("layout", None)
-        if self.template.get("layout") == "per_card":
-            data.pop("page_regions", None)  # 공통 영역으로 바꿨다
-        regions, protect = self._items_to_dicts()
+        if self._ov_key:  # 따로 영역 카드를 보는 중: 화면의 영역은 그 카드 것, 공통 영역은 넣어 둔 것
+            r, p = self._items_to_dicts()
+            self._cards()[self._ov_key] = {"regions": r, "protect_rects": p}
+            regions, protect = self._common
+        else:
+            regions, protect = self._items_to_dicts()
         data["regions"] = regions
         data["protect_rects"] = protect
+        ov = {k: self._override_with_common_style(v, regions) for k, v in self._cards().items()}
+        if ov:  # 이 카드만 따로 영역 (공통 영역 그룹). 빈 것도 남긴다: 그 카드는 처리하지 않는다
+            data["page_regions"] = ov
+        else:
+            data.pop("page_regions", None)
         data.setdefault("reference_page", self.page_spin.value())
         data.setdefault("source_language", "ja")
         return data
@@ -1558,6 +1776,8 @@ class RegionEditor(QDialog):
         self._update_title()
         if hasattr(self, "card_info"):
             self._update_card_info()
+        if hasattr(self, "preview"):
+            self.preview.schedule()
 
     def _update_title(self):
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}{' *' if self.dirty else ''}")

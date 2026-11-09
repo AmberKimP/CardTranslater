@@ -312,3 +312,34 @@ def test_compose_layout_keeps_lines_when_not_two_line_sentence_or_too_long():
     rec = compose_layout_region(doc.new_page(width=180, height=110), (10, 10, 170, 100),
                                 "카드를\n한 장 뽑는다.\n버린다.", {}, mixed)
     assert rec["line_modes"] == ["slot"] * 3
+
+
+def test_overflow_in_line_slots_falls_back_to_whole_region_without_dropping_text():
+    """원문 줄 자리(아주 좁은 줄)에 다 들어가지 않으면 버리지 않고 영역 전체에 줄여 넣는다 (엘프 3쪽 제목처럼)."""
+    from app.typeset_compose import STATUS_WHOLE_REGION, fit_whole_region
+
+    lay = {"lines": [{"bbox_pt": [150.0, 20.0, 152.0, 30.0], "glyph_h_pt": 10.0, "color": "#202020",
+                      "stroke_color": None, "stroke_pt": 0.0, "weight": 0.2, "bold": False, "align": "left",
+                      "accents": []}], "dividers_pt": []}
+    text = "작은 불길이 엘프의 숲을 태운다"
+    doc = pymupdf.open()
+    page = doc.new_page(width=180, height=110)
+    dry = compose_layout_region(page, (10, 10, 170, 60), text, {}, lay, draw=False)
+    assert dry["overflow_text"]  # 줄 자리에는 다 안 들어간다
+    assert not page.get_text().strip()  # 시험은 그리지 않는다
+    rec = fit_whole_region(page, (10, 10, 170, 60), text, {}, lay)
+    assert rec is not None and not rec["overflow_text"] and STATUS_WHOLE_REGION in rec["status"]
+    assert "".join(page.get_text().split()) == "".join(text.split())  # 한 글자도 빠지지 않는다
+
+
+def test_result_pages_report_dropped_text(tmp_path):
+    """결과 보기: 넣지 못한 글자(overflow_text)를 칸마다 돌려준다."""
+    import json
+
+    from app import service
+
+    (tmp_path / "compare").mkdir()
+    (tmp_path / "report.json").write_text(json.dumps({"pages_detail": [{"page": 3, "regions": {
+        "제목": {"status": ["넘침"], "overflow_text": "작\n은\n불"}, "본문": {"status": []}}}]}), encoding="utf-8")
+    p = service.result_pages(tmp_path)[0]
+    assert p["regions"][0]["overflow"] == "작 은 불" and p["regions"][1]["overflow"] == ""

@@ -23,7 +23,7 @@ from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.erase_text import is_icon_line
-from app.typeset_layout import STATUS_OVERFLOW, join_lines_at, two_line_sentences, wrap_sentence_fonts
+from app.typeset_layout import STATUS_OVERFLOW, join_lines_at, min_size_rule, two_line_sentences, wrap_sentence_fonts
 from app.font_files import resolve as resolve_font
 from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
@@ -216,8 +216,24 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         layout = reg.get("text_layout") or {}
         if layout.get("lines") and text and int(style_d.get("rotate", 0)) % 360 in (0, 180):
             # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
+            if layout.get("panel_pt"):  # 지우기가 영역을 글자 상자로 좁혔다: 그 상자 안에 넣는다 (위쪽 그림 위로 나가지 않게)
+                pr = pymupdf.Rect(layout["panel_pt"]) & rect
+                if not pr.is_empty:
+                    rect = pr
             rec.update(source_ink={"layout_lines": len(layout["lines"])}, draw_rect_pt=[round(v, 3) for v in rect])
-            r_ = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
+            # 먼저 그리지 않고 해 본다: 원문 줄 자리에 다 들어가면 그대로 그리고, 넘치면 영역 전체에 줄여 넣는다
+            # (넘친 글자를 버리면 카드에서 내용이 사라진다)
+            dry = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"), draw=False)
+            fb = None
+            if dry is not None and dry.get("overflow_text") and int(style_d.get("rotate", 0)) % 360 == 0:
+                fb = fit_whole_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
+            if fb is not None:
+                rec["warnings"] += fb.pop("warnings")
+                rec.update(fb)
+                out[name] = rec
+                continue
+            r_ = (compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
+                  if dry is not None else None)
             if r_ is not None:
                 rec["warnings"] += r_.pop("warnings")
                 rec.update(r_)
@@ -393,8 +409,67 @@ def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
     return out
 
 
+STATUS_WHOLE_REGION = "줄 자리 대신 영역 전체"  # 원문 줄 자리에 다 들어가지 않아 영역 전체에 줄여 넣음
+WHOLE_REGION_RATIOS = (0.7, 0.55, 0.45, 0.35, 0.25)  # 원문 글자 높이 대비: 다 들어갈 때까지 차례로 줄인다
+
+
+def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict, base_dir: Path = ROOT,
+                     source_text: str | None = None) -> dict | None:
+    """원문 줄 자리(compose_layout_region)에 다 들어가지 않는 글: 원문 첫 줄 위부터 영역 아래까지 한 칸으로 보고,
+    다 들어갈 때까지 글자를 줄여 넣는다 (넘친 글자를 버리지 않는다). 그래도 안 들어가면 None (줄 자리 배치를 쓴다).
+    상태에 STATUS_WHOLE_REGION과(줄였으면) ‘글자 축소’를 남긴다."""
+    rect = pymupdf.Rect(rect)
+    lines = [ln for ln in layout.get("lines") or [] if ln["glyph_h_pt"] >= 2.5] or list(layout.get("lines") or [])
+    if not lines or not (text or "").strip() or layout.get("dividers_pt"):
+        return None  # 구분선 위아래가 다른 칸: 한 덩어리로 넣으면 선을 넘고 서식이 섞인다 (넘친 글자는 결과 보기에 알린다)
+    gh = float(np.median([ln["glyph_h_pt"] for ln in lines]))
+    # 가장 많은 줄의 서식(색·굵기·테두리)으로: 맨 위 이름 줄(빨간 굵은 글자 등) 서식으로 본문까지 그리지 않게
+    style_of = lambda ln: (ln.get("color"), bool(ln.get("bold")), ln.get("stroke_color"))  # noqa: E731
+    counts: dict = {}
+    for ln in lines:
+        counts[style_of(ln)] = counts.get(style_of(ln), 0) + 1
+    common = max(counts, key=counts.get)
+    ln0 = {**next(ln for ln in lines if style_of(ln) == common), "glyph_h_pt": gh}
+    aligns = [ln.get("align", "left") for ln in lines]
+    ln0["align"] = max(set(aligns), key=aligns.count)
+    pitch = None
+    tops = sorted(ln["bbox_pt"][1] for ln in lines)
+    if len(tops) > 1:
+        pitch = float(np.median(np.diff(tops))) or None
+    top = max(rect.y0, min(min(tops), rect.y1 - gh))
+    boxes = [pymupdf.Rect(rect.x0, top, rect.x1, rect.y1), rect]  # 원문 첫 줄 위부터, 안 되면 영역 전체
+    st = _line_style(style_d, base_dir, ln0, [], None, measured_icon_scales(layout), line_pitch_pt=pitch)
+    mode = style_d.get("align") or ""
+    if mode in ("left", "center", "right"):
+        st.align = mode
+    for box in boxes:
+        last_min = None
+        for ratio in WHOLE_REGION_RATIOS:
+            st.min_ratio = ratio
+            mn = min_size_rule(st.start_size(), ratio, st.floor_for_fit())
+            if last_min is not None and abs(mn - last_min) < 1e-6:
+                continue  # pt 하한에 막혀 같은 크기: 다시 해 볼 필요 없다
+            last_min = mn
+            anchor = top if box is boxes[0] else None
+            trial = typeset_region(page, box, text, st, top_anchor=anchor, source_text=source_text, draw=False)
+            if trial.overflow_text or STATUS_OVERFLOW in trial.status:
+                continue
+            start = st.start_size()
+            res = typeset_region(page, box, text, st, top_anchor=anchor, source_text=source_text)
+            d = res.to_dict()
+            status = list(d["status"])
+            if res.size and res.size < start - 1e-6 and "글자 축소" not in status:
+                status.insert(0, "글자 축소")
+            d["status"] = sorted(set(status) | {STATUS_WHOLE_REGION})
+            d.update(layout="whole_region", sections=1, line_modes=["whole_region"], rotate=0,
+                     warnings=[f"원문 줄 자리에 다 들어가지 않아 영역 전체에 넣음 (원문 글자 높이의 {res.size / start:.0%})"
+                               if res.size and start else "원문 줄 자리에 다 들어가지 않아 영역 전체에 넣음"])
+            return d
+    return None
+
+
 def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
-                          base_dir: Path = ROOT, source_text: str | None = None) -> dict:
+                          base_dir: Path = ROOT, source_text: str | None = None, draw: bool = True) -> dict:
     """원문 줄 모양(지우기 때 잰 text_layout)대로 한글을 넣는다.
 
     - 원문 줄 자리마다 번역 한 줄: 같은 높이·색·테두리·굵기·정렬 (줄 수가 같을 때)
@@ -531,7 +606,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         jt = join_two(src, sec, kos) if len(kos) == len(src) else None
         if jt is not None:
             new_kos, r, st, top = jt
-            results.append((typeset_region(page, r, "\n".join(new_kos), st, top_anchor=top), "joined"))
+            results.append((typeset_region(page, r, "\n".join(new_kos), st, top_anchor=top, draw=draw), "joined"))
             joined_note.append(f"{len(kos)}줄 → {len(new_kos)}줄")
             continue
         if len(kos) == len(src):
@@ -579,7 +654,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 slots.append((ln, ko, r, st, top))
         else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
             r, st, top = paragraph(src, sec)
-            results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top), "paragraph"))
+            results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top, draw=draw), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}
     own: dict[int, float] = {}
@@ -603,12 +678,12 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         if size:
             start = st.start_size()
             st.fixed_size_pt = size
-            res = typeset_region(page, r, ko, st, top_anchor=top)
+            res = typeset_region(page, r, ko, st, top_anchor=top, draw=draw)
             res.start_size = start
             if size < start - 1e-6 and "글자 축소" not in res.status:
                 res.status = ["글자 축소"] + res.status
         else:
-            res = typeset_region(page, r, ko, st, top_anchor=top)
+            res = typeset_region(page, r, ko, st, top_anchor=top, draw=draw)
         results.append((res, "slot"))
     status = sorted({s for r, _ in results for s in r.status})
     # 지운 줄보다 읽은(원문) 줄이 적다: 추출이 줄을 빠뜨렸으면 그 줄은 지워지기만 하고 다시 넣지 못한다
@@ -882,4 +957,8 @@ def _compose_report(project, src_path, erase_run, erased_path, pages, page_recs,
 
 def _pack_hint(file: str) -> str:
     """앱 글꼴(fonts/…)이 없으면 글꼴 설치 파일을 안내한다."""
-    return " (글꼴 설치 파일 CardTranslater-Fonts를 설치하세요)" if str(file).replace("\\", "/").startswith("fonts/") else ""
+    if not str(file).replace("\\", "/").startswith("fonts/"):
+        return ""
+    from app.font_files import pack_file_name
+
+    return f" (글꼴 설치 파일 {pack_file_name()}을 설치하세요)"

@@ -311,7 +311,7 @@ class FontPlanDialog(QDialog):
         pack = service.font_pack_status()
         self.pack_note = hint_bar(  # 글꼴 묶음을 설치하지 않았거나 옛 묶음: 목록에 나오는 글꼴이 적다
             f"앱 글꼴 {pack['missing']}개가 설치되어 있지 않아 목록·추천에서 빠졌습니다. "
-            f"글꼴 설치 파일(CardTranslater-Fonts-{pack['wanted'] or ''}.exe)을 설치하고 앱을 다시 켜세요.", "warn")
+            f"글꼴 설치 파일({pack.get('file_name') or 'CardTranslater-Fonts-….exe'})을 설치하고 앱을 다시 켜세요.", "warn")
         self.pack_note.setVisible(not pack["ok"])
         lay.addWidget(self.pack_note)
         lay.addWidget(self.note)

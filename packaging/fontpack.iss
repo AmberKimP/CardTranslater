@@ -1,11 +1,14 @@
 ; CardTranslater 글꼴 설치 파일 (Inno Setup 6) — 프로그램 설치 파일과 따로
-;   .venv/Scripts/python packaging/make_font_pack.py  -> dist/CardTranslater-Fonts-<묶음 버전>.exe
+;   .venv/Scripts/python packaging/make_font_pack.py  -> dist/CardTranslater-Fonts-<묶음 버전>-<글꼴 수>fonts.exe
 ; 프로그램에 들어 있는 기본 글꼴(본고딕)을 뺀 한글 글꼴을 %LOCALAPPDATA%\CardTranslater\fontpack\fonts 에 설치한다.
 ; 앱(app/font_files.py)이 그 폴더를 찾아 쓴다. 프로그램을 업데이트·제거해도 남고, 따로 제거할 수 있다.
 ; Windows 글꼴 폴더에는 설치하지 않는다 (이 앱만 쓴다).
 
 #ifndef PackVersion
   #define PackVersion "1"
+#endif
+#ifndef OutputName
+  #define OutputName "CardTranslater-Fonts-" + PackVersion
 #endif
 
 [Setup]
@@ -20,7 +23,7 @@ DisableProgramGroupPage=yes
 CreateAppDir=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=CardTranslater-Fonts-{#PackVersion}
+OutputBaseFilename={#OutputName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

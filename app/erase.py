@@ -1280,9 +1280,31 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         ox1, oy1 = min(size[0], b[2] + mg), min(size[1], b[3] + mg)
         sub = new_img[oy0:oy1, ox0:ox1].copy()  # 채우기 전 원문 픽셀 (줄 모양을 잴 때도 쓴다)
         lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
+        lb_region = lb
+        core = erase_text.label_panel(sub, lb)  # 영역이 글자 상자보다 크면 상자 안에서만 (위쪽 그림·띠 밖 테두리 빼기)
+        if core != lb_region:
+            # 글자가 상자 끝에 닿아 ‘가장자리 조각’으로 빠지지 않게 몇 px 넉넉히 (넓힌 곳은 상자색으로 칠한 사본에서 찾는다)
+            m_ = max(3, int(0.12 * (core[3] - core[1])))
+            lb = (max(lb_region[0], core[0] - m_), max(lb_region[1], core[1] - m_),
+                  min(lb_region[2], core[2] + m_), min(lb_region[3], core[3] + m_))
+            area = lambda b_: max(1, b_[2] - b_[0]) * max(1, b_[3] - b_[1])  # noqa: E731
+            if area(core) >= 0.97 * area(lb_region):  # 거의 영역 그대로: 좁히지 않는다
+                lb, core = lb_region, lb_region
+        else:
+            lb = lb_region
         prot = protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
-        tm = erase_text.text_mask(sub, lb, prot)
-        lay = erase_text.text_layout(sub, tm, lb)
+        # 상자로 좁혔으면 상자 밖을 상자 색으로 칠한 사본에서 글자를 찾는다 (지우기는 원본 sub에)
+        look = erase_text.paint_outside(sub, core) if lb != lb_region else sub
+        tm = erase_text.text_mask(look, lb, prot, size_box=lb_region)
+        if lb != lb_region:
+            # 지울 픽셀은 상자 몸통 안으로만: 밖(띠 테두리·그림)까지 번지면 채울 때 그 색이 끌려와 얼룩이 생긴다
+            inside = np.zeros(tm.mask.shape, bool)
+            inside[core[1]:core[3], core[0]:core[2]] = True
+            tm.mask &= inside
+            tm.core &= inside
+        lay = erase_text.text_layout(look, tm, lb)
+        if lb != lb_region:  # 좁힌 상자: 상자 위·아래 끝에 붙은 줄(띠 안의 그림 조각)을 먼저 원문에 없는 줄로 본다
+            lay["box_y"] = [core[1], core[3]]
         src = (sources or {}).get(name)
         found = _find_icons(sub, lb, src, regs_by_name.get(name))
         if isinstance(src, str) and src.strip():
@@ -1306,6 +1328,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             # 상자 안에서 글자를 거의 못 찾음: 영역 위치가 카드와 안 맞을 수 있다 (예: 거꾸로 인쇄된 카드)
             "few_text": bool(float(tm.core[lb[1]:lb[3], lb[0]:lb[2]].mean()) < 0.01),
         }
+        if lb != lb_region:
+            text_mask_meta[name]["notes"] = list(tm.notes) + ["영역 안의 글자 상자에서만 찾음 (위쪽 그림·테두리 제외)"]
         # 원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt
         ppx = bg.pt_per_px
 
@@ -1324,6 +1348,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
                                    for a_ in ln["accents"]]}
                       for ln in lay["lines"]],
             "dividers_pt": [_pt(d) for d in lay["dividers"]],
+            # 영역을 글자 상자로 좁혔으면 그 상자 (한글 넣기가 영역 대신 이 안에 넣는다)
+            **({"panel_pt": _pt(lb)} if lb != lb_region else {}),
             # 지운 글 속 아이콘: 이름, 자리, 그 줄 글자 높이 대비 크기 (한글 넣기가 원본 크기로 다시 그린다)
             "icons": [{"name": n_, "bbox_pt": _pt(bx), "scale": sc} for n_, bx, sc in icons_found],
         }
