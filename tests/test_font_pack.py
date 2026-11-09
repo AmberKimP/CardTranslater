@@ -74,3 +74,20 @@ def test_pack_file_name_has_font_count():
     assert font_files.pack_file_name() == f"CardTranslater-Fonts-{cat['pack_version']}-{len(files)}fonts.exe"
     present = [f for f in files if (REPO / "fonts" / f).exists()]
     assert len(present) == len(files)  # 개발 폴더에 다 있다 (scripts/fetch_fonts.py)
+
+
+def test_font_pack_hash_ignores_catalog_and_sees_font_changes(tmp_path):
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
+    from make_font_pack import fonts_hash
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "A-Regular.ttf").write_bytes(b"font")
+    (tmp_path / "catalog.json").write_text("{}", encoding="utf-8")
+    h = fonts_hash(tmp_path)
+    (tmp_path / "catalog.json").write_text('{"pack_version": 2}', encoding="utf-8")  # 이름표만 바뀜: 그대로
+    (tmp_path / "pack.json").write_text("{}", encoding="utf-8")
+    assert fonts_hash(tmp_path) == h
+    (tmp_path / "a" / "A-Regular.ttf").write_bytes(b"font2")  # 글꼴이 바뀜
+    assert fonts_hash(tmp_path) != h

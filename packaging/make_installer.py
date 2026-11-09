@@ -3,6 +3,8 @@
     .venv/Scripts/python packaging/build.py            # 먼저 dist/CardTranslater/
     .venv/Scripts/python packaging/make_installer.py   # dist/CardTranslater-Setup-<버전>-<날짜>.exe
 
+글꼴 설치 파일은 글꼴이 바뀌었을 때만 이어서 만든다 (make_font_pack.py --if-changed).
+
 버전은 app/version.py, 뒤에 만든 날짜(YYYYMMDD)를 붙인다 (예: CardTranslater-Setup-1.0.0-20261108.exe). Inno Setup이 없으면: winget install JRSoftware.InnoSetup
 """
 
@@ -51,7 +53,10 @@ def main() -> int:
                     str(ROOT / "packaging" / "installer.iss")], check=True)
     out = ROOT / "dist" / f"CardTranslater-Setup-{name}.exe"
     print(f"[installer] {out} ({out.stat().st_size / 1e6:.1f} MB)")
-    return 0
+    sys.path.insert(0, str(ROOT / "packaging"))
+    from make_font_pack import main as font_pack
+
+    return font_pack(["--if-changed"])
 
 
 if __name__ == "__main__":
