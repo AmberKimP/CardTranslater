@@ -81,6 +81,11 @@ class ClaudeCodeClient:
 
     def read_card(self, project, page_no: int, src_doc, model: str, work_dir: Path, schema: dict,
                   regions=None) -> CCReply:
+        return self.run_card(self.prepare_card(project, page_no, src_doc, model, work_dir, schema, regions))
+
+    def prepare_card(self, project, page_no: int, src_doc, model: str, work_dir: Path, schema: dict,
+                     regions=None) -> tuple:
+        """영역 이미지를 만들고 실행할 명령을 정한다 (PDF를 다루므로 주 스레드에서). run_card로 실행한다."""
         from app.extract import region_hint
 
         regions = project.template.regions_for(page_no) if regions is None else regions
@@ -104,6 +109,11 @@ class ClaudeCodeClient:
                 "--tools", "Read", "--allowedTools", "Read",
                 "--permission-prompts", "none",
                 "--no-session-persistence"]
+        return args, crop_dir, model
+
+    def run_card(self, prepared: tuple) -> CCReply:
+        """prepare_card로 준비한 요청을 실행한다 (PDF를 다루지 않아 여러 스레드에서 동시에 불러도 된다)."""
+        args, crop_dir, model = prepared
         try:
             code, out, err = self.runner(args, crop_dir, CALL_TIMEOUT_S)
         except subprocess.TimeoutExpired:

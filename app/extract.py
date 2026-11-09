@@ -397,6 +397,81 @@ def classify_error(e: Exception) -> Paused | None:
     raise e
 
 
+# 동시에 보내는 요청 수: 카드마다 Claude 응답을 기다리는 시간이 대부분이라 여러 장을 함께 보낸다.
+# Claude Code(요금제)는 사용 한도·CLI 시작 비용 때문에 적게. 환경 변수 CARDTRANSLATER_EXTRACT_WORKERS로 바꾼다
+EXTRACT_WORKERS = {"api": 4, "claude-code": 2}
+
+
+def extract_workers(engine: str) -> int:
+    v = os.environ.get("CARDTRANSLATER_EXTRACT_WORKERS", "").strip()
+    if v.isdigit() and int(v) > 0:
+        return int(v)
+    return EXTRACT_WORKERS.get(engine, 1)
+
+
+def _pipelined(todo: list, prepare, finish, workers: int, cancel=None, before=None) -> None:
+    """todo의 항목을 차례로 prepare(item)(주 스레드: PDF 자르기 등)한 뒤, 돌려준 함수를 최대 workers개 스레드에서
+    동시에 실행하고, 끝난 것부터 finish(item, 결과, 예외)(주 스레드: 저장·상태)를 부른다.
+
+    - prepare가 None을 돌려주면 그 항목은 이미 처리된 것 (요청 없음).
+    - before(i, item)는 보내기 전에 부른다 (예산 확인·진행 표시). 예외를 던지면 새로 보내지 않는다.
+    - 작업 함수의 예외는 finish에 넘긴다. finish가 예외를 던지면(Paused 등) 새로 보내지 않고, 이미 보낸 요청은
+      끝까지 받아 저장한 뒤(돈을 낸 결과를 버리지 않게) 처음 예외를 던진다.
+    - cancel.check()가 던지면 기다리지 않고 바로 던진다 (보낸 요청의 결과는 버린다).
+    """
+    from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+
+    workers = max(1, workers)
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="extract")
+    running: dict[Future, object] = {}
+    stop: BaseException | None = None
+    it = iter(enumerate(todo))
+    wait_pool = True
+
+    def settle(fut: Future) -> None:
+        nonlocal stop
+        item = running.pop(fut)
+        exc = fut.exception()
+        try:
+            finish(item, None if exc else fut.result(), exc)
+        except BaseException as e:  # noqa: BLE001
+            if stop is None:
+                stop = e
+
+    try:
+        while True:
+            while stop is None and len(running) < workers:
+                if cancel:
+                    cancel.check()
+                nxt = next(it, None)
+                if nxt is None:
+                    break
+                i, item = nxt
+                try:
+                    if before:
+                        before(i, item)
+                    job = prepare(item)
+                except BaseException as e:  # noqa: BLE001
+                    stop = e
+                    break
+                if job is not None:
+                    running[pool.submit(job)] = item
+            if not running:
+                break
+            finished, _ = wait(list(running), timeout=0.2, return_when=FIRST_COMPLETED)
+            if cancel and stop is None:
+                cancel.check()
+            for fut in finished:
+                settle(fut)
+        if stop is not None:
+            raise stop
+    except BaseException as e:
+        wait_pool = e is stop  # 취소 등 밖에서 온 예외: 보낸 요청을 기다리지 않는다
+        raise
+    finally:
+        pool.shutdown(wait=wait_pool, cancel_futures=True)
+
+
 def _iso_after(seconds: float | None) -> str | None:
     if not seconds:
         return None
@@ -460,34 +535,42 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
             return _run_batch(project, pages, client, st, spath, done, kinds, src_doc, budget_usd, remaining, result,
                               progress, cancel, model, base)
         todo = remaining()
-        for i, pno in enumerate(todo):
-            if cancel:
-                cancel.check()
+        tags_of: dict[int, dict] = {}
+
+        def before(i, pno):
+            # 예산은 보내기 전에 본다 (이미 동시에 보낸 요청 몫만큼은 넘을 수 있다)
             if budget_usd is not None and st.spent_usd >= budget_usd:
                 raise Paused(f"정한 예산(${budget_usd:.2f})에 도달")
             if progress:
                 progress(ProgressEvent("extract", i, len(todo), f"{pno}쪽 글자 읽는 중", pno))
+
+        def prepare(pno):  # 주 스레드: PDF를 잘라 요청을 만든다 (PyMuPDF는 여러 스레드에서 함께 쓰면 안 된다)
             if not project.template.has_regions(pno):  # 카드별 그룹에서 아직 영역을 정하지 않은 카드
                 st.failed[pno] = NO_REGIONS
                 st.save(spath)
-                continue
+                return None
             color_tags = tags_from_colors(project, pno, src_doc)
             to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
             if not to_read:
                 _write_plain(base, pno, color_tags, model, "colors")
                 done.add(pno)
                 st.save(spath)
-                continue
+                return None
+            tags_of[pno] = color_tags
             params = build_params(project, pno, src_doc, model, to_read)
-            try:
-                # 거절되면 서버가 대체 모델로 다시 읽는다 (SERVER_FALLBACK_MODELS)
-                msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)
-            except Exception as e:  # noqa: BLE001
-                p = classify_error(e)
+            # 거절되면 서버가 대체 모델로 다시 읽는다 (SERVER_FALLBACK_MODELS)
+            return lambda: send_message(client, params, model in SERVER_FALLBACK_MODELS)
+
+        def finish(pno, msg, exc):  # 주 스레드: 결과 저장·상태
+            color_tags = tags_of.pop(pno, {})
+            if exc is not None:
+                if not isinstance(exc, Exception):
+                    raise exc
+                p = classify_error(exc)
                 if p is None:
-                    st.failed[pno] = f"요청 오류: {getattr(e, 'message', e)}"
+                    st.failed[pno] = f"요청 오류: {getattr(exc, 'message', exc)}"
                     st.save(spath)
-                    continue
+                    return
                 raise p
             try:
                 regions = {**parse_response(msg, kinds), **color_tags}
@@ -495,10 +578,12 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 st.failed[pno] = f"응답 오류: {e}"
                 st.spent_usd += cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0
                 st.save(spath)
-                continue
+                return
             st.spent_usd += _write_page(base, pno, regions, msg, batch=False)
             done.add(pno)
             st.save(spath)
+
+        _pipelined(todo, prepare, finish, extract_workers("api"), cancel, before)
         return result("done")
     except Paused as p:
         st.reason, st.retry_after = p.reason, _iso_after(p.retry_after_s)
@@ -593,33 +678,52 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
     from app.service import ProgressEvent
 
     todo = remaining()
-    for i, pno in enumerate(todo):
-        if cancel:
-            cancel.check()
+    tags_of: dict[int, dict] = {}
+    can_split = hasattr(client, "prepare_card") and hasattr(client, "run_card")
+
+    def before(i, pno):
         if progress:
             progress(ProgressEvent("extract", i, len(todo), f"{pno}쪽 글자 읽는 중 (Claude Code)", pno))
+
+    def prepare(pno):  # 주 스레드: 영역 이미지 만들기 (PyMuPDF)
         if not project.template.has_regions(pno):
             st.failed[pno] = NO_REGIONS
             st.save(spath)
-            continue
+            return None
         color_tags = tags_from_colors(project, pno, src_doc)
         to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
         if not to_read:
             _write_plain(base, pno, color_tags, model, "colors")
             done.add(pno)
             st.save(spath)
-            continue
-        try:
-            reply = client.read_card(project, pno, src_doc, model, base, output_schema(to_read), to_read)
-            regions = {**regions_from_json(reply.regions_json, kinds), **color_tags}
+            return None
+        tags_of[pno] = color_tags
+        args = (project, pno, src_doc, model, base, output_schema(to_read), to_read)
+        if can_split:
+            prepared = client.prepare_card(*args)
+            return lambda: client.run_card(prepared)
+        try:  # 나눠 부를 수 없는 클라이언트: 여기(주 스레드)서 읽는다
+            reply = client.read_card(*args)
         except CardError as e:
-            st.failed[pno] = str(e)
-            st.save(spath)
-            continue
+            def fail(e=e):
+                raise e
+            return fail
+        return lambda: reply
+
+    def finish(pno, reply, exc):  # 주 스레드: 결과 저장·상태
+        color_tags = tags_of.pop(pno, {})
+        if exc is not None:
+            if isinstance(exc, CardError):
+                st.failed[pno] = str(exc)
+                st.save(spath)
+                return
+            raise exc  # Paused·NotAvailable 등: 멈춘다
+        try:
+            regions = {**regions_from_json(reply.regions_json, kinds), **color_tags}
         except (KeyError, TypeError, ValueError) as e:
             st.failed[pno] = f"응답 오류: {e}"
             st.save(spath)
-            continue
+            return
         rec = {
             "page": pno, "engine": "claude-code", "model": reply.model, "batch": False, "regions": regions,
             "usage": reply.usage, "cost_usd": 0.0, "cost_equiv_usd": round(reply.cost_equiv_usd, 6),
@@ -633,6 +737,8 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
         st.equiv_usd += reply.cost_equiv_usd
         done.add(pno)
         st.save(spath)
+
+    _pipelined(todo, prepare, finish, extract_workers("claude-code"), cancel, before)
     return result("done")
 
 
@@ -777,28 +883,47 @@ class RecheckResult:
 
 def _read_regions_once(client, project, pno, src_doc, model, base, regions) -> tuple[dict, float, float]:
     """영역 일부만 한 번 읽는다. (영역 결과, API 비용, 요금제 환산). 이 카드만의 문제면 CardError."""
+    return _prepare_read(client, project, pno, src_doc, model, base, regions)()
+
+
+def _prepare_read(client, project, pno, src_doc, model, base, regions):
+    """영역 일부를 읽을 요청을 만든다 (PDF를 다루므로 주 스레드에서). 돌려준 함수는 다른 스레드에서 불러도 되고,
+    (영역 결과, API 비용, 요금제 환산)을 돌려준다. 이 카드만의 문제면 CardError."""
     from app.extract_cc import CardError
 
     kinds = {r.name: r.kind for r in project.template.regions}
     if getattr(client, "engine", "api") == "claude-code":
-        reply = client.read_card(project, pno, src_doc, model, base, output_schema(regions), regions)
-        try:
-            return regions_from_json(reply.regions_json, kinds), 0.0, reply.cost_equiv_usd
-        except (KeyError, TypeError, ValueError) as e:
-            raise CardError(f"응답 오류: {e}")
+        args = (project, pno, src_doc, model, base, output_schema(regions), regions)
+        if hasattr(client, "prepare_card") and hasattr(client, "run_card"):
+            prepared = client.prepare_card(*args)
+            call = lambda: client.run_card(prepared)  # noqa: E731
+        else:
+            reply0 = client.read_card(*args)  # 나눠 부를 수 없는 클라이언트: 여기서 읽는다
+            call = lambda: reply0  # noqa: E731
+
+        def run_cc():
+            reply = call()
+            try:
+                return regions_from_json(reply.regions_json, kinds), 0.0, reply.cost_equiv_usd
+            except (KeyError, TypeError, ValueError) as e:
+                raise CardError(f"응답 오류: {e}")
+        return run_cc
     params = build_params(project, pno, src_doc, model, regions)
-    try:
-        msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)
-    except Exception as e:  # noqa: BLE001
-        p = classify_error(e)
-        if p is None:
-            raise CardError(f"요청 오류: {getattr(e, 'message', e)}")
-        raise p
-    c = cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0.0
-    try:
-        return parse_response(msg, kinds), c, 0.0
-    except (ValueError, KeyError, StopIteration, json.JSONDecodeError) as e:
-        raise CardError(f"응답 오류: {e}")
+
+    def run_api():
+        try:
+            msg = send_message(client, params, model in SERVER_FALLBACK_MODELS)
+        except Exception as e:  # noqa: BLE001
+            p = classify_error(e)
+            if p is None:
+                raise CardError(f"요청 오류: {getattr(e, 'message', e)}")
+            raise p
+        c = cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0.0
+        try:
+            return parse_response(msg, kinds), c, 0.0
+        except (ValueError, KeyError, StopIteration, json.JSONDecodeError) as e:
+            raise CardError(f"응답 오류: {e}")
+    return run_api
 
 
 def run_recheck(project, pages: list[int], client, *, base: Path, check_model: str,
@@ -830,47 +955,62 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         return out
     by_name_all = {r.name: r for r in project.template.regions}
     src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
-    try:
-        for i, (pno, f, rec, names) in enumerate(todo):
-            by_name = {**by_name_all, **{r.name: r for r in project.template.regions_for(pno)}}
-            if cancel:
-                cancel.check()
-            if progress:
-                progress(ProgressEvent("recheck", i, len(todo), f"{pno}쪽 불확실한 {len(names)}칸 다시 읽는 중", pno))
-            regs = [by_name[n] for n in names if n in by_name]
-            try:
-                second, c, eq = _read_regions_once(client, project, pno, src_doc, check_model, base, regs)
-            except CardError as e:
-                rec["recheck"] = {"model": check_model, "error": str(e), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-                f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def before(i, item):
+        pno, _f, _rec, names = item
+        if progress:
+            progress(ProgressEvent("recheck", i, len(todo), f"{pno}쪽 불확실한 {len(names)}칸 다시 읽는 중", pno))
+
+    def prepare(item):  # 주 스레드: PDF 자르기
+        pno, _f, _rec, names = item
+        by_name = {**by_name_all, **{r.name: r for r in project.template.regions_for(pno)}}
+        regs = [by_name[n] for n in names if n in by_name]
+        try:
+            return _prepare_read(client, project, pno, src_doc, check_model, base, regs)
+        except CardError as e:
+            def fail(e=e):
+                raise e
+            return fail
+
+    def finish(item, got, exc):  # 주 스레드: 비교·저장
+        pno, f, rec, names = item
+        if isinstance(exc, CardError):
+            rec["recheck"] = {"model": check_model, "error": str(exc), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+            return
+        if exc is not None:
+            raise exc
+        second, c, eq = got
+        out.spent_usd += c
+        out.equiv_usd += eq
+        first_model = rec.get("model") or "1차"
+        for n in names:
+            if n not in second:
                 continue
-            out.spent_usd += c
-            out.equiv_usd += eq
-            first_model = rec.get("model") or "1차"
-            for n in names:
-                if n not in second:
-                    continue
-                a, b = rec["regions"][n], second[n]
-                out.checked_cells += 1
-                readings = [{"model": first_model, "source": a["source"]}, {"model": check_model, "source": b["source"]}]
-                if _norm(a["source"]) == _norm(b["source"]) and not b.get("uncertain"):
-                    rec["regions"][n] = {**a, "uncertain": False, "note": f"{check_model}로 다시 읽어 같음",
-                                         "readings": readings}
-                    out.agreed += 1
-                else:
-                    same = _norm(a["source"]) == _norm(b["source"])
-                    head = ("두 모델이 같게 읽었지만 다시 읽은 모델도 확실하지 않음" if same
-                            else "두 모델이 다르게 읽음")
-                    rec["regions"][n] = {"source": b["source"], "uncertain": True,
-                                         "note": f"{head} ({first_model}: {a['source']} / "
-                                                 f"{check_model}: {b['source']}). {b.get('note', '')}".strip(),
-                                         "readings": readings}
-                    out.disagreed += 1
-            rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),
-                              "cost_equiv_usd": round(eq, 6), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-            tmp = f.with_suffix(".tmp")
-            tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(f)
+            a, b = rec["regions"][n], second[n]
+            out.checked_cells += 1
+            readings = [{"model": first_model, "source": a["source"]}, {"model": check_model, "source": b["source"]}]
+            if _norm(a["source"]) == _norm(b["source"]) and not b.get("uncertain"):
+                rec["regions"][n] = {**a, "uncertain": False, "note": f"{check_model}로 다시 읽어 같음",
+                                     "readings": readings}
+                out.agreed += 1
+            else:
+                same = _norm(a["source"]) == _norm(b["source"])
+                head = ("두 모델이 같게 읽었지만 다시 읽은 모델도 확실하지 않음" if same
+                        else "두 모델이 다르게 읽음")
+                rec["regions"][n] = {"source": b["source"], "uncertain": True,
+                                     "note": f"{head} ({first_model}: {a['source']} / "
+                                             f"{check_model}: {b['source']}). {b.get('note', '')}".strip(),
+                                     "readings": readings}
+                out.disagreed += 1
+        rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),
+                          "cost_equiv_usd": round(eq, 6), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
+
+    try:
+        _pipelined(todo, prepare, finish, extract_workers(getattr(client, "engine", "api")), cancel, before)
         return out
     except Paused as p:
         out.state, out.reason, out.retry_after = "paused", p.reason, _iso_after(p.retry_after_s)

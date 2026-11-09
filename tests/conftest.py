@@ -13,6 +13,7 @@ def _no_installed_font_pack(monkeypatch, tmp_path_factory):
 def _single_process(monkeypatch):
     """⑦·⑧ 동시 처리는 그것을 보는 테스트만 켠다 (프로세스를 띄우면 느리다)."""
     monkeypatch.setenv("CARDTRANSLATER_WORKERS", "1")
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "1")  # ① 동시 요청은 그것을 보는 테스트만 (요청 순서를 정해 두려고)
 
 
 @pytest.fixture(autouse=True)

@@ -1685,7 +1685,7 @@ def font_plans(project_dir: Path | str, group: str | None = None, files: list | 
     info = workspace.load_project_info(project_dir)
     dirs = [fd for fd in scoped_file_dirs(info, group, files) if (fd / "cleared" / "cleared.pdf").exists()]
     client = None
-    need = refresh or any(not font_plan.load(fd).get("recommended") for fd in dirs)
+    need = refresh or any(font_plan.needs_recommend(fd) for fd in dirs)  # 다시 추천할 때도 Claude에게 (모양 값만으로 하지 않게)
     if need:
         eng = get_settings().engine
         try:

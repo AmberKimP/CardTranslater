@@ -402,7 +402,8 @@ def test_font_dialog_ref_rows_saved_for_all_cards(qapp):
     assert dlg.choices()[0]["slots"] == {"본문": {"ref": [SANS, GAEGU], "page": 1}}
     c0.setCurrentIndex(0)
     c1.setCurrentIndex(0)
-    assert dlg.choices()[0]["slots"] == {"본문": {}}  # 모두 영역 글꼴이면 저장할 것 없음
+    # 모두 영역 글꼴도 남긴다 (사람이 고른 것: 다음에 문단 추천으로 다시 채우지 않게)
+    assert dlg.choices()[0]["slots"] == {"본문": {"ref": [None, None], "page": 1}}
 
 
 def test_ref_fonts_saved_and_used_by_compose(tmp_path, monkeypatch):
@@ -445,3 +446,162 @@ def test_paragraphs_follow_card_text_structure():
     assert paragraphs("첫 줄\n\n다음") == ["첫 줄", "다음"] and paragraph_spans("  ") == []
     # 한 줄 안의 여러 문장은 한 문단 (설명 글이 두 문장이어도 하나)
     assert paragraphs("알려 주세요. 보수는 교회에서 지급 됩니다!") == ["알려 주세요. 보수는 교회에서 지급 됩니다!"]
+
+
+# ---------------------------------------------------------------- 문단마다 글꼴 추천
+def test_paragraph_rects_follow_source_lines_and_split_shared_line():
+    from app.font_plan import paragraph_rects
+
+    lines = [{"bbox_pt": [10, 10, 110, 16]}, {"bbox_pt": [10, 20, 60, 26]}, {"bbox_pt": [10, 30, 110, 35]}]
+    src = "キャラクターカードが裏のプレイヤーが過半数いたときエ\nルフの森が30燃える。\n<c1>エコでエゴは満たせまへん。 —— 王様</c1>"
+    rects = paragraph_rects(src, lines)
+    assert len(rects) == 3
+    assert rects[0] == [9, 9, 111, 27]  # 두 줄에 걸친 첫 문단
+    assert rects[1][1] == 29 and rects[1][2] < 110  # 셋째 줄 앞쪽 (인용문)
+    assert rects[2] == [9, 29, 111, 36]  # ‘—— 王様’는 짧아 줄 전체로 잰다
+    assert paragraph_rects(src, lines[:2]) is None  # 줄 수가 다르면 문단 위치를 모른다
+
+
+def test_slot_of_matches_slot_fonts():
+    from app.font_plan import slot_fonts, slot_of
+
+    for r in (1, 2, 3, 4):
+        ref = [f"f{k}" for k in range(r)]
+        for n in (1, 2, 3, 5):
+            assert {i: f"f{slot_of(i, n, r)}" for i in range(n)} == slot_fonts({"ref": ref}, n)
+
+
+def test_same_style_uses_shape_distance():
+    from app.font_plan import same_style
+
+    body = {"stroke": 0.12, "contrast": 0.24, "density": 0.31}
+    assert same_style(body, {"stroke": 0.118, "contrast": 0.27, "density": 0.36})  # 거의 같음
+    assert not same_style(body, {"stroke": 0.05, "contrast": 0.33, "density": 0.20})  # 가는 글씨 (인용문)
+    assert same_style(body, None)  # 잴 수 없으면 다르다고 하지 않는다
+
+
+def _para_feats(monkeypatch, quote):
+    from app import font_plan
+
+    body = {"stroke": 0.12, "contrast": 0.24, "density": 0.31, "height_px": 50, "height_pt": 6.0}
+    feats = {0: [body], 1: [quote], 2: [quote]}
+    monkeypatch.setattr(font_plan, "_paragraph_samples", lambda *a, **k: {
+        "r": 3, "feats": feats, "crop": {k: (1, [5, 5, 100, 20]) for k in feats}, "sample": {}})
+
+
+def _fake_pick(monkeypatch, para_file):
+    """Claude 대신: 영역은 SANS, 문단은 para_file을 1순위로."""
+    def pick(client, model, regions, work_dir):
+        pick.asked = [r["name"] for r in regions]
+        return {r["name"]: [{"file": para_file if "paragraph" in r["name"] else SANS, "reason": ""}] for r in regions}
+
+    pick.asked = []
+    monkeypatch.setattr("app.font_match.ask_claude_pick", pick)
+    return pick
+
+
+def test_recommend_paragraphs_different_lettering_gets_own_font(tmp_path, monkeypatch):
+    from tests.test_fonts import FakeCC
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: {1: {"이름": "가.\n나.\n다."}})
+    _para_feats(monkeypatch, {"stroke": 0.05, "contrast": 0.33, "density": 0.20, "height_px": 38, "height_pt": 4.5})
+    pick = _fake_pick(monkeypatch, SERIF)
+    slots: dict = {}
+    rec, _note = font_plan.recommend(fd, FakeCC(), slots_out=slots)
+    assert rec["이름"][0]["file"] == SANS and pick.asked == ["이름", "이름 - paragraph 2", "이름 - paragraph 3"]
+    assert slots["이름"]["ref"] == [None, SERIF, SERIF]
+    assert slots["이름"]["recommended"]["1"][0]["file"] == SERIF
+
+
+def test_recommend_paragraphs_same_lettering_or_same_pick_stay_region_font(tmp_path, monkeypatch):
+    from tests.test_fonts import FakeCC
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: {1: {"이름": "가.\n나.\n다."}})
+    # 거의 같은 글씨: Claude에 묻지도 않고 영역 글꼴
+    _para_feats(monkeypatch, {"stroke": 0.118, "contrast": 0.27, "density": 0.35, "height_px": 50, "height_pt": 6})
+    pick = _fake_pick(monkeypatch, SERIF)
+    slots: dict = {}
+    font_plan.recommend(fd, FakeCC(), slots_out=slots)
+    assert slots["이름"]["ref"] == [None, None, None] and pick.asked == ["이름"]
+    # 모양 값은 달라도 Claude가 같은 글꼴을 1순위로 고르면 영역 글꼴
+    _para_feats(monkeypatch, {"stroke": 0.05, "contrast": 0.33, "density": 0.20, "height_px": 38, "height_pt": 4.5})
+    pick = _fake_pick(monkeypatch, SANS)
+    slots = {}
+    font_plan.recommend(fd, FakeCC(), slots_out=slots)
+    assert len(pick.asked) == 3 and slots["이름"]["ref"] == [None, None, None]
+
+
+def test_plan_uses_paragraph_recommendation_until_user_saves(tmp_path, monkeypatch):
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: {1: {"이름": "가.\n나."}, 2: {"이름": "하나"}})
+
+    def fake(fd_, client=None, model="", work_dir=None, cancel=None, say=None, slots_out=None):
+        slots_out["이름"] = {"ref": [None, GAEGU], "recommended": {"1": [{"file": GAEGU, "reason": "", "by": "claude"}]}}
+        return {"이름": [{"file": SANS, "reason": "", "by": "claude"}]}, ""
+
+    monkeypatch.setattr("app.font_plan.recommend", fake)
+    reg = service.font_plans(info.dir)[0]["regions"][0]
+    assert reg["slots"] == {"ref": [None, GAEGU], "page": 1} and reg["slot_default"] == [None, GAEGU]
+    assert reg["slot_recommended"][1][0]["file"] == GAEGU and reg["slot_recommended"][1][0]["label"]
+    service.save_font_choices(fd, {"이름": SANS}, slots={"이름": {"ref": [None, None], "page": 1}})
+    reg = service.font_plans(info.dir)[0]["regions"][0]
+    assert reg["slots"] == {"ref": [None, None], "page": 1}  # 사람이 모두 영역 글꼴로 고른 것은 그대로
+
+
+def test_old_recommendation_is_redone_once_for_paragraph_regions(tmp_path, monkeypatch):
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: {1: {"이름": "가.\n나."}})
+    service.font_plans(info.dir)
+    data = font_plan.load(fd)
+    data.pop("recommended_slots")  # 문단 추천이 생기기 전에 만든 추천
+    (fd / font_plan.FILE_NAME).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    calls = []
+    real = font_plan.recommend
+    monkeypatch.setattr("app.font_plan.recommend", lambda *a, **k: calls.append(1) or real(*a, **k))
+    service.font_plans(info.dir)
+    service.font_plans(info.dir)
+    assert calls == [1]
+
+
+def test_font_dialog_paragraph_recommendation_rows(qapp):
+    from app.qt.fonts_dialog import ROLE_KIND, SAME, FontPlanDialog
+
+    plan = _sent_plan()
+    plan[0]["regions"][0].update(
+        ref_sentences=2, slot_page=1, slots={"ref": [None, SERIF]}, slot_default=[None, SERIF],
+        slot_recommended={1: [{"file": SERIF, "label": "본명조", "reason": "가는 글씨", "by": "claude"}]})
+    dlg = FontPlanDialog(plan)
+    top = dlg.tree.topLevelItem(0)
+    rows = [top.child(i) for i in range(top.childCount()) if top.child(i).data(0, ROLE_KIND)[0] == "slot"]
+    assert rows[0].text(0) == "1번째 문단 (첫 문단)" and "글씨 다름" in rows[1].text(0)
+    c0, c1 = (dlg.tree.itemWidget(r, 1) for r in rows)
+    assert c0.currentData() == SAME and c1.currentData() == SERIF and c1.currentText().startswith("★ 본명조")
+    assert c1.itemData(2) == SANS  # 그 아래 영역 추천
+    from PySide6.QtCore import Qt
+
+    assert rows[1].background(0).style() == Qt.BrushStyle.NoBrush  # 추천 그대로면 바꾼 표시 없음
+    c1.setCurrentIndex(c1.findData(SAME))
+    assert rows[1].background(0).style() != Qt.BrushStyle.NoBrush
+    dlg._all_recommended()
+    assert c1.currentData() == SERIF and dlg.choices()[0]["slots"]["본문"]["ref"] == [None, SERIF]
+
+
+def test_font_plans_asks_claude_when_recommendation_is_redone(tmp_path, monkeypatch):
+    """추천이 있어도 다시 만들어야 하면(지우기 결과가 바뀜 등) Claude 클라이언트를 만들어 넘긴다."""
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    monkeypatch.setattr("app.font_plan.card_texts", lambda _fd: {1: {"이름": "가.\n나."}})
+    service.font_plans(info.dir)
+    data = font_plan.load(fd)
+    data["recommended_sig"] = "old"
+    (fd / font_plan.FILE_NAME).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(service, "engine_status", lambda: {"claude-code": True, "api": True, "message": ""})
+    sentinel = object()
+    monkeypatch.setattr("app.extract_cc.ClaudeCodeClient", lambda *a, **k: sentinel)
+    monkeypatch.setattr("app.extract.make_client", lambda *a, **k: sentinel)
+    got = []
+    monkeypatch.setattr("app.font_plan.recommend",
+                        lambda fd_, client=None, *a, **k: got.append(client) or ({"이름": []}, ""))
+    service.font_plans(info.dir)
+    assert got == [sentinel]

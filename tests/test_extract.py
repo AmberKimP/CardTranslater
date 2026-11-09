@@ -387,3 +387,109 @@ def test_excel_shows_how_each_source_was_verified(tmp_path):
 
     res = import_translation(load_project(proj), x)
     assert not res.blocking and res.rows == 4
+
+
+# ---------------------------------------------------------------- ① 동시 요청
+class SlowClient(FakeClient):
+    """요청마다 delay초 걸리고, 동시에 몇 개가 진행 중이었는지 센다."""
+
+    def __init__(self, delay=0.15, fail_pages=None):
+        super().__init__()
+        import threading
+
+        self.lock, self.now, self.peak, self.delay = threading.Lock(), 0, 0, delay
+        self.fail_pages = fail_pages or {}
+        outer, base_create = self, self.beta.messages.create
+
+        def create(**kw):
+            import time as _t
+
+            page = int(kw["messages"][0]["content"][0]["text"].split("page ")[1].split(".")[0])
+            with outer.lock:
+                outer.now += 1
+                outer.peak = max(outer.peak, outer.now)
+            try:
+                if page in outer.fail_pages:  # 실패는 바로 (함께 보낸 다른 카드는 아직 진행 중)
+                    outer.calls.append(kw)
+                    raise outer.fail_pages[page]
+                _t.sleep(outer.delay)
+                return base_create(**kw)
+            finally:
+                with outer.lock:
+                    outer.now -= 1
+
+        self.beta = NS(messages=NS(create=create))
+        self.messages = NS(batches=self.messages.batches, create=create)
+
+
+def test_api_extract_sends_requests_concurrently(tmp_path, monkeypatch):
+    import time as _t
+
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "4")
+    proj = make_project(tmp_path, pages=8)
+    c = SlowClient(delay=0.3)
+    t0 = _t.perf_counter()
+    r = service.extract(proj, client=c, model="opus", engine="api", mode="opus")
+    took = _t.perf_counter() - t0
+    assert r.state == "done" and r.done_pages == list(range(1, 9)) and not r.failed
+    assert c.peak == 4 and len(c.calls) == 8
+    assert took < 8 * 0.3 * 0.6  # 차례로 하면 2.4초 이상
+    assert r.spent_usd == pytest.approx(8 * (2000 * 4 + 600 * 20) / 1e6)
+    ex = load_extracted(proj)
+    assert sorted(ex) == list(range(1, 9)) and all(ex[p]["이름"]["source"] == "HELLO" for p in ex)
+
+
+def test_concurrent_rate_limit_keeps_finished_cards_and_resumes(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "3")
+    proj = make_project(tmp_path, pages=8)
+    rl = anthropic.RateLimitError("rate limited", response=_resp(429, {"retry-after": "30"}), body=None)
+    c = SlowClient(delay=0.5, fail_pages={2: rl})
+    r = service.extract(proj, client=c, model="opus", engine="api", mode="opus")
+    assert r.state == "paused" and "429" in r.reason
+    # 함께 보낸 1·3쪽은 받아 저장하고, 멈춘 뒤로는 새로 보내지 않는다
+    assert r.done_pages == [1, 3] and r.remaining_pages == [2, 4, 5, 6, 7, 8] and len(c.calls) == 3
+    r = service.extract(proj, client=SlowClient(delay=0.01), model="opus", engine="api", mode="opus")
+    assert r.state == "done" and r.done_pages == list(range(1, 9))
+
+
+def test_concurrent_cancel_stops_without_waiting(tmp_path, monkeypatch):
+    import time as _t
+
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "4")
+    proj = make_project(tmp_path, pages=8)
+    tok = service.CancelToken()
+
+    def progress(ev):
+        if ev.done >= 2:
+            tok.cancel()
+
+    t0 = _t.perf_counter()
+    with pytest.raises(service.Cancelled):
+        service.extract(proj, client=SlowClient(delay=1.0), model="opus", engine="api", mode="opus",
+                        progress=progress, cancel=tok)
+    assert _t.perf_counter() - t0 < 0.9  # 보낸 요청(1초)을 기다리지 않는다
+
+
+def test_claude_code_engine_reads_two_cards_at_once(tmp_path, monkeypatch):
+    import threading
+    import time as _t
+
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "")  # 기본값 (Claude Code는 2)
+    proj = make_project(tmp_path, pages=5)
+    lock, state = threading.Lock(), {"now": 0, "peak": 0, "main": 0}
+    main = threading.get_ident()
+
+    def runner(args, cwd, timeout, input_text=None):
+        assert (Path(cwd) / "region01.png").exists()  # 영역 이미지는 보내기 전에(주 스레드에서) 만든다
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+            state["main"] += threading.get_ident() == main
+        _t.sleep(0.15)
+        with lock:
+            state["now"] -= 1
+        return 0, _cc_ok(), ""
+
+    r = service.extract(proj, client=ClaudeCodeClient(exe="claude", runner=runner), mode="opus")
+    assert r.state == "done" and r.done_pages == [1, 2, 3, 4, 5]
+    assert state["peak"] == 2 and state["main"] == 0

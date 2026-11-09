@@ -89,9 +89,12 @@ def shape_features(mask: np.ndarray) -> dict | None:
             "height_px": h}
 
 
-def erased_text_mask(src_page, cleared_page, rect_pt, dpi: int = 600, diff_min: int = 0) -> tuple[np.ndarray, float]:
+def erased_text_mask(src_page, cleared_page, rect_pt, dpi: int = 600, diff_min: int = 0,
+                     relative: bool = False) -> tuple[np.ndarray, float]:
     """원본과 지운 카드를 같은 영역으로 그려 비교해, 지우기로 사라진 픽셀(= 원문 글자)만 True.
-    아이콘·그림·테두리는 지우지 않았으므로 빠진다. (마스크, 1px당 pt)"""
+    아이콘·그림·테두리는 지우지 않았으므로 빠진다. (마스크, 1px당 pt)
+    relative: 연한 글자(회색 인용문 등)는 바탕과 차이가 작아 획이 가늘게 잡힌다. 글자 진하기에 맞춰 문턱을 낮춘다
+    (진한 글자는 그대로 ERASE_DIFF_MIN)."""
     import pymupdf
 
     r = pymupdf.Rect(rect_pt) & src_page.rect
@@ -103,17 +106,21 @@ def erased_text_mask(src_page, cleared_page, rect_pt, dpi: int = 600, diff_min: 
     diff_min = diff_min or ERASE_DIFF_MIN
     a, b = gray(src_page), gray(cleared_page)
     h, w = min(a.shape[0], b.shape[0]), min(a.shape[1], b.shape[1])
-    return np.abs(a[:h, :w] - b[:h, :w]) >= diff_min, 72.0 / dpi
+    d = np.abs(a[:h, :w] - b[:h, :w])
+    if relative and d.size:
+        top = float(np.percentile(d, 99.5))
+        diff_min = int(max(16, min(diff_min, top * ERASE_DIFF_MIN / 200.0)))  # 진한 글자(차이 200쯤)는 48 그대로
+    return d >= diff_min, 72.0 / dpi
 
 
-def source_features(src_page, rect_pt, cleared_page=None) -> dict | None:
+def source_features(src_page, rect_pt, cleared_page=None, relative: bool = False) -> dict | None:
     """원본 PDF 쪽의 영역에서 원문 글자 모양을 잰다. cleared_page(지운 카드)가 있으면 지워진 글자만 잰다.
-    글자 높이가 TARGET_H_PX쯤 되는 해상도로 다시 그려 잰다."""
+    글자 높이가 TARGET_H_PX쯤 되는 해상도로 다시 그려 잰다. relative: erased_text_mask 참고 (연한 글자)."""
     from app.typeset_ink import ink_mask
 
     def mask_at(dpi):
         if cleared_page is not None:
-            return erased_text_mask(src_page, cleared_page, rect_pt, dpi)
+            return erased_text_mask(src_page, cleared_page, rect_pt, dpi, relative=relative)
         mk, _r, sc = ink_mask(src_page, rect_pt, polarity="dark", dpi=dpi)
         return mk, sc
 
@@ -318,6 +325,9 @@ a gothic printed on a scanned card is still a gothic.
 Step 2: rank the candidates. Same category first, then the closest weight, then roundness and mood.
 Only pick a handwriting or decorative font when the original itself is handwriting or decorative.
 Readability matters: do not prefer a thin or highly decorative font for small body text.
+Some regions are paragraphs of one text box, named "<box> - paragraph N". When a paragraph's lettering is the same
+typeface and about the same weight as another paragraph of that box, give it exactly the same ranking. Rank differently
+only when the lettering clearly differs (e.g. light vs bold, mincho vs gothic, handwriting vs print).
 Return the best 3 candidate numbers per region, best first, each with a short reason in Korean (under 30 chars)."""
 
 

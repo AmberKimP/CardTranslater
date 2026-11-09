@@ -8,6 +8,8 @@
      "aligns": {영역: "left"|"center"|"right"}, # 정렬 (없으면 영역 설정대로)
      "recommended": {영역: [{"file", "reason", "by"}]},  # 추천 (by: claude | shape), 1번째가 기본값
      "recommended_sig": "...",                 # 추천을 만든 지우기 결과 (바뀌면 다시 추천)
+     "recommended_slots": {영역: {"ref": [None|파일, ...], "recommended": {"문단 번호": [추천...]}}},
+                                               # ‘문단마다’ 영역: 기준 카드 문단마다 추천 (None = 첫 문단과 같은 글씨)
      "updated": "YYYY-MM-DD HH:MM"}
 글꼴 파일은 앱 기준 상대 경로(fonts/...) 또는 PC의 절대 경로. 한글 넣기(typeset_compose)가 읽어 쓴다.
 화면 코드 없음.
@@ -32,6 +34,9 @@ BASELINE_FONTS = ("fonts/notosanskr/NotoSansKR-Regular.ttf", "fonts/notosanskr/N
                   "fonts/notosanskr/NotoSansKR-Bold.ttf", "fonts/gothica1/GothicA1-Medium.ttf",
                   "fonts/notoserifkr/NotoSerifKR-Regular.ttf", "fonts/notoserifkr/NotoSerifKR-Bold.ttf")
 ALIGNS = ("left", "center", "right")
+SAME_STYLE_DIST = 1.5  # 문단끼리 모양 값 거리가 이보다 작으면 같은 글씨로 본다 (font_match.FEATURES 척도)
+CROP_GLYPH_PX = 40  # 문단 원문 그림을 Claude에 보낼 때 글자 높이
+MIN_PART_CHARS = 6  # 한 줄을 다른 문단과 나눠 쓰는 문단이 이보다 짧으면 그 줄 전체로 잰다 (짧으면 값이 흔들린다)
 _TAG_RE = re.compile(r"</?[a-z0-9]+>|\[\[[^\]]*\]\]")
 
 
@@ -75,7 +80,7 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
         clean_slots = {}
         for name, sl in slots.items():
             ref = [f or None for f in (sl.get("ref") or [])]
-            if any(ref):
+            if ref:  # 모두 None(= 모두 영역 글꼴)도 남긴다: 사람이 고른 것이라 추천으로 다시 채우지 않게
                 clean_slots[name] = {"ref": ref, **({"page": int(sl["page"])} if sl.get("page") else {})}
         data["sentence_slots"] = clean_slots
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
@@ -360,10 +365,133 @@ def _signature(file_dir: Path) -> str:
 
 
 # ---------------------------------------------------------------- 추천
+def _visible_len(s: str) -> int:
+    """태그를 빼고 아이콘([[…]])은 한 글자로 센 길이 (줄 안에서 문단 위치를 어림할 때)."""
+    return len(re.sub(r"\[\[[^\]]*\]\]", "□", re.sub(r"</?[a-z0-9]+>", "", s or "")))
+
+
+def paragraph_rects(source: str, lines: list[dict]) -> list[list[float]] | None:
+    """원문(source)의 문단마다 원본 쪽 위 사각형 [x0, y0, x1, y1] (pt). 원문 줄과 지우기가 찾은 줄(lines)의 수가
+    같을 때만 (아니면 None). 한 줄을 다른 문단과 나눠 쓰는 문단은 글자 수 비율로 그 줄의 가로 구간을 어림하고,
+    그 조각이 MIN_PART_CHARS보다 짧으면 줄 전체를 쓴다."""
+    from app.typeset_layout import paragraph_spans
+
+    source = source or ""
+    rows, pos = [], 0
+    for ln in source.split("\n"):
+        if ln.strip():
+            rows.append((pos, pos + len(ln)))
+        pos += len(ln) + 1
+    if not rows or len(rows) != len(lines):
+        return None
+    out = []
+    for a, b in paragraph_spans(source):
+        parts = []
+        for (la, lb), ln in zip(rows, lines):
+            oa, ob = max(a, la), min(b, lb)
+            if oa >= ob:
+                continue
+            bx = [float(v) for v in ln["bbox_pt"]]
+            total, part = _visible_len(source[la:lb].strip()), _visible_len(source[oa:ob].strip())
+            if total and MIN_PART_CHARS <= part < total:
+                before = _visible_len(source[la:oa].lstrip())
+                w = bx[2] - bx[0]
+                x0 = bx[0] + w * before / total
+                parts.append([x0, bx[1], min(bx[2], x0 + w * part / total), bx[3]])
+            else:
+                parts.append(bx)
+        if not parts:
+            return None
+        out.append([min(p[0] for p in parts) - 1, min(p[1] for p in parts) - 1,
+                    max(p[2] for p in parts) + 1, max(p[3] for p in parts) + 1])
+    return out
+
+
+def slot_of(i: int, n: int, r: int) -> int:
+    """문단이 n개인 카드의 i번째 문단이 쓰는 기준 카드(문단 r개) 문단 번호 (slot_fonts와 같은 규칙)."""
+    if i == 0:
+        return 0
+    if i == n - 1:
+        return r - 1
+    return i if i <= r - 2 else 0
+
+
+def _median_features(feats: list[dict]) -> dict | None:
+    import numpy as np
+
+    from app.font_match import FEATURES
+
+    feats = [f for f in feats if f]
+    if not feats:
+        return None
+    return {k: float(np.median([f[k] for f in feats])) for k, _s, _l in FEATURES}
+
+
+def same_style(a: dict | None, b: dict | None) -> bool:
+    """두 글씨 모양 값이 거의 같은가 (같으면 같은 글꼴을 쓴다)."""
+    from app.font_match import _distance
+
+    if not a or not b:
+        return True  # 잴 수 없으면 다르다고 하지 않는다
+    return _distance(_median_features([a]), _median_features([b]))[0] < SAME_STYLE_DIST
+
+
+def _paragraph_samples(metas: list[dict], name: str, cards: dict, src, cl, cancel=None) -> dict | None:
+    """‘문단마다’ 영역: 기준 카드 문단(r개)마다 원문 글씨 모양을 여러 카드에서 잰다.
+    {"r", "feats": {k: [모양 값]}, "crop": {k: (쪽 번호, 사각형)}, "sample": {k: 한글}}. 잴 수 없으면 None."""
+    from app import font_match
+    from app.typeset_layout import paragraphs
+
+    def ko_of(page):
+        return _ko_text((cards.get(page) or {}).get(name)) or ""
+
+    r = max((len(paragraphs(ko_of(m["_page"]))) for m in metas), default=0)
+    if r < 2:
+        return None
+    feats: dict[int, list] = {k: [] for k in range(r)}
+    crop: dict[int, tuple] = {}
+    sample: dict[int, str] = {}
+    used = 0
+    for m in metas:
+        if all(len(v) >= SAMPLE_PAGES for v in feats.values()) or used >= SAMPLE_PAGES * 3:
+            break
+        reg = next((x for x in m["regions"] if x["name"] == name), None)
+        entry = (cards.get(m["_page"]) or {}).get(name)
+        source = entry.get("source") if isinstance(entry, dict) else None
+        if reg is None or not isinstance(source, str):
+            continue
+        rects = paragraph_rects(source, ((reg.get("text_layout") or {}).get("lines")) or [])
+        if not rects:
+            continue
+        if cancel is not None:
+            cancel.check()
+        used += 1
+        n = len(rects)
+        kos = paragraphs(ko_of(m["_page"]))
+        for i, rect in enumerate(rects):
+            k = slot_of(i, n, r)
+            if len(feats[k]) >= SAMPLE_PAGES:
+                continue
+            f = font_match.source_features(src[m["_page"] - 1], rect, cl[m["output_page_index"]], relative=True)
+            if not f:
+                continue
+            feats[k].append(f)
+            if k not in crop:
+                crop[k] = (m["_page"], rect)
+                sample[k] = kos[i] if len(kos) == n else ""
+    if not feats[0]:
+        return None
+    return {"r": r, "feats": feats, "crop": crop, "sample": sample}
+
+
 def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", work_dir: Path | None = None,
-              cancel=None, say=None) -> tuple[dict, str]:
+              cancel=None, say=None, slots_out: dict | None = None) -> tuple[dict, str]:
     """영역마다 추천 글꼴 [{"file", "reason", "by"}] (1번째가 원본과 가장 비슷한 것)와 안내 문구.
-    client가 있으면 모양 값으로 추린 후보를 Claude에게 보여 고르게 하고, 없거나 실패하면 모양 값 순서."""
+    client가 있으면 모양 값으로 추린 후보를 Claude에게 보여 고르게 하고, 없거나 실패하면 모양 값 순서.
+
+    ‘문단마다’ 영역은 기준 카드의 문단마다 원문 글씨를 따로 잰다. 영역 추천은 첫 문단(본문) 글씨로 하고,
+    다른 문단은 글씨가 거의 같으면(모양 값이 가깝거나 1순위 추천이 같으면) 영역 글꼴, 다르면 그 문단의 추천을
+    slots_out[영역] = {"ref": [None|파일 …], "recommended": {"문단 번호": [추천 …]}}에 넣는다."""
     import pymupdf
 
     from app import font_match
@@ -375,6 +503,8 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
     if not metas:
         return {}, "지운 결과가 없어 추천하지 못했습니다"
     texts = card_texts(fd)
+    raw_cards = _raw_cards(fd)
+    modes = region_font_modes(fd)
     project = load_project(fd)
     src = pymupdf.open(project.source_pdf)
     cl = pymupdf.open(fd / "cleared" / "cleared.pdf")
@@ -386,13 +516,64 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
         for r in m["regions"]:
             if r["name"] not in names:
                 names.append(r["name"])
+    kinds = {r["name"]: r.get("kind", "text") for m in metas for r in m["regions"]}
     shape: dict[str, list[dict]] = {}
     ask: list[dict] = []
+    para_keys: dict[str, list] = {}  # 영역 -> [(Claude에 보낸 이름, 문단 번호)]
+    para_r: dict[str, int] = {}
+
+    def add_ask(key, safe, page_no, rect, pool, sample, glyph_pt=None):
+        crop = work / f"{safe}_original.png"
+        pg = src[page_no - 1]
+        # 작은 글자(문단 한 줄 등)는 크게 그려 보낸다: 글자 높이가 CROP_GLYPH_PX쯤 되게 (굵기를 알아볼 수 있게)
+        dpi = 200 if not glyph_pt else int(min(900, max(200, 72 * CROP_GLYPH_PX / glyph_pt)))
+        pg.get_pixmap(dpi=dpi, clip=pymupdf.Rect(rect) & pg.rect, alpha=False).save(str(crop))
+        sheet = font_match.render_sample_sheet(pool, sample or font_match.KO_SAMPLE, work / f"{safe}_samples.png")
+        ask.append({"name": key, "crop_png": crop, "sheet_png": sheet, "candidates": pool})
+
+    def pool_of(ranked):
+        pool = ranked[:4]  # 모양 값 상위 + 대표 글꼴 (고딕 굵기별·명조): 비교할 기준이 늘 있게
+        for must in BASELINE_FONTS:
+            c = next((x for x in ranked if x["file"] == must), None)
+            if c and c not in pool and len(pool) < MAX_CANDIDATES:
+                pool.append(c)
+        return pool
+
     try:
         for ni, name in enumerate(names):
             if cancel is not None:
                 cancel.check()
             say(ni, len(names), f"원문 글자 모양 재는 중: {name}")
+            para = None
+            if modes.get(name) == "sentence" and kinds.get(name, "text") == "text":
+                para = _paragraph_samples(metas, name, raw_cards, src, cl, cancel)
+            if para:  # 문단마다: 영역 추천은 첫 문단 글씨로
+                first = _median_features(para["feats"][0])
+                pg0, rect0 = para["crop"][0]
+                sample0 = plain(para["sample"].get(0, "")) or plain(
+                    next((texts.get(m["_page"], {}).get(name, "") for m in metas
+                          if texts.get(m["_page"], {}).get(name)), ""))
+                ranked = font_match.rank_fonts(para["feats"][0], cands, sample0 or font_match.KO_SAMPLE)
+                shape[name] = ranked
+                para_r[name] = para["r"]
+                if client is not None and ranked:
+                    add_ask(name, f"r{ni + 1}", pg0, rect0, pool_of(ranked), sample0,
+                            para["feats"][0][0].get("height_pt"))
+                para_keys[name] = []
+                for k in range(1, para["r"]):
+                    fk = _median_features(para["feats"][k])
+                    if not fk or same_style(first, fk):
+                        continue  # 거의 같은 글씨: 영역 글꼴
+                    pk, rk = para["crop"][k]
+                    sk = plain(para["sample"].get(k, "")) or sample0
+                    ranked_k = font_match.rank_fonts(para["feats"][k], cands, sk or font_match.KO_SAMPLE)
+                    key = f"{name} - paragraph {k + 1}"
+                    shape[key] = ranked_k
+                    para_keys[name].append((key, k))
+                    if client is not None and ranked_k:
+                        add_ask(key, f"r{ni + 1}p{k + 1}", pk, rk, pool_of(ranked_k), sk,
+                                para["feats"][k][0].get("height_pt"))
+                continue
             feats, crop_src, sample = [], None, ""
             for m in metas:
                 reg = next((r for r in m["regions"] if r["name"] == name), None)
@@ -411,18 +592,8 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
             ranked = font_match.rank_fonts(feats, cands, plain(sample) or font_match.KO_SAMPLE)
             shape[name] = ranked
             if client is not None and crop_src is not None and ranked:
-                pool = ranked[:4]  # 모양 값 상위 + 대표 글꼴 (고딕 굵기별·명조): 비교할 기준이 늘 있게
-                for must in BASELINE_FONTS:
-                    c = next((x for x in ranked if x["file"] == must), None)
-                    if c and c not in pool and len(pool) < MAX_CANDIDATES:
-                        pool.append(c)
                 m, reg = crop_src
-                safe = f"r{ni + 1}"
-                crop = work / f"{safe}_original.png"
-                src[m["_page"] - 1].get_pixmap(dpi=200, clip=pymupdf.Rect(reg["rect_pt"]) & src[m["_page"] - 1].rect,
-                                               alpha=False).save(str(crop))
-                sheet = font_match.render_sample_sheet(pool, sample or font_match.KO_SAMPLE, work / f"{safe}_samples.png")
-                ask.append({"name": name, "crop_png": crop, "sheet_png": sheet, "candidates": pool})
+                add_ask(name, f"r{ni + 1}", m["_page"], reg["rect_pt"], pool_of(ranked), sample)
     finally:
         src.close()
         cl.close()
@@ -439,19 +610,53 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
     elif client is None:
         note = "글자 모양 값으로만 추천했습니다 (Claude에 연결되어 있지 않음)"
     styles = {c["file"]: c.get("style", "") for c in cands}
-    out = {}
-    for name in names:
-        rec = order_by_category([{**p, "by": "claude"} for p in picked.get(name, [])], styles)
-        for c in shape.get(name, []):
+
+    def rec_for(key):
+        rec = order_by_category([{**p, "by": "claude"} for p in picked.get(key, [])], styles)
+        for c in shape.get(key, []):
             if len(rec) >= MAX_RECOMMENDED:
                 break
             if all(r["file"] != c["file"] for r in rec):
                 rec.append({"file": c["file"], "reason": c.get("reason", ""), "by": "shape"})
+        return rec
+
+    out = {}
+    for name in names:
+        rec = rec_for(name)
         if not rec:  # 원문을 잴 수 없었다: 기본 글꼴
             rec = [{"file": "fonts/notosanskr/NotoSansKR-Regular.ttf", "reason": "원문 모양을 재지 못해 기본 글꼴",
                     "by": "default"}]
         out[name] = rec
+        if name in para_r and slots_out is not None:
+            ref: list = [None] * para_r[name]
+            recs = {}
+            style0 = _style_words(rec[0].get("original_style"))
+            for key, k in para_keys.get(name, []):
+                rk = rec_for(key)
+                if not picked.get(key):  # Claude 없이 모양 값만: 다른 글꼴로 바꾸지 말고 본문 글꼴의 다른 굵기 중에서
+                    base = _family_base(next((c0.get("family") for c0 in cands if c0["file"] == rec[0]["file"]), None))
+                    fam = [c for c in shape.get(key, []) if base and _family_base(c.get("family")) == base]
+                    best = fam[0]["file"] if fam else rec[0]["file"]
+                    rk = [{"file": best, "reason": "본문 글꼴의 굵기만 다르게" if best != rec[0]["file"]
+                           else "본문과 같은 글꼴", "by": "shape"}] + [r for r in rk if r["file"] != best]
+                if not rk:
+                    continue
+                recs[str(k)] = rk
+                same = rk[0]["file"] == rec[0]["file"] or (style0 and _style_words(rk[0].get("original_style")) == style0)
+                if not same:  # 1순위가 같거나 Claude가 같은 글씨라고 보면 영역 글꼴
+                    ref[k] = rk[0]["file"]
+            slots_out[name] = {"ref": ref, "recommended": recs}
     return out, note
+
+
+def _family_base(family: str | None) -> str:
+    """글꼴 계열 이름에서 굵기 낱말을 뺀 것 (같은 글꼴의 굵기 차이만 보려고)."""
+    return re.sub(r"\s+(Thin|ExtraLight|Light|Regular|Medium|SemiBold|Bold|ExtraBold|Black)$", "", family or "").strip()
+
+
+def _style_words(s: str | None) -> str:
+    """Claude가 적은 원문 글씨 설명을 비교용으로 (대소문자·띄어쓰기·문장부호 무시)."""
+    return re.sub(r"[\W_]+", "", (s or "").lower())
 
 
 CATEGORY_WORDS = {"sans": ("고딕", "산세리프", "sans", "gothic", "돋움"), "serif": ("명조", "세리프", "serif", "mincho", "바탕")}
@@ -479,6 +684,16 @@ def order_by_category(picks: list[dict], styles: dict) -> list[dict]:
     return out
 
 
+def needs_recommend(file_dir: Path, data: dict | None = None) -> bool:
+    """추천을 (다시) 만들어야 하는가: 추천이 없거나, 지우기 결과가 바뀌었거나,
+    문단마다 추천이 생기기 전(1.8.0 이하)에 만든 추천인데 ‘문단마다’ 영역이 있을 때."""
+    fd = Path(file_dir)
+    data = load(fd) if data is None else data
+    if not data.get("recommended") or data.get("recommended_sig") != _signature(fd):
+        return True
+    return "recommended_slots" not in data and any(v == "sentence" for v in region_font_modes(fd).values())
+
+
 def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh: bool = False,
           cancel=None, say=None) -> dict:
     """창에 보여 줄 한 파일의 글꼴 계획.
@@ -489,9 +704,11 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
     data = load(fd)
     sig = _signature(fd)
     note = ""
-    if refresh or not data.get("recommended") or data.get("recommended_sig") != sig:
-        rec, note = recommend(fd, client, model, cancel=cancel, say=say)
+    if refresh or needs_recommend(fd, data):
+        slots_rec: dict = {}
+        rec, note = recommend(fd, client, model, cancel=cancel, say=say, slots_out=slots_rec)
         data["recommended"], data["recommended_sig"] = rec, sig
+        data["recommended_slots"] = slots_rec
         data["recommended_note"] = note
         p = fd / FILE_NAME
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -527,10 +744,17 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
             cards.append(card)
         # 기준 카드: 문장이 가장 많은 카드 (같으면 앞 카드). 그 카드의 모든 문장 자리를 정할 수 있게
         ref = max((c for c in cards if c["sentences"]), key=lambda c: len(c["sentences"]), default=None)
+        srec = (data.get("recommended_slots") or {}).get(name) or {}
+        slot_rec = {int(k): [{**r, "label": label_for(r["file"])} for r in v]
+                    for k, v in (srec.get("recommended") or {}).items()}
+        slot_default = list(srec.get("ref") or [])
+        saved = (data.get("sentence_slots") or {}).get(name)
+        if saved is None and any(slot_default) and ref:  # 사람이 아직 고르지 않았다: 문단 추천을 기본으로
+            saved = {"ref": slot_default, "page": ref["page"]}
         regions.append({"name": name, "kind": kind, "font_mode": mode, "recommended": rec, "selected": sel,
                         "size_scale": float((data.get("sizes") or {}).get(name) or 1.0),
                         "align": align_choices(data).get(name, ""), "cards": cards,
-                        "slots": (data.get("sentence_slots") or {}).get(name) or {},
+                        "slots": saved or {}, "slot_recommended": slot_rec, "slot_default": slot_default,
                         "ref_sentences": len(ref["sentences"]) if ref else 0,
                         "slot_page": ref["page"] if ref else None})
     used = [f for f in project_used_fonts(fd)]

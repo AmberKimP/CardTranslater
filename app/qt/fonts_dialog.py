@@ -211,7 +211,7 @@ class FontPlanDialog(QDialog):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["영역 / 카드 / 문단", "글꼴", "번역"])
-        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(0, 250)
         self.tree.setColumnWidth(1, 320)
         self.tree.header().setStretchLastSection(True)
         self.tree.setMinimumHeight(140)
@@ -297,7 +297,8 @@ class FontPlanDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         self.b_all_rec = QPushButton("모두 추천으로")
-        self.b_all_rec.setToolTip("모든 영역을 ★ 추천 글꼴로, 카드·문단은 ‘영역과 같음’으로 되돌립니다")
+        self.b_all_rec.setToolTip("모든 영역을 ★ 추천 글꼴로, 기준 카드 문단은 추천대로(글씨가 다른 문단만 그 문단 추천), "
+                                  "카드·문단은 ‘영역과 같음’으로 되돌립니다")
         self.b_all_rec.clicked.connect(self._all_recommended)
         bottom = QHBoxLayout()
         bottom.addWidget(self.b_all_rec)
@@ -321,10 +322,12 @@ class FontPlanDialog(QDialog):
         self.split.setSizes([300, 400])
 
     # ---- 목록
-    def _options(self, pi: int, name: str, level: str) -> list[tuple[str, str, str]]:
-        """콤보 항목 [(보이는 글, 파일, 설명)]. 구분선은 ("", "-", ""). level: region | card | sentence."""
+    def _options(self, pi: int, name: str, level: str, slot: int | None = None) -> list[tuple[str, str, str]]:
+        """콤보 항목 [(보이는 글, 파일, 설명)]. 구분선은 ("", "-", ""). level: region | card | sentence | slot.
+        slot(기준 카드 문단 번호)에 그 문단만의 추천이 있으면 그것을 ★로 먼저 (영역 추천은 그 아래)."""
         plan = self.plans[pi]
         reg = next(r for r in plan["regions"] if r["name"] == name)
+        own = list((reg.get("slot_recommended") or {}).get(slot) or []) if level == "slot" and slot is not None else []
         out: list[tuple[str, str, str]] = []
         if level == "card":
             out.append(("(영역과 같음)", SAME, "이 영역에서 고른 글꼴을 씁니다"))
@@ -333,9 +336,12 @@ class FontPlanDialog(QDialog):
         elif level == "slot":
             out.append(("(영역 글꼴대로)", SAME, "이 영역에서 고른 글꼴을 씁니다"))
         seen = set()
-        for i, r in enumerate(reg["recommended"]):
+        recs = own + [r for r in reg["recommended"] if all(o["file"] != r["file"] for o in own)]
+        for i, r in enumerate(recs):
             mark = "★ " if i == 0 else "    "
             by = {"claude": "추천", "shape": "모양 비슷", "default": "기본"}.get(r.get("by", ""), "")
+            if own and i < len(own):
+                by = f"이 문단 {by}"
             out.append((f"{mark}{r['label']}", r["file"], f"{by}: {r.get('reason', '')}"))
             seen.add(r["file"])
         picked = self._picked_fonts()  # 다른 영역·카드·문장에서 고른 글꼴도 고를 수 있게
@@ -377,7 +383,7 @@ class FontPlanDialog(QDialog):
     def _fill(self, combo: QComboBox, pi: int, name: str, level: str, selected: str | None):
         combo.blockSignals(True)
         combo.clear()
-        for text, file, tip in self._options(pi, name, level):
+        for text, file, tip in self._options(pi, name, level, combo.property("slot")):
             if file == "-":
                 combo.insertSeparator(combo.count())
                 continue
@@ -388,9 +394,11 @@ class FontPlanDialog(QDialog):
         combo.setProperty("prev", combo.currentData())
         combo.blockSignals(False)
 
-    def _combo(self, item: QTreeWidgetItem, pi: int, name: str, level: str, selected: str | None) -> QComboBox:
+    def _combo(self, item: QTreeWidgetItem, pi: int, name: str, level: str, selected: str | None,
+               slot: int | None = None) -> QComboBox:
         cb = QComboBox()
         cb.setProperty("meta", (pi, name, level))
+        cb.setProperty("slot", slot)
         self._fill(cb, pi, name, level, selected)
         cb.currentIndexChanged.connect(lambda _i, c=cb, it=item: self._changed(c, it))
         self.tree.setItemWidget(item, 1, cb)
@@ -408,9 +416,16 @@ class FontPlanDialog(QDialog):
         if level == "region":
             rec = self._reg(pi, name)["recommended"]
             changed = bool(rec) and cb.currentData() not in (rec[0]["file"], None)
+        elif level == "slot":
+            changed = (cb.currentData() or SAME) != self._slot_default(pi, name, cb.property("slot"))
         else:
             changed = cb.currentData() not in (SAME, None)
         item.setBackground(0, QBrush(QColor("#CFE2F3")) if changed else QBrush())
+
+    def _slot_default(self, pi: int, name: str, slot: int | None) -> str:
+        """기준 카드 문단 줄의 추천 기본값: 첫 문단과 글씨가 다르면 그 문단 추천 글꼴, 같으면 SAME(영역 글꼴대로)."""
+        d = list(self._reg(pi, name).get("slot_default") or [])
+        return (d[slot] if slot is not None and slot < len(d) else None) or SAME
 
     def _reg(self, pi: int, name: str) -> dict:
         return next(r for r in self.plans[pi]["regions"] if r["name"] == name)
@@ -505,8 +520,11 @@ class FontPlanDialog(QDialog):
                              "아래 카드를 펼쳐 카드마다 문단 글꼴을 따로 고르면 그것이 먼저입니다.")
             ch.setToolTip(2, sample)
             ch.setForeground(0, QBrush(QColor("#0b5cad")))
+            if self._slot_default(pi, reg["name"], idx) != SAME:
+                ch.setText(0, f"{label} · 글씨 다름")
+                ch.setToolTip(0, ch.toolTip(0) + "\n\n원문에서 이 문단의 글씨가 첫 문단과 달라(굵기·글씨체) 이 문단에 맞는 글꼴을 추천했습니다.")
             item.addChild(ch)
-            self._combo(ch, pi, reg["name"], "slot", (ref[idx] if idx < len(ref) else None) or SAME)
+            self._combo(ch, pi, reg["name"], "slot", (ref[idx] if idx < len(ref) else None) or SAME, idx)
 
     def _slots(self, pi: int, name: str) -> dict:
         """그 영역의 지금 기준 카드 문장별 글꼴 {"ref": [f1 … fR], "page"} (펼치지 않았으면 저장된 것)."""
@@ -528,7 +546,8 @@ class FontPlanDialog(QDialog):
                 ref[i] = f
         if not found:
             return dict(reg.get("slots") or {})
-        return {"ref": ref, "page": reg.get("slot_page")} if any(ref) else {}
+        # 모두 ‘영역 글꼴대로’도 남긴다 (사람이 고른 것: 다음에 문단 추천으로 다시 채우지 않게)
+        return {"ref": ref, "page": reg.get("slot_page")}
 
     # ---- 고르기
     def _changed(self, combo: QComboBox, item: QTreeWidgetItem):
@@ -751,7 +770,9 @@ class FontPlanDialog(QDialog):
                 if idx >= 0:
                     self._set_quiet(cb, idx)
             else:
-                idx = cb.findData(SAME)
+                pi, name, _lv = cb.property("meta")
+                want = self._slot_default(pi, name, cb.property("slot")) if level == "slot" else SAME
+                idx = cb.findData(want)
                 if idx >= 0:
                     self._set_quiet(cb, idx)
         self._preview()

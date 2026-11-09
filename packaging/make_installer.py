@@ -34,6 +34,14 @@ def main() -> int:
     if not exe.exists():
         print("먼저 빌드하세요: .venv/Scripts/python packaging/build.py")
         return 1
+    import json
+
+    info = ROOT / "dist" / "CardTranslater" / "_internal" / "build_info.json"
+    built = json.loads(info.read_text(encoding="utf-8")).get("version") if info.exists() else None
+    if built != VERSION:  # 빌드가 실패해 예전 프로그램이 남아 있으면 새 버전 이름으로 묶지 않는다
+        print(f"빌드 결과가 지금 버전이 아닙니다 (빌드 {built}, 지금 {VERSION}). 먼저 packaging/build.py를 성공시키세요"
+              " (dist의 CardTranslater.exe가 켜져 있으면 끄고).")
+        return 1
     iscc = find_iscc()
     if iscc is None:
         print("Inno Setup이 없습니다: winget install JRSoftware.InnoSetup")
