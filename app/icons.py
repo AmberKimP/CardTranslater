@@ -32,6 +32,9 @@ SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아�
 SAME_GRAY = 0.82  # 밝기 무늬 상관이 이 이상이면 같은 아이콘 (같은 타일 2: 0.83~0.91, 타일 1·2: 0.78 이하)
 SAME_INNER = 0.82  # 가운데 내용 상관 (같은 아이콘 0.86 이상, 동전 3·5 0.78, 상자 안 동전·병 0.37)
 SAME_DETAIL = 0.90  # 그리고 64칸으로 자세히 본 상관계수도 이 이상 (숫자만 다른 타일 1·2를 가른다)
+FLAT_INNER_STD = 10.0  # 가운데 밝기 표준편차(0~255)가 이보다 작으면 ‘안이 밋밋한’ 아이콘 (민무늬 금화 5~7, 무늬 있는 것 12 이상)
+FLAT_DETAIL = 0.88  # 밋밋한 아이콘끼리는 밝기 무늬 대신 자세한 모양(64칸)과
+FLAT_COLOR_DIST = 25.0  # 색으로 본다 (같은 금화 스캔 2~11, 다른 동전 70 이상)
 MAX_COLOR_DIST = 80.0  # 평균 색 거리(0~441)가 이보다 크면 다른 아이콘 (빨간 하트·파란 하트)
 DEFAULT_SCALE = 1.1
 NOT_ICON = "아이콘 아님"
@@ -1011,9 +1014,23 @@ def inner_feature(rgba: np.ndarray, n: int = 32, frac: float = 0.6) -> np.ndarra
     return g / nrm if nrm > 0 else g
 
 
+def inner_contrast(rgba: np.ndarray, frac: float = 0.6) -> float:
+    """가운데(60%) 밝기의 표준편차 (0~255). 작으면 안에 그림·숫자가 없는 밋밋한 아이콘."""
+    import cv2
+
+    al = rgba[:, :, 3] > 80
+    ys, xs = np.nonzero(al)
+    a = rgba[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if len(xs) else rgba
+    h, w = a.shape[:2]
+    m0, m1 = int(h * (1 - frac) / 2), int(w * (1 - frac) / 2)
+    a = a[m0:h - m0 or h, m1:w - m1 or w]
+    g = a[:, :, :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    return float(cv2.GaussianBlur(g, (0, 0), max(1.0, h / 60)).std())
+
+
 def shape_pair(rgba: np.ndarray):
-    """(대강 모양 32칸, 자세한 모양 64칸, 밝기 무늬, 가운데 자세히)."""
-    return shape_of(rgba), shape_of(rgba, 64), gray_feature(rgba), inner_feature(rgba)
+    """(대강 모양 32칸, 자세한 모양 64칸, 밝기 무늬, 가운데 자세히, 가운데 밝기 차이)."""
+    return shape_of(rgba), shape_of(rgba, 64), gray_feature(rgba), inner_feature(rgba), inner_contrast(rgba)
 
 
 def _comparable(a: Shape, b: Shape) -> bool:
@@ -1029,6 +1046,12 @@ def same_icon(a, b) -> float:
       (테두리·바탕이 같고 안의 숫자만 다른 타일 1·2, 같은 나무 상자의 동전·칼은 여기서 갈린다)"""
     if not _comparable(a[0], b[0]):
         return 0.0
+    if len(a) > 4 and len(b) > 4 and max(a[4], b[4]) < FLAT_INNER_STD:
+        # 둘 다 안이 밋밋함(민무늬 금화 등): 밝기 무늬는 스캔 잡음뿐이라 비교할 수 없다 → 모양과 색으로
+        s = similarity(a[0], b[0])
+        ok = (s >= SAME_SHAPE and similarity(a[1], b[1]) >= FLAT_DETAIL
+              and float(np.linalg.norm(a[0].color - b[0].color)) <= FLAT_COLOR_DIST)
+        return s if ok else 0.0
     gray = float(a[2] @ b[2]) if len(a) > 2 and len(b) > 2 else 0.0
     inner = float(a[3] @ b[3]) if len(a) > 3 and len(b) > 3 else 1.0
     if inner < SAME_INNER:  # 테두리·바탕이 같아도 안의 내용이 다르면 다른 아이콘
@@ -1470,7 +1493,10 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
 SUGGEST_SYSTEM = """You name small icons printed inside board game card text, for a translation tool.
 For each icon image, give a short identifier (lowercase English letters, digits or _ only, e.g. coin, heart,
 sword), what the icon stands for in the original language of the card text (meaning), and a natural Korean name
-(ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context."""
+(ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context.
+Each group is a visually different icon. A number, sign or small mark printed on or right next to the icon is
+part of that icon: put it in the identifier (e.g. gold_2, coin_plus1, card_minus) and in meaning/ko. Give two
+groups the same identifier only when their images are truly the same icon."""
 
 
 def _suggest_schema() -> dict:

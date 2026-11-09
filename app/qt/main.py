@@ -239,7 +239,7 @@ class HomePage(QWidget):
         self.refresh()
 
     def new_project(self):
-        dlg = NewProjectDialog(self.win.root, self, game=self._game_of_selection())
+        dlg = NewProjectDialog(self.win.root, self)  # 게임 이름은 비운 채로 (목록에서 고르거나 새로 입력)
         if dlg.exec() and dlg.created:
             self.refresh()
             self.win.open_project(dlg.created)

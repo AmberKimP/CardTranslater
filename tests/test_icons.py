@@ -424,3 +424,26 @@ def test_band_trimmed_to_glyphs_when_drawing_hangs_below():
     junk = [(170, 740, 28, 108, 300), (1100, 770, 4, 39, 100)]  # 가늘고 속이 빈 그림 선
     assert icons._trim_to_core([[679, 848]], glyph + junk) == [[679, 782]]
     assert icons._trim_to_core([[679, 776]], glyph) == [[679, 776]]  # 붙은 그림이 없으면 그대로
+
+
+def test_flat_icons_group_by_shape_and_color_not_scan_noise():
+    """안이 밋밋한 금화는 스캔마다 밝기 무늬가 달라도 같은 아이콘 (엘프 금화). 숫자가 붙은 금화·다른 색은 다르다."""
+    import numpy as np
+
+    def coin(color, seed, digit=False, size=60):
+        rng = np.random.default_rng(seed)
+        a = np.zeros((size, size + (35 if digit else 0), 4), np.uint8)
+        yy, xx = np.mgrid[:size, :a.shape[1]]
+        disk = (yy - size / 2) ** 2 + (xx - size / 2) ** 2 < (size / 2 - 2) ** 2
+        a[disk, :3] = np.clip(np.array(color) + rng.normal(0, 4, (disk.sum(), 3)), 0, 255)  # 스캔 잡음
+        a[disk, 3] = 255
+        if digit:
+            a[15:45, size + 10:size + 25, :3] = 20
+            a[15:45, size + 10:size + 25, 3] = 255
+        return a
+
+    gold = (245, 214, 80)
+    a, b = icons.shape_pair(coin(gold, 1)), icons.shape_pair(coin(gold, 2))
+    assert a[4] < icons.FLAT_INNER_STD and icons.same_icon(a, b) >= icons.SAME_SHAPE
+    assert icons.same_icon(a, icons.shape_pair(coin(gold, 3, digit=True))) == 0.0  # 금화 2
+    assert icons.same_icon(a, icons.shape_pair(coin((200, 200, 205), 4))) == 0.0  # 은화

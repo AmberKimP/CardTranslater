@@ -824,6 +824,31 @@ def test_icon_review_merge_rows_and_card_view(qapp, tmp_path, monkeypatch):
     assert list(icons.load_dictionary(info)["icons"]) == ["coin"]
 
 
+def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypatch):
+    """다른 줄의 새 아이콘에 같은 이름(gold, gold)을 적으면 주황으로 표시하고, 확정할 때 합칠지 묻는다."""
+    from app import icons
+    from app.qt import steps as steps_mod
+    from app.qt.steps import IconReviewDialog
+    from tests.test_icons import _project as icon_project
+
+    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)
+    info, _fd = icon_project(tmp_path, "1차", pages=2)
+    service.find_icons(info.dir, suggest=False)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    for w in dlg.widgets:
+        w[1].setText("gold")
+        w[3].setText("골드")
+    assert dlg._dup_names() == {"gold": [0, 1]} and "F4B183" in dlg.widgets[1][1].styleSheet()
+    asked = []
+    monkeypatch.setattr(steps_mod, "ask_choice", lambda *a, **k: asked.append(a[2]) or 1)  # 돌아가서 고치기
+    dlg.accept()
+    assert dlg.result is None and "gold: 1번, 2번" in asked[0]
+    dlg.widgets[1][1].setText("gold_2")  # 숫자가 붙은 금화: 다른 이름
+    assert dlg._dup_names() == {} and dlg.widgets[1][1].styleSheet() == ""
+    dlg.accept()
+    assert dlg.result is not None and len(asked) == 1
+
+
 def test_icon_review_merge_cycle_is_blocked(qapp, tmp_path, monkeypatch):
     from app import icons
     from app.qt.steps import IconReviewDialog
@@ -1190,9 +1215,10 @@ def test_card_erase_mode_override_and_redo(qapp, tmp_path):
     assert "erase_modes" not in workspace.file_settings(fd)
 
 
-def test_home_new_project_prefills_selected_game(qapp, tmp_path, monkeypatch):
-    """홈 화면에서 게임(또는 그 프로젝트)을 고르고 ‘새 프로젝트’를 누르면 그 게임이 채워진다."""
+def test_home_new_project_starts_with_empty_game(qapp, tmp_path, monkeypatch):
+    """‘+ 새 프로젝트’는 고른 게임이 있어도 게임 이름을 비운 채 연다 (사용자 요청). 목록에는 기존 게임이 있다."""
     from app.qt import main as qmain
+    from app.qt.dialogs import NewProjectDialog
     from app.qt.main import MainWindow
 
     _project(tmp_path)
@@ -1209,17 +1235,11 @@ def test_home_new_project_prefills_selected_game(qapp, tmp_path, monkeypatch):
             return 0
 
     monkeypatch.setattr(qmain, "NewProjectDialog", Fake)
-    g = win.home.tree.topLevelItem(0)
-    win.home.tree.setCurrentItem(g)
+    win.home.tree.setCurrentItem(win.home.tree.topLevelItem(0))  # 게임을 고른 채
     win.home.new_project()
-    win.home.tree.setCurrentItem(g.child(0))
-    win.home.new_project()
-    assert seen == ["G", "G"]
-    win.home.tree.setCurrentItem(None)
-    win.home.new_project()
-    assert seen[-1] is None
-    from app.qt.dialogs import NewProjectDialog
-    assert NewProjectDialog(tmp_path, game="G").game.currentText() == "G"
+    assert seen == [None]
+    d = NewProjectDialog(tmp_path)
+    assert d.game.currentText() == "" and d.game.count() >= 1
 
 
 def test_region_editor_erase_mode_saves_and_loads(qapp, tmp_path):

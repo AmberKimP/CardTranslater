@@ -1154,7 +1154,9 @@ class IconReviewDialog(QDialog):
                     same.setCurrentIndex(idx)
             same.currentIndexChanged.connect(lambda _x, r=i: self._sync_row(r))
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
+            name.textChanged.connect(lambda _t: self._paint_dups())
             self._sync_row(i)
+        self._paint_dups()
         self.table.resizeColumnToContents(1)
         self.table.resizeColumnToContents(8)
         for col, w in ((2, 150), (3, 170), (4, 150), (6, 100)):  # 입력 칸 글이 잘리지 않게
@@ -1219,6 +1221,31 @@ class IconReviewDialog(QDialog):
             meaning.setToolTip("")
         same.setEnabled(not not_icon.isChecked())
         not_icon.setEnabled(not merged)
+        if hasattr(self, "widgets") and len(self.widgets) == self.table.rowCount():
+            self._paint_dups()
+
+    def _dup_names(self) -> dict[str, list[int]]:
+        """‘(새 아이콘)’ 줄끼리 이름이 같은 것 {이름: [줄 번호]}. 확정하면 첫 줄 그림 하나로 합쳐진다."""
+        by: dict[str, list[int]] = {}
+        for i, (_g, name, _m, _k, not_icon, _sc, same) in enumerate(self.widgets):
+            nm = name.text().strip()
+            if nm and same.currentData() is None and not not_icon.isChecked():
+                by.setdefault(nm, []).append(i)
+        return {nm: rows for nm, rows in by.items() if len(rows) > 1}
+
+    def _paint_dups(self):
+        """이름이 같은 새 아이콘 줄은 주황으로 (다른 아이콘인데 같은 이름이면 하나로 합쳐져 그림이 바뀐다)."""
+        dups = {i: rows for rows in self._dup_names().values() for i in rows}
+        for i, (_g, name, *_rest) in enumerate(self.widgets):
+            rows = dups.get(i)
+            if rows:
+                others = ", ".join(f"{j + 1}번" for j in rows if j != i)
+                name.setStyleSheet("background: #F4B183")
+                name.setToolTip(f"{others}과 이름이 같습니다. 확정하면 하나의 아이콘(첫 줄 그림)으로 합쳐집니다.\n"
+                                "다른 아이콘이면(예: 숫자가 붙은 금화) 이름을 바꾸세요 (예: gold_2).")
+            else:
+                name.setStyleSheet("")
+                name.setToolTip("")
 
     def show_cards(self, group: str):
         """그 묶음이 나온 카드 자리를 보여 주고, 자리를 직접 잡게 한다."""
@@ -1266,6 +1293,15 @@ class IconReviewDialog(QDialog):
         except ValueError as e:
             show_problem(self, "아이콘 이름을 확정하지 못했습니다", str(e), "표시된 줄의 이름을 고친 뒤 다시 누르세요.")
             return
+        dups = self._dup_names()
+        if dups:
+            lines = [f"• {nm}: " + ", ".join(f"{i + 1}번" for i in rows) for nm, rows in dups.items()]
+            r = ask_choice(self, "같은 이름의 아이콘", "다른 줄인데 이름이 같은 아이콘이 있습니다 (주황):\n" + "\n".join(lines),
+                           [("같은 아이콘이니 합치기", "accept"), ("돌아가서 이름 고치기", "reject")], default=1,
+                           informative="합치면 하나의 아이콘이 되어 첫 줄의 그림만 씁니다. 숫자가 붙은 금화처럼 그림이 다르면 "
+                                       "이름을 다르게 하세요 (예: gold, gold_2).")
+            if r != 0:
+                return
         r = service.confirm_icons(self.project_dir, rows)
         if r.state != "confirmed":
             show_problem(self, "아이콘 이름을 확정하지 못했습니다", "\n".join(r.blocking), "이름을 고친 뒤 다시 누르세요.")
