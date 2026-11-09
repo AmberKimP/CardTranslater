@@ -73,7 +73,9 @@ def build() -> Path:
             "--paths", str(ROOT), "--add-data", f"{fonts}{os.pathsep}fonts",
             "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets",  # 로그인 화면 그림
             "--add-data", f"{info}{os.pathsep}.",
-            "--add-data", f"{ROOT / 'CHANGELOG.md'}{os.pathsep}."]  # 도움말 > 릴리스 노트
+            "--add-data", f"{ROOT / 'CHANGELOG.md'}{os.pathsep}.",  # 도움말 > 릴리스 노트
+            "--add-data", f"{ROOT / 'LICENSE'}{os.pathsep}.",  # 도움말 > 라이선스
+            "--add-data", f"{ROOT / 'THIRD_PARTY_NOTICES.md'}{os.pathsep}."]
     for m in EXCLUDE:
         args += ["--exclude-module", m]
     args.append(str(ROOT / "packaging" / "launch.py"))
@@ -89,9 +91,85 @@ def build() -> Path:
 
     # 설치 폴더에서도 바로 열어 볼 수 있게 (앱 화면과 같은 내용: 개발용 안내는 뺀다)
     (out / "릴리스 노트.md").write_text(install_copy(ROOT / "CHANGELOG.md"), encoding="utf-8")
+    n = copy_licenses(out)
+    print(f"[build] 라이선스: LICENSE, THIRD_PARTY_NOTICES.md, licenses/ (패키지 원문 {n}개)")
     exe = out / f"{NAME}.exe"
     print(f"[build] {exe}")
     return exe
+
+
+LICENSE_NAMES = ("license", "licence", "copying", "notice", "authors")
+RUNTIME_ROOTS = ("pymupdf", "numpy", "opencv-python-headless", "pillow", "fonttools", "openpyxl", "anthropic",
+                 "PySide6")  # 앱이 실행할 때 쓰는 패키지 (requirements.txt에서 pytest·pyinstaller 뺀 것)
+
+
+def _norm(name: str) -> str:
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def runtime_distributions() -> set[str]:
+    """RUNTIME_ROOTS와 그 의존성(설치된 것, extra 제외) 이름. 순수 Python 패키지는 _internal에 폴더로 안 보이므로 여기서 찾는다."""
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    from packaging.requirements import Requirement
+
+    seen: set[str] = set()
+    todo = list(RUNTIME_ROOTS)
+    while todo:
+        name = _norm(todo.pop())
+        if name in seen:
+            continue
+        try:
+            d = distribution(name)
+        except PackageNotFoundError:
+            continue
+        seen.add(name)
+        for r in d.requires or []:
+            req = Requirement(r)
+            if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+                continue
+            todo.append(req.name)
+    return seen
+
+
+def copy_licenses(out: Path) -> int:
+    """설치 폴더에 라이선스를 둔다: LICENSE·THIRD_PARTY_NOTICES.md, licenses/*.txt(AGPL·LGPL·GPL·Apache 전문),
+    licenses/packages/<패키지>/ (설치 파일에 실제로 들어간 Python 패키지의 라이선스 원문). 패키지 원문 수."""
+    from importlib.metadata import distributions
+
+    for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+        shutil.copy2(ROOT / name, out / name)
+    lic = out / "licenses"
+    if lic.exists():
+        shutil.rmtree(lic)
+    shutil.copytree(ROOT / "licenses", lic)
+    bundled = {p.name.split(".")[0].lower() for p in (out / "_internal").iterdir()}
+    pk = lic / "packages"
+    n = 0
+    py_lic = Path(sys.base_prefix) / "LICENSE.txt"
+    if py_lic.exists():
+        (pk / "python").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(py_lic, pk / "python" / "LICENSE.txt")
+        n += 1
+    runtime = runtime_distributions()
+    for d in distributions():
+        files = list(d.files or [])
+        tops = {str(f).replace("\\", "/").split("/")[0].split(".")[0].lower() for f in files
+                if not str(f).split("/")[0].endswith((".dist-info", ".data"))}
+        if not (tops & bundled) and _norm(d.metadata["Name"]) not in runtime:
+            continue
+        name = d.metadata["Name"]
+        for f in files:
+            if any(k in Path(str(f)).name.lower() for k in LICENSE_NAMES) and ".dist-info" in str(f):
+                src = Path(d.locate_file(f))
+                if src.is_file():
+                    dst = pk / name / Path(str(f)).name
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    n += 1
+    return n
 
 
 def selftest(exe: Path) -> bool:

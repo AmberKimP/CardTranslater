@@ -32,6 +32,7 @@ venv/
 projects/
 output/
 test_runs/
+내 글꼴/
 
 # Font binaries (download with scripts/fetch_fonts.py)
 fonts/**/*.ttf

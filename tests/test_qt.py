@@ -2356,6 +2356,11 @@ def test_release_notes_menu_shows_changelog(qapp, tmp_path):
     assert version.VERSION in dlg.windowTitle() and version.VERSION in dlg.view.toPlainText()
     assert "app/version.py" not in dlg.view.toPlainText()  # 개발용 안내는 빼고 보여 준다
     assert service.self_check()["release_notes"] is True
+    assert "라이선스…" in [a.text() for a in help_menu.actions()]
+    from app.qt.main import LicenseDialog
+
+    lic = LicenseDialog(win).view.toPlainText()
+    assert "BEER-WARE" in lic and "AmberKimP" in lic and "AGPL" in lic and service.self_check()["license"] is True
 
 
 

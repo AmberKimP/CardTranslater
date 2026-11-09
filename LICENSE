@@ -1,0 +1,18 @@
+"THE BEER-WARE LICENSE" (Revision 42):
+AmberKimP (https://github.com/AmberKimP) wrote this software. As long as you
+retain this notice you can do whatever you want with this stuff. If we meet
+some day, and you think this stuff is worth it, you can buy me a beer in return.
+
+----------------------------------------------------------------------------
+Scope and third-party components
+
+This license covers the CardTranslater source code in this repository
+(app/, tests/, packaging/, scripts/, docs/ and the other files written for
+this project). It does not cover the third-party components listed in
+THIRD_PARTY_NOTICES.md, which keep their own licenses.
+
+The Windows installer bundles PyMuPDF / MuPDF, which is licensed under the
+GNU Affero General Public License v3.0 (licenses/agpl-3.0.txt). The installer
+as a whole is therefore distributed under the terms of the AGPL-3.0. The
+complete corresponding source code of every released version is available at
+https://github.com/AmberKimP/CardTranslater (tag v<version>).

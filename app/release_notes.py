@@ -29,6 +29,25 @@ def load(path: Path | None = None) -> str:
         return ""
 
 
+def license_text(root: Path | None = None) -> str:
+    """도움말 > 라이선스에 보일 글: 이 프로그램의 라이선스(LICENSE) + 제3자 구성 요소 고지. 없으면 ''."""
+    if root is None:
+        from app.settings import resource_root
+
+        root = resource_root()
+    parts = []
+    try:
+        parts.append("# CardTranslater 라이선스\n\n```\n" + (Path(root) / "LICENSE").read_text(encoding="utf-8").strip()
+                     + "\n```\n")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    try:
+        parts.append((Path(root) / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        pass
+    return "\n".join(parts)
+
+
 def install_copy(changelog: Path) -> str:
     """설치 폴더에 넣을 ‘릴리스 노트.md’ 글 (앱 화면과 같은 내용)."""
     return f"{TITLE}\n\n" + user_notes(Path(changelog).read_text(encoding="utf-8"))

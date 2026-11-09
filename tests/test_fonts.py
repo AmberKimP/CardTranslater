@@ -312,3 +312,41 @@ def test_add_font_dialog_lists_app_fonts_first(qapp):
     dlg.list.setCurrentRow(1)
     dlg.accept()
     assert dlg.chosen["app"] is True and dlg.chosen["file"] == GAEGU
+
+
+def test_user_font_folder_lists_good_fonts_and_reasons(qapp, tmp_path, monkeypatch):
+    """데이터 폴더\내 글꼴에 넣은 글꼴이 ‘글꼴 추가…’ 목록·검색에 나온다. 한글이 없는 글꼴은 이유와 함께 뺀다."""
+    import shutil
+
+    from app import font_match, service
+    from PySide6.QtCore import Qt
+
+    from app.qt.fonts_dialog import AddFontDialog
+
+    monkeypatch.setattr(service, "data_dir", lambda: tmp_path)
+    assert service.user_fonts()["fonts"] == [] and not (tmp_path / "내 글꼴").exists()  # 읽기만으로는 만들지 않는다
+    d = service.user_font_dir()
+    assert d == tmp_path / "내 글꼴" and d.is_dir()
+    shutil.copy(ROOT / GAEGU, d / "MyHand.ttf")
+    (d / "sub").mkdir()
+    shutil.copy(ROOT / SANS, d / "sub" / "MyGothic.ttf")
+    (d / "broken.ttf").write_bytes(b"not a font")
+    monkeypatch.setattr(font_match, "font_info", lambda p, _o=font_match.font_info: (
+        {**_o(p), "hangul": False} if "MyGothic" in str(p) else _o(p)))  # 한글 없는 글꼴 흉내
+    u = service.user_fonts()
+    assert [Path(f["file"]).name for f in u["fonts"]] == ["MyHand.ttf"]
+    assert {s["name"]: s["reason"] for s in u["skipped"]} == {"MyGothic.ttf": "한글 글자가 없음",
+                                                              "broken.ttf": "읽을 수 없는 글꼴 파일"}
+    dlg = AddFontDialog([{"file": str(ROOT / SANS), "label": "PC 글꼴"}], app_fonts=[],
+                        user_fonts={"dir": str(d), "fonts": [], "skipped": []})
+    assert dlg.b_user_dir is not None and any("내 글꼴 폴더 0개" in dlg.list.item(i).text() for i in range(dlg.list.count()))
+    monkeypatch.setattr(service, "user_fonts", lambda: u)
+    dlg.reload_user_fonts()  # 파일을 넣고 ‘목록 새로 고침’
+    texts = [dlg.list.item(i).text() for i in range(dlg.list.count())]
+    assert any("내 글꼴 폴더 1개" in t for t in texts) and not dlg.user_note.isHidden()
+    dlg.search.setText("gaegu")  # 검색에 나온다 (글꼴 안의 이름)
+    row = next(i for i in range(dlg.list.count()) if not dlg.list.item(i).isHidden()
+               and dlg.list.item(i).data(Qt.ItemDataRole.UserRole))
+    dlg.list.setCurrentRow(row)
+    dlg.accept()
+    assert dlg.chosen["user"] is True and dlg.chosen["file"].endswith("MyHand.ttf")

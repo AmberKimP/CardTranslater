@@ -1700,6 +1700,44 @@ def prepare_font(file: str) -> str:
     return str(font_match.extract_face(file, font_cache_dir()))
 
 
+USER_FONT_DIR = "내 글꼴"  # 데이터 폴더 안: 사용자가 글꼴 파일을 넣어 두면 ‘글꼴 추가…’ 목록에 나온다
+FONT_EXTS = (".ttf", ".otf", ".ttc", ".otc")
+
+
+def user_font_dir(create: bool = True) -> Path:
+    """사용자 글꼴 폴더 (데이터 폴더\\내 글꼴). create=True면 없을 때 만든다."""
+    d = data_dir() / USER_FONT_DIR
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def user_fonts() -> dict:
+    """사용자 글꼴 폴더의 글꼴 (하위 폴더 포함, 부를 때마다 새로 읽는다).
+    {"dir", "fonts": [{"file", "label", "family", ...}], "skipped": [{"name", "reason"}]}.
+    한글이 없거나 PDF에 넣을 수 없는 글꼴은 skipped에 이유와 함께."""
+    from app import font_match
+
+    d = user_font_dir(create=False)
+    fonts, skipped, seen = [], [], set()
+    files = sorted(p for p in d.rglob("*") if p.is_file() and p.suffix.lower() in FONT_EXTS) if d.is_dir() else []
+    for p in files:
+        fs = font_match.faces(p)
+        if not fs:
+            skipped.append({"name": p.name, "reason": "읽을 수 없는 글꼴 파일"})
+            continue
+        for info in fs:
+            if not info["hangul"]:
+                skipped.append({"name": p.name, "reason": "한글 글자가 없음"})
+            elif not info["embeddable"]:
+                skipped.append({"name": p.name, "reason": "PDF에 넣는 것이 허락되지 않은 글꼴 (라이선스)"})
+            elif info["file"] not in seen:
+                seen.add(info["file"])
+                fonts.append(info)
+    fonts.sort(key=lambda x: x["label"].lower())
+    return {"dir": str(d), "fonts": fonts, "skipped": skipped}
+
+
 def font_file_info(path: Path | str) -> dict:
     """사용자가 고른 글꼴 파일 검사: {"ok", "file", "label", "reason"}.
     글꼴 모음(.ttc)이면 한글이 있고 PDF에 넣어도 되는 첫 글꼴을 고른다."""
@@ -2752,10 +2790,18 @@ def self_check() -> dict:
         out["typeset"] = f"실패: {e}"
     out["engine"] = engine_status()
     out["release_notes"] = bool(release_notes())
+    out["license"] = "BEER-WARE" in license_text() and "AGPL" in license_text()
     out["font_pack"] = font_files.pack_status()  # 글꼴 묶음은 따로 설치하므로 점검 실패로 보지 않는다
-    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and not any(
+    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and out["license"] and not any(
         str(v).startswith("없음") for v in libs.values())
     return out
+
+
+def license_text() -> str:
+    """도움말 > 라이선스: 이 프로그램의 라이선스(Beerware)와 제3자 구성 요소 고지 (마크다운). 없으면 ''."""
+    from app import release_notes as rn
+
+    return rn.license_text()
 
 
 def release_notes() -> str:

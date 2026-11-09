@@ -904,6 +904,30 @@ class ReleaseNotesDialog(QDialog):
         lay.addWidget(bb)
 
 
+class LicenseDialog(QDialog):
+    """도움말 > 라이선스: 이 프로그램(Beerware)과 함께 든 구성 요소의 라이선스, 소스 코드 받는 곳."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"라이선스 — {APP_NAME} {service.VERSION}")
+        fit_to_screen(self, 900, 760, maximize_below=0)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(True)
+        text = service.license_text()
+        if text:
+            self.view.setMarkdown(text)
+        else:
+            self.view.setPlainText("라이선스 파일을 찾지 못했습니다. https://github.com/AmberKimP/CardTranslater 를 보세요.")
+        self.view.setStyleSheet("QTextBrowser { padding: 10px 14px; }")
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(page_title("라이선스", 14))
+        lay.addWidget(self.view, 1)
+        lay.addWidget(bb)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, root: Path | None = None):
         super().__init__()
@@ -940,6 +964,9 @@ class MainWindow(QMainWindow):
         help_.addSeparator()
         act = QAction("릴리스 노트…", self)
         act.triggered.connect(self.show_release_notes)
+        help_.addAction(act)
+        act = QAction("라이선스…", self)
+        act.triggered.connect(lambda: LicenseDialog(self).exec())
         help_.addAction(act)
         st = service.engine_status()
         self.statusBar().showMessage(st["message"])

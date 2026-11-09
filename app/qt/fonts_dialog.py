@@ -43,35 +43,25 @@ def qt_family(file: str) -> str | None:
 
 
 class AddFontDialog(QDialog):
-    """앱에 들어 있는 글꼴(app_fonts, 맨 위)이나 PC에 설치된 글꼴(한글이 있고 PDF에 넣어도 되는 것) 중 하나를 고르거나,
-    글꼴 파일을 고른다. 앱 글꼴을 고르면 chosen["app"] = True."""
+    """앱에 들어 있는 글꼴(app_fonts, 맨 위), 내 글꼴 폴더의 글꼴(user_fonts: service.user_fonts()),
+    PC에 설치된 글꼴(한글이 있고 PDF에 넣어도 되는 것) 중 하나를 고르거나, 글꼴 파일을 고른다.
+    앱 글꼴을 고르면 chosen["app"] = True. ‘내 글꼴 폴더 열기’로 폴더를 열어 파일을 넣고 ‘목록 새로 고침’."""
 
-    def __init__(self, fonts: list[dict], parent=None, app_fonts: list[dict] | None = None):
+    def __init__(self, fonts: list[dict], parent=None, app_fonts: list[dict] | None = None,
+                 user_fonts: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("글꼴 추가")
-        self.resize(560, 600)
+        self.resize(580, 640)
         self.chosen: dict | None = None
+        self.pc_fonts, self.app_fonts, self.user = fonts, app_fonts, user_fonts
         self.search = QLineEdit()
         self.search.setPlaceholderText("이름으로 찾기")
         self.search.textChanged.connect(self._filter)
         self.list = QListWidget()
-        groups = [(None, fonts)] if app_fonts is None else [
-            (f"앱에 들어 있는 글꼴 {len(app_fonts)}개 (상업적으로 써도 되는 무료 글꼴)",
-             [{**f, "app": True} for f in app_fonts]),
-            (f"PC에 설치된 글꼴 {len(fonts)}개", fonts)]
-        for head, items in groups:
-            if head:
-                h = QListWidgetItem(head)
-                h.setFlags(Qt.ItemFlag.NoItemFlags)  # 고를 수 없는 제목 줄
-                f = h.font()
-                f.setBold(True)
-                h.setFont(f)
-                self.list.addItem(h)
-            for f in items:
-                it = QListWidgetItem(("    " if head else "") + f["label"])
-                it.setData(Qt.ItemDataRole.UserRole, f)
-                it.setToolTip(f["file"])
-                self.list.addItem(it)
+        self.user_note = QLabel()
+        self.user_note.setStyleSheet("color: #9A4B00")
+        self.user_note.setWordWrap(True)
+        self._populate()
         self.list.currentItemChanged.connect(self._preview)
         self.list.itemDoubleClicked.connect(lambda *_a: self.accept())
         self.sample = QLabel("가나다라 한글 글꼴 견본 ABC 123")
@@ -89,6 +79,16 @@ class AddFontDialog(QDialog):
         bb.rejected.connect(self.reject)
         row = QHBoxLayout()
         row.addWidget(b_file)
+        self.b_user_dir = self.b_reload = None
+        if user_fonts is not None:
+            self.b_user_dir = QPushButton("내 글꼴 폴더 열기")
+            self.b_user_dir.setToolTip(f"{user_fonts['dir']}\n여기에 글꼴 파일(.ttf·.otf·.ttc)을 넣고 ‘목록 새로 고침’을 누르면 "
+                                       "목록과 검색에 나옵니다")
+            self.b_user_dir.clicked.connect(self.open_user_dir)
+            self.b_reload = QPushButton("목록 새로 고침")
+            self.b_reload.clicked.connect(self.reload_user_fonts)
+            row.addWidget(self.b_user_dir)
+            row.addWidget(self.b_reload)
         row.addStretch(1)
         row.addWidget(bb)
         lay = QVBoxLayout(self)
@@ -96,7 +96,57 @@ class AddFontDialog(QDialog):
         lay.addWidget(self.list, 1)
         lay.addWidget(self.sample)
         lay.addWidget(note)
+        lay.addWidget(self.user_note)
         lay.addLayout(row)
+
+    def _populate(self):
+        """목록을 (다시) 채운다: 앱 글꼴 · 내 글꼴 폴더 · PC 글꼴 (제목 줄은 고를 수 없다)."""
+        fonts, app_fonts, user = self.pc_fonts, self.app_fonts, self.user
+        self.list.clear()
+        groups: list = [(None, fonts)] if app_fonts is None and user is None else []
+        if app_fonts is not None:
+            groups.append((f"앱에 들어 있는 글꼴 {len(app_fonts)}개 (상업적으로 써도 되는 무료 글꼴)",
+                           [{**f, "app": True} for f in app_fonts]))
+        if user is not None:
+            groups.append((f"내 글꼴 폴더 {len(user['fonts'])}개 (‘내 글꼴 폴더 열기’로 파일을 넣으세요)",
+                           [{**f, "user": True} for f in user["fonts"]]))
+        if groups and groups[0][0] is not None:
+            groups.append((f"PC에 설치된 글꼴 {len(fonts)}개", fonts))
+        for head, items in groups:
+            if head:
+                h = QListWidgetItem(head)
+                h.setFlags(Qt.ItemFlag.NoItemFlags)  # 고를 수 없는 제목 줄
+                f = h.font()
+                f.setBold(True)
+                h.setFont(f)
+                self.list.addItem(h)
+            for f in items:
+                it = QListWidgetItem(("    " if head else "") + f["label"])
+                it.setData(Qt.ItemDataRole.UserRole, f)
+                it.setToolTip(f["file"])
+                self.list.addItem(it)
+        bad = (user or {}).get("skipped") or []
+        self.user_note.setText(f"내 글꼴 폴더에서 쓸 수 없는 파일 {len(bad)}개: "
+                               + ", ".join(f"{b['name']}({b['reason']})" for b in bad[:4])
+                               + (" …" if len(bad) > 4 else ""))
+        self.user_note.setVisible(bool(bad))
+        if hasattr(self, "search"):
+            self._filter(self.search.text())
+
+    def open_user_dir(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        try:
+            d = service.user_font_dir()
+        except OSError as e:
+            show_error(self, "내 글꼴 폴더를 열지 못했습니다", str(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
+    def reload_user_fonts(self):
+        self.user = service.user_fonts()
+        self._populate()
 
     def _filter(self, text: str):
         t = text.strip().lower()
@@ -302,7 +352,7 @@ class FontPlanDialog(QDialog):
                        else "이 프로젝트에서 쓴 글꼴")
                 out.append((f"    {u['label']}", u["file"], src))
         out.append(("", "-", ""))
-        out.append(("글꼴 추가…", ADD, "앱에 들어 있는 다른 글꼴, PC에 설치된 글꼴이나 글꼴 파일을 추가합니다"))
+        out.append(("글꼴 추가…", ADD, "앱에 들어 있는 다른 글꼴, 내 글꼴 폴더·PC에 설치된 글꼴이나 글꼴 파일을 추가합니다"))
         return out
 
     def _picked_fonts(self) -> list[dict]:
@@ -516,7 +566,7 @@ class FontPlanDialog(QDialog):
             fonts = service.installed_fonts()  # 처음 한 번은 몇 초 걸린다
         finally:
             QGuiApplication.restoreOverrideCursor()
-        dlg = AddFontDialog(fonts, self, app_fonts=service.font_choices())
+        dlg = AddFontDialog(fonts, self, app_fonts=service.font_choices(), user_fonts=service.user_fonts())
         if not dlg.exec() or not dlg.chosen:
             return None
         if dlg.chosen.get("app"):  # 앱 글꼴은 그대로 쓴다 (fonts/... 경로)
