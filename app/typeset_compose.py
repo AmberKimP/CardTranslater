@@ -658,10 +658,12 @@ def erased_pdf_path(erase_run: Path) -> Path:
 
 def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_dir: Path,
                 cards: dict | None = None, translation_source: str = "samples.json",
-                out_name: str = "composed.pdf", progress=None, cancel=None) -> tuple[Path, int]:
+                out_name: str = "composed.pdf", progress=None, cancel=None,
+                workers: int | None = None) -> tuple[Path, int]:
     """run_dir(새로 만들 빈 폴더)에 결과를 쓴다. cards가 없으면 samples.json을 쓴다.
 
     progress: app.service.ProgressEvent를 받는 콜백, cancel: app.service.CancelToken (둘 다 선택).
+    workers: 동시에 돌릴 프로세스 수 (None이면 쪽 수·CPU에 맞춰, 1이면 나누지 않음: app.parallel).
     """
     from app.service import ProgressEvent
 
@@ -694,10 +696,9 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     run_dir.mkdir(parents=True, exist_ok=False)
     ensure_not_source(run_dir / "x", src_path)
 
-    src_doc = pymupdf.open(stream=src_path.read_bytes(), filetype="pdf")
-    er_doc = pymupdf.open(stream=erased_path.read_bytes(), filetype="pdf")
     if pages_spec:
-        pages = parse_page_spec(pages_spec, src_doc.page_count)
+        with pymupdf.open(src_path) as d:
+            pages = parse_page_spec(pages_spec, d.page_count)
     else:
         run_info = json.loads((erase_run / "run.json").read_text(encoding="utf-8"))
         pages = list(run_info["pages"])
@@ -709,6 +710,33 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
             raise FileNotFoundError(f"지우기 메타가 없습니다: {f}")
         metas[pno] = json.loads(f.read_text(encoding="utf-8"))
 
+    from app import parallel
+
+    out_pdf = run_dir / out_name
+    ensure_not_source(out_pdf, src_path)
+    w = parallel.worker_count(len(pages), workers)
+
+    def serial():
+        src_doc = pymupdf.open(stream=src_path.read_bytes(), filetype="pdf")
+        er_doc = pymupdf.open(stream=erased_path.read_bytes(), filetype="pdf")
+        try:
+            return _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, run_dir, out_pdf,
+                                  _p, cancel)
+        finally:  # 취소·오류 때도 닫는다
+            src_doc.close()
+            er_doc.close()
+    if w <= 1:
+        page_recs = serial()
+    else:  # 작업 프로세스를 못 띄웠거나 합친 결과가 다르면 한 프로세스로 (결과는 같다)
+        page_recs = parallel.run_or_fallback(
+            lambda: _compose_parallel(project_dir, erase_run, pages, metas, cards, run_dir, out_pdf, w, _p, cancel),
+            serial, run_dir)
+    return _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
+                           translation_source, edit_notes, sha_src_before, sha_erased_before)
+
+
+def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, run_dir, out_pdf, _p, cancel) -> list:
+    """pages에 한글을 넣어 out_pdf에 저장하고 쪽 PNG·비교 이미지(run_dir/compare)를 만든다. 쪽별 기록."""
     styles = {r.name: r.style for r in project.template.regions}
     icon_style = icon_style_for(project_dir)  # 게임 아이콘 사전 (영역 서식에 따로 적은 값이 우선)
     if icon_style:
@@ -738,8 +766,6 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         page_recs.append({"page": pno, "regions": rec})
 
     finalize(out_doc)
-    out_pdf = run_dir / out_name
-    ensure_not_source(out_pdf, src_path)
     out_doc.save(out_pdf, garbage=3, deflate=True)
     out_doc.close()
 
@@ -770,7 +796,54 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
             report.save(img, cdir / f"p{pno:03d}_{sn}.png")
         page_recs[i]["extracted_text"] = cp.get_text()
     chk.close()
+    return page_recs
 
+
+def _compose_part(pages: list[int], k: int, project_dir: str, erase_run: str, metas: dict, cards: dict,
+                  run_dir: str) -> list:
+    """(작업 프로세스) 이어진 쪽 묶음 하나에 한글을 넣어 run_dir/.part-k.pdf에 쓴다 (PNG·비교 이미지는 run_dir에 바로).
+    metas·cards는 이 묶음의 쪽 것만. 화면에서 취소하면 다음 쪽에서 멈춘다."""
+    from app.parallel import tick_progress, worker_cancel
+    from app.service import ProgressEvent
+
+    project = load_project(Path(project_dir))
+    tick = tick_progress()
+    src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
+    er_doc = pymupdf.open(stream=erased_pdf_path(Path(erase_run)).read_bytes(), filetype="pdf")
+    try:
+        return _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, Path(run_dir),
+                              Path(run_dir) / f".part-{k:03d}.pdf",
+                              lambda stage, d, t, msg, page=None: tick(ProgressEvent(stage, d, t, msg, page)),
+                              worker_cancel())
+    finally:
+        src_doc.close()
+        er_doc.close()
+
+
+def _compose_parallel(project_dir, erase_run, pages, metas, cards, run_dir, out_pdf, workers, _p, cancel) -> list:
+    """쪽을 묶음으로 나눠 여러 프로세스로 한글을 넣고 한 PDF로 합친다 (쪽 순서 그대로)."""
+    from app import parallel
+
+    n = len(pages)
+    parts = parallel.split(pages, workers * parallel.PARTS_PER_WORKER)
+    _p("compose", 0, 2 * n, f"{n}쪽 한글 넣는 중 (동시에 {workers}개)")
+
+    def on_tick(c: dict):  # 쪽마다 한글 넣기 + 미리보기 그림 두 단계
+        a, b = min(c.get("compose", 0), n), min(c.get("render", 0), n)
+        _p("compose", a + b, 2 * n, f"한글 넣기 {a}/{n}쪽 · 미리보기 {b}/{n}쪽 (동시에 {workers}개)")
+    part_args = [(str(project_dir), str(erase_run), {p: metas[p] for p in part},
+                  {p: cards[p] for p in part if p in cards}, str(run_dir)) for part in parts]  # 묶음마다 그 쪽 것만
+    res = parallel.run_parts(_compose_part, parts, part_args, workers, on_tick, cancel)
+    _p("compose", 2 * n, 2 * n, "한글 넣은 쪽을 한 파일로 합치는 중")
+    # 묶음마다 글꼴을 서브셋하므로 합친 PDF에 같은 글꼴의 서브셋이 묶음 수만큼 들어갈 수 있다
+    # (123 7쪽: 한 프로세스와 파일 크기가 같았다)
+    parallel.merge_parts(run_dir, len(parts), out_pdf)  # 합친 쪽이 묶음 쪽과 똑같이 그려지는지도 확인
+    return [rec for recs in res for rec in recs]
+
+
+def _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
+                    translation_source, edit_notes, sha_src_before, sha_erased_before) -> tuple[Path, int]:
+    """칸별 상태 요약·report.json·원본 해시를 쓴다."""
     # ---- 칸별 상태 요약
     summary: dict[str, list[str]] = {}
     for pr in page_recs:

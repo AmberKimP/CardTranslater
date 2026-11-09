@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import threading
 import time
@@ -148,30 +149,52 @@ def _boxes(page) -> dict:
 
 # ---------------------------------------------------------------- 7단계: 지우기
 def erase(project_dir: Path | str, pages: str, *, test: bool = False, out_root: Path | str = "test_runs",
-          progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> EraseResult:
-    """영역 글자를 지워 cleared/ (test면 test_runs/<시각>-erase/)에 쓴다. 원본은 읽기만 한다."""
+          progress: ProgressFn | None = None, cancel: CancelToken | None = None,
+          workers: int | None = None) -> EraseResult:
+    """영역 글자를 지워 cleared/ (test면 test_runs/<시각>-erase/)에 쓴다. 원본은 읽기만 한다.
+    workers: 동시에 돌릴 프로세스 수 (None이면 쪽 수·CPU에 맞춰, 1이면 나누지 않음: app.parallel)."""
     progress = progress or _noop
     project = load_project(Path(project_dir))
     final_dir, run_dir = _output_dirs(project.root, "cleared", "erase", test, Path(out_root))
     run_dir.mkdir(parents=True, exist_ok=False)
     try:
-        return _erase(project, pages, final_dir, run_dir, test, progress, cancel)
+        return _erase(project, pages, final_dir, run_dir, test, progress, cancel, workers)
     except BaseException:
         _discard(run_dir, final_dir)
         raise
 
 
-def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> EraseResult:
+def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel, workers=None) -> EraseResult:
     import pymupdf
+
+    from app import parallel
 
     src_path = project.source_pdf
     sha_before = sha256_file(src_path)
     ensure_not_source(run_dir / "x", src_path)
     pdf_name = "erased.pdf" if test else "cleared.pdf"
+    with pymupdf.open(src_path) as d:
+        pages = parse_page_spec(pages_spec, d.page_count)
+    w = parallel.worker_count(len(pages), workers)
 
+    def serial():
+        return _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel)
+    if w <= 1:
+        page_metas, box_checks = serial()
+    else:  # 작업 프로세스를 못 띄웠거나 합친 결과가 다르면 한 프로세스로 (결과는 같다)
+        page_metas, box_checks = parallel.run_or_fallback(
+            lambda: _erase_parallel(project, pages, run_dir, pdf_name, w, progress, cancel), serial, run_dir)
+    return _finish_erase(project, pages, page_metas, box_checks, final_dir, run_dir, pdf_name, sha_before,
+                         progress, cancel)
+
+
+def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[list, list]:
+    """pages를 지워 run_dir/pdf_name에 저장하고 확인·비교 이미지(run_dir/compare)를 만든다. (쪽 메타, 상자 확인)."""
+    import pymupdf
+
+    src_path = project.source_pdf
     src_bytes = src_path.read_bytes()  # 원본은 메모리로만 읽는다
     src_doc = pymupdf.open(stream=src_bytes, filetype="pdf")
-    pages = parse_page_spec(pages_spec, src_doc.page_count)
     n = len(pages)
 
     out_doc = pymupdf.open(stream=src_bytes, filetype="pdf")
@@ -218,8 +241,78 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel) -> E
     finally:  # 취소·오류 때도 닫는다 (Windows는 열린 파일이 든 작업 폴더를 지우지 못한다)
         check.close()
         src_doc.close()
-    return _finish_erase(project, pages, page_metas, box_checks, final_dir, run_dir, pdf_name, sha_before,
-                         progress, cancel)
+    return page_metas, box_checks
+
+
+def _erase_part(pages: list[int], k: int, project_root: str, run_dir: str) -> tuple[list, list]:
+    """(작업 프로세스) 이어진 쪽 묶음 하나를 지워 run_dir/.part-k.pdf에 쓴다. 비교 이미지는 run_dir/compare에 바로.
+    쪽마다 지우기(erase)·확인(verify) 단계를 알리고, 화면에서 취소하면 다음 쪽에서 멈춘다."""
+    from app.parallel import tick_progress, worker_cancel
+
+    project = load_project(Path(project_root))
+    return _erase_chunk(project, pages, Path(run_dir), f".part-{k:03d}.pdf", tick_progress(), worker_cancel())
+
+
+def _erase_parallel(project, pages, run_dir, pdf_name, workers, progress, cancel) -> tuple[list, list]:
+    """쪽을 묶음으로 나눠 여러 프로세스로 지우고 한 PDF로 합친다 (쪽 순서·output_page_index를 맞춘다)."""
+    import pymupdf
+
+    from app import parallel
+
+    n = len(pages)
+    parts = parallel.split(pages, workers * parallel.PARTS_PER_WORKER)
+    progress(ProgressEvent("erase", 0, 2 * n, f"{n}쪽 지우는 중 (동시에 {workers}개)"))
+
+    def on_tick(c: dict):  # 쪽마다 지우기 + 확인 두 단계
+        e, v = min(c.get("erase", 0), n), min(c.get("verify", 0), n)
+        msg = f"지우기 {e}/{n}쪽 · 확인 {v}/{n}쪽 (동시에 {workers}개)"
+        progress(ProgressEvent("erase", e + v, 2 * n, msg))
+    res = parallel.run_parts(_erase_part, parts, [(str(project.root), str(run_dir))] * len(parts), workers,
+                             on_tick, cancel)
+    progress(ProgressEvent("verify", n, n, "지운 쪽을 한 파일로 합치는 중"))
+    page_metas, box_checks = [], []
+    offset = 0
+    for k, (metas, boxes) in enumerate(res):
+        for m in metas:
+            m["output_page_index"] += offset
+            m["output_pdf"] = pdf_name  # 묶음 파일 이름 대신 합친 파일
+        offset += len(parts[k])
+        page_metas += metas
+        box_checks += boxes
+    out_pdf = run_dir / pdf_name
+    ensure_not_source(out_pdf, project.source_pdf)
+    parallel.merge_parts(run_dir, len(parts), out_pdf)  # 합친 쪽이 묶음 쪽과 똑같이 그려지는지도 확인
+    src_doc = pymupdf.open(project.source_pdf)
+    check = pymupdf.open(out_pdf)
+    try:  # 합치면 PDF 안의 번호(xref)가 바뀐다: 배경·패치 스트림 정보를 합친 파일에서 다시 적는다
+        for i, (pno, m) in enumerate(zip(pages, page_metas)):
+            _stream_meta(src_doc, check, pno, i, m)
+    finally:
+        check.close()
+        src_doc.close()
+    return page_metas, box_checks
+
+
+def _stream_meta(src_doc, check, pno: int, i: int, meta: dict):
+    """원본 배경 이미지 스트림이 바이트 그대로인지와 패치 이미지의 xref·압축 방식을 meta에 적는다. (bg_o, 패치 정보)."""
+    sp, op = src_doc[pno - 1], check[i]
+    bg = find_background_image(sp)
+    bg_o = find_background_image(op)
+    s_raw = src_doc.xref_stream_raw(bg.xref)
+    o_raw = check.xref_stream_raw(bg_o.xref)
+    bgm = meta["background_image"]
+    bgm["stream_sha256_source"] = hashlib.sha256(s_raw).hexdigest()
+    bgm["stream_sha256_output"] = hashlib.sha256(o_raw).hexdigest()
+    bgm["stream_untouched"] = s_raw == o_raw
+    bgm["filter"] = check.xref_get_key(bg_o.xref, "Filter")[1]
+    bgm["output_xref"] = bg_o.xref
+    # 패치: 저장 뒤 xref·압축 방식 다시 확인 (garbage 정리로 번호가 바뀔 수 있음)
+    infos = [x for x in op.get_image_info(xrefs=True) if x.get("xref", 0) not in (0, bg_o.xref)]
+    for pt in meta["patches"]:
+        match = min(infos, key=lambda x: sum(abs(a - b) for a, b in zip(x["bbox"], pt["bbox_pt"])))
+        pt["xref"] = match["xref"]
+        pt["filter"] = check.xref_get_key(match["xref"], "Filter")[1]
+        pt["stream_bytes"] = len(check.xref_stream_raw(match["xref"]))
 
 
 def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_dir, progress, cancel) -> list:
@@ -242,24 +335,9 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
         if raw_o.shape != raw.shape:
             page_metas[i]["warnings"].append(f"이미지 크기가 바뀜 {raw.shape} -> {raw_o.shape}")
 
-        # 원본 배경 JPEG 스트림이 바이트 그대로인지
-        s_raw = src_doc.xref_stream_raw(bg.xref)
-        o_raw = check.xref_stream_raw(bg_o.xref)
-        bgm = page_metas[i]["background_image"]
-        bgm["stream_sha256_source"] = hashlib.sha256(s_raw).hexdigest()
-        bgm["stream_sha256_output"] = hashlib.sha256(o_raw).hexdigest()
-        bgm["stream_untouched"] = s_raw == o_raw
-        bgm["filter"] = check.xref_get_key(bg_o.xref, "Filter")[1]
-        bgm["output_xref"] = bg_o.xref
-
-        # 패치: 저장 뒤 xref·압축 방식 다시 확인 (garbage 정리로 번호가 바뀔 수 있음)
-        infos = [x for x in op.get_image_info(xrefs=True) if x.get("xref", 0) not in (0, bg_o.xref)]
+        _stream_meta(src_doc, check, pno, i, page_metas[i])  # 원본 배경 스트림 그대로인지, 패치 xref·압축
         outside = np.ones(raw.shape[:2], bool)
         for pt in page_metas[i]["patches"]:
-            match = min(infos, key=lambda x: sum(abs(a - b) for a, b in zip(x["bbox"], pt["bbox_pt"])))
-            pt["xref"] = match["xref"]
-            pt["filter"] = check.xref_get_key(match["xref"], "Filter")[1]
-            pt["stream_bytes"] = len(check.xref_stream_raw(match["xref"]))
             x0, y0, x1, y1 = pt["bbox_px"]
             outside[y0:y1, x0:x1] = False
         diff = np.abs(after.astype(int) - before.astype(int)).max(axis=2)
@@ -976,9 +1054,10 @@ class ProjectStepResult:
 
 def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bool = False,
                   progress: ProgressFn | None = None, cancel: CancelToken | None = None,
-                  files: list | None = None, stale: bool = True) -> ProjectStepResult:
+                  files: list | None = None, stale: bool = True, workers: int | None = None) -> ProjectStepResult:
     """7단계를 모든 그룹·파일에. 이미 지운 파일(cleared/)은 건너뛴다(redo=True면 다시).
-    stale=True면 지운 뒤 원문·영역·카드별 지우기 방식이 바뀐 파일은 다시 지운다."""
+    stale=True면 지운 뒤 원문·영역·카드별 지우기 방식이 바뀐 파일은 다시 지운다.
+    workers: 파일마다 쪽을 나눠 동시에 돌릴 프로세스 수 (None이면 자동, 뒤에서 지우기는 1)."""
     from app import workspace
 
     info = workspace.load_project_info(project_dir)
@@ -994,7 +1073,7 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
             out.files.append({"file": key, "state": "skipped", "reason": "처리할 쪽 없음"})
             continue
         try:
-            r = erase(fd, workspace.pages_spec(pages), progress=progress, cancel=cancel)
+            r = erase(fd, workspace.pages_spec(pages), progress=progress, cancel=cancel, workers=workers)
         except FileNotFoundError as e:  # 영역 템플릿 없음 등
             out.files.append({"file": key, "state": "blocked", "reason": str(e)})
             out.state, out.reason = "blocked", f"{key}: {e}"
@@ -2791,8 +2870,13 @@ def self_check() -> dict:
     out["engine"] = engine_status()
     out["release_notes"] = bool(release_notes())
     out["license"] = "BEER-WARE" in license_text() and "AGPL" in license_text()
+    from app import parallel
+
+    # ⑦·⑧ 동시 처리: 작업 프로세스가 뜨는지 (안 되면 한 프로세스로 하지만 느리다 — 빌드가 잘못된 것이므로 점검 실패로 본다).
+    # 동시 처리를 끈 환경(테스트)이면 None: 점검하지 않는다
+    out["parallel"] = parallel.self_check()
     out["font_pack"] = font_files.pack_status()  # 글꼴 묶음은 따로 설치하므로 점검 실패로 보지 않는다
-    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and out["license"] and not any(
+    out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and out["license"] and out["parallel"] is not False and not any(
         str(v).startswith("없음") for v in libs.values())
     return out
 

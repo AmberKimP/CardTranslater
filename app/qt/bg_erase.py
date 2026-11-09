@@ -205,7 +205,8 @@ class BackgroundEraser(QObject):
         n = self.total - len(self.queue)
         label = f"뒤에서 글자 지우기 {n}/{self.total} 파일"
         self._set_text(f"{label} {self._pace()}")
-        job = _BgJob(self, service.erase_project, self.project_dir, files=[fd], stale=True)
+        job = _BgJob(self, service.erase_project, self.project_dir, files=[fd], stale=True,
+                     workers=1)  # 뒤에서는 한 프로세스로 (화면 작업·다른 프로그램을 방해하지 않게)
         self.job = job
         job.signals.progress.connect(lambda ev, b=label: self._progress(b, ev))
         for sig in (job.signals.done, job.signals.failed, job.signals.cancelled):
