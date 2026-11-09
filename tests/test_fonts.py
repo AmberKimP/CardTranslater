@@ -293,3 +293,22 @@ def test_font_picked_in_one_region_is_offered_in_others(qapp):
     dlg.tree.expandItem(r2)
     card = dlg.tree.itemWidget(r2.child(0), 1)
     assert card.findData(other) >= 0
+
+
+def test_add_font_dialog_lists_app_fonts_first(qapp):
+    """‘글꼴 추가…’ 창은 앱에 들어 있는 글꼴 전체를 맨 위에 (추천에 없던 앱 글꼴도 고를 수 있게)."""
+    from app.qt.fonts_dialog import AddFontDialog
+
+    app_fonts = [{"file": GAEGU, "label": "Gaegu — 개구"}]
+    pc = [{"file": str(ROOT / SANS), "label": "Noto Sans KR"}]
+    dlg = AddFontDialog(pc, app_fonts=app_fonts)
+    texts = [dlg.list.item(i).text() for i in range(dlg.list.count())]
+    assert texts[0].startswith("앱에 들어 있는 글꼴 1개") and "Gaegu" in texts[1] and texts[2].startswith("PC에 설치된")
+    dlg.list.setCurrentRow(0)  # 제목 줄은 고를 수 없다
+    dlg.accept()
+    assert dlg.chosen is None
+    dlg.search.setText("gae")
+    assert not dlg.list.item(0).isHidden() and dlg.list.item(3).isHidden()
+    dlg.list.setCurrentRow(1)
+    dlg.accept()
+    assert dlg.chosen["app"] is True and dlg.chosen["file"] == GAEGU

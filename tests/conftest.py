@@ -4,6 +4,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_installed_font_pack(monkeypatch, tmp_path_factory):
+    """이 PC에 설치된 글꼴 묶음(%LOCALAPPDATA%)을 테스트가 보지 않게 (빈 폴더)."""
+    monkeypatch.setenv("CARDTRANSLATER_FONT_PACK", str(tmp_path_factory.mktemp("fontpack")))
+
+
+@pytest.fixture(autouse=True)
 def _no_background_erase(monkeypatch):
     """프로젝트 화면을 여는 테스트가 뒤에서 글자 지우기를 시작하지 않게 (그것을 보는 테스트만 켠다)."""
     monkeypatch.setenv("CARDTRANSLATER_NO_BG_ERASE", "1")

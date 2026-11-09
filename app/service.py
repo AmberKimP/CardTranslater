@@ -1569,18 +1569,25 @@ def pdf_page_image(pdf: Path | str, page: int, dpi: int = 110) -> bytes:
 
 def font_choices() -> list[dict]:
     """고를 수 있는 한글 글꼴 [{"label", "family", "file"}] (fonts/에 실제로 있는 파일만)."""
-    from app.typeset import ROOT
+    from app import font_files
 
-    cat = json.loads((ROOT / "fonts" / "catalog.json").read_text(encoding="utf-8"))
+    cat = font_files.catalog()  # 프로그램의 기본 글꼴 + 따로 설치한 글꼴 묶음
     out = []
     for fam in cat.get("families", []):
-        d = ROOT / "fonts" / fam["dir"]
-        for f in sorted(p for p in d.glob("*.[ot]tf") if "[" not in p.name) if d.exists() else []:  # 가변 글꼴 원본 제외
+        files = {p.name: p for d in font_files.family_dirs(fam["dir"]) for p in d.glob("*.[ot]tf")}
+        for f in sorted((p for p in files.values() if "[" not in p.name), key=lambda p: p.name):  # 가변 글꼴 원본 제외
             weight = f.stem.split("-")[-1] if "-" in f.stem else ""
             family = fam["name"] + (f" {weight}" if weight and weight != "Regular" else "")
             out.append({"label": f"{family} — {fam.get('ko_name', '')}", "family": family,
                         "file": f"fonts/{fam['dir']}/{f.name}", "style": fam.get("style", "")})
     return out
+
+
+def font_pack_status() -> dict:
+    """따로 설치하는 글꼴 묶음 상태 {"wanted", "installed", "missing", "ok"} (app.font_files.pack_status)."""
+    from app import font_files
+
+    return font_files.pack_status()
 
 
 # ---------------------------------------------------------------- 한글 넣기 전 글꼴 고르기
@@ -1738,7 +1745,7 @@ def validate_region_template(data: dict) -> list[str]:
 
 
 def _validate_region_set(data: dict) -> list[str]:
-    from app.typeset import ROOT
+    from app import font_files
 
     problems = []
     all_regions = list(data.get("regions", [])) + list(data.get("protect_rects", []))
@@ -1768,7 +1775,7 @@ def _validate_region_set(data: dict) -> list[str]:
         if st.get("align", "left") not in ALIGNS:
             problems.append(f"{r.get('name')}: 정렬은 left/center/right")
         f = (st.get("font") or {}).get("file")
-        if f and not (Path(f) if Path(f).is_absolute() else ROOT / f).exists():
+        if f and not font_files.resolve(f).exists():
             problems.append(f"{r.get('name')}: 글꼴 파일이 없습니다 ({f})")
     return problems
 
@@ -2472,19 +2479,26 @@ def save_review(file_dir: Path | str, page: int, region: str, text: str | None, 
     확인한다 (다른 번역을 쓰던 칸은 그대로). 바뀐 칸들의 새 줄을 돌려준다."""
     from app import card_edits, review_marks, workspace
 
-    fd = Path(file_dir)
-    me = _review_row(fd, page, region)
+    fd = Path(file_dir).resolve()
+    before: dict[str, list[dict]] = {}
+
+    def rows_of(d: Path) -> list[dict]:  # 파일마다 한 번만 (칸마다 파일 전체 줄을 다시 만들면 느리다)
+        if str(d) not in before:
+            before[str(d)] = _review_file_rows(d)
+        return before[str(d)]
+    me = next((r for r in rows_of(fd) if r["page"] == int(page) and r["region"] == region), None)
     if me is None:
         raise KeyError(f"검수할 칸이 없습니다: {page}쪽 {region}")
     targets = [(fd, int(page), region)]
     if same_source and text is not None:
         info = workspace.project_of(fd)
-        scope = [Path(x) for x in (scope_files or [fd])]
+        scope = list(dict.fromkeys(Path(x).resolve() for x in (scope_files or [fd])))  # 같은 파일을 두 번 보지 않게
         for d in scope:
-            for r in (_review_file_rows(d) if info is not None else []):
+            for r in (rows_of(d) if info is not None else []):
                 if (r["source"] == me["source"] and r["ko"] == me["ko"]
-                        and not (Path(r["file_dir"]) == fd and r["page"] == int(page) and r["region"] == region)):
-                    targets.append((Path(r["file_dir"]), r["page"], r["region"]))
+                        and not (Path(r["file_dir"]).resolve() == fd and int(r["page"]) == int(page)
+                                 and r["region"] == region)):
+                    targets.append((Path(r["file_dir"]).resolve(), int(r["page"]), r["region"]))
     for d, p_, reg in targets:
         if text is not None:
             entry = (_translation_cards(d).get(p_) or {}).get(reg) or {}
@@ -2497,12 +2511,11 @@ def save_review(file_dir: Path | str, page: int, region: str, text: str | None, 
         if checked and final is not None:
             review_marks.mark(d, p_, reg, final)
     _clear_review_caches()
-    out = []
-    for d, p_, reg in targets:
-        r = _review_row(d, p_, reg)
-        if r is not None:
-            out.append(r)
-    return out
+    after: dict = {}
+    for d in dict.fromkeys(str(t[0]) for t in targets):
+        for r in _review_file_rows(Path(d)):
+            after[(d, int(r["page"]), r["region"])] = r
+    return [after[k] for k in ((str(d), p_, reg) for d, p_, reg in targets) if k in after]
 
 
 def set_review_checked(file_dir: Path | str, page: int, region: str, checked: bool) -> dict:
@@ -2713,7 +2726,7 @@ def self_check() -> dict:
 
     from app.typeset import ROOT, TextStyle, finalize, typeset_region
 
-    from app import settings
+    from app import font_files, settings
 
     out: dict = {"root": str(ROOT), "data_dir": str(data_dir()), "frozen": settings.is_frozen()}
     fonts = font_choices()
@@ -2729,7 +2742,7 @@ def self_check() -> dict:
     try:
         doc = pymupdf.open()
         page = doc.new_page(width=200, height=100)
-        ff = ROOT / (fonts[0]["file"] if fonts else "fonts/notosanskr/NotoSansKR-Regular.ttf")
+        ff = font_files.resolve(fonts[0]["file"] if fonts else "fonts/notosanskr/NotoSansKR-Regular.ttf")
         r = typeset_region(page, (10, 10, 190, 60), "한글 점검", TextStyle(font_file=str(ff), size_pt=10))
         finalize(doc)
         data = doc.tobytes()
@@ -2739,6 +2752,7 @@ def self_check() -> dict:
         out["typeset"] = f"실패: {e}"
     out["engine"] = engine_status()
     out["release_notes"] = bool(release_notes())
+    out["font_pack"] = font_files.pack_status()  # 글꼴 묶음은 따로 설치하므로 점검 실패로 보지 않는다
     out["ok"] = bool(out["fonts"]) and out["typeset"] is True and out["release_notes"] and not any(
         str(v).startswith("없음") for v in libs.values())
     return out
@@ -2886,8 +2900,10 @@ def claude_login_status(check: bool = False, runner=None) -> dict:
                                                 "required": ["ok"], "additionalProperties": False},
                         "claude-haiku-5-5", "You are a health check.", data_dir() / "work" / "login-check")
     except NotAvailable as e:
+        if "Git for Windows" in str(e):
+            return {"installed": True, "logged_in": False, "message": str(e)[:300]}
         return {"installed": True, "logged_in": False,
-                "message": f"로그인되어 있지 않습니다 — ‘로그인 창 열기’에서 /login 으로 로그인하세요 ({str(e)[:160]})"}
+                "message": f"로그인되어 있지 않습니다 — ‘로그인 창 열기’에서 로그인하세요 ({str(e)[:160]})"}
     except Paused as e:
         return {"installed": True, "logged_in": True, "message": f"로그인됨 (지금은 사용 한도: {e.reason[:120]})"}
     except CardError as e:
@@ -2904,8 +2920,13 @@ def launch_claude_login() -> None:
     if not exe:
         raise OSError("Claude Code가 설치되어 있지 않습니다 — ‘Claude Code 설치’를 누르세요")
     if sys.platform == "win32":
-        subprocess.Popen(["cmd", "/c", "start", "Claude 로그인", "cmd", "/k",
-                          f'echo 로그인하려면 /login 을 입력하세요 & "{exe}"'])
+        guide = ("echo ===== Claude 로그인 ===== & "
+                 "echo  처음이면 안내가 차례로 나옵니다: 글자 색은 아무거나 Enter, "
+                 "로그인 방법은 Claude account with subscription 을 골라 Enter, 브라우저에서 승인. & "
+                 "echo  코드를 붙여 넣으라고 하면 브라우저의 코드를 복사해 마우스 오른쪽 클릭 후 Enter. & "
+                 "echo  안내 없이 바로 ^> 입력 칸이 나오면 /login 을 입력하고 Enter. & "
+                 "echo  로그인이 끝나면 이 창을 닫고 CardTranslater에서 [로그인 확인]을 누르세요. & echo.")
+        subprocess.Popen(["cmd", "/c", "start", "Claude 로그인", "cmd", "/k", f'{guide} & "{exe}"'])
     else:
         subprocess.Popen(["x-terminal-emulator", "-e", exe])
 

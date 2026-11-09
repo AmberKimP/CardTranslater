@@ -236,10 +236,9 @@ def label_for(file: str) -> str:
 
 
 def resolve(file: str) -> Path:
-    from app.typeset import ROOT
+    from app.font_files import resolve as _resolve
 
-    p = Path(file)
-    return p if p.is_absolute() else ROOT / p
+    return _resolve(file)  # 프로그램 폴더 → 글꼴 묶음
 
 
 def project_used_fonts(file_dir: Path | str) -> list[str]:

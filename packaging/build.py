@@ -3,7 +3,8 @@
     .venv/Scripts/python packaging/build.py            # dist/CardTranslater/CardTranslater.exe
     .venv/Scripts/python packaging/build.py --no-test  # 빌드만 (자가 점검 생략)
 
-- 글꼴은 정적 파일(*.ttf/*.otf)과 catalog.json·라이선스(OFL.txt)만 넣는다 (가변 글꼴 원본 [wght]는 뺀다).
+- 글꼴은 기본 글꼴(catalog.json의 "bundled": true, 본고딕)만 넣는다: 정적 파일(*.ttf/*.otf)·라이선스(OFL.txt)와
+  catalog.json (가변 글꼴 원본 [wght]는 뺀다). 나머지 글꼴은 글꼴 설치 파일로 따로 (packaging/make_font_pack.py).
 - 빌드 뒤 exe를 --selftest로 실행해 글꼴·라이브러리·한글 그리기·화면 생성을 점검한다.
 - .env(API 키)와 projects/·games/는 넣지 않는다. exe는 데이터 폴더(기본 문서/CardTranslater)를 쓴다.
 """
@@ -28,14 +29,26 @@ EXCLUDE = ["tkinter", "pytest", "_pytest", "matplotlib", "IPython", "PyQt5", "Py
            "PySide6.QtQml", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization"]
 
 
-def stage_fonts(dst: Path) -> int:
+def font_families(bundled: bool) -> set[str]:
+    """catalog.json의 계열 폴더 이름: bundled=True면 프로그램에 넣는 것, False면 글꼴 설치 파일에 넣는 것."""
+    cat = json.loads((ROOT / "fonts" / "catalog.json").read_text(encoding="utf-8"))
+    return {f["dir"] for f in cat["families"] if bool(f.get("bundled")) == bundled}
+
+
+def stage_fonts(dst: Path, families: set[str] | None = None) -> int:
+    """families(계열 폴더 이름)의 글꼴과 catalog.json을 dst에 모은다. None이면 프로그램에 넣는 기본 글꼴."""
     if dst.exists():
         shutil.rmtree(dst)
+    if families is None:
+        families = font_families(bundled=True)
     n = 0
     for f in (ROOT / "fonts").rglob("*"):
         if f.is_dir():
             continue
-        keep = (f.suffix.lower() in (".ttf", ".otf") and "[" not in f.name) or f.name in ("catalog.json", "OFL.txt")
+        rel = f.relative_to(ROOT / "fonts")
+        in_family = len(rel.parts) > 1 and rel.parts[0] in families
+        font_file = f.suffix.lower() in (".ttf", ".otf") and "[" not in f.name
+        keep = (in_family and (font_file or f.name == "OFL.txt")) or str(rel) == "catalog.json"
         if keep:
             out = dst / f.relative_to(ROOT / "fonts")
             out.parent.mkdir(parents=True, exist_ok=True)

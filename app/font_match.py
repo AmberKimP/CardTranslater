@@ -22,6 +22,8 @@ from pathlib import Path
 
 import numpy as np
 
+from app import font_files  # 앱 글꼴: 프로그램 폴더 → 글꼴 묶음
+
 log = logging.getLogger("cardtranslater.fonts")
 
 KO_SAMPLE = "한글 글꼴 견본 가나다라 마바사 아자차카 타파하"
@@ -175,7 +177,6 @@ def _reason(parts: list[tuple[float, str]], src: dict, cand: dict) -> str:
 def rank_fonts(sources: list[dict], candidates: list[dict], sample: str = KO_SAMPLE) -> list[dict]:
     """원문 모양 값(여러 쪽)과 후보 [{"file", "label", "style"}]로 가까운 순 목록.
     돌려주는 항목: 후보 dict + {"score"(작을수록 비슷), "reason"}. 원문을 못 쟀으면 후보 순서 그대로(score None)."""
-    from app.typeset import ROOT
 
     srcs = [s for s in sources if s]
     if not srcs:
@@ -185,8 +186,7 @@ def rank_fonts(sources: list[dict], candidates: list[dict], sample: str = KO_SAM
     small = float(np.median([s.get("height_pt", 99) for s in srcs])) < SMALL_TEXT_PT
     out = []
     for c in candidates:
-        p = Path(c["file"])
-        f = font_features(str(p if p.is_absolute() else ROOT / p), sample, max(hpx, 16))
+        f = font_features(str(font_files.resolve(c["file"])), sample, max(hpx, 16))
         if not f:
             continue
         score, parts = _distance(src, f)
@@ -346,9 +346,8 @@ def render_sample_sheet(candidates: list[dict], text: str, out_png: Path, height
     for i, c in enumerate(candidates, start=1):
         y = 8 + (i - 1) * row_h
         d.text((12, y + row_h * 0.25), f"{i}.", font=label_font, fill=(200, 30, 30))
-        p = Path(c["file"])
         try:
-            f = ImageFont.truetype(str(p if p.is_absolute() else ROOT / p), height_px)
+            f = ImageFont.truetype(str(font_files.resolve(c["file"])), height_px)
         except OSError:
             continue
         d.text((70, y + row_h * 0.12), text[:40], font=f, fill="black")

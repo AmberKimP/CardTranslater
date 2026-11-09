@@ -159,14 +159,28 @@ def measure_source_ink(page: pymupdf.Page, rect, *, polarity: str = "dark", colo
     return SourceInk(bbox, lines, float(np.median(heights)) if heights else None, pitch, line_x)
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=64)
+def _font(path: str) -> pymupdf.Font:
+    """글꼴 파일 하나에 Font 하나 (typeset의 글자 폭 재기와 함께 쓴다: 큰 한글 글꼴을 두 번 올리지 않게)."""
+    return pymupdf.Font(fontfile=path)
+
+
+@lru_cache(maxsize=65536)  # (글꼴, 글자)마다 한 번 (한글은 글자 종류가 많다). 끝없이 늘지 않게 상한을 둔다
 def _glyph_ink(font_file: str, ch: str, size: float = 200.0, dpi: int = 144) -> tuple[float, float] | None:
     """한 글자를 그려 (기준선 위 잉크 높이, 기준선 아래 깊이)를 1pt 기준으로 돌려준다."""
     doc = pymupdf.open()
     page = doc.new_page(width=size * 2, height=size * 2)
-    page.insert_font(fontname="K", fontfile=font_file)
     base = size * 1.4
-    page.insert_text((size * 0.5, base), ch, fontname="K", fontsize=size)
+    font = _font(font_file)
+    if font.has_glyph(ord(ch)):
+        # TextWriter로 그린다: insert_text는 부를 때마다 글꼴을 넣고 글꼴 전체 글자 폭을 계산해 느리다 (한 글자 0.1초).
+        # 잉크는 같다 (글꼴에 있는 글자는 예전 방식과 똑같은 값).
+        tw = pymupdf.TextWriter(page.rect)
+        tw.append((size * 0.5, base), ch, font=font, fontsize=size)
+        tw.write_text(page)
+    else:  # 글꼴에 없는 글자: 예전 방식 그대로 (TextWriter는 다른 글꼴로 대신 그려 값이 달라진다)
+        page.insert_font(fontname="K", fontfile=font_file)
+        page.insert_text((size * 0.5, base), ch, fontname="K", fontsize=size)
     pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
     a = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w)
     rows = np.where((a < 128).any(1))[0]

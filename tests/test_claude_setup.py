@@ -68,6 +68,10 @@ class FakeRun:
         raise AssertionError(args)
 
 
+def _no_native(*_a):
+    raise cs.SetupError("downloads.claude.ai에 연결하지 못했습니다")
+
+
 def _fake_node(dirpath: Path) -> Path:
     node = _touch(dirpath / "node.exe")
     _touch(dirpath / "node_modules" / "npm" / "bin" / "npm-cli.js")
@@ -82,7 +86,7 @@ def test_install_downloads_node_when_missing(home):
         installed.append(1)
         return _fake_node(cs.tools_dir() / "node")
 
-    exe = cs.install_claude_code(lambda *a: events.append(a), run=run, node_installer=node_installer)
+    exe = cs.install_claude_code(lambda *a: events.append(a), run=run, node_installer=node_installer, native_installer=_no_native)
     assert installed and exe == str(cs.tools_dir() / "claude" / cs._EXE_IN_PKG)
     assert any("install" in c for c in run.calls) and events[-1][0] == "done"
     assert cs.find_claude() == exe  # 다음부터는 PATH 없이도 찾는다
@@ -94,13 +98,15 @@ def test_install_uses_existing_node_and_rejects_old(home, monkeypatch):
     monkeypatch.setenv("ProgramFiles", str(pf))
     _fake_node(pf / "nodejs")
     installed = []
-    cs.install_claude_code(run=FakeRun(node_major=24), node_installer=lambda *_a: installed.append(1))
+    cs.install_claude_code(run=FakeRun(node_major=24), node_installer=lambda *_a: installed.append(1),
+                           native_installer=_no_native)
     assert not installed  # 시스템 Node 22+ → 그대로 사용
 
     (cs.tools_dir() / "claude").rename(home / "gone")  # 다시 없는 상태로
     called = []
     cs.install_claude_code(run=FakeRun(node_major=18),
-                           node_installer=lambda *_a: called.append(1) or _fake_node(cs.tools_dir() / "node"))
+                           node_installer=lambda *_a: called.append(1) or _fake_node(cs.tools_dir() / "node"),
+                           native_installer=_no_native)
     assert called  # Node 18은 너무 낮아 새로 받는다
 
 
@@ -108,7 +114,7 @@ def test_install_uses_existing_node_and_rejects_old(home, monkeypatch):
 def test_install_reports_npm_failure(home):
     with pytest.raises(cs.SetupError, match="npm"):
         cs.install_claude_code(run=FakeRun(npm_ok=False),
-                               node_installer=lambda *_a: _fake_node(cs.tools_dir() / "node"))
+                               node_installer=lambda *_a: _fake_node(cs.tools_dir() / "node"), native_installer=_no_native)
 
 
 def test_install_returns_existing(home):
@@ -154,3 +160,66 @@ def test_install_node_verifies_and_extracts(home, monkeypatch):
     fetch, download = _fetcher(name, data, sha="0" * 64)
     with pytest.raises(cs.SetupError, match="체크섬"):
         cs.install_node(lambda *a: None, fetch=fetch, download=download)
+
+
+# ---------------------------------------------------------------- 공식 claude.exe (Node.js 없이)
+def _native_fakes(body=b"CLAUDE-EXE", checksum=None):
+    want = checksum or hashlib.sha256(body).hexdigest()
+    urls = []
+
+    def fetch(url, timeout=60):
+        urls.append(url)
+        if url.endswith("/latest"):
+            return b"2.1.319\n"
+        if url.endswith("/manifest.json"):
+            return json.dumps({"platforms": {"win32-x64": {"checksum": want}, "win32-arm64": {"checksum": want}}}).encode()
+        raise AssertionError(url)
+
+    def download(url, dest, progress, cancel, timeout=60, stage="", label=""):
+        urls.append(url)
+        progress(stage, len(body), len(body), f"{label} 받는 중")
+        Path(dest).write_bytes(body)
+    return fetch, download, urls
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="자동 설치는 Windows만")
+def test_native_install_downloads_verifies_and_runs_install(home):
+    fetch, download, urls = _native_fakes()
+    calls = []
+
+    def run(args, cwd, timeout, env=None):
+        calls.append(args)
+        if args[1:] == ["install", "latest"]:
+            assert Path(args[0]).read_bytes() == b"CLAUDE-EXE"  # 받은 파일로 설치
+            _touch(home / "home" / ".local" / "bin" / "claude.exe")  # 공식 install이 두는 곳
+            return 0, "Claude Code successfully installed", ""
+        return 0, "2.1.319 (Claude Code)", ""
+    exe = cs.install_claude_code(run=run, native_installer=lambda say, cancel, r: cs.install_native(
+        say, cancel, r, fetch=fetch, download=download), node_installer=lambda *_a: pytest.fail("Node.js 필요 없음"))
+    assert exe == str(home / "home" / ".local" / "bin" / "claude.exe")
+    assert any(u.endswith("/2.1.319/win32-x64/claude.exe") or u.endswith("/2.1.319/win32-arm64/claude.exe") for u in urls)
+    assert not list(cs.tools_dir().glob("*.part"))  # 받은 임시 파일은 지운다
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="자동 설치는 Windows만")
+def test_native_install_keeps_exe_when_install_step_fails(home):
+    fetch, download, _urls = _native_fakes()
+
+    def run(args, cwd, timeout, env=None):
+        return (1, "", "install failed") if "install" in args else (0, "2.1.319 (Claude Code)", "")
+    exe = cs.install_native(lambda *a: None, None, run, fetch=fetch, download=download)
+    assert exe == str(cs.tools_dir() / "claude-native" / "claude.exe") and Path(exe).read_bytes() == b"CLAUDE-EXE"
+    assert cs.find_claude() == exe  # 다음에 켜도 찾는다
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="자동 설치는 Windows만")
+def test_native_checksum_mismatch_falls_back_to_npm_and_reports_both(home):
+    fetch, download, _urls = _native_fakes(checksum="0" * 64)
+
+    def native(say, cancel, r):
+        return cs.install_native(say, cancel, r, fetch=fetch, download=download)
+    with pytest.raises(cs.SetupError) as ei:
+        cs.install_claude_code(run=FakeRun(npm_ok=False), native_installer=native,
+                               node_installer=lambda *_a: _fake_node(cs.tools_dir() / "node"))
+    assert "손상" in str(ei.value) and "npm" in str(ei.value)
+    assert not (cs.tools_dir() / "claude-native").exists()  # 손상된 파일은 쓰지 않는다

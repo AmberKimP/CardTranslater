@@ -24,6 +24,7 @@ from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.erase_text import is_icon_line
 from app.typeset_layout import STATUS_OVERFLOW, join_lines_at, two_line_sentences, wrap_sentence_fonts
+from app.font_files import resolve as resolve_font
 from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
 
@@ -128,7 +129,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         style_d = (styles or {}).get(name) or reg.get("style_defaults") or {}
         chosen = (fonts or {}).get(name)
         missing = None
-        if chosen and not (Path(chosen) if Path(chosen).is_absolute() else Path(base_dir) / chosen).is_file():
+        if chosen and not resolve_font(chosen, base_dir).is_file():
             missing, chosen = chosen, None  # 글꼴을 지웠거나 다른 PC의 경로: 영역 글꼴로 넣고 알린다
         if chosen:  # 고른 글꼴: 굵게용 파일은 그 글꼴의 이웃 굵기에서 다시 찾는다
             style_d = {**style_d, "font": {**(style_d.get("font") or {}), "file": chosen, "bold_file": None}}
@@ -146,7 +147,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         if chosen:
             rec["font_file"] = chosen
         if missing:
-            rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음: {missing}")
+            rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음: {missing}" + _pack_hint(missing))
             rec["font_missing"] = missing
 
         if reg.get("kind") == "tag_pills":
@@ -203,7 +204,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         if sent and text and style_d.get("font_mode") == "sentence":
             ok = {}
             for k, f in sent.items():
-                if (Path(f) if Path(f).is_absolute() else Path(base_dir) / f).is_file():
+                if resolve_font(f, base_dir).is_file():
                     ok[int(k)] = f
                 else:
                     rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음 ({int(k) + 1}번째 문장): {f}")
@@ -804,3 +805,8 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         f"before {sha_src_before}  {src_path.name}\nafter  {sha_src_after}  {src_path.name}\n", encoding="utf-8")
     ok = rep["source_unchanged"] and rep["erased_unchanged"]
     return run_dir, (0 if ok else 2)
+
+
+def _pack_hint(file: str) -> str:
+    """앱 글꼴(fonts/…)이 없으면 글꼴 설치 파일을 안내한다."""
+    return " (글꼴 설치 파일 CardTranslater-Fonts를 설치하세요)" if str(file).replace("\\", "/").startswith("fonts/") else ""

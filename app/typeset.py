@@ -26,7 +26,8 @@ from pathlib import Path
 
 import pymupdf
 
-from app.typeset_ink import DEFAULT_KO_SAMPLE, _glyph_ink, font_ink_ratio, start_size_for_ink
+from app.font_files import resolve as resolve_font  # 프로그램 폴더 → 글꼴 묶음
+from app.typeset_ink import DEFAULT_KO_SAMPLE, _font, _glyph_ink, font_ink_ratio, start_size_for_ink
 from app.typeset_layout import (
     STATUS_EMPTY,
     STATUS_ERASE_ONLY,
@@ -103,25 +104,19 @@ class TextStyle:
         """regions.json의 style(또는 추출 JSON의 style_defaults)에서 만든다."""
         font = style.get("font") or {}
         ff = font.get("file") or "fonts/notosanskr/NotoSansKR-Regular.ttf"
-        p = Path(ff)
-        if not p.is_absolute():
-            p = Path(base_dir) / p
         kw = dict(
-            font_file=str(p),
+            font_file=str(resolve_font(ff, base_dir)),
             color=style.get("color", "#000000"),
             align={"original": "left", "": "left"}.get(style.get("align", "left"), style.get("align", "left")),
             italic=bool(style.get("italic", False)),
         )
         fb = font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf")
         if fb:
-            fp = Path(fb)
-            kw["fallback_file"] = str(fp if fp.is_absolute() else Path(base_dir) / fp)
+            kw["fallback_file"] = str(resolve_font(fb, base_dir))
         if font.get("bold_file"):
-            bp = Path(font["bold_file"])
-            kw["bold_file"] = str(bp if bp.is_absolute() else Path(base_dir) / bp)
+            kw["bold_file"] = str(resolve_font(font["bold_file"], base_dir))
         if style.get("tag_fonts"):
-            kw["tag_fonts"] = {k: str(Path(v) if Path(v).is_absolute() else Path(base_dir) / v)
-                               for k, v in style["tag_fonts"].items()}
+            kw["tag_fonts"] = {k: str(resolve_font(v, base_dir)) for k, v in style["tag_fonts"].items()}
         for k in ("tag_colors", "size_pt", "line_pitch_pt", "fixed_size_pt", "min_ratio", "floor_pt",
                   "floor_basis", "tracking", "rotate", "icons_dir", "icon_scales", "size_scale", "join_two"):
             if k in style:
@@ -148,11 +143,6 @@ class TextStyle:
 
 
 # ---------------------------------------------------------------- 글꼴 메트릭
-@lru_cache(maxsize=64)
-def _font(path: str) -> pymupdf.Font:
-    return pymupdf.Font(fontfile=path)
-
-
 @lru_cache(maxsize=64)
 def _bold_variant(path: str) -> str | None:
     p = Path(path)

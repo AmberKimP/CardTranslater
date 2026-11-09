@@ -61,10 +61,10 @@ class LoginDialog(QDialog):
         self.b_check.setToolTip("아주 짧은 요청을 한 번 보내 로그인 상태를 확인합니다 (사용량이 조금 듭니다)")
         self.b_check.clicked.connect(self.check_claude)
         self.b_login = QPushButton("로그인 창 열기")
-        self.b_login.setToolTip("새 창에서 claude를 띄웁니다. /login 을 입력해 로그인한 뒤 ‘로그인 확인’을 누르세요")
+        self.b_login.setToolTip("새 검은 창에서 Claude Code를 띄웁니다. 안내대로 로그인한 뒤 ‘로그인 확인’을 누르세요")
         self.b_login.clicked.connect(self.open_claude_login)
         self.b_install = QPushButton("Claude Code 설치")
-        self.b_install.setToolTip("Node.js(없을 때만)와 Claude Code를 이 사용자 폴더에 설치합니다 (관리자 권한 필요 없음)")
+        self.b_install.setToolTip("Anthropic 공식 Claude Code를 이 사용자 폴더에 설치합니다 (관리자 권한 필요 없음)")
         self.b_install.clicked.connect(self.install_claude)
         crow = QHBoxLayout()
         crow.addWidget(self.b_install)  # 설치 -> 로그인 창 열기 -> 로그인 확인 순서
@@ -170,9 +170,9 @@ class LoginDialog(QDialog):
 
     def install_claude(self):
         msg = ("Claude Code를 설치할까요?\n\n"
-               "• Node.js 22 이상이 없으면 공식 사이트(nodejs.org)에서 받아 이 사용자 폴더에 둡니다 (약 30MB)\n"
-               "• 그다음 npm으로 Claude Code를 설치합니다 (약 330MB 내려받기)\n"
-               "• 관리자 권한은 필요 없고, 인터넷 연결이 필요합니다. 몇 분 걸릴 수 있습니다.\n\n"
+               "• Anthropic 공식 사이트에서 Claude Code(약 350MB)를 받아 이 사용자 폴더에 설치합니다\n"
+               "• 관리자 권한은 필요 없고, 인터넷 연결이 필요합니다. 보통 1~5분 걸립니다.\n"
+               "• 공식 사이트에 연결되지 않으면 Node.js와 npm으로 대신 설치합니다 (더 오래 걸림).\n\n"
                "설치한 뒤 ‘로그인 창 열기’에서 Claude 구독 계정으로 로그인하세요.")
         if QMessageBox.question(self, "Claude Code 설치", msg) != QMessageBox.StandardButton.Yes:
             return
@@ -184,7 +184,7 @@ class LoginDialog(QDialog):
         self._refresh_claude(service.claude_login_status(check=False))
         self._sync()
         if self._claude["installed"]:
-            QMessageBox.information(self, "Claude Code 설치", "설치했습니다. 이제 ‘로그인 창 열기’를 눌러 /login 으로 로그인하세요.")
+            QMessageBox.information(self, "Claude Code 설치", "설치했습니다. 이제 ‘로그인 창 열기’를 눌러 Claude 계정으로 로그인하세요.")
 
     def open_claude_login(self):
         try:
@@ -193,7 +193,8 @@ class LoginDialog(QDialog):
             show_problem(self, "로그인 창을 열지 못했습니다", str(e),
                          "Claude Code가 설치되어 있는지 확인하세요. 아니면 ‘API 키 사용’을 고르세요.")
             return
-        self.claude_status.setText("○ 새 창에서 /login 으로 로그인한 뒤 ‘로그인 확인’을 누르세요")
+        self.claude_status.setText("○ 검은 창의 안내대로 로그인한 뒤(로그인 방법: Claude account with subscription) "
+                                   "그 창을 닫고 ‘로그인 확인’을 누르세요")
 
     def save_key(self):
         key = self.key.text().strip()

@@ -43,28 +43,42 @@ def qt_family(file: str) -> str | None:
 
 
 class AddFontDialog(QDialog):
-    """PC에 설치된 글꼴(한글이 있고 PDF에 넣어도 되는 것) 중 하나를 고르거나, 글꼴 파일을 고른다."""
+    """앱에 들어 있는 글꼴(app_fonts, 맨 위)이나 PC에 설치된 글꼴(한글이 있고 PDF에 넣어도 되는 것) 중 하나를 고르거나,
+    글꼴 파일을 고른다. 앱 글꼴을 고르면 chosen["app"] = True."""
 
-    def __init__(self, fonts: list[dict], parent=None):
+    def __init__(self, fonts: list[dict], parent=None, app_fonts: list[dict] | None = None):
         super().__init__(parent)
         self.setWindowTitle("글꼴 추가")
-        self.resize(560, 560)
+        self.resize(560, 600)
         self.chosen: dict | None = None
         self.search = QLineEdit()
         self.search.setPlaceholderText("이름으로 찾기")
         self.search.textChanged.connect(self._filter)
         self.list = QListWidget()
-        for f in fonts:
-            it = QListWidgetItem(f["label"])
-            it.setData(Qt.ItemDataRole.UserRole, f)
-            it.setToolTip(f["file"])
-            self.list.addItem(it)
+        groups = [(None, fonts)] if app_fonts is None else [
+            (f"앱에 들어 있는 글꼴 {len(app_fonts)}개 (상업적으로 써도 되는 무료 글꼴)",
+             [{**f, "app": True} for f in app_fonts]),
+            (f"PC에 설치된 글꼴 {len(fonts)}개", fonts)]
+        for head, items in groups:
+            if head:
+                h = QListWidgetItem(head)
+                h.setFlags(Qt.ItemFlag.NoItemFlags)  # 고를 수 없는 제목 줄
+                f = h.font()
+                f.setBold(True)
+                h.setFont(f)
+                self.list.addItem(h)
+            for f in items:
+                it = QListWidgetItem(("    " if head else "") + f["label"])
+                it.setData(Qt.ItemDataRole.UserRole, f)
+                it.setToolTip(f["file"])
+                self.list.addItem(it)
         self.list.currentItemChanged.connect(self._preview)
         self.list.itemDoubleClicked.connect(lambda *_a: self.accept())
         self.sample = QLabel("가나다라 한글 글꼴 견본 ABC 123")
         self.sample.setMinimumHeight(60)
         self.sample.setStyleSheet("background: white; border: 1px solid #ccc; padding: 6px")
-        note = QLabel(f"PC에 설치된 글꼴 중 한글이 있고 PDF에 넣어도 되는 글꼴 {len(fonts)}개")
+        note = QLabel(f"PC에 설치된 글꼴 중 한글이 있고 PDF에 넣어도 되는 글꼴 {len(fonts)}개"
+                      if app_fonts is None else "PC 글꼴은 한글이 있고 PDF에 넣어도 되는 것만 보입니다")
         note.setStyleSheet("color: #666")
         note.setWordWrap(True)
         b_file = QPushButton("파일에서 찾기…")
@@ -88,10 +102,12 @@ class AddFontDialog(QDialog):
         t = text.strip().lower()
         for i in range(self.list.count()):
             it = self.list.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) is None:
+                continue  # 제목 줄은 늘 보인다
             it.setHidden(bool(t) and t not in it.text().lower())
 
     def _preview(self, it, _prev=None):
-        if it is None:
+        if it is None or it.data(Qt.ItemDataRole.UserRole) is None:
             return
         fam = qt_family(it.data(Qt.ItemDataRole.UserRole)["file"])
         if fam:
@@ -110,7 +126,7 @@ class AddFontDialog(QDialog):
 
     def accept(self):
         it = self.list.currentItem()
-        if it is None or it.isHidden():
+        if it is None or it.isHidden() or it.data(Qt.ItemDataRole.UserRole) is None:
             return
         self.chosen = it.data(Qt.ItemDataRole.UserRole)
         super().accept()
@@ -242,6 +258,12 @@ class FontPlanDialog(QDialog):
         lay.setSpacing(8)
         lay.addWidget(title)
         lay.addWidget(help_)
+        pack = service.font_pack_status()
+        self.pack_note = hint_bar(  # 글꼴 묶음을 설치하지 않았거나 옛 묶음: 목록에 나오는 글꼴이 적다
+            f"앱 글꼴 {pack['missing']}개가 설치되어 있지 않아 목록·추천에서 빠졌습니다. "
+            f"글꼴 설치 파일(CardTranslater-Fonts-{pack['wanted'] or ''}.exe)을 설치하고 앱을 다시 켜세요.", "warn")
+        self.pack_note.setVisible(not pack["ok"])
+        lay.addWidget(self.pack_note)
         lay.addWidget(self.note)
         lay.addWidget(self.split, 1)
         lay.addLayout(bottom)
@@ -280,7 +302,7 @@ class FontPlanDialog(QDialog):
                        else "이 프로젝트에서 쓴 글꼴")
                 out.append((f"    {u['label']}", u["file"], src))
         out.append(("", "-", ""))
-        out.append(("글꼴 추가…", ADD, "PC에 설치된 다른 글꼴이나 글꼴 파일을 추가합니다"))
+        out.append(("글꼴 추가…", ADD, "앱에 들어 있는 다른 글꼴, PC에 설치된 글꼴이나 글꼴 파일을 추가합니다"))
         return out
 
     def _picked_fonts(self) -> list[dict]:
@@ -494,9 +516,11 @@ class FontPlanDialog(QDialog):
             fonts = service.installed_fonts()  # 처음 한 번은 몇 초 걸린다
         finally:
             QGuiApplication.restoreOverrideCursor()
-        dlg = AddFontDialog(fonts, self)
+        dlg = AddFontDialog(fonts, self, app_fonts=service.font_choices())
         if not dlg.exec() or not dlg.chosen:
             return None
+        if dlg.chosen.get("app"):  # 앱 글꼴은 그대로 쓴다 (fonts/... 경로)
+            return {"file": dlg.chosen["file"], "label": dlg.chosen["label"]}
         try:
             file = service.prepare_font(dlg.chosen["file"])  # 글꼴 모음(.ttc)이면 그 글꼴만 .ttf로 꺼낸다
         except Exception as e:  # noqa: BLE001

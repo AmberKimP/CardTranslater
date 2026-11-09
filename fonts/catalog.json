@@ -1,8 +1,10 @@
 {
   "_comment": "Korean font catalog for typesetting and F28 font matching. Every font here is SIL OFL 1.1, so commercial use and PDF embedding are allowed. Font binaries are not committed; run scripts/fetch_fonts.py. style: sans | serif | rounded | handwriting | display. weight: 100-900. width: condensed | normal | wide.",
+  "pack_version": 1,
+  "_pack_comment": "bundled: true = shipped inside the program installer. Every other family ships in the separate font installer (packaging/make_font_pack.py); bump pack_version whenever that set of files changes.",
   "families": [
     {
-      "name": "Noto Sans KR", "ko_name": "본고딕", "dir": "notosanskr",
+      "name": "Noto Sans KR", "ko_name": "본고딕", "dir": "notosanskr", "bundled": true,
       "source_files": ["NotoSansKR[wght].ttf"],
       "static_weights": {"Regular": 400, "Medium": 500, "Bold": 700, "Black": 900},
       "style": "sans", "width": "normal", "license": "OFL-1.1",
@@ -83,27 +85,142 @@
     },
     {
       "name": "Gothic A1", "ko_name": "고딕 A1", "dir": "gothica1",
-      "source_files": ["GothicA1-Medium.ttf", "GothicA1-SemiBold.ttf", "GothicA1-Bold.ttf", "GothicA1-Black.ttf"],
+      "source_files": ["GothicA1-Regular.ttf", "GothicA1-Medium.ttf", "GothicA1-SemiBold.ttf", "GothicA1-Bold.ttf", "GothicA1-ExtraBold.ttf", "GothicA1-Black.ttf"],
       "style": "sans", "weight": 500, "width": "normal", "license": "OFL-1.1",
       "notes": "단정한 고딕, 굵기가 많아 원문 획 굵기에 맞추기 쉬움"
     },
     {
       "name": "IBM Plex Sans KR", "ko_name": "IBM 플렉스 산스 KR", "dir": "ibmplexsanskr",
-      "source_files": ["IBMPlexSansKR-Medium.ttf", "IBMPlexSansKR-SemiBold.ttf"],
+      "source_files": ["IBMPlexSansKR-Regular.ttf", "IBMPlexSansKR-Medium.ttf", "IBMPlexSansKR-SemiBold.ttf", "IBMPlexSansKR-Bold.ttf"],
       "style": "sans", "weight": 500, "width": "normal", "license": "OFL-1.1",
       "notes": "또렷한 고딕. 작은 본문에서 잘 읽힘"
     },
     {
       "name": "Nanum Gothic", "ko_name": "나눔고딕", "dir": "nanumgothic",
-      "source_files": ["NanumGothic-Bold.ttf", "NanumGothic-ExtraBold.ttf"],
+      "source_files": ["NanumGothic-Regular.ttf", "NanumGothic-Bold.ttf", "NanumGothic-ExtraBold.ttf"],
       "style": "sans", "weight": 700, "width": "normal", "license": "OFL-1.1",
       "notes": "획 끝이 약간 둥근 친숙한 고딕"
     },
     {
       "name": "Sunflower", "ko_name": "해바라기", "dir": "sunflower",
-      "source_files": ["Sunflower-Medium.ttf", "Sunflower-Bold.ttf"],
+      "source_files": ["Sunflower-Light.ttf", "Sunflower-Medium.ttf", "Sunflower-Bold.ttf"],
       "style": "sans", "weight": 500, "width": "condensed", "license": "OFL-1.1",
       "notes": "손맛이 살짝 있는 좁은 고딕. 부드러운 본문 후보"
+    },
+    {
+      "name": "Nanum Myeongjo", "ko_name": "나눔명조", "dir": "nanummyeongjo",
+      "source_files": ["NanumMyeongjo-Regular.ttf", "NanumMyeongjo-Bold.ttf", "NanumMyeongjo-ExtraBold.ttf"],
+      "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "가장 흔한 명조. 명조 본문·플레이버 글"
+    },
+    {
+      "name": "Gowun Batang", "ko_name": "고운바탕", "dir": "gowunbatang",
+      "source_files": ["GowunBatang-Regular.ttf", "GowunBatang-Bold.ttf"],
+      "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "부드러운 바탕(명조), 이야기 글·플레이버 글"
+    },
+    {
+      "name": "Song Myung", "ko_name": "송명", "dir": "songmyung",
+      "source_files": ["SongMyung-Regular.ttf"],
+      "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "붓맛이 있는 고전풍 명조, 제목·이름"
+    },
+    {
+      "name": "Hahmlet", "ko_name": "함렛", "dir": "hahmlet",
+      "source_files": ["Hahmlet[wght].ttf"],
+      "static_weights": {"Regular": 400, "Medium": 500, "Bold": 700, "Black": 900},
+      "style": "serif", "width": "normal", "license": "OFL-1.1",
+      "notes": "현대적인 명조, 굵기 여러 개"
+    },
+    {
+      "name": "Diphylleia", "ko_name": "디필레이아", "dir": "diphylleia",
+      "source_files": ["Diphylleia-Regular.ttf"],
+      "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "가늘고 우아한 명조, 판타지 제목"
+    },
+    {
+      "name": "Grandiflora One", "ko_name": "그랜디플로라", "dir": "grandifloraone",
+      "source_files": ["GrandifloraOne-Regular.ttf"],
+      "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "장식적인 세리프, 고전·판타지 제목"
+    },
+    {
+      "name": "Orbit", "ko_name": "오르빗", "dir": "orbit",
+      "source_files": ["Orbit-Regular.ttf"],
+      "style": "sans", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "깔끔한 기하학 고딕, SF·현대풍"
+    },
+    {
+      "name": "Stylish", "ko_name": "스타일리시", "dir": "stylish",
+      "source_files": ["Stylish-Regular.ttf"],
+      "style": "sans", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "살짝 멋을 낸 고딕, 짧은 본문·라벨"
+    },
+    {
+      "name": "Dongle", "ko_name": "동글", "dir": "dongle",
+      "source_files": ["Dongle-Light.ttf", "Dongle-Regular.ttf", "Dongle-Bold.ttf"],
+      "style": "rounded", "weight": 400, "width": "condensed", "license": "OFL-1.1",
+      "notes": "둥글고 폭이 아주 좁음, 귀여운 카드·긴 글"
+    },
+    {
+      "name": "Nanum Brush Script", "ko_name": "나눔손글씨 붓", "dir": "nanumbrushscript",
+      "source_files": ["NanumBrushScript-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "condensed", "license": "OFL-1.1",
+      "notes": "붓 손글씨, 동양풍 제목"
+    },
+    {
+      "name": "Cute Font", "ko_name": "귀여운글꼴", "dir": "cutefont",
+      "source_files": ["CuteFont-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "condensed", "license": "OFL-1.1",
+      "notes": "아기자기한 손글씨"
+    },
+    {
+      "name": "Dokdo", "ko_name": "독도", "dir": "dokdo",
+      "source_files": ["Dokdo-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "거친 마커 손글씨"
+    },
+    {
+      "name": "East Sea Dokdo", "ko_name": "동해독도", "dir": "eastseadokdo",
+      "source_files": ["EastSeaDokdo-Regular.ttf"],
+      "style": "handwriting", "weight": 400, "width": "condensed", "license": "OFL-1.1",
+      "notes": "거칠고 힘찬 붓펜 손글씨, 외침·효과"
+    },
+    {
+      "name": "Single Day", "ko_name": "싱글데이", "dir": "singleday",
+      "source_files": ["SingleDay-Regular.ttf"],
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "장식적인 귀여운 제목용"
+    },
+    {
+      "name": "Yeon Sung", "ko_name": "연성", "dir": "yeonsung",
+      "source_files": ["YeonSung-Regular.ttf"],
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "레트로 간판풍 제목"
+    },
+    {
+      "name": "Gugi", "ko_name": "구기", "dir": "gugi",
+      "source_files": ["Gugi-Regular.ttf"],
+      "style": "display", "weight": 700, "width": "normal", "license": "OFL-1.1",
+      "notes": "각진 장식 제목, 게임·SF풍"
+    },
+    {
+      "name": "Kirang Haerang", "ko_name": "기랑해랑", "dir": "kiranghaerang",
+      "source_files": ["KirangHaerang-Regular.ttf"],
+      "style": "display", "weight": 700, "width": "normal", "license": "OFL-1.1",
+      "notes": "울퉁불퉁한 장식 제목, 공포·괴물"
+    },
+    {
+      "name": "Black And White Picture", "ko_name": "흑백사진", "dir": "blackandwhitepicture",
+      "source_files": ["BlackAndWhitePicture-Regular.ttf"],
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "옛날 영화 자막풍 제목"
+    },
+    {
+      "name": "Moirai One", "ko_name": "모이라이", "dir": "moiraione",
+      "source_files": ["MoiraiOne-Regular.ttf"],
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "굵은 윤곽 장식 제목"
     }
   ]
 }

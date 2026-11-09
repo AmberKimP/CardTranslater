@@ -147,6 +147,9 @@ class ClaudeCodeClient:
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|limit reached|hit your limit|too many requests|overloaded|"
                        r"quota|resets?\b|try again later", re.I)
+_GIT_RE = re.compile(r"git[- ]?bash|git for windows|CLAUDE_CODE_GIT_BASH_PATH", re.I)
+GIT_NEEDED = ("Claude Code를 쓰려면 Git for Windows가 필요합니다 — https://git-scm.com/download/win 에서 받아 "
+              "설치(모두 기본값)한 뒤 이 프로그램을 다시 켜세요")
 _LOGIN_RE = re.compile(r"not logged in|please run /login|/login|authentication|invalid api key|unauthori", re.I)
 
 
@@ -183,6 +186,8 @@ def parse_cc_output(code: int, out: str, err: str, model: str) -> CCReply:
         data = None
     if not isinstance(data, dict):
         msg = (err or text or f"종료 코드 {code}").strip()[:300]
+        if _GIT_RE.search(msg):  # Windows의 Claude Code가 Git Bash를 찾지 못함
+            raise NotAvailable(GIT_NEEDED + f" ({msg[:160]})")
         if _LOGIN_RE.search(msg):
             raise NotAvailable(f"Claude Code에 로그인되어 있지 않습니다: {msg}")
         if _LIMIT_RE.search(msg):
