@@ -91,3 +91,77 @@ def test_service_export_logs(logdir, tmp_path, monkeypatch):
     with zipfile.ZipFile(out) as z:
         info = json.loads(z.read("system.json"))
     assert info["claude"] == r"C:\x\claude.exe" and "engine" in info
+
+
+# ---------------------------------------------------------------- 문제 위치·단계별 시간
+def test_context_adds_location_to_warnings_only(logdir):
+    lg = logging.getLogger("cardtranslater.test")
+    with applog.context(프로젝트="엘프", 쪽=10):
+        with applog.context(영역="본문"):
+            lg.warning("지우기 경고")
+        lg.info("보통 줄")
+    lg.warning("밖의 경고")
+    text = _read(logdir)
+    assert "지우기 경고 | 위치: 프로젝트=엘프, 쪽=10, 영역=본문" in text
+    assert "보통 줄 | 위치" not in text and "밖의 경고 | 위치" not in text
+
+
+def test_timings_summary_and_report(logdir):
+    import threading
+
+    tm = applog.Timings("① 글자 추출 [엘프]")
+    with tm.part("원본 자르기"):
+        pass
+    ths = [threading.Thread(target=tm.add, args=("Claude 요청", 2.0)) for _ in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    line = tm.log(카드="4장 읽음", 실패=None)
+    assert line.startswith("[시간] ① 글자 추출 [엘프]") and "Claude 요청 8.0초 (4회, 평균 2.00초, 최대 2.00초)" in line
+    assert "카드 4장 읽음" in line and "실패" not in line
+    applog.log_job_time("extract_project", 19.2, "done")
+    rep = applog.timing_report()
+    assert "작업 ① 글자 추출 (extract_project) 19.2초 done" in rep and "    ① 글자 추출 [엘프]" in rep
+    out = applog.export(logdir.parent / "x.zip")
+    with zipfile.ZipFile(out) as z:
+        assert "Claude 요청" in z.read("timings.txt").decode("utf-8")
+
+
+def test_job_runner_writes_cycle_line_with_state(logdir):
+    from types import SimpleNamespace as NS
+
+    from app.qt import worker
+
+    def extract_project(progress=None, cancel=None):
+        return NS(state="paused")
+
+    worker.Job(extract_project).run()
+    assert "[시간] 작업 ① 글자 추출 (extract_project)" in _read(logdir) and "paused" in _read(logdir)
+
+
+def test_cli_log_times_reads_a_sent_log(tmp_path, capsys):
+    from app import cli
+
+    f = tmp_path / "sent.log"
+    f.write_text("2026-11-11 10:00:00,000 INFO    [Dummy-1] cardtranslater.time: [시간] ⑦ 글자 지우기 [엘프] 16.0초 | 쪽 20\n"
+                 "2026-11-11 10:00:01,000 INFO    [Dummy-1] cardtranslater.job: 작업 끝: erase_project\n"
+                 "2026-11-11 10:00:01,000 INFO    [Dummy-1] cardtranslater.time: [시간] 작업 ⑦ 글자 지우기 (erase_project) 16.2초 끝\n",
+                 encoding="utf-8")
+    assert cli.main(["log-times", "--file", str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "2026-11-11 10:00:00      ⑦ 글자 지우기 [엘프] 16.0초 | 쪽 20" in out
+    assert "2026-11-11 10:00:01  작업 ⑦ 글자 지우기 (erase_project) 16.2초 끝" in out and "작업 끝: erase" not in out
+
+
+def test_log_summary_errors_never_fail_the_job(logdir):
+    from app import runlog
+
+    applog.safe(runlog.log_compose, "p", [{"page": 1, "regions": {"이름": {"status": ["넘침"], "errors": ("x",),
+                                                                          "warnings": ["y"]}}}], 1.0, 1)
+    applog.safe(runlog.log_erase, "p", [{"source_page": 1, "regions": [{"erase": "이상한 값"}]}], 1.0, 1)  # 오류는 로그로만
+    assert "로그 요약을 적지 못함" in _read(logdir) or "[시간] ⑦ 글자 지우기" in _read(logdir)
+    two = "2026-11-11 10:00:00,000 I t: [시간] 첫줄\n2026-11-11 10:00:01,000 I t: [시간] 둘째줄"
+    assert "첫줄" in applog.timing_report(two, last=0) and "둘째줄" in applog.timing_report(two, last=0)  # 0 = 전부
+    one = applog.timing_report(two, last=1)
+    assert "둘째줄" in one and "첫줄" not in one

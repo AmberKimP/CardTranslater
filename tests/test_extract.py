@@ -574,3 +574,18 @@ def test_recheck_rereads_only_pending_cell_on_already_rechecked_page(tmp_path):
     out = json.loads((base / "pages" / "page-001.json").read_text(encoding="utf-8"))
     assert "recheck_pending" not in out and out["regions"]["다른"]["readings"][1]["source"] == "Y"
     assert run_recheck(load_project(proj), [1], FakeClient(), base=base, check_model="claude-opus-5-5").checked_cells == 0
+
+
+def test_extract_logs_failed_card_with_api_detail_and_times(tmp_path, caplog):
+    import logging as _logging
+
+    caplog.set_level(_logging.INFO, logger="cardtranslater")
+    proj = make_project(tmp_path, pages=2)
+    err = anthropic.BadRequestError("image too large", response=_resp(400), body=None)
+    r = service.extract(proj, client=FakeClient(fail_at={0: err}), engine="api", mode="opus")
+    assert r.state == "done" and 1 in r.failed
+    msgs = caplog.messages
+    assert any("1쪽 요청 오류" in m and "BadRequestError" in m and "status=400" in m for m in msgs)
+    assert any("1쪽 읽기 실패: 요청 오류" in m for m in msgs)
+    t = next(m for m in msgs if m.startswith("[시간] ① 글자 추출"))
+    assert "Claude 요청" in t and "카드 1장 읽음" in t and "실패 1" in t and "엔진 api" in t

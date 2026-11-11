@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 import numpy as np
@@ -790,6 +791,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
     out_pdf = run_dir / out_name
     ensure_not_source(out_pdf, src_path)
     w = parallel.worker_count(len(pages), workers)
+    t_start = time.monotonic()
 
     def serial():
         src_doc = pymupdf.open(stream=src_path.read_bytes(), filetype="pdf")
@@ -806,8 +808,14 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         page_recs = parallel.run_or_fallback(
             lambda: _compose_parallel(project_dir, erase_run, pages, metas, cards, run_dir, out_pdf, w, _p, cancel),
             serial, run_dir)
-    return _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
-                           translation_source, edit_notes, sha_src_before, sha_erased_before)
+    out = _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
+                          translation_source, edit_notes, sha_src_before, sha_erased_before)
+    from app import runlog
+
+    from app.applog import safe
+
+    safe(runlog.log_compose, project.root.name, page_recs, time.monotonic() - t_start, w)
+    return out
 
 
 def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, run_dir, out_pdf, _p, cancel) -> list:
@@ -831,14 +839,18 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
         if cancel:
             cancel.check()
         _p("compose", i, len(pages), f"{pno}쪽 한글 넣는 중", pno)
-        rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
-                           font_plan.overrides_for_page(font_data, pno),
-                           font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
-                           font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno))
+        t_page = time.monotonic()
+        from app.applog import context
+
+        with context(쪽=pno):
+            rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
+                               font_plan.overrides_for_page(font_data, pno),
+                               font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
+                               font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno))
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]
-        page_recs.append({"page": pno, "regions": rec})
+        page_recs.append({"page": pno, "regions": rec, "timing": {"compose_s": round(time.monotonic() - t_page, 3)}})
 
     finalize(out_doc)
     out_doc.save(out_pdf, garbage=3, deflate=True)
@@ -851,6 +863,7 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
         if cancel:
             cancel.check()
         _p("render", i, len(pages), f"{pno}쪽 미리보기·비교 이미지", pno)
+        t_page = time.monotonic()
         cp, sp = chk[i], src_doc[pno - 1]
         cp.get_pixmap(dpi=300, alpha=False).save(str(run_dir / f"p{pno:03d}.png"))
         report.save(report.side_by_side(_render(sp, 300), _render(cp, 300)), cdir / f"p{pno:03d}_card.png")
@@ -870,6 +883,7 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
                                       (f"ORIGINAL p{pno} {sn} 600dpi", "COMPOSED"))  # 카드 전체와 같이 좌우로
             report.save(img, cdir / f"p{pno:03d}_{sn}.png")
         page_recs[i]["extracted_text"] = cp.get_text()
+        page_recs[i].setdefault("timing", {})["render_s"] = round(time.monotonic() - t_page, 3)
     chk.close()
     return page_recs
 

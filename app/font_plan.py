@@ -504,6 +504,7 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
     from app.project import load_project
 
     say = say or (lambda *_a: None)
+    t_start = time.monotonic()
     fd = Path(file_dir)
     metas = _metas(fd)
     if not metas:
@@ -606,13 +607,17 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
 
     picked: dict[str, list[dict]] = {}
     note = ""
+    t_measure = time.monotonic() - t_start
+    t_claude = 0.0
     if ask:
         say(len(names), len(names) + 1, "Claude가 원문과 견본을 비교하는 중…")
+        t_c = time.monotonic()
         try:
             picked = font_match.ask_claude_pick(client, model, ask, work)
         except Exception as e:  # noqa: BLE001 - 추천이 안 돼도 글꼴은 고를 수 있다
-            log.warning("Claude 글꼴 추천 실패: %s", e)
+            log.warning("Claude 글꼴 추천 실패 [%s]: %s", fd.name, e)
             note = f"Claude 추천을 받지 못해 글자 모양 값으로만 추천했습니다 ({str(e)[:80]})"
+        t_claude = time.monotonic() - t_c
     elif client is None:
         note = "글자 모양 값으로만 추천했습니다 (Claude에 연결되어 있지 않음)"
     styles = {c["file"]: c.get("style", "") for c in cands}
@@ -655,6 +660,11 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
                 if not same:  # 1순위가 같거나 Claude가 같은 글씨라고 보면 영역 글꼴
                     ref[k] = rk[0]["file"]
             slots_out[name] = {"ref": ref, "recommended": recs}
+    from app.applog import TIME_TAG
+
+    logging.getLogger("cardtranslater.time").info(
+        "%s 글꼴 추천 [%s] %.1f초 | 원문 모양 재기 %.1f초 | Claude 비교 %.1f초 (%d칸) | %s", TIME_TAG, fd.name,
+        time.monotonic() - t_start, t_measure, t_claude, len(ask), "Claude" if picked else "모양 값만")
     return out, note
 
 

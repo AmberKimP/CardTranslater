@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("cardtranslater.translate")
 
 STATUS_TERM = "용어 불일치"
 STATUS_ICON = "아이콘 불일치"
@@ -225,6 +228,9 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
     from app.llm import complete_json
     from app.service import ProgressEvent
 
+    from app.applog import Timings
+
+    tm = Timings(f"⑥ 번역 요청 [{Path(project_dir).name}] {model}")
     cache = load_cache(project_dir)
     by_source = {t["source"]: t for t in glossary}
     items = unique_sources(sources)
@@ -319,12 +325,14 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
 
     try:
         # 묶음 여러 개를 동시에 보낸다 (글자 추출과 같은 수: API 4, Claude Code 2)
-        _pipelined(batches, lambda b: (lambda: work(b)), finish,
+        _pipelined(batches, lambda b: tm.timed("Claude 요청(묶음)", lambda: work(b)), finish,
                    extract_workers(getattr(client, "engine", "api")), cancel, before)
     except Paused as p:
         res.state, res.reason, res.retry_after = "paused", p.reason, _iso_after(p.retry_after_s)
+        log.warning("번역 일시 정지: %s", p.reason)
     except (CardError, NotAvailable) as e:
         res.state, res.reason = "blocked", str(e)
+        log.warning("번역 할 수 없음: %s", e)
     for text, *_ in items:
         e = cache.get(text)
         if e and STATUS_TERM in e.get("status", []):
@@ -333,4 +341,11 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
             res.icon_mismatch.append(text)
         if e and STATUS_LEFTOVER in e.get("status", []):
             res.leftover.append(text)
+    for kind, texts in (("용어 불일치", res.term_mismatch), ("아이콘 불일치", res.icon_mismatch),
+                        ("일본어 남음", res.leftover)):
+        if texts:  # 고칠 곳을 찾을 수 있게 원문 앞부분을 몇 개
+            log.warning("번역 %s %d칸: %s", kind, len(texts), " / ".join(t.replace("\n", " ")[:30] for t in texts[:5]))
+    tm.log(상태=res.state, 칸=res.cells, 새로번역=res.translated, 저장된번역=res.cached, 용어집=res.from_glossary,
+           비용=f"${res.spent_usd:.3f}" if res.spent_usd else None,
+           요금제환산=f"${res.equiv_usd:.3f}" if res.equiv_usd else None)
     return res

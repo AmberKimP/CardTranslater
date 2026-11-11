@@ -430,6 +430,14 @@ def cmd_compose_project(args: argparse.Namespace) -> int:
     return code
 
 
+def cmd_log_times(args: argparse.Namespace) -> int:
+    from app import applog
+
+    text = Path(args.file).read_text(encoding="utf-8", errors="replace") if args.file else None
+    print(applog.timing_report(text, last=args.last), end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -543,6 +551,10 @@ def main(argv: list[str] | None = None) -> int:
     ig.add_argument("--excel", required=True)
     ig.add_argument("--yes", action="store_true", help="확인 항목이 있어도 확정")
     ig.set_defaults(func=cmd_import_glossary)
+    lt = sub.add_parser("log-times", help="동작 로그에서 단계별 시간만 모아 보기 (보낸 로그 파일을 줄 수도 있다)")
+    lt.add_argument("--file", help="로그 파일 (기본: 이 PC의 cardtranslater.log들)")
+    lt.add_argument("--last", type=int, default=400, help="최근 몇 줄까지 (기본 400)")
+    lt.set_defaults(func=cmd_log_times)
     args = ap.parse_args(argv)
     return args.func(args)
 

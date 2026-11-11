@@ -4,10 +4,17 @@
 - cardtranslater.log      작업 시작·끝·실패, 진행 메시지, Claude 호출, 보여 준 오류 창 (2MB × 5개 돌려 씀)
 - crash.log               파이썬이 통째로 죽을 때(faulthandler)의 스택
 API 키(sk-ant-…)는 기록하기 전에 가린다. 화면 코드 없음: 화면은 service를 통해 부른다.
+
+문제를 받았을 때 고칠 수 있게:
+- context(파일=…, 쪽=…, 영역=…): 그 안에서 남긴 경고·오류 줄 끝에 ‘| 위치: …’를 붙인다 (어느 카드에서 났는지).
+- Timings: 작업 하나 안의 단계별 시간 (Claude 요청·원본 자르기·저장 …). 끝에 ‘[시간]’ 줄 하나로 남긴다.
+  작업마다 ‘[시간] 작업 …’ 줄도 남아, 한 사이클(①~⑧)의 단계별 시간을 timing_report()로 모아 볼 수 있다.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import faulthandler
 import json
 import logging
@@ -26,6 +33,118 @@ _KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{4,}")
 _state: dict = {}
 
 log = logging.getLogger("cardtranslater")
+tlog = logging.getLogger("cardtranslater.time")
+TIME_TAG = "[시간]"
+# 작업 함수 이름 -> 화면의 단계 이름 (사이클 시간표에 쓴다)
+JOB_LABELS = {
+    "extract_project": "① 글자 추출", "find_icons": "② 아이콘 정의", "finish_extraction": "④ 용어집 만들기",
+    "import_glossary": "⑤ 용어집 가져오기", "translate_project": "⑥ 전체 번역", "export_project_excel": "검수 엑셀 만들기",
+    "erase_project": "⑦ 글자 지우기", "compose_project": "⑧ 한글 넣기", "font_plans": "글꼴 추천",
+    "redo_file": "카드 다시 만들기", "render_preview": "미리 보기", "test_run": "시험 실행",
+}
+_ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("cardtranslater_log_ctx", default={})
+
+
+@contextlib.contextmanager
+def context(**kv):
+    """이 안에서 남긴 경고·오류 줄에 위치(파일·쪽·영역 등)를 붙인다. 겹쳐 쓰면 합친다 (None 값은 뺀다).
+    작업 스레드(ThreadPoolExecutor)로는 넘어가지 않는다: 주 스레드에서 결과를 처리할 때 감싼다."""
+    tok = _ctx.set({**_ctx.get(), **{k: v for k, v in kv.items() if v is not None}})
+    try:
+        yield
+    finally:
+        _ctx.reset(tok)
+
+
+def current_context() -> dict:
+    return dict(_ctx.get())
+
+
+def _fmt_ctx(ctx: dict) -> str:
+    return ", ".join(f"{k}={v}" for k, v in ctx.items())
+
+
+class Timings:
+    """작업 하나 안의 단계별 시간. part()/add()는 여러 스레드에서 불러도 된다.
+    단계 시간을 더한 값은 동시에 한 일(동시 요청 등) 때문에 전체 시간보다 클 수 있다."""
+
+    def __init__(self, job: str):
+        self.job = job
+        self.t0 = time.monotonic()
+        self._lock = threading.Lock()
+        self.parts: dict[str, list] = {}  # 이름 -> [합, 횟수, 최대]
+
+    def add(self, name: str, secs: float, n: int = 1) -> None:
+        with self._lock:
+            p = self.parts.setdefault(name, [0.0, 0, 0.0])
+            p[0] += secs
+            p[1] += n
+            p[2] = max(p[2], secs / max(n, 1))
+
+    @contextlib.contextmanager
+    def part(self, name: str):
+        t = time.monotonic()
+        try:
+            yield
+        finally:
+            self.add(name, time.monotonic() - t)
+
+    def timed(self, name: str, fn):
+        """fn()을 부르고 걸린 시간을 name에 더하는 함수 (작업 스레드에 넘길 때)."""
+        def run():
+            with self.part(name):
+                return fn()
+        return run
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.t0
+
+    def summary(self, **extra) -> str:
+        with self._lock:  # 취소 뒤에도 작업 스레드가 add()할 수 있다
+            parts = {k: list(v) for k, v in self.parts.items()}
+        bits = []
+        for name, (tot, n, mx) in sorted(parts.items(), key=lambda kv: -kv[1][0]):
+            bits.append(f"{name} {tot:.1f}초" + (f" ({n}회, 평균 {tot / n:.2f}초, 최대 {mx:.2f}초)" if n > 1 else ""))
+        bits += [f"{k} {v}" for k, v in extra.items() if v not in (None, "")]
+        return f"{TIME_TAG} {self.job} {self.elapsed():.1f}초" + (" | " + " | ".join(bits) if bits else "")
+
+    def log(self, **extra) -> str:
+        try:
+            line = self.summary(**extra)
+        except Exception:  # noqa: BLE001 - 로그 때문에 끝난 작업을 실패로 만들지 않는다
+            log.exception("단계별 시간을 적지 못함: %s", self.job)
+            return ""
+        tlog.info("%s", line)
+        return line
+
+
+def safe(fn, *args, **kwargs) -> None:
+    """로그 요약 함수를 부르되, 그 안의 오류가 이미 끝난 작업을 실패로 만들지 않게 (오류는 로그에만)."""
+    try:
+        fn(*args, **kwargs)
+    except Exception:  # noqa: BLE001
+        log.exception("로그 요약을 적지 못함: %s", getattr(fn, "__name__", fn))
+
+
+def log_job_time(name: str, secs: float, state: str) -> None:
+    """작업 하나가 끝날 때 (화면 작업 실행기가 부른다): 사이클 시간표의 한 줄."""
+    tlog.info("%s 작업 %s (%s) %.1f초 %s", TIME_TAG, JOB_LABELS.get(name, name), name, secs, state)
+
+
+def timing_report(text: str | None = None, last: int = 400) -> str:
+    """로그에서 ‘[시간]’ 줄만 모아 읽기 쉬운 표로 (최근 last줄). text가 없으면 지금 로그 파일들."""
+    if text is None:
+        d = Path(_state["file"]).parent if _state.get("file") else log_dir()
+        files = sorted(d.glob(LOG_NAME + "*"), key=lambda f: f.stat().st_mtime) if d.exists() else []
+        text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in files)
+    rows = [ln for ln in text.splitlines() if TIME_TAG in ln]
+    rows = rows[-last:] if last and last > 0 else rows
+    out = ["단계별 시간 (오래된 것부터). ‘작업’ 줄이 화면에서 누른 단계 하나, 그 위 줄들이 그 단계 안의 자세한 시간.", ""]
+    for ln in rows:
+        stamp = ln[:19]
+        body = ln.split(TIME_TAG, 1)[1].strip()
+        out.append(f"{stamp}  {'' if body.startswith('작업 ') else '    '}{body}")
+    return "\n".join(out) + "\n"
 
 
 def log_dir() -> Path:
@@ -43,6 +162,9 @@ def mask(text: str) -> str:
 class _MaskFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
+        ctx = _ctx.get()
+        if ctx and record.levelno >= logging.WARNING:  # 어느 파일·카드에서 났는지
+            msg += f" | 위치: {_fmt_ctx(ctx)}"
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         record.msg, record.args = mask(msg), None
@@ -117,10 +239,18 @@ def export(dest: Path, extra: dict | None = None) -> Path:
     info = {"build": build_info(), "windows": platform.platform(), "python": sys.version.split()[0],
             "exported": time.strftime("%Y-%m-%d %H:%M:%S")}
     info.update(extra or {})
+    texts = []
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in sorted(d.glob("*.log*")) if d.exists() else []:
-            z.writestr(f.name, mask(f.read_text(encoding="utf-8", errors="replace")))
+        files = sorted(d.glob("*.log*")) if d.exists() else []
+        for f in files:
+            t = mask(f.read_text(encoding="utf-8", errors="replace"))
+            z.writestr(f.name, t)
+            if f.name.startswith(LOG_NAME):
+                texts.append((f.stat().st_mtime, t))
         z.writestr("system.json", mask(json.dumps(info, ensure_ascii=False, indent=2, default=str)))
+        joined = "\n".join(t for _m, t in sorted(texts))
+        if TIME_TAG in joined:  # 단계별 시간만 모은 표 (묶은 로그에서)
+            z.writestr("timings.txt", timing_report(joined))
     log.info("로그를 묶었습니다: %s", dest)
     return dest
 

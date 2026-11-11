@@ -516,6 +516,10 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
     kinds = {r.name: r.kind for r in project.template.regions}
     done = set(load_extracted(project.root, base))
     src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
+    from app.applog import Timings
+
+    tm = Timings(f"① 글자 추출 [{project.root.name}]")
+    done0, failed0, spent0, equiv0 = set(done), dict(st.failed), st.spent_usd, st.equiv_usd
 
     def remaining() -> list[int]:
         busy = set((st.batch or {}).get("pages", []))
@@ -524,6 +528,10 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
     def result(state: str) -> ExtractRunResult:
         st.status = state
         st.save(spath)
+        from app.applog import safe
+
+        safe(_log_run, tm, state, st, failed0, len(done - done0), len(remaining()), engine, model, batch,
+             spent0, equiv0, project)
         return ExtractRunResult(state, sorted(p for p in pages if p in done), remaining(), dict(st.failed),
                                 round(st.spent_usd, 4), st.reason, st.retry_after, (st.batch or {}).get("id"),
                                 model, base, engine, round(st.equiv_usd, 4))
@@ -533,7 +541,7 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
     try:
         if engine == "claude-code":
             return _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, remaining, result,
-                                    progress, cancel, model, base)
+                                    progress, cancel, model, base, tm)
         if batch:
             return _run_batch(project, pages, client, st, spath, done, kinds, src_doc, budget_usd, remaining, result,
                               progress, cancel, model, base)
@@ -552,17 +560,18 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 st.failed[pno] = NO_REGIONS
                 st.save(spath)
                 return None
-            color_tags = tags_from_colors(project, pno, src_doc)
-            to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
-            if not to_read:
-                _write_plain(base, pno, color_tags, model, "colors")
-                done.add(pno)
-                st.save(spath)
-                return None
-            tags_of[pno] = color_tags
-            params = build_params(project, pno, src_doc, model, to_read)
+            with tm.part("원본 자르기"):
+                color_tags = tags_from_colors(project, pno, src_doc)
+                to_read = [r for r in project.template.regions_for(pno) if r.name not in color_tags]
+                if not to_read:
+                    _write_plain(base, pno, color_tags, model, "colors")
+                    done.add(pno)
+                    st.save(spath)
+                    return None
+                tags_of[pno] = color_tags
+                params = build_params(project, pno, src_doc, model, to_read)
             # 거절되면 서버가 대체 모델로 다시 읽는다 (SERVER_FALLBACK_MODELS)
-            return lambda: send_message(client, params, model in SERVER_FALLBACK_MODELS)
+            return tm.timed("Claude 요청", lambda: send_message(client, params, model in SERVER_FALLBACK_MODELS))
 
         def finish(pno, msg, exc):  # 주 스레드: 결과 저장·상태
             color_tags = tags_of.pop(pno, {})
@@ -572,8 +581,10 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 p = classify_error(exc)
                 if p is None:
                     st.failed[pno] = f"요청 오류: {getattr(exc, 'message', exc)}"
+                    log.warning("%d쪽 요청 오류 %s", pno, api_error_detail(exc))
                     st.save(spath)
                     return
+                log.warning("%d쪽에서 멈춤: %s %s", pno, p.reason, api_error_detail(exc))
                 raise p
             try:
                 regions = {**parse_response(msg, kinds), **color_tags}
@@ -582,9 +593,10 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 st.spent_usd += cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0
                 st.save(spath)
                 return
-            st.spent_usd += _write_page(base, pno, regions, msg, batch=False)
-            done.add(pno)
-            st.save(spath)
+            with tm.part("저장"):
+                st.spent_usd += _write_page(base, pno, regions, msg, batch=False)
+                done.add(pno)
+                st.save(spath)
 
         _pipelined(todo, prepare, finish, extract_workers("api"), cancel, before)
         return result("done")
@@ -598,6 +610,8 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
             st.status = "paused"
             st.reason = f"예상하지 못한 오류: {e}"
             st.save(spath)
+            log.error("글자 추출 중 예상하지 못한 오류 [%s] (읽은 카드 %d장, 남은 카드 %s)", project.root.name,
+                      len(done - done0), remaining()[:10], exc_info=True)
             raise
         st.reason = str(e)
         return result("blocked")
@@ -675,11 +689,14 @@ def _run_batch(project, pages, client, st, spath, done, kinds, src_doc, budget_u
 
 
 def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, remaining, result,
-                     progress, cancel, model, base):
+                     progress, cancel, model, base, tm=None):
     """Claude Code 요금제 엔진. 한 장씩 `claude -p`로 읽는다."""
     from app.extract_cc import CardError
     from app.service import ProgressEvent
 
+    from app.applog import Timings
+
+    tm = tm or Timings("① 글자 추출")
     todo = remaining()
     tags_of: dict[int, dict] = {}
     can_split = hasattr(client, "prepare_card") and hasattr(client, "run_card")
@@ -703,8 +720,9 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
         tags_of[pno] = color_tags
         args = (project, pno, src_doc, model, base, output_schema(to_read), to_read)
         if can_split:
-            prepared = client.prepare_card(*args)
-            return lambda: client.run_card(prepared)
+            with tm.part("영역 이미지 만들기"):
+                prepared = client.prepare_card(*args)
+            return tm.timed("Claude Code 요청", lambda: client.run_card(prepared))
         try:  # 나눠 부를 수 없는 클라이언트: 여기(주 스레드)서 읽는다
             reply = client.read_card(*args)
         except CardError as e:
@@ -720,6 +738,8 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
                 st.failed[pno] = str(exc)
                 st.save(spath)
                 return
+            if isinstance(exc, Paused):
+                log.warning("%d쪽에서 멈춤: %s", pno, exc.reason)
             raise exc  # Paused·NotAvailable 등: 멈춘다
         try:
             regions = {**regions_from_json(reply.regions_json, kinds), **color_tags}
@@ -743,6 +763,38 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
 
     _pipelined(todo, prepare, finish, extract_workers("claude-code"), cancel, before)
     return result("done")
+
+
+def api_error_detail(e: Exception) -> str:
+    """API 오류를 고칠 수 있게: 종류·상태 코드·요청 ID·메시지 (요청 ID로 Anthropic에 물어볼 수 있다)."""
+    bits = [type(e).__name__]
+    code = getattr(e, "status_code", None)
+    if code:
+        bits.append(f"status={code}")
+    rid = getattr(e, "request_id", None)
+    if rid:
+        bits.append(f"request_id={rid}")
+    msg = str(getattr(e, "message", "") or e)
+    return "(" + ", ".join(bits) + f") {msg[:300]}"
+
+
+def _log_run(tm, state, st, failed0, n_read, n_left, engine, model, batch, spent0, equiv0, project) -> None:
+    """글자 추출 한 번이 끝날 때: 새로 실패한 카드(쪽·이유), 멈춘 이유, 단계별 시간."""
+    from app.applog import context
+
+    new_failed = {p: r for p, r in st.failed.items() if failed0.get(p) != r}
+    with context(프로젝트=project.root.name):
+        for p, r in sorted(new_failed.items()):
+            log.warning("%d쪽 읽기 실패: %s", p, r)
+        if state in ("paused", "blocked"):
+            log.warning("글자 추출 %s: %s%s", "일시 정지" if state == "paused" else "할 수 없음", st.reason,
+                        f" (다시 할 수 있는 시각 {st.retry_after})" if st.retry_after else "")
+    cost = st.spent_usd - spent0
+    tm.log(상태=state, 카드=f"{n_read}장 읽음", 실패=len(new_failed) or None, 남음=n_left or None,
+           엔진=engine + (" 일괄" if batch else ""), 모델=model,
+           동시=extract_workers(engine) if not batch else None,
+           비용=f"${cost:.3f}" if cost else None,
+           요금제환산=f"${st.equiv_usd - equiv0:.3f}" if st.equiv_usd - equiv0 else None)
 
 
 def _write_plain(base: Path, page_no: int, regions: dict, model: str, engine: str) -> None:
@@ -1068,6 +1120,9 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         return out
     by_name_all = {r.name: r for r in project.template.regions}
     src_doc = pymupdf.open(stream=project.source_pdf.read_bytes(), filetype="pdf")
+    from app.applog import Timings
+
+    tm = Timings(f"두 번째 확인 [{project.root.name}] {check_model}")
 
     def before(i, item):
         pno, _f, _rec, names = item
@@ -1079,7 +1134,9 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         by_name = {**by_name_all, **{r.name: r for r in project.template.regions_for(pno)}}
         regs = [by_name[n] for n in names if n in by_name]
         try:
-            return _prepare_read(client, project, pno, src_doc, check_model, base, regs)
+            with tm.part("원본 자르기"):
+                job = _prepare_read(client, project, pno, src_doc, check_model, base, regs)
+            return tm.timed("Claude 요청", job)
         except CardError as e:
             def fail(e=e):
                 raise e
@@ -1088,6 +1145,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
     def finish(item, got, exc):  # 주 스레드: 비교·저장
         pno, f, rec, names = item
         if isinstance(exc, CardError):
+            log.warning("%d쪽 다시 읽기 실패 (%s): %s", pno, ", ".join(names), exc)
             rec["recheck"] = {"model": check_model, "error": str(exc), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
             rec.pop("recheck_pending", None)
             f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1129,9 +1187,13 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         return out
     except Paused as p:
         out.state, out.reason, out.retry_after = "paused", p.reason, _iso_after(p.retry_after_s)
+        log.warning("두 번째 확인 일시 정지: %s", p.reason)
         return out
     except NotAvailable as e:
         out.state, out.reason = "blocked", str(e)
+        log.warning("두 번째 확인 할 수 없음: %s", e)
         return out
     finally:
         src_doc.close()
+        tm.log(상태=out.state, 카드=f"{len(todo)}장", 칸=out.checked_cells, 같음=out.agreed, 다름=out.disagreed,
+               비용=f"${out.spent_usd:.3f}" if out.spent_usd else None)

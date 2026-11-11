@@ -125,3 +125,30 @@ def test_set_engine_saves_only_the_engine(tmp_path, monkeypatch):
         assert after.model == other
     service.set_engine("claude-code")
     assert settings.load().engine == "claude-code"
+
+
+def test_erase_and_compose_log_page_times_and_problem_cells(tmp_path, caplog):
+    """지우기·한글 넣기: 쪽마다 걸린 시간을 기록하고, ‘[시간]’ 요약과 문제 칸(쪽·영역·상태)을 로그에 남긴다."""
+    import json as _json
+    import logging as _logging
+
+    caplog.set_level(_logging.INFO, logger="cardtranslater")
+    proj = make_project(tmp_path, pages=2)
+    r = service.erase(proj, "1-2", workers=1)
+    assert r.ok
+    meta = _json.loads((proj / "cleared" / "meta" / "page-001.json").read_text(encoding="utf-8"))
+    assert meta["timing"]["erase_s"] >= 0 and "verify_s" in meta["timing"]
+    assert any("[시간] ⑦ 글자 지우기" in m and "쪽 2" in m for m in caplog.messages)
+    caplog.clear()
+    res = service._compose_with_cards(proj, {1: {"이름": {"ko": "아주 긴 번역 " * 40}}, 2: {"이름": {"ko": "짧음"}}},
+                                      None, None)
+    assert res.state == "done"
+    rep = _json.loads((proj / "translated" / "report.json").read_text(encoding="utf-8"))
+    assert "compose_s" in rep["pages_detail"][0]["timing"]
+    assert any("[시간] ⑧ 한글 넣기" in m for m in caplog.messages)
+    from app.runlog import COMPOSE_PROBLEMS
+
+    bad = {k for s, keys in rep["status_summary"].items() if s in COMPOSE_PROBLEMS for k in keys}
+    assert any(k.endswith("#p1#이름") for k in bad)  # 긴 번역: 문제 칸이 생긴다
+    assert any(m.startswith(f"[{proj.name}] 1쪽 이름 한글 넣기:") for m in caplog.messages)
+    assert not any(m.startswith(f"[{proj.name}] 2쪽") for m in caplog.messages)

@@ -29,7 +29,7 @@ from typing import Callable
 import numpy as np
 
 from app.version import VERSION  # noqa: F401 (화면이 버전을 service로 읽는다)
-from app import report
+from app import applog, report
 from app.claude_setup import find_claude
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
@@ -176,6 +176,7 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel, work
     with pymupdf.open(src_path) as d:
         pages = parse_page_spec(pages_spec, d.page_count)
     w = parallel.worker_count(len(pages), workers)
+    t_start = time.monotonic()
 
     def serial():
         return _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel)
@@ -184,8 +185,12 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel, work
     else:  # 작업 프로세스를 못 띄웠거나 합친 결과가 다르면 한 프로세스로 (결과는 같다)
         page_metas, box_checks = parallel.run_or_fallback(
             lambda: _erase_parallel(project, pages, run_dir, pdf_name, w, progress, cancel), serial, run_dir)
-    return _finish_erase(project, pages, page_metas, box_checks, final_dir, run_dir, pdf_name, sha_before,
-                         progress, cancel)
+    res = _finish_erase(project, pages, page_metas, box_checks, final_dir, run_dir, pdf_name, sha_before,
+                        progress, cancel)
+    from app import runlog
+
+    applog.safe(runlog.log_erase, project.root.name, page_metas, time.monotonic() - t_start, w)
+    return res
 
 
 def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[list, list]:
@@ -216,9 +221,12 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
         srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
-        r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno,
-                       modes=card_modes.get(str(pno)), sources=srcs)
+        t_page = time.monotonic()
+        with applog.context(프로젝트=project.root.name, 쪽=pno):
+            r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno,
+                           modes=card_modes.get(str(pno)), sources=srcs)
         page_metas.append({
+            "timing": {"erase_s": round(time.monotonic() - t_page, 3)},
             "schema": SCHEMA,
             "source_pdf": str(src_path),
             "source_page": pno,
@@ -322,6 +330,7 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
         if cancel:
             cancel.check()
         progress(ProgressEvent("verify", i, n, f"{pno}쪽 확인·비교 이미지", pno))
+        t_page = time.monotonic()
         sp, op = src_doc[pno - 1], check[i]
         sb, ob = _boxes(sp), _boxes(op)
         box_checks.append({"source_page": pno, "same": sb == ob, "source": sb, "output": ob})
@@ -398,6 +407,7 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
             path = report.save(img, pdir / f"{tag}_{safe_name(m['name'], ri)}.png")
             m["compare_png"] = str(path)
         page_metas[i]["compare_card_png"] = str(pdir / f"{tag}_card.png")
+        page_metas[i].setdefault("timing", {})["verify_s"] = round(time.monotonic() - t_page, 3)
     return box_checks
 
 
@@ -3099,6 +3109,16 @@ def log_folder() -> Path:
     from app import applog
 
     return Path(applog._state["file"]).parent if applog._state.get("file") else applog.log_dir()
+
+
+def log_job_time(name: str, secs: float, state: str) -> None:
+    """화면 작업 하나가 끝날 때 사이클 시간표 한 줄 (‘[시간] 작업 ① 글자 추출 …’)."""
+    applog.log_job_time(name, secs, state)
+
+
+def timing_report() -> str:
+    """로그의 단계별 시간만 모은 표 (오래된 것부터)."""
+    return applog.timing_report()
 
 
 def export_logs(dest: Path) -> Path:

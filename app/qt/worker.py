@@ -57,17 +57,31 @@ class Job(QRunnable):
             result = self.fn(*self.args, **kw)
         except service.Cancelled:
             log.info("작업 취소: %s (%.1f초)", name, time.monotonic() - t0)
+            service.log_job_time(name, time.monotonic() - t0, "취소")
             self.signals.cancelled.emit()
             return
         except Exception as e:  # noqa: BLE001 - 화면에 보여 준다
-            log.error("작업 실패: %s (%.1f초)", name, time.monotonic() - t0, exc_info=True)
+            log.error("작업 실패: %s (%.1f초) %s", name, time.monotonic() - t0, _describe(self.args, self.kwargs),
+                      exc_info=True)
+            service.log_job_time(name, time.monotonic() - t0, f"실패: {type(e).__name__}")
             self.signals.failed.emit(f"{e}\n\n{traceback.format_exc(limit=3)}")
             return
         log.info("작업 끝: %s (%.1f초) → %s", name, time.monotonic() - t0, _brief(result))
+        service.log_job_time(name, time.monotonic() - t0, _state_of(result))
         self.signals.done.emit(result)
 
     def cancel(self) -> None:
         self.token.cancel()
+
+
+def _state_of(result) -> str:
+    """결과의 상태 (done·paused·blocked 등). 없으면 ‘끝’."""
+    st = getattr(result, "state", None)
+    if st is None and isinstance(result, dict):
+        st = result.get("state")
+    if st is None and getattr(result, "ok", None) is False:  # EraseResult 등
+        return f"실패: {getattr(result, 'error', '') or 'ok=False'}"
+    return str(st) if st else "끝"
 
 
 def _brief(x, limit: int = 300) -> str:
