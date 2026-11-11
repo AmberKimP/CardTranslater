@@ -982,14 +982,6 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
 
-    def resume_last(self) -> bool:
-        """앱을 다시 켜면 마지막에 연 프로젝트를 이어서 연다 (데이터 폴더 안의 것만)."""
-        last = service.last_project()
-        if last and self.root.resolve() in last.resolve().parents:
-            self.open_project(last)
-            return True
-        return False
-
     def show_home(self):
         self.home.refresh()
         self.stack.setCurrentWidget(self.home)
@@ -1082,8 +1074,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if not ask_login(None, first_run=True):
             return 0
-    win = MainWindow()
-    win.resume_last()
+    win = MainWindow()  # 시작 화면은 ‘내 프로젝트’ (마지막에 연 프로젝트를 골라 둔다)
     win.show()
     return app.exec()
 

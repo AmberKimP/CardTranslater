@@ -55,7 +55,7 @@ def test_일반_시작은_로그를_연다(qapp, monkeypatch):
     calls = []
     monkeypatch.setattr(service, "start_logging", lambda: calls.append(1) or (_ for _ in ()).throw(OSError("막힘")))
     monkeypatch.setattr(qmain, "MainWindow", lambda *a, **k: type("W", (), {
-        "resume_last": lambda s: None, "show": lambda s: None})())
+        "show": lambda s: None})())
     monkeypatch.setattr(QApplication, "exec", lambda self: 0)
     old_font = qapp.font()
     try:

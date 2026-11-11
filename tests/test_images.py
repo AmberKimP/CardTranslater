@@ -402,3 +402,119 @@ def test_cut_sheet_skips_empty_slots(tmp_path):
     assert len(cut.boxes) == 7
     assert max(abs(a - b) for bx, tb in zip(cut.boxes, truth) for a, b in zip(bx, tb)) <= 12
     assert any("7장" in w for w in cut.warnings)
+
+
+# ---------------------------------------------------------------- 수동으로 영역 지정
+def test_manual_cut_reading_order_and_clipping(tmp_path):
+    p = tmp_path / "in" / "free.png"
+    boxes = _grid(p, cols=3, rows=2)
+    drawn = [boxes[4], boxes[0], boxes[5], boxes[2], boxes[1], boxes[3],  # 그린 순서는 뒤죽박죽
+             (-50, -50, 3, 3)]  # 이미지 밖·너무 작은 상자는 뺀다
+    cut = images.manual_cut(p, drawn)
+    assert cut.boxes == boxes and "1개는 뺐습니다" in cut.warnings[0]
+    # 줄이 조금 비뚤어도 같은 줄로 본다
+    assert images.reading_order([(200, 12, 300, 112), (10, 0, 110, 100), (10, 200, 110, 300)]) == \
+        [(10, 0, 110, 100), (200, 12, 300, 112), (10, 200, 110, 300)]
+
+
+def test_add_images_with_manual_boxes(tmp_path):
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    a, b = tmp_path / "in" / "a.png", tmp_path / "in" / "b.png"
+    ba = _grid(a, cols=3, rows=2)
+    _grid(b, cols=3, rows=2)
+    manual = {str(a): [ba[0], ba[4]], str(b): [ba[1]]}
+    r = service.add_images(info.dir, [a, b], "카드", name="시트", new_group=True, boxes=manual)
+    assert r.pages == 3
+    fi = json.loads((r.file_dir / "file.json").read_text(encoding="utf-8"))["from_images"]
+    assert fi["manual"] is True and [tuple(x) for x in fi["sheets"][0]["boxes"]] == [ba[0], ba[4]]
+    doc = pymupdf.open(next((r.file_dir / "source").glob("*.pdf")))
+    w0 = doc[0].rect.width
+    assert abs(w0 - (ba[0][2] - ba[0][0]) * 72 / 300) < 0.5  # 그린 상자 크기 그대로 한 쪽
+
+
+def test_card_boxes_dialog_draw_inherit_and_add(tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.card_boxes import CardBoxesDialog
+    from app.qt.dialogs import AddFilesDialog
+
+    QApplication.instance() or QApplication([])
+    a, b = tmp_path / "in" / "a.png", tmp_path / "in" / "b.png"
+    ba = _grid(a, cols=3, rows=2)
+    _grid(b, cols=3, rows=2)
+    dlg = CardBoxesDialog([str(a), str(b)])
+    for box in (ba[3], ba[0]):  # 화면에서 그린 것처럼
+        dlg._add_item(box)
+        dlg._changed()
+    assert [it.data["name"] for it in sorted(dlg._items(), key=lambda i: i.rect().top())] == ["1", "2"]
+    dlg.list.setCurrentRow(1)  # 두 번째 이미지: 자리를 안 그렸으면 앞 이미지 자리(점선)
+    assert len(dlg._items()) == 2 and all(getattr(i, "inherited", False) for i in dlg._items())
+    assert "앞 이미지와 같은 자리" in dlg.info.text()
+    res = dlg.result()
+    assert res[str(a)] == [ba[0], ba[3]] and res[str(b)] == [ba[0], ba[3]]
+    dlg.clear_current()
+    dlg._add_item(ba[5])
+    dlg._changed()
+    assert dlg.result()[str(b)] == [ba[5]] and dlg.result()[str(a)] == [ba[0], ba[3]]
+
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    add = AddFilesDialog(info.dir, files=[str(a), str(b)])
+    add.r_manual.setChecked(True)
+    assert add.b_draw.isEnabled() and add.b_preview.isHidden() and "카드 자리 그리기" in add.img_info.text()
+    add.manual_boxes = dlg.result()
+    add._sync()
+    assert "카드 3장" in add.img_info.text()
+    add.new_name.setText("카드")
+    import PySide6.QtWidgets as W
+
+    orig = W.QMessageBox.information
+    W.QMessageBox.information = staticmethod(lambda *a, **k: W.QMessageBox.StandardButton.Ok)
+    try:
+        add.accept()
+    finally:
+        W.QMessageBox.information = orig
+    assert add.result_info["added"] and service.project_overview(info.dir)["groups"][0]["files"][0]["pages"] == 3
+
+
+def test_manual_boxes_with_forward_slash_paths_and_empty_image(tmp_path):
+    """파일 고르기 창의 경로(C:/x/a.png)로 그린 자리도 쓰고, 빈 목록 이미지에서는 카드를 만들지 않는다."""
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    a, b = tmp_path / "in" / "a.png", tmp_path / "in" / "b.png"
+    ba = _grid(a, cols=3, rows=2)
+    _grid(b, cols=3, rows=2)
+    fwd = {a.as_posix(): [ba[0], ba[1]], b.as_posix(): []}
+    r = service.add_images(info.dir, [str(a), str(b)], "카드", name="시트", new_group=True, boxes=fwd)
+    assert r.pages == 2  # a에서 2장, b에서는 0장 (통째로 한 장이 아님)
+
+
+def test_card_boxes_dialog_delete_inherited_sticks_and_click_keeps_inheriting(tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.card_boxes import CardBoxesDialog
+
+    QApplication.instance() or QApplication([])
+    a, b, c = (tmp_path / "in" / f"{n}.png" for n in "abc")
+    ba = _grid(a, cols=3, rows=2)
+    _grid(b, cols=3, rows=2)
+    _grid(c, cols=3, rows=2)
+    dlg = CardBoxesDialog([str(a), str(b), str(c)])
+    dlg._add_item(ba[0])
+    dlg._changed()
+    dlg.list.setCurrentRow(1)
+    dlg._changed()  # 누르기만 함 (옮기지 않음): 앞 이미지 자리를 계속 따른다
+    assert str(b) not in dlg.boxes and all(i.inherited for i in dlg._items())
+    for it in dlg._items():
+        it.setSelected(True)
+    dlg.delete_selected()  # 앞 이미지에서 빌려 온 자리를 지움: 이 이미지에는 카드 없음
+    assert dlg.boxes[str(b)] == [] and "카드를 만들지 않음" in dlg.info.text()
+    dlg.list.setCurrentRow(2)
+    dlg.list.setCurrentRow(1)  # 돌아와도 점선이 다시 생기지 않는다
+    assert dlg._items() == []
+    res = dlg.result()
+    assert res[str(b)] == [] and res[str(c)] == [ba[0]]  # c는 b를 건너뛰고 a 자리를 따른다

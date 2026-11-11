@@ -724,7 +724,8 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
                 prepared = client.prepare_card(*args)
             return tm.timed("Claude Code 요청", lambda: client.run_card(prepared))
         try:  # 나눠 부를 수 없는 클라이언트: 여기(주 스레드)서 읽는다
-            reply = client.read_card(*args)
+            with tm.part("Claude Code 요청"):
+                reply = client.read_card(*args)
         except CardError as e:
             def fail(e=e):
                 raise e
@@ -790,6 +791,8 @@ def _log_run(tm, state, st, failed0, n_read, n_left, engine, model, batch, spent
             log.warning("글자 추출 %s: %s%s", "일시 정지" if state == "paused" else "할 수 없음", st.reason,
                         f" (다시 할 수 있는 시각 {st.retry_after})" if st.retry_after else "")
     cost = st.spent_usd - spent0
+    if state == "waiting_batch" and not n_read and not new_failed:
+        return  # 일괄 처리 결과를 아직 기다리는 중: 확인할 때마다 시간 줄을 쌓지 않는다
     tm.log(상태=state, 카드=f"{n_read}장 읽음", 실패=len(new_failed) or None, 남음=n_left or None,
            엔진=engine + (" 일괄" if batch else ""), 모델=model,
            동시=extract_workers(engine) if not batch else None,
@@ -1134,7 +1137,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         by_name = {**by_name_all, **{r.name: r for r in project.template.regions_for(pno)}}
         regs = [by_name[n] for n in names if n in by_name]
         try:
-            with tm.part("원본 자르기"):
+            with tm.part("원본 자르기·요청 준비"):  # 나눠 부를 수 없는 클라이언트는 여기서 읽기까지 한다
                 job = _prepare_read(client, project, pno, src_doc, check_model, base, regs)
             return tm.timed("Claude 요청", job)
         except CardError as e:

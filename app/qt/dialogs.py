@@ -388,7 +388,8 @@ class AddFilesDialog(QDialog):
     """카드 파일(PDF 또는 이미지)을 기존 그룹에 넣거나 새 그룹을 만든다 (PRD 1단계).
 
     이미지(JPG·PNG 등)는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣는다. 이미지 한 장에 카드가
-    가로 X × 세로 Y로 놓여 있으면 ‘여러 장 배열’을 고르고, 미리 보기로 자를 자리를 확인한다."""
+    가로 X × 세로 Y로 놓여 있으면 ‘여러 장 배열’을 고르고, 미리 보기로 자를 자리를 확인한다.
+    카드가 불규칙하게 놓였으면 ‘수동으로 영역 지정’을 골라 카드 자리를 직접 그린다 (CardBoxesDialog)."""
 
     def __init__(self, project_dir: Path, parent=None, files: list[str] | None = None):
         super().__init__(parent)
@@ -441,9 +442,13 @@ class AddFilesDialog(QDialog):
         self.img_box = QGroupBox("③ 이미지로 된 카드")
         self.r_single = QRadioButton("이미지 한 장에 카드 한 장")
         self.r_grid = QRadioButton("이미지 한 장에 카드 여러 장 (배열)")
+        self.r_manual = QRadioButton("수동으로 영역 지정")
+        self.r_manual.setToolTip("카드가 줄 맞춰 놓이지 않았거나 배열 자르기가 맞지 않을 때, 이미지 위에 카드 자리를 직접 그립니다")
+        self.manual_boxes: dict = {}  # {이미지 경로: [(x0, y0, x1, y1) 원본 px]}
         ib = QButtonGroup(self)
         ib.addButton(self.r_single)
         ib.addButton(self.r_grid)
+        ib.addButton(self.r_manual)
         self.r_single.setChecked(True)
         self.cols, self.rows = QSpinBox(), QSpinBox()
         for sp, v in ((self.cols, 3), (self.rows, 3)):
@@ -460,16 +465,22 @@ class AddFilesDialog(QDialog):
         self.img_name.setPlaceholderText("비워 두면 첫 이미지 이름")
         self.b_preview = QPushButton("자를 자리 미리 보기")
         self.b_preview.clicked.connect(self.preview)
+        self.b_draw = QPushButton("카드 자리 그리기…")
+        self.b_draw.clicked.connect(self.draw_boxes)
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.b_draw)
+        mrow.addStretch(1)
         self.img_info = QLabel()
         self.img_info.setWordWrap(True)
         self.img_info.setStyleSheet("color: #666")
         il = QFormLayout(self.img_box)
         il.addRow(self.r_single)
         il.addRow(self.r_grid, grow)
+        il.addRow(self.r_manual, mrow)
         il.addRow("파일 이름", self.img_name)
         il.addRow(self.b_preview)
         il.addRow(self.img_info)
-        for w in (self.r_single, self.r_grid):
+        for w in (self.r_single, self.r_grid, self.r_manual):
             w.toggled.connect(lambda _c: self._sync())
         for sp in (self.cols, self.rows):
             sp.valueChanged.connect(lambda _v: self._sync())
@@ -539,9 +550,19 @@ class AddFilesDialog(QDialog):
         self.ok_btn.setEnabled(not empty)
         self.img_box.setVisible(bool(imgs))
         grid = self.r_grid.isChecked()
+        manual = self.r_manual.isChecked()
         self.cols.setEnabled(grid)
         self.rows.setEnabled(grid)
-        if imgs:
+        self.b_draw.setEnabled(manual)
+        self.b_preview.setVisible(not manual)  # 수동이면 그린 자리가 곧 미리 보기
+        if imgs and manual:
+            boxes = self._manual_for(imgs)
+            if any(boxes.values()):
+                n = sum(len(v) for v in boxes.values())
+                self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 {n}장 (그린 자리대로, 한 쪽에 한 장씩 PDF로)")
+            else:
+                self.img_info.setText("‘카드 자리 그리기…’를 눌러 이미지 위에 카드 자리를 그리세요.")
+        elif imgs:
             per = self.cols.value() * self.rows.value() if grid else 1
             self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 약 {len(imgs) * per}장 (한 쪽에 한 장씩 PDF로)")
 
@@ -555,6 +576,21 @@ class AddFilesDialog(QDialog):
     def _remove(self):
         for it in self.files.selectedItems():
             self.files.takeItem(self.files.row(it))
+
+    def _manual_for(self, imgs: list[str]) -> dict:
+        """지금 목록의 이미지에 해당하는 그린 자리만 (목록에서 뺀 이미지 것은 버린다)."""
+        return {p: b for p, b in self.manual_boxes.items() if p in imgs}  # [] = 그 이미지에서는 카드를 만들지 않음
+
+    def draw_boxes(self) -> None:
+        from app.qt.card_boxes import CardBoxesDialog
+
+        imgs = self.image_files()
+        if not imgs:
+            return
+        dlg = CardBoxesDialog(imgs, self._manual_for(imgs), self)
+        if dlg.exec():
+            self.manual_boxes = dlg.result()
+        self._sync()
 
     def layout_choice(self) -> tuple[int, int]:
         return (self.cols.value(), self.rows.value()) if self.r_grid.isChecked() else (1, 1)
@@ -610,6 +646,13 @@ class AddFilesDialog(QDialog):
         others = [f for f in files if f not in pdfs and f not in imgs]
         added, skipped, warnings = [], [f"{Path(f).name}: PDF·이미지가 아님" for f in others], []
         has_regions = False
+        boxes = None
+        if imgs and self.r_manual.isChecked():  # 아무것도 넣기 전에 확인
+            boxes = self._manual_for(imgs)
+            if not any(boxes.values()):
+                show_error(self, "카드 자리를 그리지 않았습니다", "‘수동으로 영역 지정’은 카드 자리를 직접 그려야 합니다.",
+                           "‘카드 자리 그리기…’를 눌러 이미지 위에 카드마다 사각형을 그리세요.")
+                return
         try:
             if pdfs:
                 r = service.add_files(self.project_dir, pdfs, group, new_group=new, regions_from=regions_from)
@@ -621,7 +664,7 @@ class AddFilesDialog(QDialog):
                 cols, rows = self.layout_choice()
                 ri = service.add_images(self.project_dir, imgs, group, cols=cols, rows=rows,
                                         name=self.img_name.text().strip() or None, new_group=new,
-                                        regions_from=regions_from)
+                                        regions_from=regions_from, boxes=boxes)
                 if ri.file_dir:
                     added.append(ri.file_dir)
                 skipped += ri.skipped

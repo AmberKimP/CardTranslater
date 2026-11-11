@@ -6,6 +6,7 @@
 - 이미지 한 장에 카드 한 장: 그대로 한 쪽.
 - 이미지 한 장에 가로 X장 × 세로 Y장: 카드 사이의 빈 틈(배경)을 찾아 자르고, 틈이 안 보이면 같은 간격으로 나눈다.
   바깥 여백은 잘라 낸다.
+- 수동으로 영역 지정: 사람이 이미지 위에 그린 카드 상자(이미지 px) 그대로 자른다 (manual_cut).
 - 쪽 크기는 이미지 DPI(없으면 300dpi로 가정)로 정한다. 사진 회전 정보(EXIF)를 반영한다.
 - 원본 이미지는 읽기만 한다.
 """
@@ -472,6 +473,58 @@ def _cut_grid(rgb: np.ndarray, cols: int, rows: int, cut: SheetCut) -> None:
         cut.warnings.append(f"크기가 다른 카드가 있습니다: {', '.join(map(str, odd))}번째 (빈 칸이거나 잘못 잘렸을 수 있음)")
 
 
+MIN_BOX_PX = 8  # 이보다 작은 수동 상자는 버린다 (잘못 누른 것)
+
+
+def reading_order(boxes: list) -> list[tuple[int, int, int, int]]:
+    """카드 상자를 읽는 순서로: 위 줄부터, 줄 안에서는 왼쪽부터 (배열 자르기와 같은 순서 = PDF 쪽 순서).
+    세로 가운데가 상자 높이(중앙값)의 절반 안이면 같은 줄로 본다."""
+    bs = [tuple(int(round(v)) for v in b) for b in boxes]
+    if not bs:
+        return []
+    hs = sorted(b[3] - b[1] for b in bs)
+    tol = max(1, hs[len(hs) // 2] / 2)
+    rows: list[list] = []
+    for b in sorted(bs, key=lambda b: (b[1] + b[3]) / 2):
+        cy = (b[1] + b[3]) / 2
+        if rows and abs(cy - rows[-1][0]) <= tol:
+            rows[-1][1].append(b)
+        else:
+            rows.append([cy, [b]])
+    return [b for _cy, row in rows for b in sorted(row, key=lambda b: b[0])]
+
+
+def manual_cut(path: Path | str, boxes: list, frame: int = 0, im=None) -> SheetCut:
+    """사람이 그린 카드 상자(이미지 px, 회전 정보 반영한 그림 기준)로 자른다. 이미지 밖은 잘라 내고, 너무 작은 상자는 버린다.
+    im: 이미 읽은 그 쪽 그림 (여러 쪽 TIFF를 쪽마다 다시 읽지 않게). 상자가 빈 목록이면 그 그림에서는 카드를 만들지 않는다."""
+    im = im if im is not None else load_images(path)[frame]
+    w, h = im.size
+    cut = SheetCut(str(path), (w, h), [], image_dpi(path), frame=frame)
+    out = []
+    for b in boxes:
+        x0, y0, x1, y1 = (int(round(v)) for v in b)
+        x0, x1 = sorted((max(0, min(w, x0)), max(0, min(w, x1))))
+        y0, y1 = sorted((max(0, min(h, y0)), max(0, min(h, y1))))
+        if x1 - x0 >= MIN_BOX_PX and y1 - y0 >= MIN_BOX_PX:
+            out.append((x0, y0, x1, y1))
+    cut.boxes = reading_order(out)
+    if len(cut.boxes) < len(boxes):
+        cut.warnings.append(f"이미지 밖이거나 너무 작은 상자 {len(boxes) - len(cut.boxes)}개는 뺐습니다")
+    return cut
+
+
+def display_png(path: Path | str, max_px: int = 1600) -> tuple[bytes, tuple[int, int], float]:
+    """수동 영역 지정 화면에 보여 줄 그림: (PNG, 원본 크기(w, h), 축소 배율). 화면 좌표 / 배율 = 원본 px."""
+    import io
+
+    im = load_images(path)[0]
+    s = min(1.0, max_px / max(im.size))
+    shown = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s)))) if s < 1.0 else im
+    buf = io.BytesIO()
+    shown.save(buf, format="PNG")
+    return buf.getvalue(), im.size, s
+
+
 def preview_png(path: Path | str, cols: int = 1, rows: int = 1, max_px: int = 900) -> tuple[bytes, SheetCut]:
     """자를 자리를 빨간 상자와 번호로 표시한 미리 보기 PNG."""
     import io
@@ -502,8 +555,12 @@ class ImagePdfResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, rows: int = 1) -> ImagePdfResult:
-    """이미지 여러 장 -> 카드 한 장이 한 쪽인 PDF. 이미지 순서대로, 한 이미지 안에서는 왼쪽 위부터 가로 먼저."""
+def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, rows: int = 1,
+                  boxes: dict | None = None) -> ImagePdfResult:
+    """이미지 여러 장 -> 카드 한 장이 한 쪽인 PDF. 이미지 순서대로, 한 이미지 안에서는 왼쪽 위부터 가로 먼저.
+    boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1), …]} (있으면 cols·rows 대신 그 상자대로 자른다.
+    경로는 / 와 \\ 를 가리지 않는다. 목록에 없는 이미지는 통째로 한 장, 빈 목록이면 그 이미지에서는 카드를 만들지 않는다.
+    여러 쪽 TIFF는 모든 쪽에 같은 상자를 쓴다 (쪽 크기가 첫 쪽과 다르면 알린다))."""
     import io
 
     import pymupdf
@@ -511,10 +568,20 @@ def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, r
     out_pdf = Path(out_pdf)
     doc = pymupdf.open()
     sheets, warnings = [], []
+    norm = {str(Path(k)): v for k, v in (boxes or {}).items()}  # 파일 고르기 창은 C:/x/a.png, Path는 C:\\x\\a.png
     for p in paths:
         frames = load_images(p)
         for fi, im in enumerate(frames):
-            cut = cut_sheet(p, cols, rows, frame=fi)
+            if boxes is not None:
+                own = norm.get(str(Path(p)))
+                if own is None:
+                    cut = cut_sheet(p, 1, 1, frame=fi)
+                else:
+                    cut = manual_cut(p, own, frame=fi, im=im)
+                    if fi and im.size != frames[0].size:
+                        cut.warnings.append(f"{fi + 1}쪽은 첫 쪽과 크기가 달라 그린 자리가 맞지 않을 수 있습니다")
+            else:
+                cut = cut_sheet(p, cols, rows, frame=fi)
             sheets.append(cut)
             warnings += [f"{Path(p).name}: {w}" for w in cut.warnings]
             jpeg_src = Path(p).suffix.lower() in (".jpg", ".jpeg")

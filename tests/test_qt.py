@@ -511,10 +511,11 @@ def test_result_viewer_and_output_buttons(qapp, tmp_path):
     win.open_project(info.dir)
     on = {k: win.project.step_buttons[k].isEnabled() for k in ("erase", "compose", "results", "test")}
     assert on == {"erase": True, "compose": True, "results": True, "test": True}
-    # 다시 켜면 마지막 프로젝트를 연다
+    # 다시 켜면 ‘내 프로젝트’ 화면에서 시작하고, 마지막에 연 프로젝트를 골라 둔다
     win2 = MainWindow(root=tmp_path)
-    assert win2.resume_last() and win2.stack.currentWidget() is win2.project
-    assert win2.project.project_dir.resolve() == info.dir.resolve()
+    assert win2.stack.currentWidget() is win2.home
+    sel = win2.home.tree.currentItem()
+    assert sel is not None and Path(sel.data(0, Qt.ItemDataRole.UserRole)[1]["dir"]).resolve() == info.dir.resolve()
 
 
 def test_delete_project_group_file_go_to_trash(qapp, tmp_path, monkeypatch):

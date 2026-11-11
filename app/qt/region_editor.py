@@ -177,6 +177,7 @@ class PageScene(QGraphicsScene):
         super().__init__(parent)
         self.page_rect = QRectF()
         self.add_kind: str | None = None  # 그리기 모드: text | tag_pills | protect | None
+        self.item_class = RegionItem  # 새로 그릴 상자의 종류 (카드 자리 그리기 창은 CardBox)
         self._new: RegionItem | None = None
         self._start = QPointF()
 
@@ -193,7 +194,7 @@ class PageScene(QGraphicsScene):
             data = {"name": "", "kind": "text" if prot else kind}
             if kind == "ocr_exclude":
                 data["ocr_exclude"] = True
-            self._new = RegionItem(QRectF(self._start, self._start), data, protect=prot)
+            self._new = self.item_class(QRectF(self._start, self._start), data, protect=prot)
             self.addItem(self._new)
             ev.accept()
             return

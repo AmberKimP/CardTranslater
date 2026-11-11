@@ -3158,11 +3158,26 @@ def image_preview(image: Path | str, cols: int = 1, rows: int = 1) -> tuple[byte
                  "size": cut.size}
 
 
+def image_display(image: Path | str, max_px: int = 1600) -> tuple[bytes, tuple[int, int], float]:
+    """수동으로 카드 자리를 그릴 때 보여 줄 그림: (PNG, 원본 크기 (w, h), 축소 배율). 화면 px / 배율 = 원본 px."""
+    from app import images
+
+    return images.display_png(image, max_px)
+
+
+def card_reading_order(boxes: list) -> list:
+    """카드 상자를 PDF 쪽 순서(위 줄부터, 줄 안에서는 왼쪽부터)로."""
+    from app import images
+
+    return images.reading_order(boxes)
+
+
 def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 1, rows: int = 1,
                name: str | None = None, new_group: bool = False,
-               regions_from: Path | str | None = None) -> ImageAddResult:
+               regions_from: Path | str | None = None, boxes: dict | None = None) -> ImageAddResult:
     """이미지 여러 장을 카드 한 장이 한 쪽인 PDF 하나로 바꿔 그룹에 넣는다 (파일 이름 name, 없으면 첫 이미지 이름).
-    한 이미지에 카드가 가로 cols × 세로 rows로 놓여 있으면 잘라서 넣는다. 원본 이미지는 source/images/에 사본을 둔다."""
+    한 이미지에 카드가 가로 cols × 세로 rows로 놓여 있으면 잘라서 넣는다. 원본 이미지는 source/images/에 사본을 둔다.
+    boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1) 원본 px, …]} (있으면 cols·rows 대신)."""
     import tempfile
 
     from app import images, workspace
@@ -3175,7 +3190,7 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     stem = (name or imgs[0].stem).strip()
     with tempfile.TemporaryDirectory() as td:
         pdf = Path(td) / f"{stem}.pdf"
-        res = images.images_to_pdf(imgs, pdf, cols, rows)
+        res = images.images_to_pdf(imgs, pdf, cols, rows, boxes=boxes)
         r = workspace.add_files(info, [pdf], group, new_group=new_group, regions_from=regions_from)
     skipped += r["skipped"]
     if not r["added"]:
@@ -3187,6 +3202,7 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
         shutil.copyfile(f, keep / f.name)
     settings = workspace.file_settings(fd)
     settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows,
+                               **({"manual": True} if boxes is not None else {}),
                                "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])
