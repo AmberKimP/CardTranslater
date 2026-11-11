@@ -43,6 +43,10 @@ MODE_LABELS = {
 }
 STRONG = 60.0  # 배경과 이만큼(RGB 최대 채널) 다르면 글자 후보
 WEAK = 30.0  # 글자에 붙은 테두리·그림자로 넓힐 때의 기준
+GAP_MIN = 1.2  # 원문과 맞춘 줄 안에서 잉크가 이만큼(글자 높이 배) 넘게 비면 놓친 글자일 수 있다 (연한 회색 글자)
+GAP_DIFF = 20.0  # 그 빈 곳에서 배경과 이만큼 다르면 글자로 본다 (줄 안이라 STRONG보다 낮게)
+GAP_COLOR_TOL = 45.0  # 그리고 그 줄 글자색과 이만큼 안이어야 한다
+TRIM_KEEP = 0.8  # 끝 조각을 빼면 줄 폭이 원문 길이(글자 수 × 글자 높이)의 이만큼보다 짧아지면 빼지 않는다
 COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
 BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자
 
@@ -731,11 +735,67 @@ def is_icon_line(text: str) -> bool:
     return not _WORD.search(_TOKEN.sub("", text))
 
 
+def _ink_segments(row_cols: np.ndarray) -> list[tuple[int, int]]:
+    """잉크가 있는 열(bool)을 틈으로 나눈 덩이 [(시작, 끝)]."""
+    xs = np.nonzero(row_cols)[0]
+    if not len(xs):
+        return []
+    segs, start = [], xs[0]
+    for a, b in zip(xs[:-1], xs[1:]):
+        if b - a > 1:
+            segs.append((int(start), int(a + 1)))
+            start = b
+    segs.append((int(start), int(xs[-1] + 1)))
+    return segs
+
+
+def fill_line_gaps(tm: "TextMask", img: np.ndarray, ln: dict, allowed: np.ndarray | None = None) -> int:
+    """원문과 맞춘 줄 안에 넓게 빈 곳(GAP_MIN 글자 넘게)이 있으면, 그 자리에서만 배경과 조금(GAP_DIFF) 다른 픽셀을
+    지울 글자로 더한다. 그림 위 연한 회색 글자는 STRONG 기준으로는 일부만 잡혀, 줄 중간 글자가 지워지지 않고
+    남던 것 (예: 회색 인용문 앞부분). allowed: 지워도 되는 곳 (보호 영역·글자 상자 밖은 False). 더한 픽셀 수."""
+    x0, y0, x1, y1 = (int(v) for v in ln["bbox"])
+    gh = float(ln.get("glyph_h") or 0)
+    H, W = tm.mask.shape
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+    if gh <= 0 or x1 - x0 < 3 * gh or y1 <= y0:
+        return 0
+    segs = _ink_segments(tm.mask[y0:y1, x0:x1].any(axis=0))
+    gaps = [(a[1], b[0]) for a, b in zip(segs[:-1], segs[1:]) if b[0] - a[1] > GAP_MIN * gh]
+    if not gaps:
+        return 0
+    pad = int(max(2, 0.3 * gh))
+    by0, by1 = max(0, y0 - pad), min(H, y1 + pad)
+    band = img[by0:by1, max(0, x0 - int(2 * gh)):min(W, x1 + int(2 * gh))].astype(np.float32)
+    bx0 = max(0, x0 - int(2 * gh))
+    k = int(max(15, min(81, 3 * gh))) | 1  # 글자보다 넓은 창의 중앙값 = 배경
+    med = np.dstack([cv2.medianBlur(np.ascontiguousarray(band[..., c]).astype(np.uint8), k)
+                     for c in range(3)]).astype(np.float32)
+    cand = np.abs(band - med).max(axis=2) > GAP_DIFF
+    ink = ln.get("color")
+    if not ink:
+        return 0
+    col = np.array([int(ink[i:i + 2], 16) for i in (1, 3, 5)], np.float32)
+    cand &= np.abs(band - col).max(axis=2) < GAP_COLOR_TOL  # 그 줄 글자색에 가까운 것만 (바쁜 배경의 티끌·테두리 색 빼기)
+    added = 0
+    for a, b in gaps:
+        ga, gb = x0 + a - bx0, x0 + b - bx0
+        sub = cand[:, ga:gb]
+        if sub.sum() < 0.02 * sub.size:
+            continue  # 정말 빈 곳 (낱말 사이 넓은 띄어쓰기 등)
+        sub = cv2.dilate(sub.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        if allowed is not None:
+            sub &= allowed[by0:by1, x0 + a:x0 + b]
+        region = tm.mask[by0:by1, x0 + a:x0 + b]
+        added += int((sub & ~region).sum())
+        region |= sub
+    return added
+
+
 def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
     """줄 맨 앞·맨 뒤에 넓은 틈을 두고 떨어진 작은 조각(글자 하나 크기)이 원문에 없으면 줄에서 뺀다.
     예: 제목 영역 왼쪽 위 배지 안의 숫자 ‘5’가 ‘緊急クエスト’ 줄에 붙어 같이 지워지던 것.
     원문 그 끝이 숫자·기호면 진짜 글자일 수 있어 그대로 둔다. 줄 상자(ln["bbox"])를 고친다."""
-    from app.icons import TOKEN_RE
+    from app.icons import TOKEN_RE, _line_units
 
     x0, y0, x1, y1 = ln["bbox"]
     gh = float(ln.get("glyph_h") or 0)
@@ -762,7 +822,9 @@ def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
         s, nxt = (segs[0], segs[1]) if end == "left" else (segs[-1], segs[-2])
         gap = (nxt[0] - s[1]) if end == "left" else (s[0] - nxt[1])
         ch = plain[0] if end == "left" else plain[-1]
-        if (gap >= 2.5 * gh and s[1] - s[0] <= 1.6 * gh
+        rest = (segs[-1][1] - nxt[0]) if end == "left" else (nxt[1] - segs[0][0])
+        need = TRIM_KEEP * _line_units(text) * gh  # 원문 글자가 차지할 폭 (어림)
+        if (gap >= 2.5 * gh and s[1] - s[0] <= 1.6 * gh and rest >= need
                 and not re.match(r"[0-9０-９+＋\-−×xX■]", ch)):
             a, b = x0 + int(s[0]), x0 + int(s[1])
             tm.mask[max(0, y0 - int(gh)):y1 + int(gh), max(0, a - 2):b + 2] = False
@@ -813,7 +875,8 @@ def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None) 
     return [lines[i] for i in best]
 
 
-def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | None = None) -> dict:
+def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | None = None,
+                       img: np.ndarray | None = None, allowed_px: np.ndarray | None = None) -> dict:
     """찾은 줄을 읽은 원문 줄에 맞춘다. tm.mask를 고친다(남길 줄은 지우지 않음).
 
     - 원문보다 줄이 많으면 가장 작은 글자 줄(카드 번호 ‘A-001’ 같은 것)부터 원문에 없는 줄로 보고 남긴다
@@ -861,6 +924,11 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
         for ln, t in zip(kept, src):
             if not ln.get("keep") and _trim_stray_end(tm, ln, t):
                 trimmed += 1
+        # 줄 끝 조각을 정리한 뒤에(빼낸 배지 숫자와 줄 사이 틈을 채우지 않게) 줄 안의 넓은 빈 곳에서 연한 글자를 다시 찾는다
+        if img is not None:
+            refound = sum(fill_line_gaps(tm, img, ln, allowed=allowed_px) for ln in kept if not ln.get("keep"))
+            if refound:
+                tm.notes.append("줄 안에서 연한 글자를 더 찾아 지움")
         if trimmed:
             tm.notes.append(f"줄 끝에 떨어진 원문에 없는 조각 {trimmed}개는 지우지 않음")
         # 원문 줄과 맞으면: 지울 줄(아이콘만 있는 줄 빼고) 둘레 밖의 지울 픽셀은 원문에 없는 것(작은 카드 번호 등)이라 남긴다

@@ -259,3 +259,56 @@ def test_extra_line_at_box_edge_is_dropped_first():
     art = {"bbox": [394, 88, 475, 103], "glyph_h": 14.0}
     assert _extra_lines([title, art], ["延焼"], (35, 103)) == [art]
     assert _extra_lines([title, art], ["延焼"]) == [title]  # 상자를 모르면 예전처럼 작은 줄부터
+
+
+def _tm(mask):
+    return erase_text.TextMask(mask=mask, core=mask.copy(), busy=False, texture=0.0)
+
+
+def test_trim_stray_end_keeps_piece_the_source_needs():
+    """줄 앞 조각이 떨어져 있어도, 빼면 줄이 원문 길이보다 많이 짧아지면 원문 글자다 (연한 글자가 덜 잡힌 줄)."""
+    m = np.zeros((40, 400), bool)
+    m[10:30, 10:30] = True  # 왼쪽 조각 (글자 하나)
+    m[10:30, 90:300] = True  # 나머지 줄
+    ln = {"bbox": [10, 10, 300, 30], "glyph_h": 20}
+    assert not erase_text._trim_stray_end(_tm(m), dict(ln), "自由民と奴隷、見ただけでその違いが分かるかね")
+    # 원문이 짧으면(배지 숫자 같은 원문에 없는 조각) 예전처럼 뺀다
+    ln2 = dict(ln)
+    assert erase_text._trim_stray_end(_tm(m.copy()), ln2, "緊急クエスト")
+    assert ln2["bbox"][0] == 90
+
+
+def test_fill_line_gaps_finds_faint_glyphs_of_line_color_only():
+    img = np.full((40, 400, 3), 200, np.uint8)
+    img[12:28, 40:200:6] = (130, 130, 130)  # 연한 회색 글자 (마스크가 놓친 것)
+    img[12:28, 220:224] = (230, 200, 40)  # 다른 색(노란 테두리 조각): 더하지 않는다
+    m = np.zeros((40, 400), bool)
+    m[12:28, 10:30] = True
+    m[12:28, 300:380] = True
+    tm = _tm(m)
+    ln = {"bbox": [10, 12, 380, 28], "glyph_h": 16, "color": "#828282"}
+    assert erase_text.fill_line_gaps(tm, img, ln) > 0
+    assert tm.mask[12:28, 40:200].any() and not tm.mask[12:28, 221:223].any()
+
+
+def test_gap_fill_runs_after_trim_and_respects_allowed_area():
+    """배지 숫자(원문에 없는 조각)를 뺀 틈은 채우지 않고, 지워도 되는 곳(allowed) 밖은 더하지 않는다."""
+    img = np.full((40, 600, 3), 200, np.uint8)
+    img[12:28, 40:100:6] = (60, 60, 60)  # 배지와 제목 사이 그림 (글자색과 같은 진한 색)
+    m = np.zeros((40, 600), bool)
+    m[12:28, 10:28] = True  # 배지 숫자
+    m[12:28, 150:420] = True  # 제목
+    tm = _tm(m)
+    lay = {"lines": [{"bbox": [10, 12, 420, 28], "glyph_h": 16, "color": "#3c3c3c"}]}
+    erase_text.match_source_lines(tm, lay, "緊急クエスト", img=img, allowed_px=np.ones_like(m))
+    assert not tm.mask[12:28, 40:100].any()  # 뺀 조각과 줄 사이 그림은 지우지 않는다
+    img2 = np.full((40, 400, 3), 200, np.uint8)
+    img2[12:28, 40:200:6] = (130, 130, 130)
+    m2 = np.zeros((40, 400), bool)
+    m2[12:28, 10:30] = True
+    m2[12:28, 300:380] = True
+    ok = np.ones_like(m2)
+    ok[:, 100:] = False
+    tm2 = _tm(m2)
+    erase_text.fill_line_gaps(tm2, img2, {"bbox": [10, 12, 380, 28], "glyph_h": 16, "color": "#828282"}, allowed=ok)
+    assert tm2.mask[12:28, 40:100].any() and not tm2.mask[12:28, 100:200].any()

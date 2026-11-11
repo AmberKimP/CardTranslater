@@ -393,11 +393,17 @@ def paragraph_rects(source: str, lines: list[dict]) -> list[list[float]] | None:
                 continue
             bx = [float(v) for v in ln["bbox_pt"]]
             total, part = _visible_len(source[la:lb].strip()), _visible_len(source[oa:ob].strip())
+            w = bx[2] - bx[0]
+            before = _visible_len(source[la:oa].lstrip())
             if total and MIN_PART_CHARS <= part < total:
-                before = _visible_len(source[la:oa].lstrip())
-                w = bx[2] - bx[0]
                 x0 = bx[0] + w * before / total
                 parts.append([x0, bx[1], min(bx[2], x0 + w * part / total), bx[3]])
+            elif total and part < total and total - part >= MIN_PART_CHARS:
+                # 짧은 조각(‘—— 이름’ 등): 그 자체로는 값이 흔들린다. 같은 줄의 나머지 글(대개 바로 앞 인용문)로 잰다
+                if before:  # 조각이 줄 뒤쪽: 앞부분
+                    parts.append([bx[0], bx[1], bx[0] + w * before / total, bx[3]])
+                else:  # 조각이 줄 앞쪽: 뒷부분
+                    parts.append([bx[0] + w * part / total, bx[1], bx[2], bx[3]])
             else:
                 parts.append(bx)
         if not parts:
@@ -613,6 +619,9 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
 
     def rec_for(key):
         rec = order_by_category([{**p, "by": "claude"} for p in picked.get(key, [])], styles)
+        if not rec and key in names:  # Claude 없이: 모양 값은 글씨체 종류를 잘 못 가린다 (테두리 글씨·스캔 번짐)
+            return shape_only_recommendation(_layout_weight(metas, key, modes.get(key) == "sentence"),
+                                             shape.get(key, []))
         for c in shape.get(key, []):
             if len(rec) >= MAX_RECOMMENDED:
                 break
@@ -638,7 +647,7 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
                     fam = [c for c in shape.get(key, []) if base and _family_base(c.get("family")) == base]
                     best = fam[0]["file"] if fam else rec[0]["file"]
                     rk = [{"file": best, "reason": "본문 글꼴의 굵기만 다르게" if best != rec[0]["file"]
-                           else "본문과 같은 글꼴", "by": "shape"}] + [r for r in rk if r["file"] != best]
+                           else "본문과 같은 글꼴", "by": "shape"}] + [r for r in rk if r["file"] != best and r["file"] in BASELINE_FONTS]
                 if not rk:
                     continue
                 recs[str(k)] = rk
@@ -647,6 +656,50 @@ def recommend(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", wor
                     ref[k] = rk[0]["file"]
             slots_out[name] = {"ref": ref, "recommended": recs}
     return out, note
+
+
+DEFAULT_SANS = {"Regular": "fonts/notosanskr/NotoSansKR-Regular.ttf", "Medium": "fonts/notosanskr/NotoSansKR-Medium.ttf",
+                "Bold": "fonts/notosanskr/NotoSansKR-Bold.ttf"}
+THIN_WEIGHT = 0.09  # 지우기가 잰 줄 굵기(획 굵기 / 글자 높이)가 이보다 작으면 가는 글씨 (Regular)
+BOLD_WEIGHT = 0.14  # 굵은 글씨로 잰 줄이 대부분이고 이보다 굵으면 Bold
+
+
+def _layout_weight(metas: list[dict], name: str, first_line_only: bool = False) -> tuple[float | None, float]:
+    """지우기가 잰 그 영역 줄들의 굵기 (중앙값, 굵은 줄 비율). first_line_only: 카드마다 첫 줄만 (‘문단마다’ 영역의 본문)."""
+    import numpy as np
+
+    ws, bold = [], []
+    for m in metas:
+        reg = next((r for r in m["regions"] if r["name"] == name), None)
+        lines = ((reg or {}).get("text_layout") or {}).get("lines") or []
+        for ln in lines[:1] if first_line_only else lines:
+            if ln.get("weight") is not None:
+                ws.append(float(ln["weight"]))
+                bold.append(bool(ln.get("bold")))
+    if not ws:
+        return None, 0.0
+    return float(np.median(ws)), sum(bold) / len(bold)
+
+
+def shape_only_recommendation(weight: tuple[float | None, float], ranked: list[dict]) -> list[dict]:
+    """Claude 없이 하는 추천: 기본 고딕(본고딕)에 굵기만 원문을 따른다. 나머지는 대표 글꼴(BASELINE_FONTS)만
+    모양 값 순서로 (손글씨·장식·명조를 모양 값만 보고 앞에 두지 않는다)."""
+    w, bold_share = weight
+    if w is not None and w < THIN_WEIGHT:
+        first, why = "Regular", "가는 글씨"
+    elif w is not None and bold_share >= 0.6 and w >= BOLD_WEIGHT:
+        first, why = "Bold", "굵은 글씨"
+    else:
+        first, why = "Medium", "보통 굵기"
+    rec = [{"file": DEFAULT_SANS[first], "reason": f"Claude 없이: 기본 고딕, 원문 {why}", "by": "default"}]
+    order = [c["file"] for c in ranked if c["file"] in BASELINE_FONTS] + list(BASELINE_FONTS)
+    for f in order:
+        if len(rec) >= MAX_RECOMMENDED:
+            break
+        if all(r["file"] != f for r in rec):
+            c = next((x for x in ranked if x["file"] == f), {})
+            rec.append({"file": f, "reason": c.get("reason", "") or "대표 글꼴", "by": "shape"})
+    return rec
 
 
 def _family_base(family: str | None) -> str:

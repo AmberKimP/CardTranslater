@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 import pytest
 from PIL import Image, ImageDraw, ImageFont
@@ -269,11 +270,11 @@ def test_sheet_combines_cards_from_moved_group(tmp_path):
     assert res.sheet_error is None and [p.name for p in res.sheet_images] == ["s.png"]
     a = Image.open(fd / "translated" / "images" / "s.png")  # 원래 그룹 결과에도 같은 시트를 다시 썼다
     b = Image.open(other / "translated" / "images" / "s.png")
-    assert list(a.getdata()) == list(b.getdata())
+    assert np.array_equal(np.asarray(a), np.asarray(b))
     lay = service.image_sheet_layouts(fd)[0]
     orig = Image.open(tmp_path / "in" / "s.png").convert("RGB")
     for box in lay["boxes"]:  # 두 칸 모두 한글을 넣은 카드 (원본과 다름)
-        assert list(b.convert("RGB").crop(box).getdata()) != list(orig.crop(box).getdata())
+        assert not np.array_equal(np.asarray(b.convert("RGB").crop(box)), np.asarray(orig.crop(box)))
 
 
 def test_test_run_writes_sheet_with_tested_pages_only(tmp_path):
@@ -286,7 +287,7 @@ def test_test_run_writes_sheet_with_tested_pages_only(tmp_path):
     got = Image.open(imgs[0]).convert("RGB")
     orig = Image.open(tmp_path / "in" / "s.png").convert("RGB")
     box2 = lay["boxes"][1]
-    assert list(got.crop(box2).getdata()) == list(orig.crop(box2).getdata())  # 시험하지 않은 2쪽은 원본
+    assert np.array_equal(np.asarray(got.crop(box2)), np.asarray(orig.crop(box2)))  # 시험하지 않은 2쪽은 원본
     assert not (fd / "translated").exists()  # 프로젝트 결과는 그대로
 
 
@@ -458,7 +459,8 @@ def test_paragraph_rects_follow_source_lines_and_split_shared_line():
     assert len(rects) == 3
     assert rects[0] == [9, 9, 111, 27]  # 두 줄에 걸친 첫 문단
     assert rects[1][1] == 29 and rects[1][2] < 110  # 셋째 줄 앞쪽 (인용문)
-    assert rects[2] == [9, 29, 111, 36]  # ‘—— 王様’는 짧아 줄 전체로 잰다
+    # ‘—— 王様’는 짧아 같은 줄의 앞 글(인용문)로 잰다
+    assert rects[2][:2] == rects[1][:2] and abs(rects[2][2] - rects[1][2]) < 8 and rects[2][2] < 100
     assert paragraph_rects(src, lines[:2]) is None  # 줄 수가 다르면 문단 위치를 모른다
 
 
@@ -605,3 +607,17 @@ def test_font_plans_asks_claude_when_recommendation_is_redone(tmp_path, monkeypa
                         lambda fd_, client=None, *a, **k: got.append(client) or ({"이름": []}, ""))
     service.font_plans(info.dir)
     assert got == [sentinel]
+
+
+def test_shape_only_recommendation_is_default_gothic_with_original_weight():
+    from app.font_plan import BASELINE_FONTS, shape_only_recommendation
+
+    ranked = [{"file": "fonts/moiraione/MoiraiOne-Regular.ttf", "reason": ""},
+              {"file": "fonts/notoserifkr/NotoSerifKR-Regular.ttf", "reason": "획 굵기가 비슷함"}]
+    rec = shape_only_recommendation((0.12, 0.0), ranked)
+    assert rec[0]["file"].endswith("NotoSansKR-Medium.ttf") and rec[0]["by"] == "default"
+    assert all(r["file"] in BASELINE_FONTS for r in rec)  # 장식 글꼴은 모양 값만 보고 넣지 않는다
+    assert rec[1]["file"].endswith("NotoSerifKR-Regular.ttf")  # 대표 글꼴 중에서는 모양 값 순서
+    assert shape_only_recommendation((0.07, 0.0), [])[0]["file"].endswith("NotoSansKR-Regular.ttf")
+    assert shape_only_recommendation((0.16, 1.0), [])[0]["file"].endswith("NotoSansKR-Bold.ttf")
+    assert shape_only_recommendation((None, 0.0), [])[0]["file"].endswith("NotoSansKR-Medium.ttf")

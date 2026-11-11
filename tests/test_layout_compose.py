@@ -343,3 +343,20 @@ def test_result_pages_report_dropped_text(tmp_path):
         "제목": {"status": ["넘침"], "overflow_text": "작\n은\n불"}, "본문": {"status": []}}}]}), encoding="utf-8")
     p = service.result_pages(tmp_path)[0]
     assert p["regions"][0]["overflow"] == "작 은 불" and p["regions"][1]["overflow"] == ""
+
+
+def test_color_tag_around_whole_slot_uses_line_color_without_mismatch():
+    """원문 한 줄(회색 인용문) 전체를 <c1>로 읽은 경우: 그 줄 색으로 그리고 ‘서식 불일치’로 보지 않는다."""
+    import pymupdf
+
+    from app.typeset import TextStyle, typeset_region
+    from app.typeset_layout import STATUS_TAG_MISMATCH
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=100)
+    st = TextStyle(font_file="fonts/notosanskr/NotoSansKR-Regular.ttf", size_pt=8, color="#969994")
+    res = typeset_region(page, pymupdf.Rect(10, 10, 190, 40), "<c1>인용문 한 줄</c1>", st)
+    assert STATUS_TAG_MISMATCH not in res.status
+    part = typeset_region(page, pymupdf.Rect(10, 50, 190, 90), "본문 <c1>강조</c1>",
+                          TextStyle(font_file="fonts/notosanskr/NotoSansKR-Regular.ttf", size_pt=8))
+    assert STATUS_TAG_MISMATCH in part.status  # 일부만 감싼 색 태그는 색을 몰라 그대로 알린다

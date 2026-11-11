@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
+
+log = logging.getLogger("cardtranslater.extract")
 
 MODELS = {  # 옵션 이름 -> 모델 ID
     "opus": "claude-opus-5-5",  # 가장 정확 (기본)
@@ -926,6 +929,115 @@ def _prepare_read(client, project, pno, src_doc, model, base, regions):
     return run_api
 
 
+# ---------------------------------------------------------------- 닮은 한자로 잘못 읽은 것 찾기
+LOOKALIKE_SIM = 0.9  # 두 한자를 그려 겹쳐 본 닮은 정도 (復·後 0.95, 未·末 0.97 / 霊·鋭 0.85, 始·拓 0.83)
+LOOKALIKE_MIN_COMMON = 3  # 다른 카드에서 이만큼 나온 한자 낱말과
+_KANJI = "[一-鿿々]"
+_JA_FONTS = ("C:/Windows/Fonts/msgothic.ttc", "C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/meiryo.ttc")
+
+
+def _kanji_font():
+    from PIL import ImageFont
+
+    if not hasattr(_kanji_font, "font"):
+        _kanji_font.font = None
+        for f in _JA_FONTS:  # 일본어 한자(新字体)가 모두 있는 글꼴 (한국어 글꼴에는 없는 글자가 있다)
+            try:
+                _kanji_font.font = ImageFont.truetype(f, 64)
+                break
+            except OSError:
+                continue
+    return _kanji_font.font
+
+
+def _glyph(ch: str):
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    cache = _glyph.__dict__.setdefault("cache", {})
+    if ch not in cache:
+        im = Image.new("L", (80, 80), 0)
+        ImageDraw.Draw(im).text((8, 8), ch, font=_kanji_font(), fill=255)
+        ink = np.asarray(im) > 128
+        cache[ch] = (ink, cv2.dilate(ink.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+    return cache[ch]
+
+
+def look_alike(a: str, b: str) -> bool:
+    """두 한자가 닮았나 (그려서 서로의 획이 상대 획 근처에 얼마나 들어오는지). 글꼴이 없으면 False."""
+    if a == b or _kanji_font() is None:
+        return False
+    ia, da = _glyph(a)
+    ib, db = _glyph(b)
+    if not ia.any() or not ib.any():
+        return False
+    return min((ia & db).sum() / ia.sum(), (ib & da).sum() / ib.sum()) >= LOOKALIKE_SIM
+
+
+def suspicious_readings(cells: dict) -> dict:
+    """cells {(쪽, 영역): 원문}. 한 번만 나온 한자 두 글자 낱말이, 다른 카드에서 LOOKALIKE_MIN_COMMON번 넘게 나온
+    낱말과 닮은 한 글자만 다르면 잘못 읽었을 수 있다 (예: 回後 ← 回復). {(쪽, 영역): [(읽은 것, 아마 맞는 것, 횟수)]}."""
+    import re
+    from collections import Counter
+
+    pat = re.compile(f"(?=({_KANJI}{_KANJI}))")
+    found = {k: [m.group(1) for m in pat.finditer(t or "")] for k, t in cells.items()}
+    count = Counter(w for ws in found.values() for w in ws)
+    common = [w for w, c in count.items() if c >= LOOKALIKE_MIN_COMMON]
+    out: dict = {}
+    for key, ws in found.items():
+        for w in ws:
+            if count[w] != 1:
+                continue
+            for o in common:
+                diff = [(x, y) for x, y in zip(w, o) if x != y]
+                if len(diff) == 1 and look_alike(*diff[0]):
+                    out.setdefault(key, []).append((w, o, count[o]))
+                    break
+    return out
+
+
+def flag_lookalikes(base: Path, pages: list[int] | None = None) -> int:
+    """추출 결과(base)에서 닮은 한자로 잘못 읽었을 법한 칸을 ‘확인 필요’로 바꾸고 이유를 남긴다 (두 번 읽기가
+    다시 읽게). 한 칸은 한 번만 본다 ("lookalike" 기록). 바꾼 칸 수."""
+    recs = {}
+    for f in sorted((Path(base) / "pages").glob("page-*.json")):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        recs[int(rec["page"])] = (f, rec)
+    cells = {}
+    for pno, (_f, rec) in recs.items():
+        for name, r in (rec.get("regions") or {}).items():
+            src = r.get("source")
+            cells[(pno, name)] = "\n".join(src) if isinstance(src, list) else (src or "")
+    n = 0
+    for (pno, name), hits in suspicious_readings(cells).items():
+        if pages is not None and pno not in pages:
+            continue
+        f, rec = recs[pno]
+        r = rec["regions"][name]
+        if r.get("lookalike") is not None or r.get("readings"):
+            continue  # 이미 봤거나 두 모델이 읽은 칸
+        r["lookalike"] = [{"read": w, "likely": o, "seen": c} for w, o, c in hits]
+        why = ", ".join(f"«{w}»(다른 카드에서는 «{o}» {c}번)" for w, o, c in hits)
+        r["uncertain"] = True
+        r["note"] = (f"닮은 한자로 잘못 읽었을 수 있음: {why}. " + (r.get("note") or "")).strip()
+        if rec.get("recheck"):  # 이미 두 번 읽은 카드: 이 칸만 다시 읽게 (다른 칸의 두 모델 기록은 그대로)
+            pending = rec.setdefault("recheck_pending", [])
+            if name not in pending:
+                pending.append(name)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
+        n += 1
+    if n:
+        log.info("닮은 한자 의심 칸 %d개를 확인 필요로 표시", n)
+    return n
+
+
 def run_recheck(project, pages: list[int], client, *, base: Path, check_model: str,
                 progress=None, cancel=None) -> RecheckResult:
     """base의 추출 결과에서 '확인 필요' 칸만 check_model로 다시 읽는다. 끊겨도 다시 부르면 이어 간다.
@@ -946,9 +1058,10 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         if not f.exists():
             continue
         rec = json.loads(f.read_text(encoding="utf-8"))
-        if rec.get("recheck"):
-            continue
-        names = [n for n, r in rec["regions"].items() if r.get("uncertain")]
+        if rec.get("recheck"):  # 이미 다시 읽은 카드: 나중에 ‘닮은 한자’로 표시된 칸만
+            names = [n for n in rec.get("recheck_pending") or [] if n in rec["regions"]]
+        else:
+            names = [n for n, r in rec["regions"].items() if r.get("uncertain")]
         if names:
             todo.append((pno, f, rec, names))
     if not todo:
@@ -976,6 +1089,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         pno, f, rec, names = item
         if isinstance(exc, CardError):
             rec["recheck"] = {"model": check_model, "error": str(exc), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            rec.pop("recheck_pending", None)
             f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
             return
         if exc is not None:
@@ -1003,6 +1117,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
                                              f"{check_model}: {b['source']}). {b.get('note', '')}".strip(),
                                      "readings": readings}
                 out.disagreed += 1
+        rec.pop("recheck_pending", None)
         rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),
                           "cost_equiv_usd": round(eq, 6), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
         tmp = f.with_suffix(".tmp")

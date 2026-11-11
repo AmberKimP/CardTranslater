@@ -528,6 +528,7 @@ class ExtractResult:
     recheck_cells: int = 0  # 두 번째 모델로 다시 읽은 칸
     recheck_agreed: int = 0  # 같게 읽어 '확인 필요'를 지운 칸
     recheck_disagreed: int = 0  # 다르게 읽어 '확인 필요'로 남긴 칸
+    lookalike_cells: int = 0  # 닮은 한자로 잘못 읽었을 법해 '확인 필요'로 바꾼 칸
 
 
 EXTRACT_MODES = {  # 모드 -> (1차 모델, 다시 확인 모델 또는 None)
@@ -591,6 +592,10 @@ def extract(project_dir: Path | str, pages: str | None = None, *, mode: str = "d
                     model=model_id, out_dir=out_dir, progress=progress or _noop, cancel=cancel)
     res = ExtractResult(r.state, r.engine, r.equiv_usd, r.done_pages, r.remaining_pages, r.failed, r.spent_usd,
                         r.reason, r.retry_after, r.batch_id, r.model, r.out_dir, mode if not model else "single")
+    if r.state == "done":  # 다른 카드에서 자주 나온 낱말과 닮은 한자 한 글자만 다른 칸: 확인 필요로 (두 번째 확인이 다시 읽는다)
+        from app.extract import flag_lookalikes
+
+        res.lookalike_cells = flag_lookalikes(r.out_dir, page_list)
     if check_id and r.state == "done":
         # 두 번째 확인: 1차가 끝난 카드의 '확인 필요' 칸만. 끊기면 다시 불렀을 때 남은 칸부터.
         rc = run_recheck(project, page_list, client, base=r.out_dir, check_model=check_id,

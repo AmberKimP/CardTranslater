@@ -207,3 +207,46 @@ def test_keep_brackets_restores_corner_brackets():
     assert keep_brackets("「A」", "「가」") == "「가」"
     assert keep_brackets("「A」「B」", "“가와 나”") == "“가와 나”"
     assert "「」" in SYSTEM_PROMPT and "become Korean" not in SYSTEM_PROMPT
+
+
+def test_translate_batches_run_concurrently_and_pause_keeps_sent_batches(tmp_path, monkeypatch):
+    """묶음 여러 개를 동시에 보내고, 한도에 걸리면 이미 보낸 묶음은 받아 저장한 뒤 멈춘다."""
+    import threading
+    import time as _t
+
+    monkeypatch.setattr("app.translate.BATCH_CELLS", 1)
+    monkeypatch.setenv("CARDTRANSLATER_EXTRACT_WORKERS", "3")
+    from tests.test_service import make_project
+
+    texts = ["一", "二", "三", "四", "五", "六"]
+    src = make_project(tmp_path / "src", pages=len(texts))
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    workspace.add_files(info, [src / "source" / "cards.pdf"], "카드", new_group=True, regions_from=src / "regions.json")
+    fd = workspace.file_dirs(info)[0]
+    for i, t in enumerate(texts, start=1):
+        _write_extract(fd, i, t)
+    glossary.confirm(info, [])
+    workspace.set_status(info, "glossary_confirmed")
+    lock, state = threading.Lock(), {"now": 0, "peak": 0}
+    limit = json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+                        "result": "rate limit"})
+
+    def runner(args, cwd, timeout, input_text=None):
+        src = json.loads(input_text.split("Items (JSON lines):\n")[1].splitlines()[0])["source"]
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        try:
+            if src == "二":
+                return 0, limit, ""  # 한도: 바로
+            _t.sleep(0.3)
+            return _reply([f"번역{src}"])
+        finally:
+            with lock:
+                state["now"] -= 1
+
+    r = service.translate_project(info.dir, client=ClaudeCodeClient(exe="claude", runner=runner))
+    assert r.state == "paused"
+    cache = load_cache(info.dir)
+    assert set(cache) == {"一", "三"} and cache["三"]["ko"] == "번역三"  # 함께 보낸 1·3번은 저장, 그 뒤로는 보내지 않음
+    assert state["peak"] >= 2

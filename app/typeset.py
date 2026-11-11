@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import dataclasses
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -382,6 +383,13 @@ def _prepare(text, style: TextStyle, source_text, m: FontMeasurer):
     spans, _ = parse_markup(text)
     atoms = to_atoms(spans)
     unknown_colors = sorted({a.fmt.color_tag for a in atoms if a.fmt.color_tag and a.fmt.color_tag not in style.tag_colors})
+    visible = [a for a in atoms if a.kind in ("char", "icon")]
+    whole = {a.fmt.color_tag for a in visible}
+    if len(unknown_colors) == 1 and whole == set(unknown_colors):
+        # 색 태그가 이 칸(원문 한 줄 자리 등)의 글 전체를 감쌌다: 그 색은 이미 이 칸의 기본 색(원문 줄 색)이다.
+        # 예: 회색 인용문 줄 전체를 <c1>…</c1>로 읽은 카드 (같은 줄을 태그 없이 읽은 카드와 똑같이 그린다)
+        style = dataclasses.replace(style, tag_colors={**style.tag_colors, unknown_colors[0]: style.color})
+        unknown_colors = []
     if unknown_colors:
         errors.append("색이 정해지지 않은 태그 " + ", ".join(unknown_colors))
     unknown_fonts = sorted({a.fmt.font_tag for a in atoms if a.fmt.font_tag and a.fmt.font_tag not in style.tag_fonts})

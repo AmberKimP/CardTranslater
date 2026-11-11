@@ -493,3 +493,84 @@ def test_claude_code_engine_reads_two_cards_at_once(tmp_path, monkeypatch):
     r = service.extract(proj, client=ClaudeCodeClient(exe="claude", runner=runner), mode="opus")
     assert r.state == "done" and r.done_pages == [1, 2, 3, 4, 5]
     assert state["peak"] == 2 and state["main"] == 0
+
+
+# ---------------------------------------------------------------- 닮은 한자로 잘못 읽은 것
+def test_suspicious_readings_finds_lookalike_kanji_only():
+    from app.extract import look_alike, suspicious_readings
+
+    assert look_alike("復", "後") and look_alike("未", "末")
+    assert not look_alike("始", "拓") and not look_alike("札", "番")
+    cells = {(1, "본문"): "森が20回復する。", (2, "본문"): "森が10回復。", (3, "본문"): "回復する",
+             (4, "본문"): "森が20回後、", (5, "본문"): "山札を引く", (6, "본문"): "手札", (7, "본문"): "手札",
+             (8, "본문"): "手札"}
+    got = suspicious_readings(cells)
+    assert got == {(4, "본문"): [("回後", "回復", 3)]}  # 山札/手札는 札이 같고 山·手는 닮지 않았다
+
+
+def test_flag_lookalikes_marks_uncertain_once_and_reopens_recheck(tmp_path):
+    from app.extract import flag_lookalikes
+
+    d = tmp_path / "pages"
+    d.mkdir()
+    texts = {1: "回復する", 2: "回復", 3: "回復した", 4: "20回後"}
+    for p, t in texts.items():
+        rec = {"page": p, "model": "m", "regions": {"본문": {"source": t, "uncertain": False, "note": ""}}}
+        if p == 4:
+            rec["recheck"] = {"model": "opus", "regions": []}
+        (d / f"page-{p:03d}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    assert flag_lookalikes(tmp_path) == 1
+    rec = json.loads((d / "page-004.json").read_text(encoding="utf-8"))
+    r = rec["regions"]["본문"]
+    assert r["uncertain"] and "回復" in r["note"] and r["lookalike"][0]["likely"] == "回復"
+    assert rec["recheck"] and rec["recheck_pending"] == ["본문"]  # 다시 읽은 기록은 두고 이 칸만 다시 읽게
+    assert flag_lookalikes(tmp_path) == 0  # 한 칸은 한 번만
+
+
+def test_double_check_rereads_lookalike_cell(tmp_path, monkeypatch):
+    """1차가 닮은 한자로 잘못 읽어도(확실하다고 해도) 두 번째 모델이 다시 읽는다."""
+    proj = make_project(tmp_path, pages=4)
+    texts = {1: "回復する", 2: "回復", 3: "回復した", 4: "20回後"}
+
+    class C(FakeClient):
+        pass
+
+    c = C()
+    calls = []
+
+    def create(**kw):
+        calls.append(kw["model"])
+        page = int(kw["messages"][0]["content"][0]["text"].split("page ")[1].split(".")[0])
+        text = "20回復" if kw["model"] == "claude-opus-5-5" else texts[page]
+        return _msg(page, text)
+
+    c.beta = NS(messages=NS(create=create))
+    c.messages = NS(batches=c.messages.batches, create=create)
+    r = service.extract(proj, client=c, engine="api")  # 기본: double-check (Sonnet 다음 Opus)
+    assert r.state == "done" and r.lookalike_cells == 1 and r.recheck_cells == 1
+    assert calls.count("claude-opus-5-5") == 1  # 의심 칸이 있는 4쪽만
+    reg = load_extracted(proj)[4]["이름"]
+    assert reg["source"] == "20回復" and reg["uncertain"]  # 두 모델이 다르게 읽음: 확인 필요로 남고 Opus 결과
+
+
+def test_recheck_rereads_only_pending_cell_on_already_rechecked_page(tmp_path):
+    """이미 두 모델이 읽은 카드에 ‘닮은 한자’ 칸이 생기면 그 칸만 다시 읽는다 (다른 칸의 두 모델 기록·비용은 그대로)."""
+    from app.extract import run_recheck
+
+    proj = make_project(tmp_path, pages=1)
+    base = extract_dir(proj)
+    (base / "pages").mkdir(parents=True)
+    rec = {"page": 1, "model": "claude-sonnet-5-5", "recheck": {"model": "claude-opus-5-5", "regions": ["이름"]},
+           "recheck_pending": ["이름"],
+           "regions": {"이름": {"source": "回後", "uncertain": True, "note": ""},
+                       "다른": {"source": "X", "uncertain": True, "note": "두 모델이 다르게 읽음",
+                              "readings": [{"model": "a", "source": "X"}, {"model": "b", "source": "Y"}]}}}
+    (base / "pages" / "page-001.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    from app.project import load_project
+
+    c = FakeClient()
+    rc = run_recheck(load_project(proj), [1], c, base=base, check_model="claude-opus-5-5")
+    assert rc.checked_cells == 1 and len(c.calls) == 1
+    out = json.loads((base / "pages" / "page-001.json").read_text(encoding="utf-8"))
+    assert "recheck_pending" not in out and out["regions"]["다른"]["readings"][1]["source"] == "Y"
+    assert run_recheck(load_project(proj), [1], FakeClient(), base=base, check_model="claude-opus-5-5").checked_cells == 0

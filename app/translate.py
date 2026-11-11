@@ -220,7 +220,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
                   game: str, work_dir: Path, progress=None, cancel=None,
                   icons: dict | None = None) -> TranslateResult:
     """icons: 게임 아이콘 사전 {이름: {"meaning", "ko", ...}}."""
-    from app.extract import Paused, _iso_after
+    from app.extract import Paused, _iso_after, _pipelined, extract_workers
     from app.extract_cc import CardError, NotAvailable
     from app.llm import complete_json
     from app.service import ProgressEvent
@@ -266,43 +266,61 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
                   + f"\n{extra}\nItems (JSON lines):\n" + "\n".join(lines) + "\nReturn one item per id.")
         return complete_json(client, model, SYSTEM_PROMPT, prompt, _schema(), work_dir)
 
-    try:
-        batches = [todo[i:i + BATCH_CELLS] for i in range(0, len(todo), BATCH_CELLS)]
-        for bi, batch in enumerate(batches):
-            if cancel:
-                cancel.check()
-            if progress:
-                progress(ProgressEvent("translate", bi, len(batches), f"{len(batch)}칸 번역 중"))
-            data, api, eq = ask(batch)
-            res.spent_usd += api
-            res.equiv_usd += eq
-            got = {it["id"]: it["ko"] for it in data.get("items", [])}
-            retry = []
-            for i, (text, region, _k) in enumerate(batch):
-                ko = got.get(str(i))
-                if ko is None:
-                    continue  # 빠진 칸은 다음 실행에서 다시
-                ko = keep_brackets(text, ko)
-                status, missing = check(text, ko, glossary)
-                entry = {"ko": ko, "status": status, "missing_terms": missing, "by": model, "region": region,
-                         "terms_used": {t["source"]: t["ko"] for t in terms_in(text, glossary)},
-                         "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-                cache[text] = entry
-                if status:
-                    retry.append((text, region, _k))
-            if retry:  # 한 번 더: 어긴 용어를 짚어 고쳐 달라고 한다
-                notes = "; ".join(f"{t}: {', '.join(cache[t]['missing_terms']) or ('translate every Japanese word into Korean' if STATUS_LEFTOVER in cache[t]['status'] else 'keep [[icons]]')}" for t, _r, _k in retry)
+    def work(batch):
+        """묶음 하나 번역 (작업 스레드: 모델 요청과 검사만, 캐시는 건드리지 않는다).
+        돌려줌: (칸별 결과, API 비용, 요금제 환산, 다시 묻다가 난 예외 또는 None)."""
+        data, api, eq = ask(batch)
+        got = {it["id"]: it["ko"] for it in data.get("items", [])}
+        entries, retry = {}, []
+        for i, (text, region, _k) in enumerate(batch):
+            ko = got.get(str(i))
+            if ko is None:
+                continue  # 빠진 칸은 다음 실행에서 다시
+            ko = keep_brackets(text, ko)
+            status, missing = check(text, ko, glossary)
+            entries[text] = {"ko": ko, "status": status, "missing_terms": missing, "by": model, "region": region,
+                             "terms_used": {t["source"]: t["ko"] for t in terms_in(text, glossary)},
+                             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            if status:
+                retry.append((text, region, _k))
+        if retry:  # 한 번 더: 어긴 용어를 짚어 고쳐 달라고 한다
+            notes = "; ".join(f"{t}: {', '.join(entries[t]['missing_terms']) or ('translate every Japanese word into Korean' if STATUS_LEFTOVER in entries[t]['status'] else 'keep [[icons]]')}" for t, _r, _k in retry)
+            try:
                 data2, api2, eq2 = ask(retry, extra=f"Previous attempt broke these required terms/icons: {notes}")
-                res.spent_usd += api2
-                res.equiv_usd += eq2
-                for it in data2.get("items", []):
-                    text, region, _k = retry[int(it["id"])]
-                    ko2 = keep_brackets(text, it["ko"])
-                    status, missing = check(text, ko2, glossary)
-                    if len(status) <= len(cache[text]["status"]):
-                        cache[text].update(ko=ko2, status=status, missing_terms=missing, retried=True)
-            res.translated += sum(1 for t, _r, _k in batch if t in cache)
-            save_cache(project_dir, cache)
+            except Exception as e:  # noqa: BLE001 - 첫 번역은 저장하고 나서 멈춘다
+                return entries, api, eq, e
+            api, eq = api + api2, eq + eq2
+            for it in data2.get("items", []):
+                text, region, _k = retry[int(it["id"])]
+                ko2 = keep_brackets(text, it["ko"])
+                status, missing = check(text, ko2, glossary)
+                if len(status) <= len(entries[text]["status"]):
+                    entries[text].update(ko=ko2, status=status, missing_terms=missing, retried=True)
+        return entries, api, eq, None
+
+    batches = [todo[i:i + BATCH_CELLS] for i in range(0, len(todo), BATCH_CELLS)]
+    index = {id(b): i for i, b in enumerate(batches)}
+
+    def before(_i, batch):
+        if progress:
+            progress(ProgressEvent("translate", index[id(batch)], len(batches), f"{len(batch)}칸 번역 중"))
+
+    def finish(batch, out, exc):  # 주 스레드: 캐시 저장·비용
+        if exc is not None:
+            raise exc
+        entries, api, eq, late = out
+        res.spent_usd += api
+        res.equiv_usd += eq
+        cache.update(entries)
+        res.translated += sum(1 for t, _r, _k in batch if t in cache)
+        save_cache(project_dir, cache)
+        if late is not None:
+            raise late
+
+    try:
+        # 묶음 여러 개를 동시에 보낸다 (글자 추출과 같은 수: API 4, Claude Code 2)
+        _pipelined(batches, lambda b: (lambda: work(b)), finish,
+                   extract_workers(getattr(client, "engine", "api")), cancel, before)
     except Paused as p:
         res.state, res.reason, res.retry_after = "paused", p.reason, _iso_after(p.retry_after_s)
     except (CardError, NotAvailable) as e:

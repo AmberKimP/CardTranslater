@@ -1309,7 +1309,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         found = _find_icons(sub, lb, src, regs_by_name.get(name))
         if isinstance(src, str) and src.strip():
             rows = [(b_[1], b_[3]) for _n, b_, only in found if only]
-            lay = erase_text.match_source_lines(tm, lay, src, icon_rows=rows or None)
+            ok_px = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
+            if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
+                ok_px = ok_px & inside
+            lay = erase_text.match_source_lines(tm, lay, src, icon_rows=rows or None, img=look, allowed_px=ok_px)
         # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
         icons_found = _inline_icons(found, lay, tm)
         filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
