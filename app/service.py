@@ -225,9 +225,15 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
         srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
         t_page = time.monotonic()
+        tpl = project.template.for_page(pno)
+        skip = icon_only_regions(srcs)
+        if skip:  # 아이콘(과 숫자·기호)만 있는 칸: 지우지도 한글을 넣지도 않고 원본 그대로 (메타에 없으면 한글 넣기도 건너뛴다)
+            tpl.regions = [reg for reg in tpl.regions if reg.name not in skip]
         with applog.context(프로젝트=project.root.name, 쪽=pno):
-            r = erase_page(out_doc[i], project.template.for_page(pno), project.samples.get(pno), seed=pno,
+            r = erase_page(out_doc[i], tpl, project.samples.get(pno), seed=pno,
                            modes=card_modes.get(str(pno)), sources=srcs)
+        if skip:
+            r.meta["icon_only_regions"] = skip
         page_metas.append({
             "timing": {"erase_s": round(time.monotonic() - t_page, 3)},
             "schema": SCHEMA,
@@ -388,6 +394,10 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
         tag = f"p{pno:03d}"
         report.save(report.side_by_side(before, after), pdir / f"{tag}_card.png")
         res = results[i]
+        if res.clean is None:  # 지울 영역이 없는 쪽 (아이콘만 있는 칸만 있었음): 카드 비교 그림만
+            page_metas[i]["compare_card_png"] = str(pdir / f"{tag}_card.png")
+            page_metas[i].setdefault("timing", {})["verify_s"] = round(time.monotonic() - t_page, 3)
+            continue
         cx0, cy0, cx1, cy1 = res.crop_px
         overlay_full = before.copy()
         overlay_full[cy0:cy1, cx0:cx1] = report.mask_overlay(
@@ -1454,9 +1464,26 @@ def erase_sig(project, page: int, sources: dict, modes: dict | None) -> str:
 
     regs = [{"name": r.name, "kind": r.kind, "rect": r.rect.to_dict(), "style": r.style, "erase": r.erase}
             for r in project.template.regions_for(int(page))]
-    blob = json.dumps({"src": sources or {}, "regions": regs, "modes": modes or {}}, ensure_ascii=False,
-                      sort_keys=True, default=str)
+    d = {"src": sources or {}, "regions": regs, "modes": modes or {}}
+    skip = icon_only_regions(sources)
+    if skip:  # 아이콘만 있는 칸을 건너뛰게 된 뒤로는 예전에 지운 쪽도 다시 지운다 (없는 쪽은 서명이 그대로)
+        d["icon_only"] = skip
+    blob = json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def icon_only_regions(sources: dict | None) -> list[str]:
+    """원문이 아이콘(과 숫자·기호)만으로 된 칸 이름 (예: ‘[[sword]][[sword]]’, ‘2[[coin]] [[book]]’).
+    번역해도 같으므로 글자 지우기·한글 넣기를 하지 않고 원본 그대로 둔다. 아이콘이 하나도 없는 칸(빈 칸·숫자만)은
+    넣지 않는다 (그런 칸은 예전처럼 처리)."""
+    from app.erase_text import is_icon_line
+    from app.icons import TOKEN_RE
+
+    out = []
+    for name, src in (sources or {}).items():
+        if isinstance(src, str) and TOKEN_RE.search(src) and is_icon_line(src):
+            out.append(name)
+    return sorted(out)
 
 
 def stale_erased_pages(file_dir: Path | str) -> list[int]:

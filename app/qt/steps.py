@@ -107,6 +107,16 @@ def fill_icon_names(reading: str, source: str, known=None) -> str:
     if UNKNOWN_ICON not in a:
         return reading
     b, out = _units(source), list(a)
+    ia = [i for i, u in enumerate(a) if ICON_TOKEN_RE.fullmatch(u)]
+    jb = [j for j, u in enumerate(b) if ICON_TOKEN_RE.fullmatch(u)]
+    if ia and len(ia) == len(jb):
+        # 아이콘 수가 같으면 순서대로 짝짓는다 (옆 글자·빈칸이 조금 달라도: ‘2 [[?]]’ ↔ ‘2[[crate]]’,
+        # ‘[[?]]工房 / ’ ↔ ‘[[workshop]]/’ — 글자 단위로 맞추면 이런 곳은 이름을 못 붙였다)
+        for i, j in zip(ia, jb):
+            n = b[j]
+            if a[i] == UNKNOWN_ICON and n != UNKNOWN_ICON and (known is None or n[2:-2] in known):
+                out[i] = n
+        return "".join(out)
     for op, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if op != "replace":
             continue
@@ -1107,21 +1117,11 @@ class IconPlaceDialog(QDialog):
             return
         self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (줄 번호가 바뀔 수 있음)
         rev = service.icon_review(self.project_dir) or {"groups": []}
-        new = next((ww for gg in rev["groups"] for ww in gg["where"] if ww["occ"] == w["occ"]), None)
-        if new:
-            self.where[i] = dict(new)
-            self.combo.setItemText(i, self._item_text(new))
-        self._load()
-        if r.get("dict"):
-            msg = f"저장함. 사전의 [[{r['dict']}]]와 모양이 같아 ‘같은 아이콘’에 미리 골라 두었습니다."
-        elif not r.get("new_group"):
-            msg = f"저장함. 모양이 같은 {self.row_label(r['group'])} 줄로 합쳤습니다."
-        else:
-            msg = f"저장함. 새 아이콘 {self.row_label(r['group'])} 줄입니다. 이름을 정해 주세요."
-        self.status.setText(msg)
         gg = next((x for x in rev["groups"] if x["group"] == r["group"]), {})
         if r.get("new_group") and not r.get("dict") and not gg.get("suggest"):
-            self._suggest(r["group"])
+            self._suggest(r["group"])  # 제안을 받은 뒤 닫는다
+        else:
+            self.accept()  # 저장했으면 닫고 이름 정하기 표로 돌아간다
 
     def _not_icon(self):
         """지금 고른 자리만 ‘아이콘 아님’ 줄로 옮긴다."""
@@ -1135,28 +1135,21 @@ class IconPlaceDialog(QDialog):
             show_error(self, "‘아이콘 아님’으로 정하지 못했습니다", e)
             return
         self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (그 줄은 ‘아이콘 아님’이 체크되어 있다)
-        self.status.setText(f"이 자리를 ‘아이콘 아님’인 {self.row_label(r['group'])} 줄로 옮겼습니다. 글자를 아이콘으로 "
-                            "잘못 읽은 것이면 그 줄의 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺍니다).")
+        self.accept()  # 닫고 이름 정하기 표로 돌아간다 (글자였다면 그 줄의 ‘뜻’ 칸에 글자를 적는다)
 
     def _suggest(self, group: str):
         """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다)."""
         eng = service.get_settings().engine
-        if not service.engine_status().get(eng):
-            self.status.setText(self.status.text() + " (Claude에 연결할 수 없어 이름 제안은 건너뜀)")
+        if not service.engine_status().get(eng):  # 연결할 수 없으면 제안 없이 닫는다 (이름은 표에서 직접 적는다)
+            self.accept()
             return
-        label = self.row_label(group)
 
-        def done(res):
+        def done(_res):
             self.on_saved({})  # 표를 다시 채워 제안을 넣는다 (적어 둔 값은 그대로)
-            if res.get("suggest"):
-                self.status.setText(f"저장함. 새 아이콘 {label} 줄에 이름을 제안 받았습니다: "
-                                    f"{res['suggest']} ({res.get('ko') or '-'}). 확인해 주세요.")
-            else:
-                self.status.setText(f"저장함. 새 아이콘 {label} 줄입니다. {res.get('note') or '이름을 정해 주세요.'}")
+            self.accept()
 
         job = worker.Job(service.suggest_icon_name, self.project_dir, group, engine=eng, with_progress=False)
-        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done,
-                               lambda m: self.status.setText(f"저장함. 이름 제안을 받지 못했습니다: {m}"),
+        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done, lambda _m: self.accept(),
                                cancellable=False)
 
 
@@ -1257,14 +1250,15 @@ class IconReviewDialog(QDialog):
                     target = ("row", row_of[k["same"][1]])
                 elif k["same"] and k["same"][0] == "known":
                     target = k["same"]
-            elif g.get("not_icon"):  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
-                not_icon.setChecked(True)
             elif g.get("dict"):
                 target = ("known", g["dict"])
             if target is not None:
                 idx = same.findData(target)
                 if idx >= 0:
                     same.setCurrentIndex(idx)
+            if g.get("not_icon"):  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 정한 자리 (적어 둔 값보다 우선)
+                not_icon.setChecked(True)
+                same.setCurrentIndex(0)
             same.currentIndexChanged.connect(lambda _x, r=i: self._sync_row(r))
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
             name.textChanged.connect(lambda _t: self._paint_dups())

@@ -1074,6 +1074,14 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     size = (raw.shape[1], raw.shape[0])
     before, w = render_on_image_grid(page, bg, raw)
     warnings += w
+    if not template.regions:  # 지울 영역이 없음 (아이콘만 있는 칸을 모두 뺀 쪽): 쪽을 그대로 둔다
+        meta = {
+            "page_rect_pt": _r(prect), "mediabox": _r(page.mediabox), "cropbox": _r(page.cropbox),
+            "background_image": {"xref": bg.xref, "bbox_pt": _r(bg.bbox), "size_px": list(size),
+                                 "dpi": [round(v, 2) for v in bg.dpi], "stream_untouched": True},
+            "patches": [], "clean": None, "removed_inline_images_pt": [], "regions": [], "warnings": warnings,
+        }
+        return PageErase(meta, before, None, (0, 0, 0, 0), {}, warnings, None)
 
     def to_px(b: Box) -> Box:
         return bg.pt_to_px(b)

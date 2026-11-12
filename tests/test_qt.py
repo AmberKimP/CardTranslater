@@ -2019,6 +2019,11 @@ def test_fill_icon_names_uses_confirmed_names():
     # 사전에서 정한 이름만 (정하지 않은 것은 [[?]] 그대로)
     assert fill_icon_names(sonnet, src, {"book"}) == "プレイ時効果\n文明[[book]]が4以下なら[[?]]を得る"
     assert fill_icon_names("文[[?]]", "文[[?]]") == "文[[?]]"
+    # 아이콘 수가 같으면 옆 글자·빈칸이 달라도 순서대로 이름을 붙인다 (예전에는 [[?]]로 남았다)
+    assert fill_icon_names("2 [[?]] [[?]]", "2[[crate]] [[book]]") == "2 [[crate]] [[book]]"
+    assert fill_icon_names("[[?]]工房 / [[?]]馬車", "[[workshop]]/[[wagon]]\n工房 馬車") == "[[workshop]]工房 / [[wagon]]馬車"
+    # 수가 다르면 짝이 분명한 곳만 (짝이 없는 [[?]]는 그대로)
+    assert fill_icon_names("[[?]]のとき [[?]]を得る", "のとき [[seal]]を得る") == "[[?]]のとき [[seal]]を得る"
 
 
 def _project_with_icon_cell(tmp_path):
@@ -2351,7 +2356,41 @@ def test_region_editor_skips_excluded_pages(qapp, tmp_path):
     ed.dirty = ed2.dirty = False
 
 
+def test_icon_place_dialog_not_icon_closes_and_checks_row(qapp, tmp_path, monkeypatch):
+    """자리 잡기 창의 ‘이 자리는 아이콘 아님’: 창을 닫고, 이름 정하기 표의 그 줄은 ‘아이콘 아님’이 체크되어 있다
+    (그 줄에 적어 둔 값이 있어도). 묶음에 자리가 하나뿐이면 옮기지 않고 그 줄을 표시한다."""
+    from PySide6.QtWidgets import QDialog
+
+    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from tests.test_icons import _project as icon_project
+
+    info, _fd = icon_project(tmp_path, "1차")
+    service.find_icons(info.dir, suggest=False)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    i = 0
+    g = dlg.review["groups"][i]
+    dlg.widgets[i][1].setText("coin")  # 적어 둔 값이 있는 줄
+    place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg)
+    place._not_icon()
+    assert place.result() == QDialog.DialogCode.Accepted
+    rows = {w[0]: w for w in dlg.widgets}
+    occ = g["where"][0]["occ"]
+    target = next(x["group"] for x in dlg.review["groups"] if any(w["occ"] == occ for w in x["where"]))
+    assert rows[target][4].isChecked()  # 아이콘 아님 체크
+    # 남은 묶음은 자리가 하나: 그 줄에 이름을 적어 둔 뒤 ‘아이콘 아님’ -> 옮기지 않고 그 줄이 체크된다
+    rest = next(x for x in dlg.review["groups"] if x["group"] != target)
+    j = next(k for k, w in enumerate(dlg.widgets) if w[0] == rest["group"])
+    dlg.widgets[j][1].setText("coin")
+    assert not dlg.widgets[j][4].isChecked()
+    place2 = IconPlaceDialog(info.dir, rest, dlg._row_label, dlg._after_place, dlg)
+    place2._not_icon()
+    j = next(k for k, w in enumerate(dlg.widgets) if w[0] == rest["group"])
+    assert dlg.widgets[j][4].isChecked() and dlg.widgets[j][1].text() == "coin"
+
+
 def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
     from app import icons
     from app.qt.steps import IconPlaceDialog, IconReviewDialog
     from tests.test_icons import _project as icon_project
@@ -2382,7 +2421,7 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     place._drawn()
     assert place.save_btn.isEnabled()
     place._save()
-    assert "합쳤습니다" in place.status.text() and place.view.box == list(good)
+    assert place.result() == QDialog.DialogCode.Accepted  # 저장하면 닫고 이름 정하기 표로 돌아간다
     assert len(dlg.widgets) == 1 and dlg.widgets[0][1].text() == "coin" and dlg.widgets[0][3].text() == "금화"
     # 다시 열면 직접 잡은 자리부터 보여 준다
     again = IconPlaceDialog(info.dir, dlg.review["groups"][0], dlg._row_label, dlg._after_place, dlg)
