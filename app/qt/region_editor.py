@@ -34,6 +34,7 @@ ALIGN_LABELS = [("", "자동 (원문 줄마다 따라감)"), ("left", "왼쪽 �
 COLORS = {"text": QColor(30, 110, 230), "tag_pills": QColor(150, 60, 200), "protect": QColor(220, 40, 40)}
 EDGE = 6.0  # 가장자리로 보는 거리 (화면 px)
 MIN_SIZE = 4.0
+SELECTED_Z = 10.0  # 고른 영역의 쌓임 순서 (다른 영역 위)
 
 
 class RegionItem(QGraphicsRectItem):
@@ -80,6 +81,7 @@ class RegionItem(QGraphicsRectItem):
     def itemChange(self, change, value):
         if change == QGraphicsRectItem.GraphicsItemChange.ItemSelectedHasChanged:
             try:
+                self.setZValue(SELECTED_Z if self.isSelected() else 0)  # 고른 영역을 맨 위로: 겹친 영역에 가려 끌 수 없던 문제
                 self.refresh()
             except RuntimeError:  # 장면이 이미 지워지는 중 (창을 닫을 때)
                 pass

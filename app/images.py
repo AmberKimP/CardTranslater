@@ -63,6 +63,45 @@ def load_images(path: Path | str) -> list:
     return out
 
 
+PDF_SHEET_DPI = 300  # 카드 여러 장이 한 쪽에 있는 PDF를 그림으로 바꿀 때 (쪽이 스캔 그림 한 장이면 그 해상도)
+PDF_SHEET_MAX_DPI = 600
+
+
+def _page_scan_dpi(page) -> float | None:
+    """쪽을 거의 덮는 그림 한 장(스캔)의 해상도 (가로 기준). 없으면 None."""
+    best = None
+    area = page.rect.width * page.rect.height
+    for info in page.get_image_info():
+        x0, y0, x1, y1 = info["bbox"]
+        cover = max(0.0, x1 - x0) * max(0.0, y1 - y0) / area if area else 0
+        if cover >= 0.85 and x1 > x0 and info.get("width"):
+            best = max(best or 0.0, info["width"] * 72.0 / (x1 - x0))
+    return best
+
+
+def pdf_to_images(pdf: Path | str, out_dir: Path | str) -> list[Path]:
+    """PDF 쪽마다 PNG 한 장 (<PDF 이름>_p001.png …). 한 쪽에 카드가 여러 장인 PDF를 이미지 시트처럼 자르려고 쓴다.
+    쪽이 스캔 그림 한 장이면 그 해상도로(최대 PDF_SHEET_MAX_DPI), 아니면 PDF_SHEET_DPI로 그린다. 해상도는 PNG에 적어 둔다
+    (카드 쪽 크기가 원래 PDF와 같게)."""
+    import pymupdf
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = []
+    with pymupdf.open(pdf) as doc:
+        for i, page in enumerate(doc):
+            dpi = _page_scan_dpi(page) or PDF_SHEET_DPI
+            dpi = int(round(min(max(dpi, 72), PDF_SHEET_MAX_DPI)))
+            pix = page.get_pixmap(dpi=dpi, alpha=False)
+            pix.set_dpi(dpi, dpi)
+            p = out_dir / f"{Path(pdf).stem}_p{i + 1:03d}.png"
+            pix.save(str(p))
+            out.append(p)
+    if not out:
+        raise ValueError(f"{Path(pdf).name}: 쪽이 없는 PDF입니다")
+    return out
+
+
 def image_dpi(path: Path | str) -> float:
     from PIL import Image
 

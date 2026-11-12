@@ -86,7 +86,7 @@ def collect_sources(info: ProjectInfo, game: bool = False) -> list[Source]:
             card_name = regs[name_reg]["source"] if name_reg and isinstance(regs[name_reg]["source"], str) else None
             for rname, r in regs.items():
                 src = r.get("source")
-                if not src:
+                if not src or r.get("keep_original"):  # ‘전체가 아이콘 — 번역 안 함’ 칸은 번역·용어집에서 뺀다
                     continue
                 v = verification_label(r)
                 verdict = "결론 못 냄" if v == "결론 못 냄" else ("확인 필요" if r.get("uncertain") else "")
@@ -506,9 +506,17 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
         res.blocking.append("`원문 용어`·`번역` 열이 없습니다")
         return res
     ix = {h: head.index(h) for h in head if h}
+    rows = [{h: row[i] for h, i in ix.items()} for row in ws.iter_rows(min_row=2, values_only=True)]
+    return check_rows(info, rows)
+
+
+def check_rows(info: ProjectInfo, rows: list[dict], first_row: int = 2) -> ReviewImport:
+    """검증 행(엑셀 한 줄 = {열 이름: 값}, 화면 표도 같은 모양)을 검사해 확정할 용어로.
+    first_row: 알림에 쓸 첫 행 번호 (엑셀은 2, 화면은 1)."""
+    res = ReviewImport([])
 
     def cell(row, h):
-        v = row[ix[h]] if h in ix else None
+        v = row.get(h)
         return "" if v is None else str(v).strip()
 
     seen: dict[str, int] = {}
@@ -516,7 +524,7 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
     unchanged_checks: list[str] = []
     icon_rows: list[str] = []
     current = {t["source"]: t.get("ko") for t in load_glossary(info).get("terms", [])}  # 이미 확정된 번역
-    for n, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+    for n, row in enumerate(rows, start=first_row):
         src = cell(row, "원문 용어")
         if not src:
             continue
@@ -535,7 +543,7 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
             res.blocking.append(f"'{src}'의 번역이 여러 개입니다 ({n}행): {ko!r}. 하나만 남기세요")
             continue
         variants = [v.strip() for v in re.split(r"[,、]", cell(row, "변형")) if v.strip()]
-        cnt = row[ix["등장 횟수"]] if "등장 횟수" in ix else 0
+        cnt = row.get("등장 횟수") or 0
         res.terms.append({"source": src, "ko": ko, "category": cell(row, "분류") or "기타", "variants": variants,
                           "note": cell(row, "메모").replace("이미 확정된 용어. ", ""),
                           "count": int(cnt) if isinstance(cnt, (int, float)) else 0})

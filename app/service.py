@@ -223,7 +223,7 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         if cancel:
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
-        srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
+        srcs = erase_sources(extracted.get(pno))
         t_page = time.monotonic()
         tpl = project.template.for_page(pno)
         skip = icon_only_regions(srcs)
@@ -918,7 +918,73 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
     from app import glossary, workspace
 
     info = workspace.load_project_info(project_dir)
-    res = glossary.import_review(info, Path(xlsx))
+    return _confirm_review(info, glossary.import_review(info, Path(xlsx)), accept_issues)
+
+
+def glossary_review_rows(project_dir: Path | str) -> list[dict] | None:
+    """④ 용어집 만들기로 만든 용어 후보 (화면 표용). 없으면 None. 행마다 엑셀과 같은 열 이름:
+    {"원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형", "메모",
+    "confirmed": 이미 확정된 용어, "verdict_keys"}."""
+    from app import glossary, workspace
+
+    info = workspace.load_project_info(project_dir)
+    xlsx = info.game_dir / "용어집_검증.xlsx"
+    if not xlsx.exists():
+        return None
+    out = []
+    for t in glossary.terms_from_review(xlsx):
+        out.append({"원문 용어": t.source, "번역": t.chosen if t.chosen is not None else t.ko,
+                    "추천 번역": t.suggested, "원문 상태": t.verdict or glossary.VERDICT_SURE,
+                    "번역 확인": "확인 필요" if t.check else "",
+                    "다른 후보": (", ".join(t.alternatives) + (f" — {t.check_reason}" if t.check_reason else ""))
+                    if t.check else "",
+                    "분류": t.category, "등장 횟수": t.count, "예문": "\n".join(t.examples),
+                    "변형": ", ".join(t.variants), "메모": t.note, "confirmed": t.confirmed})
+    return out
+
+
+def save_glossary_rows(project_dir: Path | str, rows: list[dict]) -> Path:
+    """화면 표에서 고친 용어 후보를 검증 엑셀에 다시 쓴다 (확정하지 않고 닫을 때·엑셀로 내보낼 때)."""
+    from app import glossary, workspace
+
+    info = workspace.load_project_info(project_dir)
+    terms = []
+    for r in rows:
+        src = str(r.get("원문 용어") or "").strip()
+        if not src:
+            continue
+        alt = str(r.get("다른 후보") or "")
+        alts, reason = (alt.split(" — ", 1) + [""])[:2] if alt else ("", "")
+        verdict = str(r.get("원문 상태") or "")
+        terms.append(glossary.Term(
+            src, ko=str(r.get("번역") or ""), suggested=str(r.get("추천 번역") or ""),
+            category=str(r.get("분류") or "기타"), count=int(r.get("등장 횟수") or 0),
+            examples=[e for e in str(r.get("예문") or "").split("\n") if e],
+            variants=[v.strip() for v in str(r.get("변형") or "").split(",") if v.strip()],
+            note=str(r.get("메모") or ""), confirmed=bool(r.get("confirmed")),
+            verdict="" if verdict in ("", glossary.VERDICT_SURE) else verdict,
+            check=bool(r.get("번역 확인")), alternatives=[a.strip() for a in alts.split(",") if a.strip()],
+            check_reason=reason, chosen=str(r.get("번역") or "")))
+    return glossary.export_review(info, terms, info.game_dir / "용어집_검증.xlsx")
+
+
+def confirm_glossary_rows(project_dir: Path | str, rows: list[dict], *,
+                          accept_issues: bool = False) -> GlossaryConfirmResult:
+    """화면 표(⑤ 용어집 확정)의 용어를 검사하고, 문제가 없거나 확인하면 게임 용어집으로 확정한다.
+    엑셀 가져오기(import_glossary)와 같은 검사·확정. 고친 값은 검증 엑셀에도 남긴다."""
+    from app import glossary, workspace
+
+    info = workspace.load_project_info(project_dir)
+    try:
+        save_glossary_rows(project_dir, rows)
+    except OSError:  # 엑셀이 열려 있으면 못 쓴다: 확정에는 필요 없다
+        pass
+    return _confirm_review(info, glossary.check_rows(info, rows, first_row=1), accept_issues)
+
+
+def _confirm_review(info, res, accept_issues: bool) -> GlossaryConfirmResult:
+    from app import glossary, workspace
+
     if res.blocking:
         return GlossaryConfirmResult("blocked", blocking=res.blocking, issues=res.issues)
     if not res.terms:
@@ -1472,8 +1538,19 @@ def erase_sig(project, page: int, sources: dict, modes: dict | None) -> str:
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
+KEEP_ORIGINAL = {"keep_original": True}  # 지우기 원문 자리에 넣는 표시: 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸
+
+
+def erase_sources(regions: dict | None) -> dict:
+    """쪽의 추출 결과 -> 지우기에 넘길 {칸: 원문}. ‘번역 안 함’으로 정한 칸은 원문 대신 KEEP_ORIGINAL
+    (원본 그대로 두고, 표시를 바꾸면 지운 결과의 서명도 바뀌어 다시 지운다)."""
+    return {k: (dict(KEEP_ORIGINAL) if v.get("keep_original") else v.get("source"))
+            for k, v in (regions or {}).items()}
+
+
 def icon_only_regions(sources: dict | None) -> list[str]:
-    """원문이 아이콘(과 숫자·기호)만으로 된 칸 이름 (예: ‘[[sword]][[sword]]’, ‘2[[coin]] [[book]]’).
+    """원문이 아이콘(과 숫자·기호)만으로 된 칸 이름 (예: ‘[[sword]][[sword]]’, ‘2[[coin]] [[book]]’),
+    그리고 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸 (KEEP_ORIGINAL).
     번역해도 같으므로 글자 지우기·한글 넣기를 하지 않고 원본 그대로 둔다. 아이콘이 하나도 없는 칸(빈 칸·숫자만)은
     넣지 않는다 (그런 칸은 예전처럼 처리)."""
     from app.erase_text import is_icon_line
@@ -1481,9 +1558,38 @@ def icon_only_regions(sources: dict | None) -> list[str]:
 
     out = []
     for name, src in (sources or {}).items():
-        if isinstance(src, str) and TOKEN_RE.search(src) and is_icon_line(src):
+        if isinstance(src, dict) and src.get("keep_original"):
+            out.append(name)
+        elif isinstance(src, str) and TOKEN_RE.search(src) and is_icon_line(src):
             out.append(name)
     return sorted(out)
+
+
+def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool = True) -> None:
+    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 그 칸은 번역·용어집에서 빼고, 글자 지우기·한글 넣기도 하지 않고
+    원본 그대로 둔다 (원문은 그대로 남긴다). keep=False면 되돌린다. 사람이 확인한 칸이 된다."""
+    from app.extract import page_file
+
+    fd = Path(file_dir)
+    files = [p for p in (page_file(fd / "extract", page), fd / "extract" / f"page-{page:03d}.json") if p.exists()]
+    if not files:
+        raise FileNotFoundError(f"{page}쪽은 아직 읽지 않았습니다")
+    if keep:  # 아직 읽지 않은 칸은 정할 수 없다 (읽기 전에 지우기·한글 넣기에서 빠져 버린다)
+        recs = [json.loads(f.read_text(encoding="utf-8")) for f in files]
+        if not any(((rec.get("regions") or {}).get(region) or {}).get("source") is not None for rec in recs):
+            raise ValueError(f"{page}쪽 {region} 칸은 아직 읽지 않았습니다")
+    for f in files:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
+        if keep:
+            r["keep_original"] = True
+            r["uncertain"] = False
+            r["checked_by"] = "사람"
+        else:
+            r.pop("keep_original", None)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
 
 
 def stale_erased_pages(file_dir: Path | str) -> list[int]:
@@ -1512,7 +1618,7 @@ def stale_erased_pages(file_dir: Path | str) -> list[int]:
         pno = int(m.get("source_page") or f.stem.split("-")[-1])
         if not sig:
             continue
-        srcs = {k: v.get("source") for k, v in (extracted.get(pno) or {}).items()}
+        srcs = erase_sources(extracted.get(pno))
         try:
             now = erase_sig(project, pno, srcs, modes.get(str(pno)))
         except Exception:  # noqa: BLE001 - 그 쪽 영역이 없어짐 등
@@ -2576,6 +2682,7 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "note": (r or {}).get("note", ""),
                 "readings": readings + rereads,
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
+                "keep_original": bool(r and r.get("keep_original")),  # 전체가 아이콘 — 번역 안 함
             })
     return out
 
@@ -2733,9 +2840,16 @@ def icon_review(project_dir: Path | str) -> dict | None:
     res = icons.load_scan(work)
     by_id = {o.id: o for o in res.occurrences}
     groups = []
+    set_extra: dict[str, int] = {}  # 세트 첫 자리 id -> 함께 붙은 아이콘 수 (자동으로 합친 것)
+    for gi in res.groups.values():
+        if gi.get("auto") and gi.get("absorbed"):
+            set_extra[gi["absorbed"]] = set_extra.get(gi["absorbed"], 0) + 1
     for g, gi in res.groups.items():
+        if gi.get("auto") and gi.get("absorbed"):  # 세트의 나머지 자리: 표에 따로 보이지 않는다 (확정하면 원문에서 뺀다)
+            continue
         members = [o for o in res.occurrences if o.group == g]
-        groups.append({"group": g, "image": by_id[gi["rep"]].png if gi.get("rep") else None,
+        groups.append({"group": g,
+                       "set_size": max((set_extra.get(o.id, 0) + 1 for o in members), default=1), "image": by_id[gi["rep"]].png if gi.get("rep") else None,
                        "suggest": gi.get("suggest", ""), "meaning": gi.get("meaning", ""), "ko": gi.get("ko", ""),
                        "count": len(members),
                        "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
@@ -2745,6 +2859,8 @@ def icon_review(project_dir: Path | str) -> dict | None:
                                  for o in members],
                        "dict": gi.get("dict", ""),
                        "not_icon": bool(gi.get("not_icon")),  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
+                       "absorbed_group": by_id[gi["absorbed"]].group if gi.get("absorbed") in by_id else "",
+                       "absorbed_name": gi.get("absorbed_name", ""),  # 세트 첫 자리가 사전 이름으로 바로 바뀐 경우
                        "reason": members[0].reason if members and not gi.get("rep") else "",
                        "first": min((res.occurrences.index(o) for o in members), default=len(res.occurrences))})
     for g in groups:  # 사람이 봐야 하는 것: 한국어 이름이 비어 있음 (창에서 노랑 칸)
@@ -2762,7 +2878,10 @@ def icon_place(project_dir: Path | str, occ_id: str) -> dict:
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
-    p = icons.place_info(info, info.game_dir / "work" / "icons", occ_id)
+    work = info.game_dir / "work" / "icons"
+    p = icons.place_info(info, work, occ_id)
+    # 못 찾은 자리인데 바로 옆에 붙은 자리에 그림이 있으면: 그 상자가 이 자리까지 감쌌을 수 있다
+    p["run_host"] = icons.run_partners(info, work, occ_id)["boxed"][:1] if not p["box"] else []
     img = p.pop("image")
     ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     if not ok:
@@ -2778,11 +2897,33 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.set_manual_box(info, work, occ_id, tuple(box))
+    # 바로 옆에 붙은 [[?]] 중 합칠 후보: 못 찾은 자리, 그리고 찾은 자리 중 이 상자 안에 들어오는 것 (세트를 한 상자로 잡음)
+    part = icons.run_partners(info, work, occ_id)
+    boxes = {o.id: o.box for o in icons.load_scan(work).occurrences}
+    x0, y0, x1, y1 = r["box"]
+    covered = [i for i in part["boxed"] if boxes.get(i) and x0 <= (boxes[i][0] + boxes[i][2]) / 2 <= x1
+               and y0 <= (boxes[i][1] + boxes[i][3]) / 2 <= y1]
+    r["run_unfound"] = part["unfound"] + covered
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:  # 엑셀이 열려 있으면 못 쓴다: 화면 확정에는 필요 없다
         pass
     return r
+
+
+def absorb_icon_run(project_dir: Path | str, host_occ: str, occ_ids: list[str]) -> dict:
+    """붙어 있는 [[?]] 자리들을 host 자리의 아이콘 하나에 포함한다 (상자 하나로 문양 여러 개를 감싼 경우).
+    그 자리들은 ‘아이콘 아님’으로 옮겨 확정할 때 원문에서 빠진다. {"groups": [옮긴 묶음]}"""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    groups = icons.absorb_into(info, work, host_occ, list(occ_ids))
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
+        pass
+    return {"groups": groups}
 
 
 def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
@@ -3185,6 +3326,8 @@ def _review_file_rows(fd: Path) -> list[dict]:
             if src is None or not card_edits.norm(src):
                 continue
             ext = (extracted.get(pno) or {}).get(reg.name)
+            if ext and ext.get("keep_original"):  # ‘전체가 아이콘 — 번역 안 함’ 칸: 번역하지 않으므로 검수할 것도 없다
+                continue
             hit = lookup(cache, src) if cache else None
             draft = card_edits.norm(hit["ko"]) if hit else ""
             entry = (base_cards.get(pno) or {}).get(reg.name)
@@ -4147,12 +4290,32 @@ def card_reading_order(boxes: list) -> list:
     return images.reading_order(boxes)
 
 
+def pdf_page_count(pdf: Path | str) -> int:
+    """PDF 파일의 쪽 수 (열 수 없으면 0)."""
+    import pymupdf
+
+    try:
+        with pymupdf.open(pdf) as doc:
+            return doc.page_count
+    except Exception:  # noqa: BLE001 - 깨진 PDF는 넣을 때 따로 알린다
+        return 0
+
+
+def pdf_sheet_images(pdf: Path | str, out_dir: Path | str) -> list[Path]:
+    """한 쪽에 카드가 여러 장인 PDF: 쪽마다 PNG로 바꿔 out_dir에 둔다 (이미지 시트처럼 배열·수동으로 자르려고)."""
+    from app import images
+
+    return images.pdf_to_images(pdf, out_dir)
+
+
 def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 1, rows: int = 1,
                name: str | None = None, new_group: bool = False,
-               regions_from: Path | str | None = None, boxes: dict | None = None) -> ImageAddResult:
+               regions_from: Path | str | None = None, boxes: dict | None = None,
+               origin_pdf: Path | str | None = None) -> ImageAddResult:
     """이미지 여러 장을 카드 한 장이 한 쪽인 PDF 하나로 바꿔 그룹에 넣는다 (파일 이름 name, 없으면 첫 이미지 이름).
     한 이미지에 카드가 가로 cols × 세로 rows로 놓여 있으면 잘라서 넣는다. 원본 이미지는 source/images/에 사본을 둔다.
-    boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1) 원본 px, …]} (있으면 cols·rows 대신)."""
+    boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1) 원본 px, …]} (있으면 cols·rows 대신).
+    origin_pdf: 이미지가 PDF 쪽을 그린 것(pdf_sheet_images)이면 그 PDF. 사본을 source/images/에 함께 둔다."""
     import tempfile
 
     from app import images, workspace
@@ -4175,9 +4338,12 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     keep.mkdir(parents=True, exist_ok=True)
     for f in imgs:  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
         shutil.copyfile(f, keep / f.name)
+    if origin_pdf:  # source/ 바로 아래에는 카드 PDF 하나만 둔다 (원래 PDF는 images/에)
+        shutil.copyfile(origin_pdf, keep / Path(origin_pdf).name)
     settings = workspace.file_settings(fd)
     settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows,
                                **({"manual": True} if boxes is not None else {}),
+                               **({"pdf": Path(origin_pdf).name} if origin_pdf else {}),
                                "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])

@@ -21,9 +21,10 @@ from app.qt.dialogs import (
 from app.qt.fonts_dialog import ALIGN_CHOICES  # noqa: E402 (글꼴 창과 같은 정렬 이름)
 
 ALIGN_TEXT = [(k, t) for k, t in ALIGN_CHOICES if k]
-OK_STATUS = {"글자 축소"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
+OK_STATUS = {"글자 축소", "모두 아이콘이라 건너뜀"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
 STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임", "넘침": "넘침(글자 빠짐)",
-               "줄 자리 대신 영역 전체": "줄 자리에 안 들어가 영역 전체에 넣음 — 위치 확인"}  # 엔진 상태 낱말을 화면용으로
+               "줄 자리 대신 영역 전체": "줄 자리에 안 들어가 영역 전체에 넣음 — 위치 확인",
+               "모두 아이콘이라 건너뜀": "모두 아이콘이라 건너뜀 (원본 그대로)"}  # 엔진 상태 낱말을 화면용으로
 
 
 def status_text(st: list[str]) -> str:

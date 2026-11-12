@@ -41,9 +41,9 @@ STEP_INFO = {
     "icons": ("② 아이콘 정의", "원문 속 아이콘에 이름을 붙입니다 (원문 확인에서 아이콘이 이름으로 보이게 먼저)",
               "먼저 ① 글자 추출을 하세요"),
     "review": ("③ 원문 확인", "읽은 원문을 카드 그림과 비교해 고칩니다", "먼저 ① 글자 추출을 하세요"),
-    "finish": ("④ 용어집 만들기", "용어 후보를 모아 용어집 엑셀을 만듭니다", "먼저 ① 글자 추출을 하세요"),
-    "glossary": ("⑤ 용어집 가져오기", "엑셀에서 고친 용어집을 가져와 확정합니다",
-                 "먼저 ④ 용어집 만들기로 용어집 엑셀을 만드세요"),
+    "finish": ("④ 용어집 만들기", "용어 후보를 모으고 바로 번역을 확인하는 창을 엽니다", "먼저 ① 글자 추출을 하세요"),
+    "glossary": ("⑤ 용어집 확정", "용어 후보의 번역을 확인·고쳐 확정합니다 (엑셀로 내보내기·가져오기도 이 창에서)",
+                 "먼저 ④ 용어집 만들기로 용어 후보를 만드세요"),
     "translate": ("⑥ 전체 번역", "확정한 용어집으로 번역합니다",
                   "먼저 ⑤ 용어집을 가져와 확정하세요"),
     "check": ("번역 검수", "번역을 칸마다 원문과 비교해 고치고 확인합니다", "먼저 ⑥ 전체 번역을 하세요"),
@@ -402,7 +402,7 @@ class ProjectPage(QWidget):
                 ("icons", self.steps.icons),
                 ("review", self.steps.review_sources),
                 ("finish", self.steps.finish),
-                ("glossary", self.steps.import_glossary),
+                ("glossary", self.steps.review_glossary),
                 ("translate", self.steps.translate),
                 ("check", self.steps.review_translation))):
             if i:
@@ -434,7 +434,7 @@ class ProjectPage(QWidget):
                                     "(그룹·파일을 고른 채 누르면 전체/고른 항목만을 묻습니다).\n"
                                     "③ 원문 확인: 고른 범위만 보여 줍니다.\n"
                                     "⑧ 한글 넣기 · 결과 보기 · 시험 실행: 그룹마다 합니다 (전체를 고른 채 누르면 그룹을 고릅니다).\n"
-                                    "② 아이콘 정의 · ④ 용어집 만들기 · ⑤ 용어집 가져오기: 늘 프로젝트(게임) 전체에 합니다.")
+                                    "② 아이콘 정의 · ④ 용어집 만들기 · ⑤ 용어집 확정: 늘 프로젝트(게임) 전체에 합니다.")
         self.scope_hint = QLabel()
         self.scope_hint.setStyleSheet("color: #5F6B7A")
         scope_row = QHBoxLayout()

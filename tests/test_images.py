@@ -556,3 +556,122 @@ def test_refined_cut_that_breaks_card_size_is_reverted():
     assert lines[1] == [0, 100, 200, 300]
     assert lines[2] == [0, 100, 200, 300]
     assert n == 3
+
+
+def _grid_pdf(path: Path, pages: int = 2, cols=3, rows=2) -> Path:
+    """쪽마다 카드 cols×rows 배열 스캔(그림 한 장, 300 dpi)이 들어 있는 PDF."""
+    doc = pymupdf.open()
+    for i in range(pages):
+        png = path.parent / f"_src{i}.png"
+        _grid(png, cols, rows)
+        w, h = Image.open(png).size
+        page = doc.new_page(width=w * 72 / 300, height=h * 72 / 300)
+        page.insert_image(page.rect, filename=str(png))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_pdf_to_images_keeps_scan_resolution(tmp_path):
+    pdf = _grid_pdf(tmp_path / "in" / "sheets.pdf", pages=2)
+    out = images.pdf_to_images(pdf, tmp_path / "pages")
+    assert [p.name for p in out] == ["sheets_p001.png", "sheets_p002.png"]
+    w, _h = Image.open(out[0]).size
+    assert abs(w - Image.open(tmp_path / "in" / "_src0.png").size[0]) <= 2  # 스캔 해상도 그대로
+    assert abs(images.image_dpi(out[0]) - 300) < 1
+    assert len(images.cut_sheet(out[0], 3, 2).boxes) == 6
+
+
+def test_add_files_dialog_cuts_pdf_pages_into_cards(tmp_path):
+    """PDF 한 쪽에 카드가 여러 장: ‘배열’을 고르면 쪽마다 잘라 카드 한 장이 한 쪽인 파일 하나로 넣는다."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.dialogs import AddFilesDialog
+
+    QApplication.instance() or QApplication([])
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    pdf = _grid_pdf(tmp_path / "in" / "sheets.pdf", pages=2)
+    dlg = AddFilesDialog(info.dir, files=[str(pdf)])
+    assert not dlg.img_box.isHidden()  # PDF만 넣어도 ‘한 장에 카드 몇 장’을 고를 수 있다
+    dlg.r_grid.setChecked(True)
+    dlg.cols.setValue(3)
+    dlg.rows.setValue(2)
+    assert "PDF 1개(2쪽)" in dlg.img_info.text() and "카드 약 12장" in dlg.img_info.text()
+    dlg.new_name.setText("카드")
+    import PySide6.QtWidgets as W
+
+    orig = W.QMessageBox.information
+    W.QMessageBox.information = staticmethod(lambda *a, **k: W.QMessageBox.StandardButton.Ok)
+    try:
+        dlg.accept()
+    finally:
+        W.QMessageBox.information = orig
+    assert dlg.result_info["added"] and "2쪽 → 카드 12장" in dlg.result_info["warnings"][0]
+    f = service.project_overview(info.dir)["groups"][0]["files"][0]
+    assert f["pages"] == 12
+    fd = Path(f["dir"])
+    assert (fd / "source" / "images" / "sheets.pdf").exists()  # 원래 PDF도 보관
+    assert len(list((fd / "source").glob("*.pdf"))) == 1  # source/ 바로 아래에는 카드 PDF 하나
+    st = workspace.file_settings(fd)["from_images"]
+    assert st["pdf"] == "sheets.pdf" and len(st["sheets"]) == 2 and st["cols"] == 3
+    with pymupdf.open(next((fd / "source").glob("*.pdf"))) as doc:  # 카드 크기 = 원래 PDF의 카드 크기
+        assert abs(doc[0].rect.width - 380 * 72 / 300) < 2
+    dlg.finished.emit(0)
+    assert dlg._tmp is None
+
+
+def test_add_files_dialog_single_keeps_pdf_as_is(tmp_path):
+    """‘한 장에 카드 한 장’이면 PDF는 예전처럼 그대로 넣는다 (그림으로 바꾸지 않음)."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.dialogs import AddFilesDialog
+
+    QApplication.instance() or QApplication([])
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    pdf = _grid_pdf(tmp_path / "in" / "sheets.pdf", pages=2)
+    dlg = AddFilesDialog(info.dir, files=[str(pdf)])
+    dlg.new_name.setText("카드")
+    dlg.accept()
+    f = service.project_overview(info.dir)["groups"][0]["files"][0]
+    assert f["pages"] == 2 and dlg._tmp is None
+
+
+def test_add_files_dialog_manual_boxes_on_pdf_pages(tmp_path):
+    """수동으로 영역 지정도 PDF 쪽 위에 그린 자리대로 자른다."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.dialogs import AddFilesDialog
+
+    QApplication.instance() or QApplication([])
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    pdf = _grid_pdf(tmp_path / "in" / "sheets.pdf", pages=2)
+    dlg = AddFilesDialog(info.dir, files=[str(pdf)])
+    dlg.r_manual.setChecked(True)
+    pages = dlg.sheet_files()
+    assert len(pages) == 2 and all(p.endswith(".png") for p in pages)
+    boxes = _grid(tmp_path / "x.png")  # 같은 배치의 카드 자리
+    dlg.manual_boxes = {pages[0]: boxes[:2], pages[1]: boxes[:3]}
+    dlg._sync()
+    assert "카드 5장" in dlg.img_info.text()
+    dlg.new_name.setText("카드")
+    import PySide6.QtWidgets as W
+
+    orig = W.QMessageBox.information
+    W.QMessageBox.information = staticmethod(lambda *a, **k: W.QMessageBox.StandardButton.Ok)
+    try:
+        dlg.accept()
+    finally:
+        W.QMessageBox.information = orig
+    f = service.project_overview(info.dir)["groups"][0]["files"][0]
+    assert f["pages"] == 5
+    assert workspace.file_settings(Path(f["dir"]))["from_images"]["manual"]

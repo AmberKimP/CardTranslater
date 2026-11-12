@@ -447,3 +447,163 @@ def test_flat_icons_group_by_shape_and_color_not_scan_noise():
     assert a[4] < icons.FLAT_INNER_STD and icons.same_icon(a, b) >= icons.SAME_SHAPE
     assert icons.same_icon(a, icons.shape_pair(coin(gold, 3, digit=True))) == 0.0  # 금화 2
     assert icons.same_icon(a, icons.shape_pair(coin((200, 200, 205), 4))) == 0.0  # 은화
+
+
+def test_placeholder_runs():
+    assert icons.placeholder_runs("[[?]][[?]][[?]]の山札") == [[0, 1, 2]]
+    assert icons.placeholder_runs("A[[?]] [[?]]B[[?]]") == [[0, 1], [2]]
+    assert icons.placeholder_runs("[[?]][[coin]][[?]]") == [[0], [1]]  # 이름 붙은 아이콘이 끼면 끊긴다
+    assert icons.placeholder_runs("") == []
+
+
+def _add_run_partner(info, fd):
+    """1쪽 원문을 [[?]] 둘이 붙은 것으로 바꾸고, 둘째 자리를 ‘위치 못 찾음’으로 scan.json에 넣는다."""
+    service.find_icons(info.dir, suggest=False)
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]][[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    sp = info.game_dir / "work" / "icons" / "scan.json"
+    scan = json.loads(sp.read_text(encoding="utf-8"))
+    host = next(o for o in scan["occurrences"] if o["page"] == 1)
+    extra = dict(host, id="o099", index=1, png="", box=[], manual=False, reason="예상 자리 근처에 아이콘 크기의 덩어리가 없음",
+                 group="위치 못 찾음 o099", order=host.get("order", 1) + 1)
+    scan["occurrences"].append(extra)
+    scan["groups"]["위치 못 찾음 o099"] = {"rep": "", "count": 1}
+    sp.write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
+    return host["id"], "o099"
+
+
+def test_absorb_adjacent_unfound_icon_into_boxed_one(tmp_path):
+    """문양 여러 개가 붙은 아이콘: 상자 하나가 붙은 [[?]] 자리까지 감싸면, 나머지 자리는 그 아이콘에 포함되어 원문에서 빠진다."""
+    info, fd = _project(tmp_path, "run", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    work = info.game_dir / "work" / "icons"
+    assert icons.run_partners(info, work, host) == {"boxed": [], "unfound": [extra]}
+    assert icons.run_partners(info, work, extra) == {"boxed": [host], "unfound": []}
+    assert service.icon_place(info.dir, extra)["run_host"] == [host]
+    assert service.icon_place(info.dir, host)["run_host"] == []  # 자리가 있는 쪽은 아님
+    service.absorb_icon_run(info.dir, host, [extra])
+    rev = service.icon_review(info.dir)
+    by_occ = {w["occ"]: g for g in rev["groups"] for w in g["where"]}
+    assert by_occ[extra]["not_icon"] and by_occ[extra]["absorbed_group"] == by_occ[host]["group"]
+    assert icons.run_partners(info, work, host)["unfound"] == []  # 이미 포함한 자리는 다시 묻지 않는다
+    rows = [{"group": g["group"], "name": "" if g["not_icon"] else "lily_3", "meaning": "", "ko": "백합 셋",
+             "not_icon": g["not_icon"], "text": "", "scale": 1.1} for g in rev["groups"]]
+    r = service.confirm_icons(info.dir, rows)
+    assert r.state == "confirmed", r.blocking
+    assert _source(fd, 1) == "AB[[lily_3]]CD"
+
+
+def _wide(box, n=3):
+    """아이콘 상자를 아이콘 n개가 옆으로 늘어선 세트 모양으로 넓힌다."""
+    x0, y0, x1, y1 = box
+    return (x0, y0, x0 + (y1 - y0) * n, y1)
+
+
+def test_scan_does_not_set_neighbours_wrongly_given_one_icon_box(tmp_path, monkeypatch):
+    """이웃 [[?]]가 아이콘 하나 크기의 같은 자리로 잡힌 것(찾기 실수)은 세트로 합치지 않는다."""
+    info, fd = _project(tmp_path, "noset", pages=1)
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]][[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    real = icons.locate
+    monkeypatch.setattr(icons, "locate", lambda img, text, index: real(img, "AB[[?]]CD", 0))
+    service.find_icons(info.dir, suggest=False)
+    assert not any(o.set_of for o in icons.load_scan(info.game_dir / "work" / "icons").occurrences)
+
+
+def test_scan_treats_touching_icons_found_as_one_blob_as_a_set(tmp_path, monkeypatch):
+    """붙어 있는 [[?]] 둘을 그림에서 한 덩어리로 찾으면 세트: 첫 자리만 표에 보이고, 확정하면 [[이름]] 하나가 된다.
+    첫 자리를 다시 잡으면 세트가 풀려 나머지 자리가 ‘위치 못 찾음’으로 돌아온다."""
+    info, fd = _project(tmp_path, "set", pages=1)
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]][[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    real = icons.locate
+    first = {}
+
+    def same_blob(img, text, index):
+        box, why = real(img, "AB[[?]]CD", 0)  # 두 자리 모두 그림의 그 아이콘 덩어리 (가로로 긴 세트 모양으로)
+        first.setdefault("box", box)
+        return _wide(box), why
+
+    monkeypatch.setattr(icons, "locate", same_blob)
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    assert first["box"] is not None
+    rev = service.icon_review(info.dir)
+    assert len(rev["groups"]) == 1 and rev["groups"][0]["set_size"] == 2
+    work = info.game_dir / "work" / "icons"
+    scan = icons.load_scan(work)
+    extra = next(o for o in scan.occurrences if o.set_of)
+    assert scan.groups[extra.group]["absorbed"] and scan.groups[extra.group]["auto"]
+    host = next(o for o in scan.occurrences if not o.set_of)
+    assert service.icon_place(info.dir, host.id)["marks"] == []  # 세트 나머지는 따로 표시하지 않는다
+    rows = [{"group": g["group"], "name": "lily_2", "meaning": "", "ko": "백합 둘", "not_icon": False, "text": "",
+             "scale": 1.1} for g in rev["groups"]]
+    # 확정 전에 다시 잡으면 세트가 풀린다
+    service.set_icon_box(info.dir, host.id, host.box)
+    scan2 = icons.load_scan(work)
+    back = next(o for o in scan2.occurrences if o.id == extra.id)
+    assert not back.set_of and back.group.startswith("위치 못 찾음")
+    # 다시 세트로 합치고 확정
+    r = service.set_icon_box(info.dir, host.id, host.box)
+    assert extra.id in r["run_unfound"]
+    service.absorb_icon_run(info.dir, host.id, r["run_unfound"])
+    rev = service.icon_review(info.dir)
+    rows = [{"group": g["group"], "name": "" if g["not_icon"] else "lily_2", "meaning": "", "ko": "백합 둘",
+             "not_icon": g["not_icon"], "text": "", "scale": 1.1} for g in rev["groups"]]
+    res = service.confirm_icons(info.dir, rows)
+    assert res.state == "confirmed", res.blocking
+    assert _source(fd, 1) == "AB[[lily_2]]CD"
+
+
+def test_scan_auto_set_confirms_without_rows_for_hidden_spots(tmp_path, monkeypatch):
+    """자동 세트의 나머지 자리는 표에 행이 없어도 확정할 때 원문에서 빠진다."""
+    info, fd = _project(tmp_path, "set2", pages=1)
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]][[?]][[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    real = icons.locate
+    monkeypatch.setattr(icons, "locate", lambda img, text, index: (_wide(real(img, "AB[[?]]CD", 0)[0]), ""))
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    rev = service.icon_review(info.dir)
+    assert [g["set_size"] for g in rev["groups"]] == [3]
+    rows = [{"group": g["group"], "name": "lily_3", "meaning": "", "ko": "백합 셋", "not_icon": False, "text": "",
+             "scale": 1.1} for g in rev["groups"]]
+    res = service.confirm_icons(info.dir, rows)
+    assert res.state == "confirmed", res.blocking
+    assert _source(fd, 1) == "AB[[lily_3]]CD"
+
+
+def test_scan_set_stops_at_first_spot_that_does_not_fit(tmp_path, monkeypatch):
+    """세트 모양(아이콘 2개 폭)에 [[?]]가 셋이면 둘만 세트, 셋째는 같은 그림으로 자르지 않고 ‘위치 못 찾음’."""
+    info, fd = _project(tmp_path, "part", pages=1)
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]][[?]][[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    real = icons.locate
+    monkeypatch.setattr(icons, "locate", lambda img, text, index: (_wide(real(img, "AB[[?]]CD", 0)[0], 2), ""))
+    service.find_icons(info.dir, suggest=False)
+    scan = icons.load_scan(info.game_dir / "work" / "icons")
+    by_index = {o.index: o for o in scan.occurrences}
+    assert by_index[1].set_of == by_index[0].id
+    assert not by_index[2].set_of and not by_index[2].png and by_index[2].group.startswith("위치 못 찾음")
+
+
+def test_rebox_host_releases_manual_absorbed_spot(tmp_path):
+    """손으로 합친 자리도 첫 자리를 다시 잡으면 풀린다 (저장할 때 다시 묻는다)."""
+    info, fd = _project(tmp_path, "rel", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    service.absorb_icon_run(info.dir, host, [extra])
+    box = service.icon_place(info.dir, host)["box"]
+    r = service.set_icon_box(info.dir, host, box)
+    assert extra in r["run_unfound"]
+    g = next(g for g in service.icon_review(info.dir)["groups"] if g["where"][0]["occ"] == extra)
+    assert not g["not_icon"] and not g["absorbed_group"]

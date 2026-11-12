@@ -285,6 +285,53 @@ def test_region_editor_mouse_draw_move_resize(qapp, tmp_path):
     ed.close()
 
 
+def test_region_editor_selected_region_on_top_for_resize(qapp, tmp_path):
+    """겹친 영역: 고른 영역이 맨 위로 와서, 다른 영역에 덮인 가장자리도 끌어 크기를 바꿀 수 있다."""
+    from PySide6.QtTest import QTest
+
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.resize(1000, 700)
+    ed.show()
+    qapp.processEvents()
+    ed.view.resetTransform()
+    ed.view.centerOn(ed.scene.page_rect.center())
+    qapp.processEvents()
+    vp = ed.view.viewport()
+
+    def at(x, y):
+        return ed.view.mapFromScene(QPointF(x, y))
+
+    def draw(x0, y0, x1, y1):
+        ed._set_add_kind("text")
+        QTest.mousePress(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at(x0, y0))
+        QTest.mouseMove(vp, at((x0 + x1) / 2, (y0 + y1) / 2))
+        QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at(x1, y1))
+
+    draw(40, 40, 140, 120)   # A
+    draw(100, 30, 200, 130)  # B: A의 오른쪽 가장자리(x=140)를 덮는다
+    a, b = ed.items()
+    assert ed.scene.itemAt(QPointF(140, 80), ed.view.transform()) is b  # 지금은 B가 위
+    a.setSelected(True)  # 목록에서 A를 고른 것과 같다
+    b.setSelected(False)
+    qapp.processEvents()
+    assert a.zValue() > b.zValue()
+    QTest.mousePress(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at(140, 80))
+    QTest.mouseMove(vp, at(150, 80))
+    QTest.mouseRelease(vp, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at(160, 80))
+    assert a.rect().right() == pytest.approx(160, abs=2)  # A가 넓어지고
+    assert b.rect().left() == pytest.approx(100, abs=1.5) and b.rect().width() == pytest.approx(100, abs=1.5)  # B는 그대로
+    assert a.isSelected() and a.zValue() > b.zValue()
+    b.setSelected(True)  # 다른 영역을 고르면 그 영역이 위로
+    a.setSelected(False)
+    assert b.zValue() > a.zValue()
+    ed.dirty = False
+    ed.close()
+
+
 # ================================================================ 2차: 추출 → 원문 확인 → 아이콘 → 용어집 → 번역
 def _project_with_extract(tmp_path):
     """영역 2개(이름, 태그) + 1쪽은 결론 못 냄, 2쪽은 두 번 확인, 3쪽은 아직 안 읽음."""
@@ -2408,7 +2455,7 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     monkeypatch.setattr(icons, "locate", real)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
     assert len(dlg.widgets) == 2
-    views = [dlg.table.cellWidget(i, 8).text() for i in range(2)]
+    views = [dlg.table.cellWidget(i, dlg.C_VIEW).text() for i in range(2)]
     assert views == ["카드 보기 · 자리 잡기"] * 2  # 찾은 줄도 자리를 다시 잡을 수 있다
     found_i = next(i for i, g in enumerate(dlg.review["groups"]) if g["image"])
     lost = next(g for g in dlg.review["groups"] if not g["image"])
@@ -3516,3 +3563,136 @@ def test_region_override_after_editing_keeps_other_cards(qapp, tmp_path):
     data = service.load_region_template(gdir)
     assert data["regions"][0]["rect"]["h"] == 0.1
     assert abs(data["page_regions"][f"{fd.name}/2"]["regions"][0]["rect"]["h"] - tall) < 1e-3
+
+
+def test_icon_place_dialog_absorbs_adjacent_unfound_icon(qapp, tmp_path, monkeypatch):
+    """붙어 있는 [[?]] 중 하나만 상자로 잡았을 때: 못 찾은 자리의 창에 ‘N번에 포함됨’이 보이고, 누르면 그 줄은
+    ‘아이콘 아님’(원문에서 뺌)으로 바뀌어 이름 없이 확정할 수 있다. 확정이 막히면 묶음 이름 대신 줄 번호로 알린다."""
+    from PySide6.QtWidgets import QDialog
+
+    from app.qt import steps
+    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from tests.test_icons import _add_run_partner, _project as icon_project
+
+    info, fd = icon_project(tmp_path, "run", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    # 이름을 안 적으면 막힘: 줄 번호로 알린다
+    seen = {}
+    monkeypatch.setattr(steps, "show_problem", lambda *a, **k: seen.update(items=k.get("items")))
+    dlg.accept()
+    assert seen["items"] and all("번 줄" in m and "위치 못 찾음" not in m for m in seen["items"])
+    lost = next(g for g in dlg.review["groups"] if g["where"][0]["occ"] == extra)
+    place = IconPlaceDialog(info.dir, lost, dlg._row_label, dlg._after_place, dlg)
+    assert not place.absorb_btn.isHidden() and "번에 포함됨" in place.absorb_btn.text()
+    place._absorb()
+    assert place.result() == QDialog.DialogCode.Accepted
+    i = next(k for k, g in enumerate(dlg.review["groups"]) if g["where"][0]["occ"] == extra)
+    h = next(k for k, g in enumerate(dlg.review["groups"]) if g["where"][0]["occ"] == host)
+    assert dlg.widgets[i][4].isChecked() and dlg.table.item(i, 0).text() == f"{h + 1}번에 포함"
+    dlg.widgets[h][1].setText("lily_3")
+    dlg.widgets[h][3].setText("백합 셋")
+    dlg.accept()
+    assert dlg.result is not None and dlg.result.state == "confirmed"
+    assert json.loads((fd / "extract" / "pages" / "page-001.json").read_text(encoding="utf-8"))[
+        "regions"]["본문"]["source"] == "AB[[lily_3]]CD"
+
+
+def test_icon_place_dialog_save_offers_to_absorb_adjacent(qapp, tmp_path, monkeypatch):
+    """상자를 저장했는데 바로 옆 [[?]]를 못 찾았으면 하나로 합칠지 묻고, 합치면 그 자리는 ‘아이콘 아님’이 된다."""
+    from app.qt import steps
+    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from tests.test_icons import _add_run_partner, _project as icon_project
+
+    info, fd = icon_project(tmp_path, "run", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    g = next(g for g in dlg.review["groups"] if g["where"][0]["occ"] == host)
+    place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg)
+    asked = []
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: asked.append(a[1]) or 0)
+    monkeypatch.setattr(place, "_suggest", lambda _g: place.accept())  # 실제 Claude 이름 제안은 부르지 않는다
+    place.view.new = list(service.icon_place(info.dir, host)["box"])
+    place._save()
+    assert asked == ["붙어 있는 아이콘"]
+    i = next(k for k, gg in enumerate(dlg.review["groups"]) if gg["where"][0]["occ"] == extra)
+    assert dlg.widgets[i][4].isChecked() and dlg.review["groups"][i]["absorbed_group"]
+
+
+def test_icon_review_sort_card_column_labels_and_select_after_place(qapp, tmp_path, monkeypatch):
+    """머리글 정렬(다시 누르면 반대), 카드 번호 열, 카드 보기의 ‘N번 이름’, 닫은 뒤 고를 줄."""
+    from PySide6.QtWidgets import QDialog
+
+    from app.qt import steps
+    from app.qt.steps import IconReviewDialog
+    from tests.test_icons import _project as icon_project
+
+    from app import icons
+
+    info, _fd = icon_project(tmp_path, "1차", pages=3)
+    real = icons.locate
+    calls = {"n": 0}
+
+    def flaky(img, text, index):  # 둘째 자리는 못 찾음 -> 줄 2개
+        calls["n"] += 1
+        return (None, "줄 수가 다름") if calls["n"] == 2 else real(img, text, index)
+
+    monkeypatch.setattr(icons, "locate", flaky)
+    service.find_icons(info.dir, suggest=False)
+    monkeypatch.setattr(icons, "locate", real)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    assert not dlg.table.hasAutoScroll()
+    n = len(dlg.widgets)
+    assert n >= 2
+    pages = [dlg.table.item(i, dlg.C_PAGES).text() for i in range(n)]
+    assert all(pages)
+    # 이름을 적은 줄은 ‘N번 이름’
+    dlg.widgets[0][1].setText("zeta")
+    assert dlg._row_label(dlg.widgets[0][0]) == "1번 zeta"
+    # 이름 열로 정렬: 적어 둔 값은 그대로, 다시 누르면 반대
+    if n > 1:
+        dlg.widgets[1][1].setText("alpha")
+    dlg._sort_by(2)
+    names = [w[1].text() for w in dlg.widgets]
+    assert names == sorted(names, key=lambda v: (v == "", v))
+    dlg._sort_by(2)
+    assert dlg._sort == (2, True)
+    assert "zeta" in [w[1].text() for w in dlg.widgets]
+    # 카드 보기를 닫은 뒤: 저장 -> 그 줄, 아이콘 아님 -> 다음 줄
+    g0 = dlg.widgets[0][0]
+
+    class Fake:
+        def __init__(self, *a, **k):
+            self.outcome = Fake.next
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(steps, "IconPlaceDialog", Fake)
+    Fake.next = ("saved", g0)
+    dlg.show_cards(g0)
+    assert dlg.table.currentRow() == 0
+    if n > 1:
+        Fake.next = ("not_icon", g0)
+        dlg.show_cards(g0)
+        assert dlg.table.currentRow() == 1
+
+
+def test_source_review_keep_original_button(qapp, tmp_path):
+    """‘전체가 아이콘 — 번역 안 함’: 그 칸을 정하고 다음 칸으로, 다시 누르면 풀린다."""
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files, only_check=False)
+    assert dlg.table.currentRow() == 0 and dlg.keep_btn.isEnabled() and not dlg.keep_btn.isChecked()
+    c0 = dlg.current()
+    dlg.keep_btn.click()
+    cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))
+    assert cell["keep_original"] and dlg.table.currentRow() == 1
+    assert dlg.table.item(0, 2).text() == "번역 안 함 (아이콘)"
+    dlg.table.setCurrentCell(0, 0)
+    assert dlg.keep_btn.isChecked() and dlg.keep_btn.text() == "번역 안 함 풀기"
+    dlg.keep_btn.click()
+    cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))
+    assert not cell["keep_original"] and not dlg.keep_btn.isChecked()

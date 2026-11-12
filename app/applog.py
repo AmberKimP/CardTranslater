@@ -38,7 +38,7 @@ TIME_TAG = "[시간]"
 # 작업 함수 이름 -> 화면의 단계 이름 (사이클 시간표에 쓴다)
 JOB_LABELS = {
     "extract_project": "① 글자 추출", "find_icons": "② 아이콘 정의", "finish_extraction": "④ 용어집 만들기",
-    "import_glossary": "⑤ 용어집 가져오기", "translate_project": "⑥ 전체 번역", "export_project_excel": "검수 엑셀 만들기",
+    "import_glossary": "⑤ 용어집 확정 (엑셀에서)", "confirm_glossary_rows": "⑤ 용어집 확정", "translate_project": "⑥ 전체 번역", "export_project_excel": "검수 엑셀 만들기",
     "erase_project": "⑦ 글자 지우기", "compose_project": "⑧ 한글 넣기", "font_plans": "글꼴 추천",
     "redo_file": "카드 다시 만들기", "render_preview": "미리 보기", "test_run": "시험 실행",
 }

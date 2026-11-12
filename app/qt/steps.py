@@ -404,6 +404,12 @@ class SourceReviewDialog(QDialog):
         self.reread_btn = QPushButton("이 칸 다시 읽기")
         self.reread_btn.setToolTip("그림을 Claude로 다시 읽어 편집 칸에 넣습니다 (저장해야 원문이 바뀝니다)")
         self.reread_btn.clicked.connect(self.reread_current)
+        # 칸 전체가 아이콘(그림)이면: 번역·지우기·한글 넣기를 하지 않고 원본 그대로 둔다
+        self.keep_btn = QPushButton("전체가 아이콘 — 번역 안 함")
+        self.keep_btn.setCheckable(True)
+        self.keep_btn.setToolTip("이 칸은 모두 아이콘(그림)이라 번역할 글자가 없습니다.\n"
+                                 "번역·용어집에서 빼고, 글자 지우기·한글 넣기도 하지 않고 원본 그대로 둡니다 (다시 누르면 풀림).")
+        self.keep_btn.clicked.connect(self.toggle_keep_original)
         hint = QLabel("Ctrl+S 저장 · Ctrl+Enter 저장하고 다음 칸 · Alt+↑/↓ 칸 이동")
         hint.setStyleSheet("color: #7B8794")
         self.next_btn.setStyleSheet(PRIMARY_QSS)  # 주 동작 (엔터 기본 버튼으로는 만들지 않는다)
@@ -413,6 +419,8 @@ class SourceReviewDialog(QDialog):
         btns.addSpacing(12)
         btns.addWidget(self.reread_btn)
         btns.addWidget(self.reread_model)
+        btns.addSpacing(12)
+        btns.addWidget(self.keep_btn)
         btns.addStretch(1)
         btns.addWidget(hint)
         # 오른쪽: 위 = 그림(남는 높이를 모두 쓰고, 그림은 늘 칸 안에 다 보이게 맞춘다),
@@ -442,7 +450,7 @@ class SourceReviewDialog(QDialog):
         lay.addWidget(self.guide)
         lay.addWidget(split, 1)
         lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        for b in (self.save_btn, self.next_btn, self.reread_btn):
+        for b in (self.save_btn, self.next_btn, self.reread_btn, self.keep_btn):
             b.setAutoDefault(False)
         for keys, fn in (("Ctrl+S", self.save_current), ("Ctrl+Return", self.save_and_next),
                          ("Ctrl+Enter", self.save_and_next), ("Alt+Down", lambda: self.move_row(1)),
@@ -562,7 +570,8 @@ class SourceReviewDialog(QDialog):
                 src = c["source"]
                 text = "\n".join(src) if isinstance(src, list) else (src or "")
                 unread = c["label"] == self.UNREAD
-                vals = [str(c["page"]), c["region"], label_text(c["label"]),
+                vals = [str(c["page"]), c["region"],
+                        "번역 안 함 (아이콘)" if c.get("keep_original") else label_text(c["label"]),
                         "(아직 추출하지 않음 — ① 글자 추출)" if unread and not text else text.replace("\n", " / ")]
                 for j, v in enumerate(vals):
                     it = QTableWidgetItem(v)
@@ -598,6 +607,8 @@ class SourceReviewDialog(QDialog):
         self.save_btn.setEnabled(bool(self.cells))
         self.next_btn.setEnabled(bool(self.cells))
         self.reread_btn.setEnabled(bool(self.cells))
+        if not self.cells:  # 칸이 있으면 _show가 정한다 (아직 읽지 않은 칸은 정할 수 없음)
+            self.keep_btn.setEnabled(False)
 
     def current(self) -> dict | None:
         r = self.table.currentRow()
@@ -632,6 +643,30 @@ class SourceReviewDialog(QDialog):
         self.edit.setPlainText(default)
         self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
         self._orig_text = self.edit.toPlainText()
+        keep = bool(c.get("keep_original"))
+        self.keep_btn.setEnabled(c["source"] is not None)  # 아직 읽지 않은 칸은 정할 수 없다
+        self.keep_btn.setChecked(keep)
+        self.keep_btn.setText("번역 안 함 풀기" if keep else "전체가 아이콘 — 번역 안 함")
+
+    def toggle_keep_original(self):
+        """지금 칸을 ‘전체가 아이콘 — 번역 안 함’으로 정하거나 푼다. 정하면 다음 칸으로 간다."""
+        c = self.current()
+        if c is None:
+            return
+        keep = not c.get("keep_original")
+        if keep and self._dirty():  # 고친 글은 버린다 (번역하지 않는 칸)
+            self.edit.setPlainText(self._orig_text)
+        try:
+            service.set_keep_original(self.file.currentData(), c["page"], c["region"], keep)
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "정하지 못했습니다", e)
+            self.keep_btn.setChecked(not keep)
+            return
+        self.saved += 1
+        if keep:  # 다음 칸으로 (확인할 칸만 보는 중이면 이 칸이 목록에서 빠질 수 있어 같은 줄 번호)
+            self.reload(row=self.table.currentRow() + (0 if self.only.isChecked() else 1))
+        else:
+            self.reload(keep=(c["page"], c["region"]))
 
     @staticmethod
     def reading_texts(c: dict, known=None) -> list[tuple[str, str]]:
@@ -1008,6 +1043,7 @@ class IconPlaceDialog(QDialog):
         self.project_dir = Path(project_dir)
         self.row_label = row_label  # 묶음 -> ‘3번’ 같은 화면 이름
         self.on_saved = on_saved
+        self.outcome: tuple[str, str | None] = ("", None)  # 닫은 뒤 표가 고를 줄: ("saved"|"not_icon", 묶음)
         self.setWindowTitle("카드 보기 · 아이콘 자리 잡기")
         fit_to_screen(self, 1100, 720, maximize_below=0)
         self.where = [dict(w) for w in g.get("where", [])]
@@ -1034,6 +1070,12 @@ class IconPlaceDialog(QDialog):
         self.not_icon_btn.setToolTip("이 자리만 ‘아이콘 아님’ 줄로 옮깁니다 (같은 묶음의 다른 자리는 그대로).\n"
                                      "글자를 아이콘으로 잘못 읽은 것이면 그 줄의 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌)")
         self.not_icon_btn.clicked.connect(self._not_icon)
+        self.absorb_btn = QPushButton("옆 아이콘에 포함됨")  # 못 찾은 자리인데 바로 옆 자리의 상자가 이 자리까지 감쌌을 때
+        self.absorb_btn.setToolTip("바로 옆에 붙은 아이콘을 잡은 상자가 이 자리까지 감싸고 있으면 누르세요.\n"
+                                   "둘을 하나의 아이콘으로 보고 이 자리는 원문에서 뺍니다 (예: 문양 셋이 붙은 아이콘).")
+        self.absorb_btn.clicked.connect(self._absorb)
+        self.absorb_btn.hide()
+        self._run_host: str | None = None
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
         side = QVBoxLayout()
@@ -1045,6 +1087,7 @@ class IconPlaceDialog(QDialog):
         mid.addLayout(side)
         btns = QHBoxLayout()
         btns.addWidget(self.status, 1)
+        btns.addWidget(self.absorb_btn)
         btns.addWidget(self.not_icon_btn)
         btns.addWidget(self.save_btn)
         btns.addWidget(close)
@@ -1090,8 +1133,18 @@ class IconPlaceDialog(QDialog):
             self.crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
         else:
             self.crop.setText("아직 없음")
+        host = (p.get("run_host") or [None])[0]
+        self._run_host = host
+        host_mark = next((m for m in p["marks"] if m.get("occ") == host), None) if host else None
+        host_label = (f"[[{host_mark['name']}]]" if host_mark.get("name") else self.row_label(host_mark.get("group", ""))) \
+            if host_mark else "옆 아이콘"
+        self.absorb_btn.setText(f"{host_label}에 포함됨")
+        self.absorb_btn.setVisible(bool(host))
         if p["box"]:
             self.status.setText("자리가 맞지 않으면 아이콘을 끌어 다시 잡으세요.")
+        elif host:
+            self.status.setText(f"바로 옆 아이콘({host_label})의 상자가 이 자리까지 감싸고 있으면 ‘{host_label}에 포함됨’을 "
+                                "누르세요. 따로 있는 아이콘이면 끌어 감싸세요.")
         elif p["guess"]:
             self.status.setText("자동으로 찾지 못했습니다. 주황 점선(예상 위치) 근처의 아이콘을 끌어 감싸세요.")
         else:
@@ -1115,6 +1168,20 @@ class IconPlaceDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             show_error(self, "자리를 저장하지 못했습니다", e)
             return
+        if r.get("run_unfound"):  # 바로 옆에 붙은 [[?]]를 못 찾았음: 이 상자가 그것까지 감쌌을 수 있다 (문양 셋이 붙은 아이콘)
+            n = len(r["run_unfound"])
+            c = ask_choice(self, "붙어 있는 아이콘",
+                           f"이 자리 바로 옆에 아이콘([[?]]) {n}개가 붙어 있습니다 (위치를 못 찾았거나 이 상자 안에 있음).\n"
+                           f"방금 잡은 상자가 아이콘 {n + 1}개를 한 세트로 감싸고 있나요?",
+                           [(f"아이콘 {n + 1}개를 한 세트로", "accept"), ("따로 있는 아이콘임", "reject")], default=0,
+                           informative="합치면 붙어 있는 [[?]]가 이 아이콘 하나가 되고, 나머지 자리는 원문에서 뺍니다.\n"
+                                       "따로 있는 아이콘이면 그 줄에서 ‘카드 보기 · 자리 잡기’로 하나씩 잡으세요.")
+            if c == 0:
+                try:
+                    service.absorb_icon_run(self.project_dir, w["occ"], r["run_unfound"])
+                except Exception as e:  # noqa: BLE001
+                    show_error(self, "아이콘을 합치지 못했습니다", e)
+        self.outcome = ("saved", r["group"])
         self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (줄 번호가 바뀔 수 있음)
         rev = service.icon_review(self.project_dir) or {"groups": []}
         gg = next((x for x in rev["groups"] if x["group"] == r["group"]), {})
@@ -1134,8 +1201,23 @@ class IconPlaceDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             show_error(self, "‘아이콘 아님’으로 정하지 못했습니다", e)
             return
+        self.outcome = ("not_icon", r["group"])
         self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (그 줄은 ‘아이콘 아님’이 체크되어 있다)
         self.accept()  # 닫고 이름 정하기 표로 돌아간다 (글자였다면 그 줄의 ‘뜻’ 칸에 글자를 적는다)
+
+    def _absorb(self):
+        """지금 자리를 바로 옆 아이콘(상자가 이 자리까지 감쌈)에 포함: 이 자리는 원문에서 뺀다."""
+        i = self.combo.currentIndex()
+        if i < 0 or not self._run_host:
+            return
+        try:
+            service.absorb_icon_run(self.project_dir, self._run_host, [self.where[i]["occ"]])
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "아이콘을 합치지 못했습니다", e)
+            return
+        self.outcome = ("not_icon", None)  # 이 줄은 끝: 다음 줄로
+        self.on_saved({})
+        self.accept()
 
     def _suggest(self, group: str):
         """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다)."""
@@ -1160,7 +1242,8 @@ class IconReviewDialog(QDialog):
     (잘못 잘렸거나 작게 찍혀 따로 묶인 것). ‘카드 보기’로 그 아이콘이 나온 카드 자리를 확인하고,
     위치를 못 찾았거나 잘못 잘린 아이콘은 마우스로 직접 감싸 다시 잡는다."""
 
-    COLS = ["그림", "같은 아이콘", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "등장", "카드", "예문"]
+    COLS = ["그림", "같은 아이콘", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "등장", "카드 번호", "카드", "예문"]
+    C_COUNT, C_PAGES, C_VIEW, C_EX = 7, 8, 9, 10
     NEW = "(새 아이콘)"
 
     def __init__(self, project_dir: Path, review: dict, parent=None):
@@ -1175,7 +1258,14 @@ class IconReviewDialog(QDialog):
         self.table.setStyleSheet("QLineEdit, QComboBox, QDoubleSpinBox, QPushButton { margin: 5px 4px; }"
                                  " QLineEdit, QDoubleSpinBox { padding-top: 1px; padding-bottom: 1px; }"
                                  " QCheckBox { margin-left: 12px; }")
-        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(self.C_EX, QHeaderView.ResizeMode.Stretch)
+        self.table.setAutoScroll(False)  # 마우스를 표 아래쪽으로 옮길 때 저절로 내려가지 않게
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        # 머리글을 누르면 그 열로 정렬 (다시 누르면 반대로). 줄 번호(‘3번’)는 보이는 순서대로 다시 매긴다
+        self._sort: tuple[int, bool] | None = None  # (열, 내림차순)
+        hh = self.table.horizontalHeader()
+        hh.setSectionsClickable(True)
+        hh.sectionClicked.connect(self._sort_by)
         self.steps_text = hint_bar("", "info")
         self.known_note = grey_note("")
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -1194,6 +1284,7 @@ class IconReviewDialog(QDialog):
 
     # ---- 표 채우기 (자리를 다시 잡으면 묶음이 바뀌어 다시 채운다; 적어 둔 값은 묶음별로 살린다)
     def _fill(self, review: dict, keep: dict):
+        review = {**review, "groups": self._sorted(review["groups"], keep)}
         self.review = review
         groups = review["groups"]
         self.table.clearContents()
@@ -1227,12 +1318,19 @@ class IconReviewDialog(QDialog):
             if not g["image"]:
                 view.setStyleSheet("font-weight: bold")
             view.clicked.connect(lambda _c=False, gg=g["group"]: self.show_cards(gg))
-            for j, w in ((1, same), (2, name), (3, meaning), (4, ko), (5, not_icon), (6, scale), (8, view)):
+            for j, w in ((1, same), (2, name), (3, meaning), (4, ko), (5, not_icon), (6, scale), (self.C_VIEW, view)):
                 self.table.setCellWidget(i, j, w)
-            self.table.setItem(i, 7, QTableWidgetItem(str(g["count"])))
+            cnt = QTableWidgetItem(str(g["count"]) + (f" (세트{g['set_size']})" if g.get("set_size", 1) > 1 else ""))
+            if g.get("set_size", 1) > 1:
+                cnt.setToolTip(f"붙어 있는 아이콘 {g['set_size']}개가 한 덩어리로 잡혀 하나의 아이콘(세트)으로 봅니다.\n"
+                               "확정하면 원문의 붙은 [[?]]가 이 아이콘 하나가 됩니다. 따로 있는 아이콘이면 ‘카드 보기’에서 하나씩 잡으세요.")
+            self.table.setItem(i, self.C_COUNT, cnt)
+            pages = QTableWidgetItem(self._pages_text(g))
+            pages.setToolTip("\n".join(w["label"] for w in g.get("where", [])))
+            self.table.setItem(i, self.C_PAGES, pages)
             ex = QTableWidgetItem(g["examples"][0] if g["examples"] else "")
             ex.setToolTip("\n".join(g["examples"]))
-            self.table.setItem(i, 9, ex)
+            self.table.setItem(i, self.C_EX, ex)
             self.table.setRowHeight(i, 46)
             self.widgets.append((g["group"], name, meaning, ko, not_icon, scale, same))
         row_of = {g["group"]: i for i, g in enumerate(groups)}
@@ -1259,15 +1357,36 @@ class IconReviewDialog(QDialog):
             if g.get("not_icon"):  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 정한 자리 (적어 둔 값보다 우선)
                 not_icon.setChecked(True)
                 same.setCurrentIndex(0)
+            host = g.get("absorbed_group")
+            host_label = (f"{row_of[host] + 1}번" if host in row_of else "") if host else \
+                (f"[[{g['absorbed_name']}]]" if g.get("absorbed_name") else "")
+            if host_label and g.get("not_icon"):  # 옆 아이콘 상자에 포함된 자리: 원문에서 뺀다
+                meaning.clear()
+                meaning.setPlaceholderText("")
+                cell = self.table.item(i, 0)
+                cell.setText(f"{host_label}에 포함")
+                cell.setBackground(QBrush(QColor("#E8F0E0")))
+                cell.setToolTip(f"{host_label} 아이콘의 그림이 이 자리까지 감싸 하나의 아이콘(세트)으로 합쳤습니다.\n"
+                                "확정하면 이 자리의 [[?]]는 원문에서 빠집니다. 따로 있는 아이콘이면 ‘아이콘 아님’을 풀고 자리를 잡으세요.")
             same.currentIndexChanged.connect(lambda _x, r=i: self._sync_row(r))
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
             name.textChanged.connect(lambda _t: self._paint_dups())
             self._sync_row(i)
         self._paint_dups()
         self.table.resizeColumnToContents(1)
-        self.table.resizeColumnToContents(8)
+        self.table.resizeColumnToContents(self.C_VIEW)
         for col, w in ((2, 150), (3, 170), (4, 150), (6, 100)):  # 입력 칸 글이 잘리지 않게
             self.table.setColumnWidth(col, w)
+        self.table.setColumnWidth(self.C_COUNT, 64)  # 등장 수는 좁게
+        self.table.resizeColumnToContents(self.C_PAGES)
+        self.table.setColumnWidth(self.C_PAGES, min(max(self.table.columnWidth(self.C_PAGES), 72), 160))
+        hh = self.table.horizontalHeader()
+        if self._sort:
+            hh.setSortIndicatorShown(True)
+            hh.setSortIndicator(self._sort[0], Qt.SortOrder.DescendingOrder if self._sort[1]
+                                else Qt.SortOrder.AscendingOrder)
+        else:
+            hh.setSortIndicatorShown(False)
         n_issue = sum(1 for g in groups if g.get("issue"))
         n_lost = sum(1 for g in groups if not g["image"])
         set_hint(self.steps_text,
@@ -1295,9 +1414,88 @@ class IconReviewDialog(QDialog):
                       "not_icon": not_icon.isChecked(), "scale": scale.value(), "same": d}
         return out
 
+    def _row_message(self, msg: str) -> str:
+        """엔진의 ‘묶음: 문제’를 ‘문제: 3번 줄’로 (묶음 이름 ‘위치 못 찾음 o014’는 표에 보이지 않는다;
+        자세히 보기는 문제별로 묶어 줄 번호를 나열한다)."""
+        for i, w in enumerate(self.widgets):
+            if msg.startswith(w[0] + ": "):
+                rest = msg[len(w[0]) + 2:].replace("처리 열에 ‘아이콘 아님’", "‘아이콘 아님’ 체크")
+                return f"{rest}: {i + 1}번 줄"
+        return msg
+
     def _row_label(self, group: str) -> str:
+        """카드 보기에 보일 이름: ‘14번’, 이름을 적어 둔 줄이면 ‘14번 crown’."""
         i = next((i for i, w in enumerate(self.widgets) if w[0] == group), None)
-        return f"{i + 1}번" if i is not None else "아이콘"
+        if i is None:
+            return "아이콘"
+        _g, name, _m, _k, not_icon, _sc, same = self.widgets[i]
+        d = same.currentData()
+        nm = d[1] if d and d[0] == "known" else (
+            self.widgets[d[1]][1].text().strip() if d and d[0] == "row" else name.text().strip())
+        return f"{i + 1}번" + (f" {nm}" if nm and not not_icon.isChecked() else "")
+
+    @staticmethod
+    def _pages_text(g: dict) -> str:
+        """그 아이콘이 나온 카드 번호 (쪽). 파일이 여럿이면 ‘파일:쪽’."""
+        where = g.get("where", [])
+        files = {w.get("file_dir") for w in where}
+        seen, out = set(), []
+        for w in where:
+            t = f"{Path(str(w.get('file_dir'))).name[:12]}:{w['page']}" if len(files) > 1 else str(w["page"])
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        return ", ".join(out)
+
+    # ---- 정렬 (머리글 누르기)
+    def _sort_by(self, col: int):
+        if col == self.C_VIEW:  # 버튼 열은 정렬하지 않는다
+            return
+        desc = bool(self._sort and self._sort[0] == col and not self._sort[1])
+        self._sort = (col, desc)
+        self._fill(self.review, self._capture())
+
+    def _sorted(self, groups: list[dict], keep: dict) -> list[dict]:
+        if not self._sort:
+            return list(groups)
+        col, desc = self._sort
+
+        def key(g):
+            k = keep.get(g["group"], {})
+            txt = {2: k.get("name", g["suggest"]), 3: k.get("meaning", g["meaning"]), 4: k.get("ko", g["ko"])}
+            if col == 0:
+                return (0 if g["image"] else 1,)
+            if col == 1:
+                same = k.get("same")
+                return (0 if not same else 1, str(same[1]) if same else "")
+            if col in txt:
+                v = (txt[col] or "").strip().lower()
+                return (v == "", v)  # 빈 칸은 뒤로
+            if col == 5:
+                return (bool(k.get("not_icon", g.get("not_icon"))),)
+            if col == 6:
+                return (k.get("scale", 1.1),)
+            if col == self.C_COUNT:
+                return (g["count"],)
+            if col == self.C_PAGES:
+                return (min((w["page"] for w in g.get("where", [])), default=0),)
+            return ((g["examples"][0] if g["examples"] else ""),)
+
+        out = sorted(groups, key=key, reverse=desc)
+        if desc:  # 빈 칸은 내림차순에서도 뒤로
+            out = [g for g in out if key(g)[0] is not True] + [g for g in out if key(g)[0] is True] \
+                if col in (2, 3, 4) else out
+        return out
+
+    def select_group(self, group: str | None) -> None:
+        """그 묶음의 줄을 골라 보이게 한다 (카드 보기를 닫은 뒤)."""
+        i = next((i for i, w in enumerate(self.widgets) if w[0] == group), None) if group else None
+        if i is None:
+            return
+        self.table.setCurrentCell(i, 2)
+        self.table.selectRow(i)
+        self.table.scrollToItem(self.table.item(i, 0), QTableWidget.ScrollHint.EnsureVisible)
+        self.widgets[i][1].setFocus()
 
     def _after_place(self, r: dict):
         keep = self._capture()
@@ -1359,7 +1557,15 @@ class IconReviewDialog(QDialog):
         g = next((x for x in self.review["groups"] if x["group"] == group), None)
         if g is None:
             return
-        IconPlaceDialog(self.project_dir, g, self._row_label, self._after_place, self).exec()
+        order = [w[0] for w in self.widgets]
+        nxt = order[order.index(group) + 1] if group in order and order.index(group) + 1 < len(order) else None
+        dlg = IconPlaceDialog(self.project_dir, g, self._row_label, self._after_place, self)
+        dlg.exec()
+        act, where = dlg.outcome
+        if act == "not_icon":  # 다음 줄로 (아이콘 아님으로 뺀 줄은 끝났으므로)
+            self.select_group(nxt if nxt in [w[0] for w in self.widgets] else where)
+        elif act == "saved":  # 저장한 자리가 들어간 줄 (같은 모양 묶음이나 새 줄)
+            self.select_group(where)
 
     def rows(self) -> list[dict]:
         """합치기를 풀어 각 줄의 최종 이름으로. 합치기가 돌고 돌면 ValueError."""
@@ -1411,7 +1617,8 @@ class IconReviewDialog(QDialog):
                 return
         r = service.confirm_icons(self.project_dir, rows)
         if r.state != "confirmed":
-            show_problem(self, "아이콘 이름을 확정하지 못했습니다", "", "이름을 고친 뒤 다시 누르세요.", items=r.blocking)
+            show_problem(self, "아이콘 이름을 확정하지 못했습니다", "", "이름을 고친 뒤 다시 누르세요.",
+                         items=[self._row_message(m) for m in r.blocking])
             return
         self.result = r
         super().accept()
@@ -1602,19 +1809,24 @@ class StepActions:
             show_problem(self.page, f"용어집 엑셀을 만들지 못했습니다 ({state_label(r.state)})", r.reason or "",
                          retry_after=r.retry_after)
             return
-        box = QMessageBox(self.page)
-        box.setWindowTitle("용어집 검증")
-        box.setText(f"새 용어 후보 {r.new_terms}개, 이미 확정된 용어 {r.confirmed_terms}개.\n"
-                    f"엑셀의 ‘번역’ 열을 확인·수정한 뒤 ‘용어집 가져오기’를 누르세요.\n(보라색: 번역이 갈릴 수 있는 용어)")
-        openb = box.addButton("엑셀 열기", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is openb and r.review_xlsx:
-            from app.qt.main import open_path
+        self.review_glossary()  # 바로 프로그램 안에서 번역을 확인·확정 (엑셀은 그 창에서 따로 내보내기·가져오기)
 
-            open_path(r.review_xlsx)
+    # ---- 용어집 확정 (프로그램 안 표; 엑셀은 그 창에서 따로)
+    def review_glossary(self):
+        from app.qt.glossary_review import GlossaryReviewDialog
 
-    # ---- 용어집 가져오기
+        rows = service.glossary_review_rows(self.pdir)
+        if rows is None:
+            show_problem(self.page, "용어 후보가 없습니다", "아직 용어 후보를 만들지 않았습니다.",
+                         "먼저 ‘④ 용어집 만들기’를 누르세요.")
+            return
+        dlg = GlossaryReviewDialog(self.pdir, rows, self.page)
+        dlg.exec()
+        self.page.refresh()
+        if dlg.result is not None:
+            self._glossary_confirmed(dlg.result)
+
+    # ---- 용어집 가져오기 (엑셀)
     def import_glossary(self, path: str | None = None, accept: bool = False):
         if path is None:
             default = str(service.game_dir(self.pdir) / "용어집_검증.xlsx")
@@ -1624,13 +1836,17 @@ class StepActions:
         r = service.import_glossary(self.pdir, path, accept_issues=accept)
         if r.state == "blocked":
             show_problem(self.page, "용어집을 가져오지 못했습니다", "", items=r.blocking + r.issues, todo=
-                         "엑셀에서 이 내용을 고치고 저장한 뒤 ‘⑤ 용어집 가져오기’를 다시 누르세요.")
+                         "엑셀에서 이 내용을 고치고 저장한 뒤 ‘⑤ 용어집 확정’ 창의 ‘엑셀에서 가져오기’를 다시 누르세요.")
             return
         if r.state == "needs_confirmation":
             if _ask_list(self.page, "용어집 확인", "아래 항목을 확인하세요.", r.issues, "이대로 확정할까요?"):
                 self.import_glossary(path, accept=True)
             return
         self.page.refresh()
+        self._glossary_confirmed(r)
+
+    def _glossary_confirmed(self, r):
+        """확정한 뒤: 번역이 바뀐 용어가 있으면 그 용어가 든 칸을 찾아 바뀜 후보로 (F20), 없으면 알린다."""
         if getattr(r, "changed_detail", None):  # 번역이 바뀐 용어: 그 용어가 든 칸을 찾아 바뀜 후보로 (F20)
             job = worker.Job(service.term_change_candidates, self.pdir, r.changed_detail, with_progress=False)
             worker.run_with_dialog(self.page, "바뀐 용어가 든 칸을 찾는 중", job,

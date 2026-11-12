@@ -51,3 +51,44 @@ def test_icon_only_cell_is_neither_erased_nor_composed(tmp_path):
     # 원문을 고쳐 글자가 생기면 그 쪽은 다시 지울 대상이 된다 (아이콘만일 때와 서명이 다름)
     _write_sources(proj, {2: "Gain [[sword]]"})
     assert 2 in service.stale_erased_pages(proj)
+
+
+def test_keep_original_cell_skips_translation_erase_and_shows_in_results(tmp_path):
+    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 번역 원문에서 빠지고, 지우지도 넣지도 않으며, 결과 보기에 표시된다."""
+    proj = make_project(tmp_path, pages=2)
+    _write_sources(proj, {1: "HELLO WORLD", 2: "AB CD"})
+    service.set_keep_original(proj, 2, "이름", True)
+    cells = {(c["page"], c["region"]): c for c in service.extracted_cells(proj)}
+    assert cells[(2, "이름")]["keep_original"] and cells[(2, "이름")]["label"] == "사람이 확인"
+    assert service.erase(proj, "1-2").ok
+    m2 = json.loads((proj / "cleared" / "meta" / "page-002.json").read_text(encoding="utf-8"))
+    assert m2["icon_only_regions"] == ["이름"]
+    r = service.compose(proj)
+    assert r.state == "done"
+    pages = {p["page"]: p for p in service.result_pages(proj / "translated")}
+    assert pages[2]["regions"][0]["status"] == ["모두 아이콘이라 건너뜀"]
+    # 풀면 다시 지울 대상
+    service.set_keep_original(proj, 2, "이름", False)
+    assert 2 in service.stale_erased_pages(proj)
+
+
+def test_icon_only_cell_listed_in_results(tmp_path):
+    proj = make_project(tmp_path, pages=2)
+    _write_sources(proj, {1: "HELLO WORLD", 2: "[[sword]][[sword]]"})
+    assert service.erase(proj, "1-2").ok
+    assert service.compose(proj).state == "done"
+    pages = {p["page"]: p for p in service.result_pages(proj / "translated")}
+    assert [r["status"] for r in pages[2]["regions"]] == [["모두 아이콘이라 건너뜀"]]
+
+
+def test_keep_original_needs_read_cell_and_leaves_review(tmp_path):
+    """‘번역 안 함’은 읽은 칸에만 정할 수 있고, 정한 칸은 번역 검수 줄에 나오지 않는다 (번역 없음으로 잡히지 않게)."""
+    proj = make_project(tmp_path, pages=2)
+    _write_sources(proj, {1: "HELLO WORLD"})  # 2쪽은 읽지 않음
+    with pytest.raises((ValueError, FileNotFoundError)):
+        service.set_keep_original(proj, 2, "이름", True)
+    _write_sources(proj, {1: "HELLO WORLD", 2: "AB CD"})
+    before = {(r["page"], r["region"]) for r in service._review_file_rows(proj)}
+    service.set_keep_original(proj, 2, "이름", True)
+    after = {(r["page"], r["region"]) for r in service._review_file_rows(proj)}
+    assert (2, "이름") in before and (2, "이름") not in after and (1, "이름") in after

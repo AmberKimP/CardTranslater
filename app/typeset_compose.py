@@ -107,6 +107,7 @@ def safe_name(name: str, idx: int) -> str:
 
 
 STATUS_NO_TRANSLATION = "번역 없음 (원문만 지워짐)"
+STATUS_ICON_ONLY = "모두 아이콘이라 건너뜀"  # 아이콘만 있는 칸(또는 ‘번역 안 함’ 칸): 지우지도 넣지도 않고 원본 그대로
 STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많음)"
 
 
@@ -986,6 +987,9 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
                                font_plan.overrides_for_page(font_data, pno),
                                font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
                                font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno))
+        for name in metas[pno].get("icon_only_regions") or []:  # 건너뛴 칸도 결과 보기에 보이게 (원본 그대로)
+            rec.setdefault(name, {"name": name, "status": [STATUS_ICON_ONLY], "drawn": False, "lines": [],
+                                  "errors": [], "warnings": [], "overflow_text": ""})
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]

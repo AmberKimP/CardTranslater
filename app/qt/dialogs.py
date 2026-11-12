@@ -434,14 +434,18 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
 class AddFilesDialog(QDialog):
     """카드 파일(PDF 또는 이미지)을 기존 그룹에 넣거나 새 그룹을 만든다 (PRD 1단계).
 
-    이미지(JPG·PNG 등)는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣는다. 이미지 한 장에 카드가
+    이미지(JPG·PNG 등)는 카드 한 장이 한 쪽인 PDF 하나로 묶어 넣는다. 이미지 한 장(또는 PDF 한 쪽)에 카드가
     가로 X × 세로 Y로 놓여 있으면 ‘여러 장 배열’을 고르고, 미리 보기로 자를 자리를 확인한다.
-    카드가 불규칙하게 놓였으면 ‘수동으로 영역 지정’을 골라 카드 자리를 직접 그린다 (CardBoxesDialog)."""
+    카드가 불규칙하게 놓였으면 ‘수동으로 영역 지정’을 골라 카드 자리를 직접 그린다 (CardBoxesDialog).
+    PDF를 배열·수동으로 자르면 쪽마다 그림으로 바꿔(임시 폴더) 이미지와 같은 방법으로 자르고, PDF 하나가 파일 하나가 된다."""
 
     def __init__(self, project_dir: Path, parent=None, files: list[str] | None = None):
         super().__init__(parent)
         self.project_dir = Path(project_dir)
         self.result_info = None
+        self._pdf_pages: dict[str, list[str]] = {}  # PDF 경로 -> 쪽 그림 (배열·수동 자르기용, 임시 폴더)
+        self._tmp = None
+        self.finished.connect(lambda _r: self._cleanup())
         self.setWindowTitle("파일 넣기")
         self.groups = service.list_groups(self.project_dir)
         self.files = QListWidget()
@@ -486,9 +490,9 @@ class AddFilesDialog(QDialog):
         form.addRow("새 그룹 영역", self.copy_from)
 
         # ---- 이미지일 때
-        self.img_box = QGroupBox("③ 이미지로 된 카드")
-        self.r_single = QRadioButton("이미지 한 장에 카드 한 장")
-        self.r_grid = QRadioButton("이미지 한 장에 카드 여러 장 (배열)")
+        self.img_box = QGroupBox("③ 한 장(이미지 한 장·PDF 한 쪽)에 카드가 몇 장인가요?")
+        self.r_single = QRadioButton("한 장에 카드 한 장")
+        self.r_grid = QRadioButton("한 장에 카드 여러 장 (배열)")
         self.r_manual = QRadioButton("수동으로 영역 지정")
         self.r_manual.setToolTip("카드가 줄 맞춰 놓이지 않았거나 배열 자르기가 맞지 않을 때, 이미지 위에 카드 자리를 직접 그립니다")
         self.manual_boxes: dict = {}  # {이미지 경로: [(x0, y0, x1, y1) 원본 px]}
@@ -579,6 +583,51 @@ class AddFilesDialog(QDialog):
     def image_files(self) -> list[str]:
         return [f for f in self.all_files() if Path(f).suffix.lower() in IMAGE_EXTS]
 
+    def pdf_files(self) -> list[str]:
+        return [f for f in self.all_files() if Path(f).suffix.lower() == ".pdf"]
+
+    def _cleanup(self) -> None:
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
+            self._pdf_pages = {}
+
+    def pdf_pages(self, pdf: str) -> list[str]:
+        """PDF 쪽 그림 (처음 부를 때 만든다). 배열·수동으로 자를 때만 쓴다."""
+        if pdf not in self._pdf_pages:
+            import tempfile
+
+            if self._tmp is None:
+                self._tmp = tempfile.TemporaryDirectory(prefix="ct_pdf_sheets_")
+            out = Path(self._tmp.name) / str(len(self._pdf_pages))
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self._pdf_pages[pdf] = [str(p) for p in service.pdf_sheet_images(pdf, out)]
+            finally:
+                QApplication.restoreOverrideCursor()
+        return self._pdf_pages[pdf]
+
+    def sheet_files(self) -> list[str]:
+        """배열·수동으로 자를 그림: 이미지 + PDF 쪽 그림 (목록 순서대로)."""
+        out = []
+        for f in self.all_files():
+            if Path(f).suffix.lower() in IMAGE_EXTS:
+                out.append(f)
+            elif Path(f).suffix.lower() == ".pdf":
+                out += self.pdf_pages(f)
+        return out
+
+    def _known_sheets(self) -> list[str]:
+        """이미 만든 그림만 (화면을 갱신할 때 PDF를 새로 그리지 않게): 이미지 + 만들어 둔 PDF 쪽 그림."""
+        return self.image_files() + [p for f in self.pdf_files() for p in self._pdf_pages.get(f, [])]
+
+    def _page_count(self, pdf) -> int:
+        """PDF 쪽 수 (파일마다 한 번만 연다: 칸 수를 바꿀 때마다 다시 열지 않게)."""
+        cache = self.__dict__.setdefault("_page_counts", {})
+        if pdf not in cache:
+            cache[pdf] = service.pdf_page_count(pdf)
+        return cache[pdf]
+
     def _sync(self):
         # 새 그룹 이름: 비어 있거나 앞서 자동으로 넣은 이름이면 첫 파일 이름으로 채운다 (사람이 고친 이름은 둔다)
         files = self.all_files()
@@ -591,27 +640,39 @@ class AddFilesDialog(QDialog):
         self.new_name.setEnabled(not ex)
         self.copy_from.setEnabled(not ex)
         imgs = self.image_files()
+        pdfs = self.pdf_files()
         empty = not files
         self.files_stack.setCurrentWidget(self.empty_hint if empty else self.files)
         self.pick.setStyleSheet(PRIMARY_QSS if empty else "")
         self.ok_btn.setEnabled(not empty)
-        self.img_box.setVisible(bool(imgs))
+        self.img_box.setVisible(bool(imgs or pdfs))
         grid = self.r_grid.isChecked()
         manual = self.r_manual.isChecked()
         self.cols.setEnabled(grid)
         self.rows.setEnabled(grid)
         self.b_draw.setEnabled(manual)
         self.b_preview.setVisible(not manual)  # 수동이면 그린 자리가 곧 미리 보기
-        if imgs and manual:
-            boxes = self._manual_for(imgs)
+        self.b_preview.setEnabled(bool(imgs) or grid)  # PDF는 배열일 때만 자를 자리를 미리 본다
+        self.img_name.setEnabled(bool(imgs))  # 이미지를 묶은 파일 이름 (PDF는 PDF 이름 그대로)
+        cut = grid or manual
+        n_pdf_pages = sum(self._page_count(f) for f in pdfs) if pdfs and cut else 0
+        what = " + ".join(x for x in (f"이미지 {len(imgs)}장" if imgs else "",
+                                      f"PDF {len(pdfs)}개({n_pdf_pages}쪽)" if pdfs and cut else "") if x)
+        if (imgs or pdfs) and manual:
+            boxes = self._manual_for(self._known_sheets())
             if any(boxes.values()):
                 n = sum(len(v) for v in boxes.values())
-                self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 {n}장 (그린 자리대로, 한 쪽에 한 장씩 PDF로)")
+                self.img_info.setText(f"{what} → 카드 {n}장 (그린 자리대로, 한 쪽에 한 장씩 PDF로)")
             else:
-                self.img_info.setText("‘카드 자리 그리기…’를 눌러 이미지 위에 카드 자리를 그리세요.")
+                self.img_info.setText("‘카드 자리 그리기…’를 눌러 이미지·PDF 쪽 위에 카드 자리를 그리세요.")
+        elif (imgs or pdfs) and grid:
+            per = self.cols.value() * self.rows.value()
+            self.img_info.setText(f"{what} → 카드 약 {(len(imgs) + n_pdf_pages) * per}장 (한 쪽에 한 장씩 PDF로)")
         elif imgs:
-            per = self.cols.value() * self.rows.value() if grid else 1
-            self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 약 {len(imgs) * per}장 (한 쪽에 한 장씩 PDF로)")
+            self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 {len(imgs)}장 (한 쪽에 한 장씩 PDF로)"
+                                  + (" · PDF는 그대로 넣습니다" if pdfs else ""))
+        else:
+            self.img_info.setText("PDF는 쪽마다 카드 한 장으로 그대로 넣습니다. 한 쪽에 카드가 여러 장이면 위에서 고르세요.")
 
     def _pick(self):
         exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
@@ -631,7 +692,11 @@ class AddFilesDialog(QDialog):
     def draw_boxes(self) -> None:
         from app.qt.card_boxes import CardBoxesDialog
 
-        imgs = self.image_files()
+        try:
+            imgs = self.sheet_files()
+        except Exception as e:  # noqa: BLE001
+            show_problem(self, "PDF 쪽을 그림으로 바꾸지 못했습니다", str(e), "PDF가 열리는지 확인하세요.")
+            return
         if not imgs:
             return
         dlg = CardBoxesDialog(imgs, self._manual_for(imgs), self)
@@ -643,12 +708,20 @@ class AddFilesDialog(QDialog):
         return (self.cols.value(), self.rows.value()) if self.r_grid.isChecked() else (1, 1)
 
     def preview(self):
-        imgs = self.image_files()
-        if not imgs:
-            return
         sel = [self._path_of(it) for it in self.files.selectedItems()
-               if Path(self._path_of(it)).suffix.lower() in IMAGE_EXTS]
-        path = sel[0] if sel else imgs[0]
+               if Path(self._path_of(it)).suffix.lower() in IMAGE_EXTS + (".pdf",)]
+        if sel and sel[0].lower().endswith(".pdf") and not self.r_grid.isChecked():
+            sel = []
+        cands = sel or self.image_files() + (self.pdf_files() if self.r_grid.isChecked() else [])
+        if not cands:
+            return
+        path = cands[0]
+        if path.lower().endswith(".pdf"):  # PDF는 첫 쪽으로 미리 본다
+            try:
+                path = self.pdf_pages(path)[0]
+            except Exception as e:  # noqa: BLE001
+                show_problem(self, "PDF 쪽을 그림으로 바꾸지 못했습니다", str(e), "PDF가 열리는지 확인하세요.")
+                return
         cols, rows = self.layout_choice()
         try:
             png, info = service.image_preview(path, cols, rows)
@@ -694,13 +767,43 @@ class AddFilesDialog(QDialog):
         added, skipped, warnings = [], [f"{Path(f).name}: PDF·이미지가 아님" for f in others], []
         has_regions = False
         boxes = None
-        if imgs and self.r_manual.isChecked():  # 아무것도 넣기 전에 확인
-            boxes = self._manual_for(imgs)
+        cut_pdfs = bool(pdfs) and (self.r_grid.isChecked() or self.r_manual.isChecked())  # PDF도 쪽을 잘라 넣는다
+        if (imgs or cut_pdfs) and self.r_manual.isChecked():  # 아무것도 넣기 전에 확인
+            boxes = self._manual_for(self._known_sheets())
             if not any(boxes.values()):
                 show_error(self, "카드 자리를 그리지 않았습니다", "‘수동으로 영역 지정’은 카드 자리를 직접 그려야 합니다.",
-                           "‘카드 자리 그리기…’를 눌러 이미지 위에 카드마다 사각형을 그리세요.")
+                           "‘카드 자리 그리기…’를 눌러 이미지·PDF 쪽 위에 카드마다 사각형을 그리세요.")
+                return
+        if cut_pdfs:  # 아무것도 넣기 전에 모든 PDF를 그림으로 (깨진 PDF 때문에 반만 넣지 않게)
+            try:
+                for pdf in pdfs:
+                    self.pdf_pages(pdf)
+            except Exception as e:  # noqa: BLE001 - pymupdf는 RuntimeError 계열을 낸다
+                show_problem(self, "PDF 쪽을 그림으로 바꾸지 못했습니다", f"{Path(pdf).name}: {e}", "PDF가 열리는지 확인하세요.")
                 return
         try:
+            if cut_pdfs:
+                cols, rows = self.layout_choice()
+                for pdf in pdfs:  # PDF 하나 = 파일 하나 (쪽 그림을 이미지처럼 자른다)
+                    pages = self.pdf_pages(pdf)
+                    own = None if boxes is None else {p: boxes.get(p, []) for p in pages}  # 안 그린 쪽은 넣지 않음
+                    if own is not None and not any(own.values()):
+                        skipped.append(f"{Path(pdf).name}: 카드 자리를 그리지 않아 넣지 않음")
+                        continue
+                    if own is not None and not all(own.values()):
+                        warnings.append(f"{Path(pdf).name}: 카드 자리를 그리지 않은 "
+                                        f"{sum(1 for v in own.values() if not v)}쪽은 넣지 않았습니다")
+                    ri = service.add_images(self.project_dir, pages, group, cols=cols, rows=rows,
+                                            name=Path(pdf).stem, new_group=new, regions_from=regions_from,
+                                            boxes=own, origin_pdf=pdf)
+                    new, regions_from = False, None
+                    if ri.file_dir:
+                        added.append(ri.file_dir)
+                        warnings.insert(0, f"{Path(pdf).name}: {len(pages)}쪽 → 카드 {ri.pages}장")
+                    skipped += ri.skipped
+                    warnings += ri.warnings
+                    has_regions = ri.has_regions
+                pdfs = []
             if pdfs:
                 r = service.add_files(self.project_dir, pdfs, group, new_group=new, regions_from=regions_from)
                 added += r["added"]

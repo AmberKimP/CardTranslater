@@ -1297,6 +1297,9 @@ class Occurrence:
     # 그림에 함께 넣은 옆 숫자 {"text", "side"}. 원문에서는 확정할 때 뺀다 (그때 원문에서 다시 찾음)
     number: dict = field(default_factory=dict)
     hint: str = ""  # 모양이 같은 예전 사전 항목 이름 (자동으로 바꾸지 않고 ② 검토에 제안만)
+    # 붙어 있는 [[?]]들이 그림에서 한 덩어리(세트)로 잡혔을 때, 이 자리가 들어간 첫 자리 id (확정하면 원문에서 뺀다)
+    set_of: str = ""
+    set_name: str = ""  # 세트 첫 자리가 사전으로 바로 바뀐 경우 그 이름 (이 자리는 표에 보여 확인받는다)
 
     @property
     def num(self) -> str:
@@ -1369,6 +1372,9 @@ def scan(info, work: Path) -> ScanResult:
                 img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
+                run_of = {k: ri for ri, run in enumerate(placeholder_runs(text)) for k in run}
+                set_host: dict[tuple, Occurrence] = {}  # (덩어리, 찾은 자리) -> 그 자리를 처음 찾은 아이콘
+                set_n: dict[tuple, int] = {}  # 그 자리에 들어간 아이콘 수
                 auto_map, auto_strip, left = {}, {}, []
                 for k, ti in enumerate(ph):
                     n += 1
@@ -1376,9 +1382,26 @@ def scan(info, work: Path) -> ScanResult:
                                     text.replace("\n", " / "))
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
                     box, why = locate(img, text, ti)
+                    key = (run_of.get(k), tuple(box)) if box is not None else None
+                    host = set_host.get(key) if key else None
+                    if host is not None and set_n[key] > 0 and set_box_fits(box, set_n[key] + 1):
+                        set_n[key] += 1
+                        # 붙어 있는 [[?]]가 앞 아이콘과 같은 덩어리: 아이콘 여러 개가 붙은 한 세트 (그 그림 하나로 보여 주고
+                        # 이 자리는 원문에서 뺀다. 둘 다 남기면 세트 그림이 두 번 들어간다)
+                        oc.set_of, oc.box = host.id, list(host.box)
+                        oc.set_name = host.match  # 첫 자리가 사전으로 바뀌었으면 이 자리는 표에서 확인받는다
+                        left.append(oc)
+                        continue
+                    if host is not None:
+                        # 앞 아이콘과 같은 자리로 잡혔는데 세트 모양이 아님(또는 세트가 끝남): 찾기 실수로 보고 직접 잡게 한다
+                        # (같은 그림을 잘라 두면 앞 아이콘과 한 묶음이 되어 같은 이름이 두 번 들어간다)
+                        set_n[key] = 0
+                        box, why = None, "앞 아이콘과 같은 자리로 잡혀 위치를 못 찾음"
                     if box is None:
                         oc.reason = why
                     else:
+                        if key not in set_host:
+                            set_host[key], set_n[key] = oc, 1
                         # 아이콘 바로 앞·뒤(또는 위)에 인쇄된 숫자는 아이콘의 일부로 그림에 넣는다. 원문에서 빼는 것은
                         # 사람이 확정할 때 (손으로 다시 잡거나 ‘아이콘 아님’이면 숫자를 남겨야 하므로)
                         num = number_near(text, tokens[ti].start(), tokens[ti].end())
@@ -1424,6 +1447,12 @@ def _group(res: ScanResult) -> None:
     by_id = {o.id: o for o in res.occurrences}
     reps: list[tuple[str, str]] = []  # (묶음, 대표 occurrence id)
     for o in res.occurrences:
+        if o.set_of:  # 세트의 나머지 자리: 표에 따로 보이지 않고 확정할 때 원문에서 뺀다
+            o.group = f"세트 {o.id}"
+            res.groups[o.group] = {"rep": "", "count": 1, "not_icon": True, "absorbed": o.set_of, "auto": True}
+            if o.set_name:  # 첫 자리가 사전으로 바로 바뀜: 이 자리는 표에 보여 확인받는다 (되돌릴 수 있게)
+                res.groups[o.group].update(auto=False, absorbed_name=o.set_name)
+            continue
         if not o.png:
             o.group = f"위치 못 찾음 {o.id}"
             res.groups[o.group] = {"rep": "", "count": 1}
@@ -1507,7 +1536,7 @@ def place_info(info, work: Path, occ_id: str) -> dict:
                 out["box"] = box or None
                 if not box:
                     out["guess"] = estimate(img, text, ti)
-            elif box:
+            elif box and not x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
                 out["marks"].append({"box": box, "group": x.group, "occ": x.id})
         else:
             box = locate(img, text, ti)[0]
@@ -1565,6 +1594,16 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     png = work / "crops" / f"{o.id}_m{n}.png"
     save_png(rgba, png)
     o.png, o.box, o.manual, o.reason = str(png), [x0, y0, x1, y1], True, ""
+    o.set_of, o.set_name = "", ""  # 사람이 따로 잡았으면 이 자리는 더는 다른 아이콘의 세트 조각이 아니다
+    for x in res.occurrences:  # 이 자리를 다시 잡으면 합친 세트를 푼다 (합칠지는 저장할 때 다시 묻는다)
+        if x.set_of == o.id:
+            res.groups.pop(x.group, None)
+            x.set_of, x.set_name, x.box, x.group = "", "", [], f"위치 못 찾음 {x.id}"
+            x.reason = "세트로 합쳤던 자리 (앞 아이콘을 다시 잡아 풀었음)"
+            res.groups[x.group] = {"rep": "", "count": 1}
+        elif x.id != o.id and res.groups.get(x.group, {}).get("absorbed") == o.id:  # 손으로 합친 자리
+            for k in ("absorbed", "not_icon", "auto"):
+                res.groups[x.group].pop(k, None)
     # 예전 묶음에서 빼기
     old = o.group
     gi = res.groups.get(old, {})
@@ -1607,7 +1646,7 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
         new_group = True
     o.group = g
     _save_scan(work, res)
-    return {"group": g, "old": old, "old_gone": old_gone, "new_group": new_group, "dict": match}
+    return {"group": g, "old": old, "old_gone": old_gone, "new_group": new_group, "dict": match, "box": [x0, y0, x1, y1]}
 
 
 def set_not_icon(info, work: Path, occ_id: str) -> dict:
@@ -1634,6 +1673,68 @@ def set_not_icon(info, work: Path, occ_id: str) -> dict:
     o.group = g
     _save_scan(work, res)
     return {"group": g, "old": old, "old_gone": False, "new_group": True}
+
+
+SET_ASPECT_PER_ICON = 0.8  # 세트로 볼 덩어리: 가로/세로가 아이콘 수 × 이 값 이상 (아이콘이 옆으로 늘어선 모양)
+
+
+def set_box_fits(box, n: int) -> bool:
+    """붙어 있는 [[?]] n개를 한 덩어리로 찾았을 때, 그 덩어리가 아이콘 n개가 옆으로 늘어선 모양인가.
+    (아이콘 하나 크기인 덩어리에 이웃 [[?]]가 잘못 붙은 것은 세트가 아니다: 건물·상자 아이콘이 같은 자리로 잡힌 경우)"""
+    w, h = box[2] - box[0], box[3] - box[1]
+    return h > 0 and w / h >= SET_ASPECT_PER_ICON * n
+
+
+def placeholder_runs(text: str) -> list[list[int]]:
+    """[[?]]가 글자 없이 바로 붙어 있는 덩어리들. 각 덩어리는 [[?]] 순번(= 자리의 index) 목록.
+    예: "[[?]][[?]][[?]]の山札" -> [[0, 1, 2]] (문양 셋이 붙은 아이콘을 모델이 셋으로 읽은 경우가 많다)."""
+    runs: list[list[int]] = []
+    j, prev_end = -1, None
+    for t in TOKEN_RE.finditer(text or ""):
+        if t.group(1) != "?":
+            prev_end = None
+            continue
+        j += 1
+        if runs and prev_end is not None and not text[prev_end:t.start()].strip():
+            runs[-1].append(j)
+        else:
+            runs.append([j])
+        prev_end = t.end()
+    return runs
+
+
+def run_partners(info, work: Path, occ_id: str) -> dict:
+    """그 자리와 글자 없이 붙어 있는 다른 [[?]] 자리: {"boxed": [그림이 있는 자리 id], "unfound": [위치 못 찾은 자리 id]}.
+    ‘아이콘 아님’으로 이미 뺀 자리는 넣지 않는다."""
+    from app.extract import load_extracted
+
+    res = load_scan(Path(work))
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    src = (load_extracted(_occ_dir(info, o.file)).get(o.page, {}).get(o.region) or {}).get("source")
+    run = next((r for r in placeholder_runs(src if isinstance(src, str) else "") if o.index in r), [])
+    out = {"boxed": [], "unfound": []}
+    for x in res.occurrences:
+        if (x.file, x.page, x.region) != (o.file, o.page, o.region) or x.id == o.id or x.index not in run:
+            continue
+        if res.groups.get(x.group, {}).get("not_icon"):
+            continue
+        out["boxed" if x.png else "unfound"].append(x.id)
+    return out
+
+
+def absorb_into(info, work: Path, host_id: str, occ_ids: list[str]) -> list[str]:
+    """붙어 있는 자리들을 host 아이콘 하나에 포함: 그 자리들은 ‘아이콘 아님’(뜻 비움 = 원문에서 뺌)으로 옮기고
+    어느 아이콘에 들어갔는지 적어 둔다. 사람이 상자 하나로 문양 여러 개를 감싼 경우. 옮긴 묶음 목록."""
+    work = Path(work)
+    groups = []
+    for oid in occ_ids:
+        r = set_not_icon(info, work, oid)
+        groups.append(r["group"])
+    res = load_scan(work)
+    for g in groups:
+        res.groups[g]["absorbed"] = host_id
+    _save_scan(work, res)
+    return groups
 
 
 # ---------------------------------------------------------------- 이름 제안 (모델)
@@ -1701,6 +1802,8 @@ def export_review(info, res: ScanResult, out: Path) -> Path:
     yellow = PatternFill("solid", fgColor="FFE066")
     r = 1
     for g, gi in res.groups.items():
+        if gi.get("absorbed"):  # 세트에 포함된 자리: 따로 정할 것이 없다 (확정하면 원문에서 뺀다)
+            continue
         r += 1
         members = [o for o in res.occurrences if o.group == g]
         ex = "\n".join(f"{o.file_key} p{o.page} {o.region}: {o.context}" for o in members[:3])
@@ -1832,6 +1935,9 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         if g not in res.groups:
             out.blocking.append(f"모르는 묶음: {g} (다른 프로젝트·이전 검증 엑셀?)")
             continue
+        if res.groups[g].get("absorbed") and not str(row.get("이름") or "").strip()                 and not str(row.get("글자") or "").strip():
+            decision[g] = ""  # 세트(옆 아이콘)에 포함된 자리: 원문에서 뺀다 (글자를 적었으면 아래에서 그 글자로)
+            continue
         if str(row.get("처리") or "").strip() == NOT_ICON:
             text = str(row.get("글자") or "").strip()
             decision[g] = f"={text}" if text else ""  # 글자를 적으면 그 글자로, 비우면 뺀다
@@ -1857,6 +1963,9 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
                 m["scale"] = float(row["표시 크기"])
             except (TypeError, ValueError):
                 out.blocking.append(f"{g}: 표시 크기가 숫자가 아님 ({row['표시 크기']})")
+    for g, gi in res.groups.items():  # 세트에 포함된 자리는 표·엑셀에 없어도 원문에서 뺀다
+        if gi.get("absorbed") and g not in decision:
+            decision[g] = ""
     missing = [g for g in res.groups if g not in decision and not any(g in b for b in out.blocking)]
     for g in missing:
         out.blocking.append(f"{g}: 엑셀에 행이 없음")

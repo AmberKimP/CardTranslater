@@ -207,3 +207,125 @@ def test_assess_skips_confirmed_and_code_candidates_are_asked(tmp_path):
     assert "\"term\": \"毒\"" not in run.inputs[1] and "\"term\": \"炎\"" in run.inputs[1]
     by = {t.source: t for t in terms}
     assert by["炎"].suggested == "불꽃" and by["炎"].check and not by["毒"].check
+
+
+def _review_ready(tmp_path):
+    pdf, regions = _pdf_and_regions(tmp_path)
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    workspace.add_files(info, [pdf], "카드", new_group=True, regions_from=regions)
+    fd = workspace.file_dirs(info)[0]
+    _extracted(fd, 1, "[炎]を持つすべての判定にボーナス")
+    _extracted(fd, 2, "[炎]と[毒]の判定")
+    run = FakeRunner([_terms_reply([{"term": "判定", "category": "키워드·능력", "suggested_ko": "판정", "reason": ""},
+                                    {"term": "炎", "category": "분류어·태그", "suggested_ko": "불꽃", "reason": ""}]),
+                      _assess_reply({"炎": ["화염"]})])
+    r = service.finish_extraction(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
+    assert r.state == "review_ready"
+    return info
+
+
+def test_glossary_rows_confirm_in_app_without_excel(tmp_path):
+    """⑤ 용어집 확정 (화면 표): 엑셀 없이 같은 검사로 확정하고, 고친 값은 검증 엑셀에도 남는다."""
+    info = _review_ready(tmp_path)
+    rows = service.glossary_review_rows(info.dir)
+    by = {r["원문 용어"]: r for r in rows}
+    assert set(by) == {"炎", "毒", "判定"} and by["炎"]["번역 확인"] == "확인 필요" and by["判定"]["추천 번역"] == "판정"
+    by["毒"]["번역"] = "독"
+    by["判定"]["번역"] = ""
+    c = service.confirm_glossary_rows(info.dir, rows)
+    assert c.state == "needs_confirmation" and any("判定" in i for i in c.issues)
+    # 확정하지 않아도 고친 값은 엑셀에 남아 다시 열면 그대로
+    again = {r["원문 용어"]: r for r in service.glossary_review_rows(info.dir)}
+    assert again["毒"]["번역"] == "독" and again["判定"]["번역"] == ""
+    c = service.confirm_glossary_rows(info.dir, rows, accept_issues=True)
+    assert c.state == "confirmed" and c.terms == 2
+    saved = json.loads((tmp_path / "games" / "G" / "glossary.json").read_text(encoding="utf-8"))
+    assert {t["source"]: t["ko"] for t in saved["terms"]} == {"炎": "불꽃", "毒": "독"}
+    # 같은 원문이 두 줄이면 막는다 (줄 번호는 화면 기준)
+    rows.append(dict(rows[0]))
+    c = service.confirm_glossary_rows(info.dir, rows)
+    assert c.state == "blocked" and "두 번" in c.blocking[0]
+
+
+def test_glossary_review_dialog_edit_sort_add_and_confirm(tmp_path, monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt import steps
+    from app.qt.glossary_review import C, GlossaryReviewDialog
+
+    QApplication.instance() or QApplication([])
+    info = _review_ready(tmp_path)
+    dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
+    assert dlg.table.rowCount() == 3
+    assert dlg.table.item(0, C["원문 용어"]).text() == "炎"  # 번역 확인(보라)이 위
+    from PySide6.QtCore import Qt
+
+    dlg.table.sortItems(C["원문 용어"])  # 머리글 정렬 (다시 누르면 반대)
+    asc = [dlg.table.item(i, C["원문 용어"]).text() for i in range(3)]
+    dlg.table.sortItems(C["원문 용어"], Qt.SortOrder.DescendingOrder)
+    assert [dlg.table.item(i, C["원문 용어"]).text() for i in range(3)] == asc[::-1]
+    dlg.table.sortItems(C["등장 횟수"], Qt.SortOrder.DescendingOrder)  # 숫자로 정렬
+    counts = [int(dlg.table.item(i, C["등장 횟수"]).text()) for i in range(3)]
+    assert counts == sorted(counts, reverse=True)
+    for i in range(3):
+        if dlg.table.item(i, C["원문 용어"]).text() == "毒":
+            dlg.table.item(i, C["번역"]).setText("독")
+    dlg.add_row()
+    new = next(i for i in range(dlg.table.rowCount()) if not dlg.table.item(i, C["원문 용어"]).text())
+    dlg.table.item(new, C["원문 용어"]).setText("闇")
+    dlg.table.item(new, C["번역"]).setText("어둠")
+    dlg.search.setText("독")
+    assert sum(not dlg.table.isRowHidden(i) for i in range(dlg.table.rowCount())) == 1
+    dlg.search.clear()
+    monkeypatch.setattr(steps, "_ask_list", lambda *a, **k: True)
+    dlg.confirm()
+    assert dlg.result is not None and dlg.result.state == "confirmed"
+    saved = json.loads((tmp_path / "games" / "G" / "glossary.json").read_text(encoding="utf-8"))
+    assert {t["source"]: t["ko"] for t in saved["terms"]} == {"炎": "불꽃", "毒": "독", "判定": "판정", "闇": "어둠"}
+
+
+def test_glossary_review_dialog_remove_sorted_and_close_rules(tmp_path, monkeypatch):
+    """정렬한 채 여러 줄을 빼도 고른 용어만 비우고, 닫을 때는 고친 것이 있을 때만·엑셀 가져오기 전일 때만 엑셀에 쓴다."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QItemSelectionModel, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt import glossary_review
+    from app.qt.glossary_review import C, GlossaryReviewDialog
+
+    QApplication.instance() or QApplication([])
+    info = _review_ready(tmp_path)
+    saves = []
+    real_save = service.save_glossary_rows
+    monkeypatch.setattr(service, "save_glossary_rows", lambda d, rows: saves.append(rows) or real_save(d, rows))
+
+    # 고친 것 없이 닫으면 엑셀을 건드리지 않는다
+    dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
+    dlg.reject()
+    assert saves == []
+
+    dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
+    for i in range(3):
+        dlg.table.item(i, C["번역"]).setText(f"번역{i}")
+    dlg.table.sortItems(C["번역"], Qt.SortOrder.DescendingOrder)
+    picked = {dlg.table.item(i, C["원문 용어"]).text() for i in (0, 1)}
+    sm = dlg.table.selectionModel()
+    sm.clearSelection()
+    for i in (0, 1):
+        sm.select(dlg.table.model().index(i, 0), QItemSelectionModel.SelectionFlag.Select
+                  | QItemSelectionModel.SelectionFlag.Rows)
+    dlg.remove_rows()
+    emptied = {r["원문 용어"] for r in dlg.rows() if not r["번역"]}
+    assert emptied == picked
+
+    # 엑셀에서 가져오기를 해 본 뒤 닫으면 (막혔어도) 표로 엑셀을 덮어쓰지 않는다
+    monkeypatch.setattr(glossary_review.QFileDialog, "getOpenFileName", lambda *a, **k: (str(tmp_path / "x.xlsx"), ""))
+    monkeypatch.setattr(dlg, "done_with", lambda run, fix_where="표": None)
+    dlg.import_excel()
+    dlg.reject()
+    assert saves == []

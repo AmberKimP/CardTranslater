@@ -271,6 +271,8 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
         card = project.samples.get(pno) or {}
         for reg in project.template.regions_for(pno):
             entry = card.get(reg.name) or {}
+            if ((extracted.get(pno) or {}).get(reg.name) or {}).get("keep_original"):
+                continue  # ‘전체가 아이콘 — 번역 안 함’ 칸: 번역하지 않으므로 검수 엑셀에도 넣지 않는다
             src, unsure = source_of(project, extracted, pno, reg.name)
             tr = lookup(tr_cache, src) if (tr_cache and src) else None
             draft = _to_cell(tr["ko"]) if tr else _to_cell(entry.get("ko"))  # 초벌 번역(5단계) 우선, 없으면 초안

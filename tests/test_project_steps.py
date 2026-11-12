@@ -283,3 +283,13 @@ def test_erase_records_source_and_detects_changed_cards(tmp_path):
     r = service.erase_project(info.dir)  # 바뀐 파일은 다시 지운다
     assert r.files[0]["state"] == "done" and service.stale_erased_pages(fd) == []
     assert service.erase_project(info.dir).files[0]["state"] == "skipped"
+
+
+def test_keep_original_cell_left_out_of_sources(tmp_path):
+    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’ 칸은 용어집·번역 원문에서 빠진다."""
+    info, fd = _project(tmp_path)
+    _write_extract(fd, 1, "金貨")
+    _write_extract(fd, 2, "HELLO")
+    assert len(glossary.collect_sources(info)) == 2
+    service.set_keep_original(fd, 1, "이름", True)
+    assert [s.key for s in glossary.collect_sources(info)] == ["카드/cards#p2#이름"]
