@@ -1010,6 +1010,7 @@ class RegionEditor(QDialog):
         else:
             for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다 (그 카드의 정렬만큼 옮겨)
                 self._place(it, r)
+        self._snap_shared()
         self._update_card_info()
         self.view.fit()
         self._sync_preview()
@@ -1383,6 +1384,7 @@ class RegionEditor(QDialog):
         else:
             self._view_t = self._align_t()
             self._load_dicts(*self._common)
+        self._snap_shared()
         self._update_card_info()
 
     def _add_item(self, data: dict, protect: bool) -> RegionItem:
@@ -1402,19 +1404,33 @@ class RegionEditor(QDialog):
         self._rebuild_list()
 
     # ------------------------------------------------------------ 이 카드만 따로 영역 (공통 영역 그룹)
+    def _snap_shared(self):
+        """공통 영역 카드를 보여 줄 때(불러오기·쪽 넘기기·저장) 공통 영역의 모양(기준 카드 좌표)을 적어 둔다.
+        ‘이 카드만 따로 영역’을 켜면 그 뒤에 이 카드에서 고친 것은 공통 영역이 아니라 이 카드 것이 되어야 한다."""
+        if self.is_per_card() or self._ov_key:
+            self._shared_snap = None
+            return
+        self._shared_snap = self._items_to_dicts()
+
     def _toggle_override(self, on: bool):
         if getattr(self, "_syncing_override", False) or self.is_per_card():
             return
         key = self.card_key()
         if on and self._ov_key != key:
-            self._common = self._items_to_dicts()  # 기준 카드 좌표
+            # 공통 영역은 이 카드를 불러올 때(또는 저장할 때) 모양 그대로 둔다 (기준 카드 좌표).
+            # 지금 화면에서 고친 것은 이 카드의 따로 영역이 된다
+            snap = getattr(self, "_shared_snap", None)
+            self._common = copy.deepcopy(snap) if snap is not None else self._items_to_dicts()
             self._view_t = None  # 따로 영역은 이 카드에서 보이는 자리 그대로 (자동 정렬을 적용한 자리)
             for it in self.items():
                 it._placed = None
             regions, protect = self._items_to_dicts()
             self._cards()[key] = {"regions": copy.deepcopy(regions), "protect_rects": copy.deepcopy(protect)}
             self._ov_key = key
-            self.status.setText(f"{self.page_spin.value()}쪽만 따로 영역을 씁니다. 이 카드에 맞게 영역을 고치세요")
+            self.status.setText(f"{self.page_spin.value()}쪽만 따로 영역을 씁니다. 이 카드에서 고친 영역은 이 카드에만 씁니다 "
+                                "(다른 카드는 그대로)")
+            if hasattr(self, "preview"):
+                self.preview.schedule()
         elif not on and self._ov_key == key:
             self._cards().pop(key, None)
             self._clear_items()
@@ -1957,11 +1973,12 @@ class RegionEditor(QDialog):
     def save(self) -> bool:
         problems = service.save_region_template(self.group_dir, self.to_template())
         if problems:
-            show_problem(self, "영역을 저장하지 못했습니다", "\n".join(problems), "표시된 영역을 고친 뒤 다시 저장하세요.")
+            show_problem(self, "영역을 저장하지 못했습니다", "", "표시된 영역을 고친 뒤 다시 저장하세요.", items=problems)
             return False
         self.template = service.load_region_template(self.group_dir)
         if self.is_per_card():
             self._card_store = {k: copy.deepcopy(v) for k, v in (self.template.get("page_regions") or {}).items()}
+        self._snap_shared()  # 저장한 모양이 새 공통 영역의 기준
         self.dirty = False
         self._update_title()
         self._update_card_info()

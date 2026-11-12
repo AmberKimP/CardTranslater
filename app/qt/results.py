@@ -587,7 +587,8 @@ class ResultViewer(QDialog):
 
         def done(res):
             if res.state != "done":
-                show_problem(self, "다시 넣지 못했습니다", res.error or "\n".join(res.blocking) or res.state)
+                show_problem(self, "다시 넣지 못했습니다", res.error or ("" if res.blocking else res.state),
+                             items=None if res.error else res.blocking)
             row = next((i for i, it in enumerate(self.items) if it["page"] == page), 0)
             self.reload()
             self.pages.setCurrentRow(min(row, max(0, len(self.items) - 1)))

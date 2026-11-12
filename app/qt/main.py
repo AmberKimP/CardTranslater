@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QStackedWidget, QTextBrowser, QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QInputDialog, QMenu, QMessageBox, QPushButton, QStackedWidget, QTextBrowser, QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
@@ -93,6 +93,11 @@ class HomePage(QWidget):
         self.b_delete.setToolTip("고른 프로젝트를 휴지통으로 옮깁니다 (확인 창이 뜹니다)")
         self.b_delete.clicked.connect(self.delete_selected)
         make_danger(self.b_delete)
+        self.b_delete_game = QPushButton("게임 삭제…")
+        self.b_delete_game.setToolTip("고른 게임(프로젝트를 골랐으면 그 게임)의 용어집·아이콘 사전·검수 엑셀을 휴지통으로 옮깁니다 "
+                                      "(확인 창이 뜹니다)")
+        self.b_delete_game.clicked.connect(self.delete_game_selected)
+        make_danger(self.b_delete_game)
         btns = QHBoxLayout()
         btns.setSpacing(8)
         for b in (self.b_open, folder):
@@ -100,6 +105,7 @@ class HomePage(QWidget):
         btns.addStretch(1)
         btns.addWidget(ref)
         btns.addWidget(self.b_delete)
+        btns.addWidget(self.b_delete_game)
         title = page_title("내 프로젝트", 18)
         guide = subtitle("번역할 보드게임 카드를 게임별로 모아 둡니다. 프로젝트를 두 번 누르면 열립니다.")
         head = QHBoxLayout()
@@ -134,6 +140,7 @@ class HomePage(QWidget):
         is_project = bool(sel) and sel[0] == "project"
         self.b_open.setEnabled(is_project)
         self.b_delete.setEnabled(is_project)
+        self.b_delete_game.setEnabled(bool(sel))
 
     def refresh(self):
         root = self.win.root
@@ -236,6 +243,38 @@ class HomePage(QWidget):
                          "이 프로젝트의 엑셀·PDF가 열려 있으면 닫고 다시 하세요.")
             return
         self.win.statusBar().showMessage(f"‘{p['name']}’ 프로젝트를 휴지통으로 옮겼습니다")
+        self.refresh()
+
+    def delete_game_selected(self):
+        """게임 삭제: 게임 줄을 골랐으면 그 게임, 프로젝트를 골랐으면 게임 목록에서 고르게 한다."""
+        sel = self.selected()
+        if not sel or not self.games:
+            QMessageBox.information(self, "게임 고르기", "삭제할 게임을 고르세요")
+            return
+        if sel[0] == "game":
+            game = sel[1]["name"]
+        else:
+            names = [g["name"] for g in self.games]
+            cur = names.index(sel[1]["game"]) if sel[1]["game"] in names else 0
+            game, ok = QInputDialog.getItem(self, "게임 삭제", "삭제할 게임을 고르세요", names, cur, False)
+            if not ok or not game:
+                return
+        ps = [p for p in self.projects if p["game"] == game]
+        msg = f"‘{game}’ 게임을 삭제할까요?\n\n용어집·아이콘 사전·검수 엑셀을 휴지통(.trash)으로 옮깁니다."
+        if ps:
+            names_txt = ", ".join(p["name"] for p in ps)
+            msg += f"\n\n이 게임의 프로젝트 {len(ps)}개({names_txt})도 함께 휴지통으로 옮깁니다."
+        if QMessageBox.question(self, "게임 삭제", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            service.delete_game(game, self.win.root, with_projects=True)
+        except (OSError, FileNotFoundError) as e:
+            show_problem(self, "게임을 삭제하지 못했습니다", str(e),
+                         "이 게임의 엑셀·PDF가 열려 있으면 닫고 다시 하세요.")
+            self.refresh()
+            return
+        self.win.statusBar().showMessage(f"‘{game}’ 게임을 휴지통으로 옮겼습니다")
         self.refresh()
 
     def new_project(self):

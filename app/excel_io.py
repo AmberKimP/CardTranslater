@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.extract import MODEL_LABEL, load_extracted, verification_label
+from app.extract import MODEL_LABEL, load_extracted, model_readings, verification_label
 from app.translate import check, lookup, terms_in
 from app.project import Project, sha256_file
 
@@ -315,9 +315,9 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
                 ws.cell(row, COL["원문 확인"]).fill = no_verdict_fill
             elif verdict == "두 번 확인":
                 ws.cell(row, COL["원문 확인"]).fill = checked_fill
-            if ext and ext.get("uncertain") and (ext.get("note") or ext.get("readings")):
+            if ext and ext.get("uncertain") and (ext.get("note") or model_readings(ext)):
                 lines = [f"{MODEL_LABEL.get(x['model'], x['model'])}: {_to_cell(x['source'])}"
-                         for x in ext.get("readings") or []]
+                         for x in model_readings(ext)]
                 text = "\n".join(lines + ([ext["note"]] if ext.get("note") else []))
                 ws.cell(row, COL["원문"]).comment = Comment(text[:1000], "CardTranslater")
             img = _region_preview(src_doc, pno, reg.rect.to_dict())

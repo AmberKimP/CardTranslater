@@ -547,6 +547,46 @@ def test_delete_project_group_file_go_to_trash(qapp, tmp_path, monkeypatch):
     assert len(list((tmp_path / ".trash").iterdir())) == 3
 
 
+def test_delete_game_moves_game_and_projects_to_trash(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)  # 게임 G, 프로젝트 p
+    other, _ = workspace.create_project("q", "H", root=tmp_path)
+    (tmp_path / "games" / "G" / "용어집_검증.xlsx").write_bytes(b"x")
+    service.remember_project(info.dir)
+    # 서비스: 프로젝트는 그대로 두는 경우
+    dest = service.delete_game("H", tmp_path)
+    assert dest.parent == tmp_path / ".trash" and (dest / "game.json").exists()
+    assert not (tmp_path / "games" / "H").exists() and other.dir.exists()
+    # 화면: 게임 줄을 골라 삭제 (예) -> 프로젝트도 함께
+    win = MainWindow(root=tmp_path)
+    win.show_home()
+    win.home.refresh()
+    asked = []
+
+    def fake_q(self, title, msg, *a, **k):
+        asked.append(msg)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_q))
+    win.home.tree.setCurrentItem(win.home.tree.topLevelItem(0))
+    assert win.home.b_delete_game.isEnabled()
+    win.home.delete_game_selected()
+    assert "‘G’ 게임을 삭제할까요?" in asked[0] and "프로젝트 1개(p)" in asked[0]
+    assert not (tmp_path / "games" / "G").exists() and not info.dir.exists()
+    assert [p["name"] for p in service.list_projects(tmp_path)] == ["q"] and service.last_project() is None
+    assert len(list((tmp_path / ".trash").iterdir())) == 3  # H, G, 프로젝트 p
+    # 아니오면 그대로
+    workspace.create_project("z", "Z", root=tmp_path)
+    win.home.refresh()
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    win.home.tree.setCurrentItem(win.home.tree.topLevelItem(0))
+    win.home.delete_game_selected()
+    assert (tmp_path / "games" / "Z" / "game.json").exists()
+
+
 def test_region_editor_page_navigation(qapp, tmp_path):
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QKeyEvent
@@ -1407,10 +1447,17 @@ def test_error_boxes_say_why_and_what_to_do(qapp, monkeypatch):
     show_failure(None, "글자 지우기를 끝내지 못했습니다", "ZeroDivisionError: division by zero\nTraceback ...")
     _t, why, todo, detail = got[-1]
     assert todo == UNKNOWN_TODO and "ZeroDivisionError" not in why and "ZeroDivisionError" in detail
-    # 엔진이 쓴 이유가 여러 줄이면 첫 줄 + 나머지 건수
-    show_problem(None, "용어집을 가져오지 못했습니다", "炎: 번역이 비어 있음\n氷: 번역이 비어 있음", "엑셀을 고치세요.")
+    # 문제 목록(items)이면 첫 항목 + 나머지 건수, ‘자세히 보기’에는 문제별로 묶어서
+    show_problem(None, "용어집을 가져오지 못했습니다", todo="엑셀을 고치세요.",
+                 items=["번역이 비어 있음: 炎", "번역이 비어 있음: 氷"])
     _t, why, todo, detail = got[-1]
-    assert why.startswith("炎: 번역이 비어 있음") and "외 1건" in why and "氷" in detail and todo == "엑셀을 고치세요."
+    assert why.startswith("번역이 비어 있음: 炎") and "외 1건" in why and todo == "엑셀을 고치세요."
+    assert detail.startswith("번역이 비어 있음 (2건)") and "  - 氷" in detail
+    # 줄글 이유(목록 아님)는 묶지 않고 그대로
+    show_problem(None, "칸을 저장하지 못했습니다", "원문 칸: 알 수 없는 응답\n같은 칸을 한 번 더 저장해 보세요", "다시 하세요.")
+    _t, why, _todo, detail = got[-1]
+    assert why == "원문 칸: 알 수 없는 응답\n같은 칸을 한 번 더 저장해 보세요"
+    assert "(1건)" not in (detail or "") and "기타" not in (detail or "")
 
 
 def test_step_failures_use_plain_error_boxes(qapp, tmp_path, monkeypatch):
@@ -3412,3 +3459,21 @@ def test_icon_dictionary_unused_rows_sink_and_fade(qapp):
     assert out["a"]["ko"] == "가가" and out["c"]["scale"] == 2.0 and out["b"]["reset"] and not out["a"]["reset"]
     assert out["d"]["scale"] == pytest.approx(1.4) and out["b"]["scale"] == pytest.approx(1.2)
     dlg.close()
+
+
+def test_region_override_after_editing_keeps_other_cards(qapp, tmp_path):
+    """카드에서 영역을 먼저 고친 뒤 ‘이 카드만 따로 영역’을 누르면, 고친 것은 그 카드에만 쓰고
+    다른 카드는 고치기 전 공통 영역 그대로 (예전에는 고친 영역이 공통 영역이 되어 다른 카드도 바뀌었다)."""
+    gdir, fd, ed = _region_editor(tmp_path)
+    ed.page_spin.setValue(2)
+    it = ed.items()[0]
+    r = it.rect()
+    it.set_scene_rect(r.adjusted(0, 0, 0, r.height()))  # 먼저 고치고
+    tall = ed.ratio_of(it)["h"]
+    ed.override_btn.setChecked(True)  # 그다음 이 카드만 따로 영역
+    assert abs(ed._preview_regions(3)[0]["rect"]["h"] - 0.1) < 1e-3  # 다른 카드는 고치기 전 그대로
+    assert abs(ed._preview_regions(2)[0]["rect"]["h"] - tall) < 1e-6
+    assert ed.save()
+    data = service.load_region_template(gdir)
+    assert data["regions"][0]["rect"]["h"] == 0.1
+    assert abs(data["page_regions"][f"{fd.name}/2"]["regions"][0]["rect"]["h"] - tall) < 1e-3

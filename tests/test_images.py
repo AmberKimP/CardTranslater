@@ -518,3 +518,41 @@ def test_card_boxes_dialog_delete_inherited_sticks_and_click_keeps_inheriting(tm
     assert dlg._items() == []
     res = dlg.result()
     assert res[str(b)] == [] and res[str(c)] == [ba[0]]  # c는 b를 건너뛰고 a 자리를 따른다
+
+
+def test_noise_line_in_bottom_margin_is_not_card_area(tmp_path):
+    """카드가 틈 없이 붙은 3×3 + 아래 빈 여백에 스캔 잡음(가는 세로줄·점): 여백까지 카드로 보고 줄이 밀리면 안 된다
+    (공주와 기사 시트: 둘째·셋째 줄 카드가 아래로 밀려 잘림)."""
+    cw, ch, top, left = 300, 420, 0, 90
+    W, H = left + 3 * cw, top + 3 * ch + 230
+    im = Image.new("RGB", (W, H), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    truth = []
+    for r in range(3):
+        for c in range(3):
+            x, y = left + c * cw, top + r * ch
+            d.rectangle([x, y, x + cw - 1, y + ch - 1], fill=COLORS[(r * 3 + c) % len(COLORS)])
+            d.rectangle([x + 2, y + 2, x + cw - 3, y + ch - 3], outline=(250, 250, 250), width=2)  # 카드 끝 밝은 선
+            truth.append((x, y, x + cw, y + ch))
+    d.rectangle([W - 8, 3 * ch - 60, W - 6, H - 1], fill=(20, 20, 20))  # 여백까지 내려오는 가는 스캔 줄
+    d.rectangle([W // 2, 3 * ch + 120, W // 2 + 2, 3 * ch + 122], fill=(60, 60, 60))  # 작은 점
+    p = tmp_path / "packed.png"
+    im.save(p)
+    cut = images.cut_sheet(p, 3, 3)
+    assert len(cut.boxes) == 9
+    for b, t in zip(cut.boxes, truth):
+        assert abs(b[1] - t[1]) <= 12 and abs(b[3] - t[3]) <= 12, (b, t)  # 줄이 아래 여백 쪽으로 밀리지 않는다
+    assert max(b[3] for b in cut.boxes) <= 3 * ch + 12
+
+
+def test_refined_cut_that_breaks_card_size_is_reverted():
+    """만나는 점을 카드 안 흰 그림에서 잘못 잡아 경계가 크게 밀리면(이웃 칸 크기 어긋남) 같은 간격 자리로 되돌린다."""
+    nominal = [0, 100, 200, 300]
+    lines = [[0, 101, 199, 300],  # 조금 옮김: 그대로
+             [0, 100, 170, 300],  # 30 밀림: 되돌림
+             [0, 125, 225, 300]]  # 둘 다 밀림: 둘 다 되돌림
+    n = images._revert_odd_cuts(lines, nominal, 100.0)
+    assert lines[0] == [0, 101, 199, 300]
+    assert lines[1] == [0, 100, 200, 300]
+    assert lines[2] == [0, 100, 200, 300]
+    assert n == 3

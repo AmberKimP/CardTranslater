@@ -270,7 +270,34 @@ def _refine_cuts(rgb: np.ndarray, xs_: list[int], ys_: list[int], cols: int, row
             col.append(v)
         col.append(ys_[-1])
         hy.append(col)
+    # 만나는 점을 카드 안의 흰 그림(옷·레이스)에서 잘못 잡으면 경계가 크게 밀려 이웃 카드 크기가 어긋난다
+    # (공주와 기사 시트: 폭 374·346·400). 같은 크기 카드 배열이므로 옮긴 결과 이웃 칸이 칸 크기에서
+    # CELL_SIZE_TOL 넘게 벗어나는 경계는 옮기지 않는다 (같은 간격 자리로 되돌림)
+    nom_x = [xs_[0]] + [round((xs_[2 * c - 1] + xs_[2 * c]) / 2) for c in range(1, cols)] + [xs_[-1]]
+    nom_y = [ys_[0]] + [round((ys_[2 * r - 1] + ys_[2 * r]) / 2) for r in range(1, rows)] + [ys_[-1]]
+    moved -= _revert_odd_cuts(vx, nom_x, cw)
+    moved -= _revert_odd_cuts(hy, nom_y, ch)
     return vx, hy, moved, missing
+
+
+CELL_SIZE_TOL = 0.04  # 경계를 옮긴 뒤 이웃 칸 크기가 칸 크기에서 이만큼 넘게 벗어나면 옮기지 않는다
+
+
+def _revert_odd_cuts(lines: list[list[int]], nominal: list[int], cell: float) -> int:
+    """lines[줄][경계]: 옮긴 경계 때문에 이웃 칸 크기가 cell에서 CELL_SIZE_TOL 넘게 벗어나면 그 경계를 nominal로
+    되돌린다 (줄마다, 바깥 끝은 그대로). 되돌린 경계 수."""
+    n = 0
+    tol = CELL_SIZE_TOL * cell
+    for line in lines:
+        for _ in range(len(line)):  # 하나를 되돌리면 이웃 칸 크기가 바뀌므로 바뀌지 않을 때까지
+            bad = [i for i in range(1, len(line) - 1) if line[i] != nominal[i]
+                   and (abs((line[i] - line[i - 1]) - cell) > tol or abs((line[i + 1] - line[i]) - cell) > tol)]
+            if not bad:
+                break
+            i = max(bad, key=lambda j: abs(line[j] - nominal[j]))  # 가장 많이 옮긴 것부터
+            line[i] = nominal[i]
+            n += 1
+    return n
 
 
 CARD_AREA_MIN_FRAC = 0.25  # 카드 영역: 카드가 가장 많은 열·행의 이만큼 이상 카드로 덮인 열·행
@@ -422,6 +449,62 @@ def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) ->
     return cut
 
 
+BOUND_OPEN_FRAC = 0.004  # 바깥 여백 찾기: 이 굵기(그림 긴 변 대비)보다 가는 선·작은 점(스캔 잡음)은 지우고 본다
+BOUND_MIN_COVER = 0.05  # 내용이 가장 많은 행·열의 이만큼 이상 덮인 행·열만 카드로 본다 (여백의 세로줄·점은 아주 조금 덮는다)
+
+
+def _content_bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """내용 마스크에서 카드 배열이 있는 곳 (x0, y0, x1, y1). 여백에 있는 가는 스캔 줄·작은 점은 뺀다.
+
+    1) 가는 선·점을 지운 마스크(열림)에서 덮인 비율이 충분한 행·열의 처음~끝을 찾고
+    2) 그 끝에서 바깥쪽으로, 원래 마스크로도 충분히 덮인 행·열이 이어지면 넓힌다
+       (열림으로 지워진 카드의 가는 테두리 선은 카드 너비만큼 덮으므로 다시 들어온다).
+    못 찾으면 모든 내용 픽셀을 감싸는 상자."""
+    import cv2
+
+    h, w = mask.shape
+    ys, xs = np.nonzero(mask)
+    full = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    k = max(3, int(round(BOUND_OPEN_FRAC * max(h, w))))
+    opened = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, np.ones((k, k), np.uint8)).astype(bool)
+    if not opened.any():
+        opened = mask
+
+    def span(m: np.ndarray, axis: int, lo: int, hi: int) -> tuple[int, int] | None:
+        """axis=1: 행 [lo, hi) 열 안에서, axis=0: 열. 충분히 덮인 처음~끝 [s, e)."""
+        sub = m[:, lo:hi] if axis == 1 else m[lo:hi, :]
+        p = sub.mean(axis=axis)
+        if not p.size or p.max() <= 0:
+            return None
+        on = np.nonzero(p >= BOUND_MIN_COVER * p.max())[0]
+        return int(on[0]), int(on[-1]) + 1
+
+    # 행 먼저(세로 잡음 줄은 행마다 몇 px뿐), 그 행 안에서 열, 그 열 안에서 행을 다시
+    yr = span(opened, 1, 0, w)
+    if yr is None:
+        return full
+    xr = span(opened, 0, *yr)
+    if xr is None:
+        return full
+    yr = span(opened, 1, *xr) or yr
+    x0, x1 = xr
+    y0, y1 = yr
+    # 원래 마스크로 바깥쪽 넓히기 (카드 끝의 가는 테두리 선)
+    rowp = mask[:, x0:x1].mean(axis=1)
+    colp = mask[y0:y1, :].mean(axis=0)
+    rthr = BOUND_MIN_COVER * max(float(rowp[y0:y1].max()), 1e-6)
+    cthr = BOUND_MIN_COVER * max(float(colp[x0:x1].max()), 1e-6)
+    while y0 > 0 and rowp[y0 - 1] >= rthr:
+        y0 -= 1
+    while y1 < h and rowp[y1] >= rthr:
+        y1 += 1
+    while x0 > 0 and colp[x0 - 1] >= cthr:
+        x0 -= 1
+    while x1 < w and colp[x1] >= cthr:
+        x1 += 1
+    return x0, y0, x1, y1
+
+
 def _cut_grid(rgb: np.ndarray, cols: int, rows: int, cut: SheetCut) -> None:
     """rgb(카드만 있는 그림)를 cols×rows로 잘라 cut.boxes·warnings에 더한다 (rgb 좌표)."""
     h, w = rgb.shape[:2]
@@ -432,8 +515,8 @@ def _cut_grid(rgb: np.ndarray, cols: int, rows: int, cut: SheetCut) -> None:
     ys, xs = np.nonzero(mask)
     if len(xs) == 0:  # 이미지 전체가 한 색으로 이어짐: 카드끼리 틈 없이 붙어 있다
         x0, y0, x1, y1 = 0, 0, w, h
-    else:  # 바깥 여백은 잘라 낸다
-        x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
+    else:  # 바깥 여백은 잘라 낸다 (여백의 스캔 줄·점은 카드로 보지 않는다)
+        x0, y0, x1, y1 = _content_bounds(mask)
     colp = mask[y0:y1].mean(axis=0)
     rowp = mask[:, x0:x1].mean(axis=1)
     if len(xs) == 0:  # 틈이 없으면 같은 간격

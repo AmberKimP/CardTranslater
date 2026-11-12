@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import re
 import sys
 
 from PySide6.QtCore import QLibraryInfo, QSize, Qt, QTranslator
@@ -228,13 +229,16 @@ def explain_error(text: str) -> tuple[str, str] | None:
     return None
 
 
-_LIST_BREAKERS = (": ", "(", ")", "=", "←", "→", "—", "\n")
+_LIST_BREAKERS = (": ", "(", ")", "=", "←", "→", "—", "\n", "/", "\\")
+_FILE_EXT_RE = re.compile(r"\.[A-Za-z0-9]{2,5}\b")  # 파일 이름 (x.pdf 등): 이름에 쉼표가 있을 수 있다
 
 
 def _split_keys(target: str) -> list[str]:
-    """‘a, b, c’처럼 이름만 쉼표로 이은 것이 분명할 때만 낱개로 쪼갠다. 그 밖의 글이 섞였으면 그대로 한 줄."""
+    """‘a, b, c’처럼 이름만 쉼표로 이은 것이 분명할 때만 낱개로 쪼갠다. 그 밖의 글이 섞였거나, 파일 이름·경로가
+    있거나(‘Cards, Vol 2.pdf 3장’), 줄여서 ‘…’로 끝나는 목록이면 그대로 한 줄 (건수도 1)."""
     parts = [p.strip() for p in target.split(", ")]
-    if len(parts) < 2 or any(not p or len(p) > 40 for p in parts) or any(b in target for b in _LIST_BREAKERS):
+    if (len(parts) < 2 or any(not p or len(p) > 40 for p in parts) or any(b in target for b in _LIST_BREAKERS)
+            or target.endswith("…") or _FILE_EXT_RE.search(target)):
         return [target]
     return parts
 
@@ -292,23 +296,33 @@ def show_failure(parent, title: str, message: str) -> QMessageBox:
     return show_error(parent, title, "예상하지 못한 문제가 생겼습니다.", UNKNOWN_TODO, message, warn=False)
 
 
-def show_problem(parent, title: str, reason: str, todo: str = "", retry_after: str | None = None,
-                 detail: str | None = None) -> QMessageBox:
-    """엔진이 ‘할 수 없음·멈춤·실패’ 상태와 이유를 돌려준 경우. reason은 엔진이 쓴 한국어 이유."""
-    rlines = [x for x in (reason or "").splitlines() if x.strip()]
-    shown = group_issue_lines(rlines) if len(rlines) > 1 else (reason or "").strip()  # 여러 줄이면 문제별로 묶어 보임
+def show_problem(parent, title: str, reason: str = "", todo: str = "", retry_after: str | None = None,
+                 detail: str | None = None, items: list[str] | None = None) -> QMessageBox:
+    """엔진이 ‘할 수 없음·멈춤·실패’ 상태와 이유를 돌려준 경우. reason은 엔진이 쓴 한국어 이유 (여러 줄이어도
+    줄글 그대로). items = ‘문제: 대상’ 목록 (blocking·issues 등): 주면 ‘자세히 보기’에 문제별로 묶어 보이고,
+    본문에는 reason(없으면 첫 항목)과 건수를 쓴다."""
+    items = [x.strip() for x in items or [] if x and x.strip()]
+    reason = (reason or "").strip()
+    if items:
+        shown = group_issue_lines(items) if len(items) > 1 else items[0]
+        if reason:
+            why = reason + f"\n({len(items)}건 — ‘자세히 보기’에 모두 있습니다)"
+        else:
+            why = _first_line(items[0]) + (f"\n(외 {len(items) - 1}건 — ‘자세히 보기’에 모두 있습니다)"
+                                           if len(items) > 1 else "")
+    else:
+        shown = reason
+        lines = [x for x in reason.splitlines() if x.strip()]
+        why = (reason if len(lines) <= 4 and len(reason) <= 600
+               else _first_line(reason) + "\n(나머지는 ‘자세히 보기’에 있습니다)")
     full = "\n\n".join(x for x in (shown, (detail or "").strip()) if x)
     if retry_after:
         return show_error(parent, title, "Claude 사용 한도에 걸려 멈췄습니다.",
                           f"{retry_after} 이후 다시 누르면 멈춘 곳부터 이어서 합니다.", full)
-    known = explain_error(reason or "")
+    known = explain_error("\n".join([reason, *items]))
     if known:
         return show_error(parent, title, known[0], todo or known[1], full)
-    why = _first_line(reason) or "작업을 마치지 못했습니다."
-    more = len([x for x in (reason or "").splitlines() if x.strip()]) - 1
-    if more > 0:
-        why += f"\n(외 {more}건 — ‘자세히 보기’에 모두 있습니다)"
-    return show_error(parent, title, why, todo or UNKNOWN_TODO, full)
+    return show_error(parent, title, why or "작업을 마치지 못했습니다.", todo or UNKNOWN_TODO, full)
 
 
 def ask_choice(parent, title: str, text: str, buttons: list[tuple[str, str]], default: int | None = None,

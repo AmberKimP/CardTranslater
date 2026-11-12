@@ -323,6 +323,22 @@ def load_extracted(project_root: Path, base: Path | None = None) -> dict:
 MODEL_LABEL = {"claude-sonnet-5-5": "Sonnet", "claude-opus-5-5": "Opus", "claude-haiku-5-5": "Haiku"}
 
 
+def model_readings(r: dict) -> list[dict]:
+    """두 번 읽기가 남긴 읽은 결과만 (칸 상태·엑셀·닮은 한자 확인에 쓴다). ‘이 칸 다시 읽기’ 결과(reread)는 뺀다.
+    1.12.0은 다시 읽은 결과를 readings에 넣으면서 처음 읽은 결과 하나를 앞에 넣었다 — 두 번 읽기는 늘 둘을
+    남기므로, 다시 읽기가 아닌 결과가 하나뿐이고 다시 읽기가 함께 있으면 그 하나도 뺀다."""
+    rds = r.get("readings") or []
+    base = [x for x in rds if not x.get("reread")]
+    if len(base) == 1 and len(base) < len(rds):
+        return []
+    return base
+
+
+def cell_rereads(r: dict) -> list[dict]:
+    """‘이 칸 다시 읽기’ 결과 (예전 1.12.0이 readings 안에 넣은 것 + rereads)."""
+    return [x for x in r.get("readings") or [] if x.get("reread")] + list(r.get("rereads") or [])
+
+
 def verification_label(r: dict | None) -> str:
     """엑셀 '원문 확인' 열 값. r = load_extracted의 칸 하나 (없으면 손 입력)."""
     if r is None:
@@ -331,7 +347,7 @@ def verification_label(r: dict | None) -> str:
         return "사람이 고침"
     if r.get("checked_by"):  # 사람이 보고 읽은 그대로 맞다고 저장한 칸
         return "사람이 확인"
-    if r.get("readings"):  # 두 번째 모델로 다시 읽은 칸
+    if model_readings(r):  # 두 번째 모델로 다시 읽은 칸 (‘이 칸 다시 읽기’ 결과는 상태를 바꾸지 않는다)
         return "결론 못 냄" if r.get("uncertain") else "두 번 확인"
     if (r.get("note") or "").startswith("라벨 색"):
         return "라벨 색"
@@ -1075,7 +1091,7 @@ def flag_lookalikes(base: Path, pages: list[int] | None = None) -> int:
             continue
         f, rec = recs[pno]
         r = rec["regions"][name]
-        if r.get("lookalike") is not None or r.get("readings"):
+        if r.get("lookalike") is not None or model_readings(r):
             continue  # 이미 봤거나 두 모델이 읽은 칸
         r["lookalike"] = [{"read": w, "likely": o, "seen": c} for w, o, c in hits]
         why = ", ".join(f"«{w}»(다른 카드에서는 «{o}» {c}번)" for w, o, c in hits)
@@ -1177,7 +1193,8 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
                 rec["regions"][n] = {"source": b["source"], "uncertain": True,
                                      "note": f"{head} ({first_model}: {a['source']} / "
                                              f"{check_model}: {b['source']}). {b.get('note', '')}".strip(),
-                                     "readings": readings}
+                                     "readings": readings,
+                                     **({"rereads": a["rereads"]} if a.get("rereads") else {})}
                 out.disagreed += 1
         rec.pop("recheck_pending", None)
         rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),

@@ -1124,8 +1124,11 @@ def entry_number(e: dict) -> str | None:
 
 
 def number_allows(entry_num: str | None, occ_num: str) -> bool:
-    """사전 항목과 자리의 숫자가 맞아 자동으로 바꿔도 되는가. 예전 항목은 숫자 없는 자리와만."""
-    return occ_num == "" if entry_num is None else entry_num == occ_num
+    """사전 항목과 자리의 숫자가 맞아 자동으로 바꿔도 되는가.
+    예전 항목(number 키 없음 = None)은 어떤 자리와도 자동으로 맞추지 않는다: 예전 찾기는 옆 숫자를 그림에 함께
+    잘라 넣었을 수 있어, 숫자 없는 자리에 수량이 박힌 그림이 들어갈 수 있다. 그런 자리는 ② 검토에 사전 이름을
+    제안(묶음의 "dict")으로만 올린다 (legacy_hint)."""
+    return entry_num is not None and entry_num == occ_num
 
 
 def apply_icons(text: str, mapping: dict[int, str], strip: dict[int, dict] | None = None,
@@ -1214,18 +1217,6 @@ def restore_numbers(src: str, name: str, numbers: list | None) -> tuple[str, lis
     return out, rest, n
 
 
-def apply_to_extract(file_dir: Path, page: int, region: str, mapping: dict[int, str], note: str = "") -> None:
-    for f in _extract_files(file_dir, page):
-        rec = json.loads(f.read_text(encoding="utf-8"))
-        r = rec["regions"].get(region)
-        if not r or not isinstance(r.get("source"), str):
-            continue
-        r["source"] = replace_placeholders(r["source"], mapping)
-        if note:
-            r["icon_note"] = note
-        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def icon_uses(info) -> dict[str, int]:
     """게임 원문에 쓰인 아이콘 이름별 횟수 ([[이름]], 뺀 쪽은 세지 않음)."""
     from app.extract import load_extracted
@@ -1303,8 +1294,9 @@ class Occurrence:
     order: int = 0  # 그 줄에서 몇 번째 아이콘 (1부터)
     box: list = field(default_factory=list)  # 영역 이미지(CROP_DPI)에서 잘라 낸 자리 [x0, y0, x1, y1]
     manual: bool = False  # 사람이 카드 보기에서 직접 잡은 자리
-    # 그림에 함께 넣은 옆 숫자 {"text", "start", "end", "side"} (찾을 때 원문 기준). 원문에서는 확정할 때 뺀다
+    # 그림에 함께 넣은 옆 숫자 {"text", "side"}. 원문에서는 확정할 때 뺀다 (그때 원문에서 다시 찾음)
     number: dict = field(default_factory=dict)
+    hint: str = ""  # 모양이 같은 예전 사전 항목 이름 (자동으로 바꾸지 않고 ② 검토에 제안만)
 
     @property
     def num(self) -> str:
@@ -1394,14 +1386,16 @@ def scan(info, work: Path) -> ScanResult:
                             nb = absorb_number(img, box, num[0], num[2] - num[1])
                             if nb is not None:
                                 box = nb
-                                oc.number = {"text": text[num[1]:num[2]], "start": num[1], "end": num[2],
-                                             "side": num[0]}
+                                oc.number = {"text": text[num[1]:num[2]], "side": num[0]}
                         oc.box = [int(v) for v in box]
                         rgba = cut_out(img, box)
                         png = work / "crops" / f"{oc.id}.png"
                         save_png(rgba, png)
                         oc.png = str(png)
-                        oc.match, oc.score = best_known(shape_pair(rgba), known, oc.num)
+                        sh = shape_pair(rgba)
+                        oc.match, oc.score = best_known(sh, known, oc.num)
+                        if not oc.match:
+                            oc.hint = legacy_hint(sh, known, oc.num)
                     if oc.match:
                         auto_map[k] = oc.match
                         if oc.number:
@@ -1443,6 +1437,8 @@ def _group(res: ScanResult) -> None:
             res.groups[g] = {"rep": o.id, "count": 0}
         o.group = g
         res.groups[g]["count"] += 1
+        if o.hint and not res.groups[g].get("dict"):  # 예전 사전 항목: 화면이 그 이름을 골라 둔다 (사람이 확인)
+            res.groups[g]["dict"] = o.hint
         # 대표는 가장 큰(선명한) 조각
         rep = res.groups[g]["rep"]
         if _area(o.png) > _area(next(x.png for x in res.occurrences if x.id == rep)):
@@ -1462,8 +1458,15 @@ def _save_scan(work: Path, res: ScanResult) -> None:
 def load_scan(work: Path) -> ScanResult:
     data = json.loads((Path(work) / "scan.json").read_text(encoding="utf-8"))
     keys = set(Occurrence.__dataclass_fields__)  # 예전 scan.json(number 없음)도, 모르는 키가 있어도 읽힌다
-    return ScanResult([Occurrence(**{k: v for k, v in o.items() if k in keys}) for o in data["occurrences"]],
-                      data["groups"], data.get("auto", {}))
+    occ = []
+    for o in data["occurrences"]:
+        oc = Occurrence(**{k: v for k, v in o.items() if k in keys})
+        if isinstance(oc.number, dict):  # 1.12.0 scan.json의 start·end는 쓰지 않는다
+            oc.number = {k: oc.number[k] for k in ("text", "side") if k in oc.number}
+        else:
+            oc.number = {}
+        occ.append(oc)
+    return ScanResult(occ, data["groups"], data.get("auto", {}))
 
 
 # ---------------------------------------------------------------- 사람이 아이콘 자리 잡기 (카드 보기)
@@ -1532,6 +1535,16 @@ def best_known(sh, known: dict, occ_num: str) -> tuple[str, float]:
     return (nm, s) if s >= SAME_SHAPE else ("", 0.0)
 
 
+def legacy_hint(sh, known: dict, occ_num: str) -> str:
+    """모양이 같은 예전 사전 항목(number 키 없음) 이름: 자동으로 바꾸지 않고 ② 검토에 제안만 한다.
+    옆 숫자가 있는 자리에는 제안하지 않는다 (예전 그림에 숫자가 들어 있는지 몰라 확정을 막으므로, _number_conflicts)."""
+    if occ_num:
+        return ""
+    cand = [(nm, same_icon(sh, ks)) for nm, (ks, en) in known.items() if en is None]
+    nm, s = max(cand, key=lambda t: t[1], default=("", 0.0))
+    return nm if s >= SAME_SHAPE else ""
+
+
 def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]) -> dict:
     """사람이 잡은 자리로 그림을 다시 잘라 묶음을 다시 정한다.
     {"group": 새 묶음, "old": 예전 묶음, "old_gone": 예전 묶음이 없어짐, "new_group": 새로 만든 묶음, "dict": 사전 이름}"""
@@ -1573,7 +1586,8 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
         s = same_icon(sh, shape_pair(load_png(Path(rep.png))))
         if s >= best_s:
             best, best_s = g, s
-    match = best_known(sh, _known_shapes(info), o.num)[0]
+    known = _known_shapes(info)
+    match = best_known(sh, known, o.num)[0] or legacy_hint(sh, known, o.num)  # 제안만 (자동으로 바꾸지 않음)
     if best is not None:
         g = best
         res.groups[g]["count"] += 1
@@ -1596,8 +1610,34 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     return {"group": g, "old": old, "old_gone": old_gone, "new_group": new_group, "dict": match}
 
 
+def set_not_icon(info, work: Path, occ_id: str) -> dict:
+    """한 자리만 ‘아이콘 아님’: 그 자리를 묶음에서 빼 ‘아이콘 아님’으로 표시한 새 묶음(혼자)으로 옮긴다.
+    (같은 묶음의 다른 자리는 아이콘인데 이 자리만 글자·장식을 잘못 잡은 경우. 묶음 줄의 ‘아이콘 아님’은 묶음 전체.)
+    이미 혼자인 묶음이면 그 묶음을 ‘아이콘 아님’으로 표시만 한다. {"group", "old", "old_gone", "new_group"}"""
+    work = Path(work)
+    res = load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    old = o.group
+    gi = res.groups.get(old, {})
+    if gi.get("count", 1) <= 1:  # 혼자인 묶음: 옮길 것 없이 표시만
+        gi["not_icon"] = True
+        res.groups[old] = gi
+        _save_scan(work, res)
+        return {"group": old, "old": old, "old_gone": False, "new_group": False}
+    gi["count"] -= 1
+    if gi.get("rep") == o.id:
+        rest = [x for x in res.occurrences if x.group == old and x.id != o.id and x.png]
+        gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
+    nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
+    g = f"g{max(nums, default=0) + 1:02d}"
+    res.groups[g] = {"rep": o.id if o.png else "", "count": 1, "not_icon": True}
+    o.group = g
+    _save_scan(work, res)
+    return {"group": g, "old": old, "old_gone": False, "new_group": True}
+
+
 # ---------------------------------------------------------------- 이름 제안 (모델)
-SUGGEST_SYSTEM = """You name small icons printed inside board game card text, for a translation tool.
+SUGGEST_SYSTEM ="""You name small icons printed inside board game card text, for a translation tool.
 For each icon image, give a short identifier (lowercase English letters, digits or _ only, e.g. coin, heart,
 sword), what the icon stands for in the original language of the card text (meaning), and a natural Korean name
 (ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context.
@@ -1735,6 +1775,41 @@ def _group_num(res: ScanResult, by_id: dict, g: str) -> str:
     return "" if o is None or o.manual else (o.number or {}).get("text", "")
 
 
+def _number_conflicts(res: ScanResult, by_id: dict, decision: dict[str, str], d: dict) -> list[str]:
+    """그림 속 숫자가 어긋나는 이름 정하기를 막는 문구들.
+    - 옆 숫자가 다른 묶음(상자+2·상자+5)을 한 이름으로: 그림은 하나라 다른 묶음 자리에 다른 숫자가 함께 보인다.
+    - 숫자가 있는 사전 항목과 숫자가 다른 묶음: 사전 그림의 숫자가 카드의 수량과 다르게 보인다.
+    - 예전 사전 항목(number 키 없음)을 숫자 있는 묶음에: 예전 그림에 숫자가 들어 있는지 몰라 수량을 잃거나 겹친다.
+    모두 숫자가 없으면 괜찮다. 그림 없는 묶음(위치 못 찾음)은 숫자를 모르므로 보지 않는다."""
+    def shown(ns):
+        return ", ".join(n or "숫자 없음" for n in ns)
+
+    def named(name, n, old=""):  # crate_5를 숫자 2로 나누라고 할 때는 crate_2 (crate_5_2가 아니라)
+        base = name[:-len(old) - 1] if old and name.endswith(f"_{old}") else name
+        return f"{base}_{n}" if n else base
+
+    out = []
+    for name in dict.fromkeys(n for n in decision.values() if n and not n.startswith("=")):
+        seen = [g for g, n in decision.items() if n == name and res.groups[g].get("rep")]
+        nums = sorted({num_key(_group_num(res, by_id, g)) for g in seen})
+        if len(nums) > 1:
+            out.append(f"수량이 다른 아이콘을 같은 이름 {name}로 정할 수 없습니다 ({shown(nums)}): "
+                       f"{'·'.join(named(name, n) for n in nums)}처럼 나눠 주세요")
+            continue
+        e = d["icons"].get(name)
+        if e is None or not nums:
+            continue
+        en, n = entry_number(e), nums[0]
+        if en is None:
+            if n:
+                out.append(f"사전의 예전 아이콘 {name}은 그림에 숫자가 들어 있는지 알 수 없어 숫자 {n}이 붙은 아이콘에 "
+                           f"쓸 수 없습니다: {name}_{n}처럼 새 이름을 정해 주세요")
+        elif en != n:
+            out.append(f"수량이 다른 아이콘을 같은 이름 {name}로 정할 수 없습니다 (사전 그림: {shown([en])}, "
+                       f"이 아이콘: {shown([n])}): {named(name, n, en) if n else '다른 이름'}처럼 새 이름을 정해 주세요")
+    return out
+
+
 def import_review(info, xlsx: Path, work: Path) -> IconImport:
     """검증 엑셀을 읽어 사전에 넣고 원문 [[?]]를 바꾼다. 막는 문제가 있으면 아무것도 바꾸지 않는다."""
     from openpyxl import load_workbook
@@ -1785,10 +1860,11 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
     missing = [g for g in res.groups if g not in decision and not any(g in b for b in out.blocking)]
     for g in missing:
         out.blocking.append(f"{g}: 엑셀에 행이 없음")
+    by_id = {o.id: o for o in res.occurrences}
+    out.blocking += _number_conflicts(res, by_id, decision, d)
     if out.blocking:
         return out
     # 사전에 넣기 (같은 이름은 하나로: 가장 큰 대표 그림)
-    by_id = {o.id: o for o in res.occurrences}
     dst = icons_dir(info)
     for name, m in meta.items():
         groups = [g for g, n in decision.items() if n == name]
@@ -1799,8 +1875,11 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
                 if m.get(k) is not None:
                     e[k] = m[k]
             seen = [g for g in groups if res.groups[g].get("rep")]
-            if entry_number(e) is None and seen:  # 예전 항목: 가장 많이 나온 묶음의 숫자를 적어 둔다
-                e["number"] = _group_num(res, by_id, max(seen, key=lambda g: res.groups[g].get("count", 0)))
+            # 예전 항목: 숫자 없는 묶음으로 확정하면 사람이 ② 창에서 사전 그림을 보고 고른 것이므로 number ""로 적는다.
+            # 숫자 있는 묶음은 _number_conflicts가 막았다 (그림 속 숫자를 몰라 묶음 숫자를 적지도, 원문에서 빼지도 않는다).
+            # 그림 있는 묶음이 없으면(위치 못 찾음만) 예전 항목 그대로 둔다
+            if entry_number(e) is None and seen and all(num_key(_group_num(res, by_id, g)) == "" for g in seen):
+                e["number"] = ""
             out.reused.append(name)
         else:
             # 대표 그림: 가장 많이 나온 묶음의 그림 (합친 작은 묶음은 잘못 잘린 조각일 수 있음)
@@ -1820,7 +1899,8 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
     save_dictionary(info, d)
     # 원문 바꾸기 (칸마다 한 번에)
     # 옆 숫자는 아이콘 이름으로 정했고 상자를 손으로 잡지 않았고 사전 그림의 숫자와 같을 때만 원문에서 뺀다
-    # (‘아이콘 아님’·손으로 잡은 자리는 숫자를 남긴다. 숫자가 다른 묶음을 같은 이름으로 합치면 숫자를 남겨 수량을 지킨다)
+    # (‘아이콘 아님’·손으로 잡은 자리는 숫자를 남긴다. 숫자가 다른 묶음을 같은 이름으로 합치는 것은 _number_conflicts가
+    # 막는다. 예전 항목(None)은 어떤 숫자와도 같지 않아 빼지 않는다)
     per_region: dict[tuple, dict[int, str]] = {}
     strips: dict[tuple, dict[int, dict]] = {}
     for o in res.occurrences:

@@ -2519,9 +2519,15 @@ def data_dir() -> Path:
 # ---------------------------------------------------------------- 화면용: 원문 확인 (2차)
 def extracted_cells(file_dir: Path | str) -> list[dict]:
     """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
-    "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None."""
+    "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None.
+    readings = 화면의 읽은 결과 표: 두 번 읽기 결과, 그 뒤에 ‘이 칸 다시 읽기’ 결과(reread=True).
+    다시 읽기 결과만 있으면 지금 원문을 처음 줄(original=True)로 넣어 비교할 수 있게 한다."""
     from app import workspace
-    from app.extract import MODEL_LABEL, load_extracted, verification_label
+    from app.extract import MODEL_LABEL, cell_rereads, load_extracted, model_readings, verification_label
+
+    def row(x: dict, **flags) -> dict:
+        return {"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"],
+                "reread": False, "original": False, **flags}
 
     fd = Path(file_dir)
     proj = load_project(fd)
@@ -2530,15 +2536,18 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
     for pno in workspace.included_pages(fd):
         for reg in proj.template.regions_for(pno):
             r = (ext.get(pno) or {}).get(reg.name)
+            readings = [row(x) for x in model_readings(r or {})]
+            rereads = [row(x, reread=True) for x in cell_rereads(r or {})]
+            if rereads and not readings and r is not None and r.get("source") is not None:
+                first = "지금 원문" if r.get("edited_by") else (r.get("read_by") or "처음 읽은 결과")
+                readings = [row({"model": first, "source": r["source"]}, original=True)]
             out.append({
                 "page": pno, "region": reg.name, "kind": reg.kind,
                 "source": None if r is None else r.get("source"),
                 "label": "읽지 않음" if r is None else verification_label(r),
                 "uncertain": bool(r and r.get("uncertain")),
                 "note": (r or {}).get("note", ""),
-                "readings": [{"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"],
-                              "reread": bool(x.get("reread"))}
-                             for x in (r or {}).get("readings") or []],
+                "readings": readings + rereads,
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
             })
     return out
@@ -2588,6 +2597,10 @@ def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
                 r["note"] = "사람이 확인 (읽은 그대로)"
         else:
             r["source"] = source
+            # 아이콘에 넣으며 뺀 숫자의 기록(몇 번째 [[…]], 그 옆 숫자)은 예전 원문 기준이다. 새 원문에 두면
+            # ‘다시 정하기’가 숫자를 엉뚱한 자리에 되살리므로 버린다 (숫자는 사람이 고친 원문에 있는 그대로)
+            r.pop("icon_numbers", None)
+            r.pop("icon_number_note", None)
             r["edited_by"] = "사람"
             r["note"] = (f"사람이 고침 (모델: {json.dumps(old, ensure_ascii=False)})" if old is not None
                          else "사람이 입력")
@@ -2610,12 +2623,14 @@ class RereadResult:
 
 def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = "opus",
                   engine: str | None = None, client=None) -> RereadResult:
-    """원문 확인 화면에서 고른 칸 하나만 다시 읽는다. 결과는 그 칸의 readings에 덧붙이고(reread=True),
-    원문(source)은 바꾸지 않는다 — 사람이 보고 저장할 때 바뀐다. 시험 모드·뺀 쪽이어도 읽는다(사람이 고른 칸).
+    """원문 확인 화면에서 고른 칸 하나만 다시 읽는다. 결과는 그 칸의 rereads에 덧붙이고, 원문(source)·
+    readings(두 번 읽기 결과)·확인 필요는 바꾸지 않는다 — 칸 상태는 사람이 보고 저장할 때 바뀐다.
+    시험 모드·뺀 쪽이어도 읽는다(사람이 고른 칸).
     한도·로그인 문제는 state="paused"·"blocked"로 돌려준다 (예외 아님)."""
     import pymupdf
 
-    from app.extract import Paused, _iso_after, _read_regions_once, make_client, page_file, resolve_model
+    from app.extract import (Paused, _iso_after, _read_regions_once, cell_rereads, make_client, model_readings,
+                             page_file, resolve_model)
     from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
 
     log = logging.getLogger("cardtranslater.extract")
@@ -2636,8 +2651,9 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
             return RereadResult("blocked", reason=f"Claude에 연결할 수 없습니다: {e}")
     base = fd / "extract"
     try:
-        with pymupdf.open(stream=proj.source_pdf.read_bytes(), filetype="pdf") as src_doc:
-            got, spent, equiv = _read_regions_once(client, proj, page, src_doc, model_id, base, [reg])
+        # 잘라 낸 그림은 extract/reread/에 둔다 (extract/crops/의 그 쪽 첫 칸 그림을 덮어쓰지 않게)
+        with pymupdf.open(proj.source_pdf) as src_doc:
+            got, spent, equiv = _read_regions_once(client, proj, page, src_doc, model_id, base / "reread", [reg])
     except Paused as p:
         log.warning("칸 다시 읽기 일시 정지 (%d쪽 %s): %s", page, region, p.reason)
         return RereadResult("paused", reason=p.reason, retry_after=_iso_after(p.retry_after_s))
@@ -2650,7 +2666,7 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
     if r is None:
         return RereadResult("blocked", reason="응답에 이 칸의 결과가 없습니다", spent_usd=spent, equiv_usd=equiv)
     entry = {"model": model_id, "source": r["source"], "uncertain": bool(r.get("uncertain")),
-             "note": r.get("note", ""), "reread": True, "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+             "note": r.get("note", ""), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
              "cost_usd": round(spent, 6), "cost_equiv_usd": round(equiv, 6)}
     # 이미 읽은 칸에만 덧붙인다 (아직 읽지 않은 칸은 편집 칸에 넣어 주고, 저장할 때 원문이 생긴다)
     for f in (page_file(base, page), base / f"page-{page:03d}.json"):
@@ -2660,11 +2676,16 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
         cell = (rec.get("regions") or {}).get(region)
         if cell is None:
             continue
-        readings = cell.setdefault("readings", [])
-        if not readings and cell.get("source") is not None and not cell.get("edited_by"):
-            # 처음 읽은 결과를 함께 남겨 두 결과를 비교할 수 있게
-            readings.append({"model": cell.get("read_by") or rec.get("model") or "1차", "source": cell["source"]})
-        readings.append(entry)
+        # 1.12.0이 readings에 넣은 다시 읽기 결과(와 그 앞에 넣은 처음 결과)는 rereads로 옮긴다
+        legacy = [x for x in cell.get("readings") or [] if x.get("reread")]
+        if legacy:
+            keep = model_readings(cell)
+            cell["rereads"] = cell_rereads(cell)
+            if keep:
+                cell["readings"] = keep
+            else:
+                cell.pop("readings", None)
+        cell.setdefault("rereads", []).append(entry)
         tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(f)
@@ -2696,6 +2717,7 @@ def icon_review(project_dir: Path | str) -> dict | None:
                                   "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
                                  for o in members],
                        "dict": gi.get("dict", ""),
+                       "not_icon": bool(gi.get("not_icon")),  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
                        "reason": members[0].reason if members and not gi.get("rep") else "",
                        "first": min((res.occurrences.index(o) for o in members), default=len(res.occurrences))})
     for g in groups:  # 사람이 봐야 하는 것: 한국어 이름이 비어 있음 (창에서 노랑 칸)
@@ -2732,6 +2754,21 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:  # 엑셀이 열려 있으면 못 쓴다: 화면 확정에는 필요 없다
+        pass
+    return r
+
+
+def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
+    """한 자리만 ‘아이콘 아님’: 그 자리를 ‘아이콘 아님’으로 표시한 혼자인 묶음으로 옮긴다 (검증 엑셀도 새로).
+    {"group", "old", "old_gone", "new_group"}. 그 줄의 ‘뜻’ 칸에 글자를 적으면 [[?]]를 그 글자로, 비우면 뺀다."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.set_not_icon(info, work, occ_id)
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
         pass
     return r
 
@@ -3820,8 +3857,40 @@ def delete_project(project_dir: Path | str) -> Path:
     return _to_trash(info.dir, info.dir.parent.parent, f"project-{info.dir.name}")
 
 
+def delete_game(game: Path | str, root: Path | None = None, with_projects: bool = False) -> Path:
+    """게임 폴더(games/<게임>: 용어집·아이콘 사전·검수 엑셀)를 휴지통(.trash)으로. 게임 이름이나 폴더 경로를 받는다.
+    with_projects=True면 그 게임의 프로젝트도 모두 휴지통으로 옮긴다 (아니면 프로젝트는 그대로).
+    마지막으로 연 프로젝트가 이 게임 것이면 설정에서 지운다. 게임 폴더가 옮겨진 휴지통 경로를 돌려준다."""
+    from app import settings, workspace
+
+    root = Path(root) if root else workspace.DEFAULT_ROOT
+    g = Path(game)
+    if g.is_dir() and (g / "game.json").exists():
+        gdir = g.resolve()
+        root = gdir.parent.parent
+        name = workspace._read(gdir / "game.json").get("name", gdir.name)
+    else:
+        name = str(game)
+        gdir = workspace.game_dir(name, root).resolve()
+        if not (gdir / "game.json").exists():
+            raise FileNotFoundError(f"게임 폴더가 없습니다: {name}")
+    mine = [p for p in workspace.list_projects(root) if p["game"] == name]
+    gone = {Path(p["dir"]).resolve() for p in mine}
+    if with_projects:
+        for p in mine:
+            delete_project(p["dir"])
+    dest = _to_trash(gdir, root, f"game-{gdir.name}")
+    s = settings.load()
+    if s.last_project:
+        lp = Path(s.last_project)
+        if with_projects and lp.resolve() in gone or not lp.exists():
+            s.last_project = ""
+            settings.save(s)
+    return dest
+
+
 RESET_WHAT = {
-    "all": ("extract", "cleared", "translated"),  # 글자 추출부터 다시
+    "all":("extract", "cleared", "translated"),  # 글자 추출부터 다시
     "output": ("cleared", "translated"),  # 지운 카드·한글 카드만 다시
 }
 

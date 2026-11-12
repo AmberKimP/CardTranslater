@@ -768,7 +768,16 @@ class SourceReviewDialog(QDialog):
             return  # 그사이 다른 파일로 옮겼다
         self.reload(keep=key)
         c = self.current()
+        if (c is None or (c["page"], c["region"]) != key) and self.only.isChecked():
+            # 다시 읽기 전에 저장해 ‘확인할 칸만’ 목록에서 빠진 칸: 거르기를 끄고 그 칸을 보여 준다
+            self.only.blockSignals(True)
+            self.only.setChecked(False)
+            self.only.blockSignals(False)
+            self.reload(keep=key)
+            c = self.current()
         if c is None or (c["page"], c["region"]) != key:
+            QMessageBox.information(self, "다시 읽기", f"{key[0]}쪽 {key[1]} 칸을 찾지 못해 다시 읽은 결과를 보여 주지 못했습니다.\n"
+                                    f"다시 읽은 결과: {as_text(r.source)}")
             return
         text = fill_icon_names(as_text(r.source), as_text(c["source"]), self._known)
         self.edit.setPlainText(text)  # _orig_text는 그대로: 저장하지 않고 떠나면 묻는다
@@ -1011,6 +1020,10 @@ class IconPlaceDialog(QDialog):
         self.save_btn = QPushButton("이 자리로 저장")
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save)
+        self.not_icon_btn = QPushButton("이 자리는 아이콘 아님")
+        self.not_icon_btn.setToolTip("이 자리만 ‘아이콘 아님’ 줄로 옮깁니다 (같은 묶음의 다른 자리는 그대로).\n"
+                                     "글자를 아이콘으로 잘못 읽은 것이면 그 줄의 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌)")
+        self.not_icon_btn.clicked.connect(self._not_icon)
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
         side = QVBoxLayout()
@@ -1022,6 +1035,7 @@ class IconPlaceDialog(QDialog):
         mid.addLayout(side)
         btns = QHBoxLayout()
         btns.addWidget(self.status, 1)
+        btns.addWidget(self.not_icon_btn)
         btns.addWidget(self.save_btn)
         btns.addWidget(close)
         lay = QVBoxLayout(self)
@@ -1108,6 +1122,21 @@ class IconPlaceDialog(QDialog):
         gg = next((x for x in rev["groups"] if x["group"] == r["group"]), {})
         if r.get("new_group") and not r.get("dict") and not gg.get("suggest"):
             self._suggest(r["group"])
+
+    def _not_icon(self):
+        """지금 고른 자리만 ‘아이콘 아님’ 줄로 옮긴다."""
+        i = self.combo.currentIndex()
+        if i < 0:
+            return
+        w = self.where[i]
+        try:
+            r = service.set_icon_not_icon(self.project_dir, w["occ"])
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "‘아이콘 아님’으로 정하지 못했습니다", e)
+            return
+        self.on_saved(r)  # 이름 정하기 표를 새로 채운다 (그 줄은 ‘아이콘 아님’이 체크되어 있다)
+        self.status.setText(f"이 자리를 ‘아이콘 아님’인 {self.row_label(r['group'])} 줄로 옮겼습니다. 글자를 아이콘으로 "
+                            "잘못 읽은 것이면 그 줄의 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺍니다).")
 
     def _suggest(self, group: str):
         """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다)."""
@@ -1228,6 +1257,8 @@ class IconReviewDialog(QDialog):
                     target = ("row", row_of[k["same"][1]])
                 elif k["same"] and k["same"][0] == "known":
                     target = k["same"]
+            elif g.get("not_icon"):  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
+                not_icon.setChecked(True)
             elif g.get("dict"):
                 target = ("known", g["dict"])
             if target is not None:
@@ -1386,7 +1417,7 @@ class IconReviewDialog(QDialog):
                 return
         r = service.confirm_icons(self.project_dir, rows)
         if r.state != "confirmed":
-            show_problem(self, "아이콘 이름을 확정하지 못했습니다", "\n".join(r.blocking), "이름을 고친 뒤 다시 누르세요.")
+            show_problem(self, "아이콘 이름을 확정하지 못했습니다", "", "이름을 고친 뒤 다시 누르세요.", items=r.blocking)
             return
         self.result = r
         super().accept()
@@ -1399,6 +1430,7 @@ class StepActions:
     def __init__(self, page):
         self.page = page
         self.resume_timer: QTimer | None = None
+        self.extract_engine: str | None = None  # 마지막 ① 글자 추출에서 고른 로그인 방식
 
     @property
     def pdir(self) -> Path:
@@ -1450,6 +1482,7 @@ class StepActions:
         self._run_extract(files, mode, engine)
 
     def _run_extract(self, files, mode, engine):
+        self.extract_engine = engine  # 원문 확인의 ‘이 칸 다시 읽기’도 같은 방식으로
         job = worker.Job(service.extract_project, self.pdir, None, mode=mode, engine=engine, files=files)
         worker.run_with_dialog(self.page, "글자 추출", job,
                                lambda r: self._extract_done(r, (files, mode, engine)),
@@ -1491,7 +1524,9 @@ class StepActions:
         files = self.page.scoped_files()  # 그리드에서 고른 범위
         if not files:
             return
-        dlg = SourceReviewDialog(files, self.page, only_check)
+        # ‘이 칸 다시 읽기’: 이번에 ① 글자 추출에서 고른 로그인 방식 (아직 안 했으면 설정에 저장된 방식)
+        eng = self.extract_engine or service.get_settings().engine
+        dlg = SourceReviewDialog(files, self.page, only_check, engine=eng)
         dlg.exec()
         if dlg.saved:
             self.page.refresh()
@@ -1594,7 +1629,7 @@ class StepActions:
                 return
         r = service.import_glossary(self.pdir, path, accept_issues=accept)
         if r.state == "blocked":
-            show_problem(self.page, "용어집을 가져오지 못했습니다", "\n".join(r.blocking + r.issues),
+            show_problem(self.page, "용어집을 가져오지 못했습니다", "", items=r.blocking + r.issues, todo=
                          "엑셀에서 이 내용을 고치고 저장한 뒤 ‘⑤ 용어집 가져오기’를 다시 누르세요.")
             return
         if r.state == "needs_confirmation":

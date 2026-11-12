@@ -11,7 +11,7 @@ import httpx2
 import pytest
 
 from app import service
-from app.extract import ExtractState, evaluate, extract_dir, load_extracted
+from app.extract import ExtractState, evaluate, extract_dir, load_extracted, verification_label
 from tests.test_service import make_project
 
 
@@ -606,13 +606,15 @@ def test_reread_region_appends_reading_and_keeps_source(tmp_path):
     for f in (base / "pages" / "page-001.json", base / "page-001.json"):
         cell = json.loads(f.read_text(encoding="utf-8"))["regions"]["이름"]
         assert cell["source"] == "HELL0" and cell["uncertain"]  # 원문은 사람이 저장할 때 바뀐다
-        first, again = cell["readings"]
-        assert first == {"model": "claude-sonnet-5-5", "source": "HELL0"}
-        assert again["reread"] and again["model"] == "claude-opus-5-5" and again["source"] == "HELLO" and again["at"]
+        assert not cell.get("readings")  # 확인 상태(두 번 확인·결론 못 냄)를 바꾸지 않게 따로 둔다
+        (again,) = cell["rereads"]
+        assert again["model"] == "claude-opus-5-5" and again["source"] == "HELLO" and again["at"]
+    label = verification_label(load_extracted(proj)[1]["이름"])
+    assert "1회" in label and "두 번" not in label and "결론" not in label
     # 한 번 더 읽으면 덧붙기만 한다
     assert service.reread_region(proj, 1, "이름", model="sonnet", client=FakeClient()).state == "done"
     cell = load_extracted(proj)[1]["이름"]
-    assert [x["model"] for x in cell["readings"]] == ["claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]
+    assert [x["model"] for x in cell["rereads"]] == ["claude-opus-5-5", "claude-sonnet-5-5"]
 
 
 def test_reread_region_paused_and_blocked_states(tmp_path):
