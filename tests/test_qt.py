@@ -3235,3 +3235,82 @@ def test_region_override_keeps_empty_and_follows_common_style(qapp, tmp_path):
            "page_regions": {f"{fd.name}/3": {"regions": [{"name": "", "rect": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.1}}]}}}
     assert any("이름이 빈 영역" in m for m in service.validate_region_template(bad))
     ed.dirty = False
+
+
+def test_region_editor_auto_alignment_view_nudge_and_preview(qapp, tmp_path):
+    """자동 정렬: 기준이 아닌 카드에서 상자를 정렬만큼 옮겨 그리고(템플릿은 기준 좌표 그대로),
+    Ctrl+화살표는 그 카드 정렬만 옮기며, 미리보기는 정렬한 자리·‘정렬 확인’ 카드를 보여 준다."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    from app.qt.region_editor import RegionEditor
+    from tests.test_align import H, W, _pdf
+
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    service.add_files(info.dir, [_pdf(tmp_path / "in" / "cards.pdf",
+                                      [(0, 0, 1.0, 1), (6.0, 5.0, 1.0, 2), (0, 0, 1.0, 3), "other"])],
+                      "카드", new_group=True)
+    g = service.project_overview(info.dir)["groups"][0]
+    gdir, fd = Path(g["dir"]), Path(g["files"][0]["dir"])
+    rect = {"x": 0.1333, "y": 0.6, "w": 0.7333, "h": 0.304}
+    assert service.save_region_template(gdir, {"regions": [{"name": "본문", "rect": rect}]}) == []
+    ed = RegionEditor(gdir, [fd])
+    assert not ed.align_btn.isHidden() and not ed.align_reset_btn.isEnabled()  # 정렬 전: 되돌릴 것 없음
+    ed._alignment_done(service.align_group([fd]))  # ‘자동 정렬’ 버튼이 작업 스레드에서 부르는 것
+    assert ed.card_info.text().endswith("정렬 기준 카드")
+    it = ed.items()[0]
+    pw = ed.scene.page_rect.width()
+    x1 = it.rect().left()
+    ed.page_spin.setValue(2)
+    it = ed.items()[0]
+    assert it.rect().left() == pytest.approx(x1 + 6 / W * pw, abs=2.0)  # 그 카드의 정렬만큼 옮겨 그린다
+    assert ed.ratio_of(it) == rect  # 편집 값은 기준 카드 좌표
+    assert "정렬: 자동" in ed.card_info.text() and ed.align_reset_btn.isEnabled()
+    pr = ed._preview_regions(2)[0]["rect"]
+    assert pr["x"] == pytest.approx(rect["x"] + 6 / W, abs=0.005) and pr["y"] == pytest.approx(rect["y"] + 5 / H, abs=0.005)
+    assert ed._preview_info(2)[3] == "ok" and ed._preview_info(4)[3] == "check"
+
+    def key(k, mods=Qt.KeyboardModifier.ControlModifier):
+        ed.view.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, k, mods))
+
+    x2 = it.rect().left()
+    key(Qt.Key.Key_Right)  # Ctrl+→: 이 카드 정렬만 1px
+    assert it.rect().left() == pytest.approx(x2 + 1, abs=0.01) and ed.page_spin.value() == 2
+    key(Qt.Key.Key_Down, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)  # Shift: 10px
+    e = service.align_info(fd)["pages"][2]
+    assert e["status"] == "manual" and "손으로 맞춤" in ed.card_info.text()
+    assert ed.ratio_of(it) == rect and not ed.dirty  # 영역은 그대로, 정렬은 바로 저장
+    ed.reset_alignment()  # 손으로 맞춤 -> 자동 값
+    assert service.align_info(fd)["pages"][2]["status"] == "ok" and it.rect().left() == pytest.approx(x2, abs=0.01)
+    # 정렬한 카드에서 상자를 옮기면 기준 좌표로 되돌려 공통 영역을 고친다
+    it.setSelected(True)
+    key(Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier)
+    assert ed.ratio_of(it)["x"] == pytest.approx(rect["x"] - 1 / pw, abs=2e-4) and ed.dirty
+    assert ed.to_template()["regions"][0]["rect"]["x"] == pytest.approx(rect["x"] - 1 / pw, abs=2e-4)
+    # 기준 카드에서는 Ctrl+화살표가 정렬을 옮기지 않는다
+    ed.scene.clearSelection()
+    ed.page_spin.setValue(1)
+    key(Qt.Key.Key_Right)
+    assert service.align_info(fd)["pages"][1]["status"] == "ref" and "기준 카드" in ed.status.text()
+    # 미리보기: 정렬 확인 카드만
+    ed.show()
+    ed.preview_btn.setChecked(True)
+    qapp.processEvents()
+    ed.preview.only_check.setChecked(True)
+    assert ed.preview.check_pages() == [4] and ed.preview._visible_list() == [4]
+    thumb = ed.preview.thumbs[0]
+    assert thumb.page == 4 and "정렬 확인" in thumb.warn_text
+    ed.preview.only_warn.setChecked(True)
+    assert not ed.preview.only_check.isChecked()
+    # 이 카드만 따로 영역: 정렬한 자리 그대로 따로 영역이 되고, 공통 영역은 기준 좌표 그대로
+    common_x = ed.to_template()["regions"][0]["rect"]["x"]
+    ed.page_spin.setValue(2)
+    ed.override_btn.setChecked(True)
+    ov = ed._cards()[f"{fd.name}/2"]["regions"][0]["rect"]
+    assert ov["x"] == pytest.approx(common_x + 6 / W, abs=0.005) and ed._view_t is None
+    assert ed.to_template()["regions"][0]["rect"]["x"] == pytest.approx(common_x, abs=1e-6)
+    assert ed._preview_info(2)[3] == "" and ed._align_label() == ""
+    ed.override_btn.setChecked(False)
+    assert ed.ratio_of(ed.items()[0])["x"] == pytest.approx(common_x, abs=1e-6) and ed._view_t
+    ed.dirty = False
+    ed.close()

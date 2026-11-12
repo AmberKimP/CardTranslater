@@ -5,6 +5,7 @@
   글자 상자가 밝든 어둡든 상자 전체가 한 가지면 주의가 아니다.
 - 카드를 누르면 신호 open_page(쪽). 오른쪽 메뉴: 이 카드 편집 / 이 카드만 따로 영역 / 공통 영역으로 되돌리기 / 빼기·되살리기.
 - [뺌] 체크·메뉴는 신호 set_excluded(쪽, 뺄지).
+- 자동 정렬: 영역은 카드마다 맞춘 자리로 그려 받는다. ‘정렬 확인 필요’ 카드는 주의처럼 표시하고 ‘정렬 확인 카드만’으로 모아 본다.
 화면만: 저장·영역 계산은 영역 지정 창(RegionEditor)이 한다.
 """
 
@@ -81,13 +82,15 @@ class CardThumb(QFrame):
         self.override = False
         self.excluded = False
         self.warn_text = ""
+        self.align_status = ""
 
     def set_card(self, page: int, base: QPixmap, gray: np.ndarray):
         self.page, self.base, self.gray = page, base, gray
 
-    def render(self, regions: list[dict], current: bool, excluded: bool, override: bool, colors: dict):
-        """영역(비율)을 그림 위에 그리고 주의·테두리를 정한다."""
-        self.override, self.excluded = override, excluded
+    def render(self, regions: list[dict], current: bool, excluded: bool, override: bool, colors: dict,
+               align_status: str = ""):
+        """영역(비율)을 그림 위에 그리고 주의·테두리를 정한다. align_status: 자동 정렬 상태 (check면 ‘정렬 확인’)."""
+        self.override, self.excluded, self.align_status = override, excluded, align_status
         if self.base is None:
             return
         avail = max(60, self.pic.width() - 2)
@@ -118,12 +121,22 @@ class CardThumb(QFrame):
             p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "뺌")
         p.end()
         self.pic.setPixmap(pm)
+        check = align_status == "check" and not excluded
+        if check:
+            warns.insert(0, "정렬 확인")
         self.warn_text = "" if excluded else ("주의: " + ", ".join(warns) if warns else "")
         self.warn.setText(self.warn_text or " ")
-        self.warn.setToolTip("영역 안에 글자 상자 말고 그림·테두리가 걸쳐 있습니다. 영역을 상자에 맞추거나 "
-                             "이 카드만 따로 영역을 정하세요" if warns else "")
+        tips = []
+        if check:
+            tips.append("자동 정렬이 이 카드를 잘 맞추지 못했을 수 있습니다 (점수가 낮거나 많이 밀림). "
+                        "카드를 열어 Ctrl+화살표로 맞추거나 ‘이 카드 정렬 되돌리기’를 누르세요")
+        if len(warns) > int(check):
+            tips.append("영역 안에 글자 상자 말고 그림·테두리가 걸쳐 있습니다. 영역을 상자에 맞추거나 "
+                        "이 카드만 따로 영역을 정하세요")
+        self.warn.setToolTip("\n".join(tips))
         tag = " · 지금 카드" if current else ""
         tag += " · 따로" if override else ""
+        tag += {"manual": " · 손으로 맞춤", "ref": " · 정렬 기준"}.get(align_status, "")
         self.num.setText(f"<b>{self.page}쪽</b>{tag}")
         self.num.setStyleSheet("color: #1E6FD9;" if current else "color: #1F2933;")
         self.ex.blockSignals(True)
@@ -159,13 +172,14 @@ class CardThumb(QFrame):
 
 
 class PreviewPanel(QWidget):
-    """4×4 미리보기. regions_for(쪽) -> [영역 dict(비율 rect, name, kind)], info_for(쪽) -> (지금 카드?, 뺐나?, 따로 영역?)."""
+    """4×4 미리보기. regions_for(쪽) -> [영역 dict(비율 rect, name, kind)],
+    info_for(쪽) -> (지금 카드?, 뺐나?, 따로 영역?, 정렬 상태)."""
 
     open_page = Signal(int)
     card_action = Signal(int, str)
     set_excluded = Signal(int, bool)
 
-    def __init__(self, regions_for: Callable[[int], list[dict]], info_for: Callable[[int], tuple[bool, bool, bool]],
+    def __init__(self, regions_for: Callable[[int], list[dict]], info_for: Callable[[int], tuple],
                  parent=None):
         super().__init__(parent)
         self.regions_for, self.info_for = regions_for, info_for
@@ -187,6 +201,10 @@ class PreviewPanel(QWidget):
         self.only_warn.setToolTip("영역 안에 그림·테두리가 걸친 카드만 모아 봅니다")
         self.only_warn.toggled.connect(self._on_only_warn)
         head.addWidget(self.only_warn)
+        self.only_check = QCheckBox("정렬 확인 카드만")
+        self.only_check.setToolTip("자동 정렬이 잘 맞추지 못했을 수 있는 카드(정렬 확인 필요)만 모아 봅니다")
+        self.only_check.toggled.connect(self._on_only_check)
+        head.addWidget(self.only_check)
         lay.addLayout(head)
         self.legend = grey_note("")
         self.legend.setWordWrap(True)
@@ -242,7 +260,7 @@ class PreviewPanel(QWidget):
         """주의 카드 (뺀 쪽 제외)."""
         out = []
         for p in self.pages:
-            _cur, excluded, _ov = self.info_for(p)
+            excluded = self.info_for(p)[1]
             if excluded:
                 continue
             _pm, gray = self._card(p)
@@ -251,7 +269,18 @@ class PreviewPanel(QWidget):
                 out.append(p)
         return out
 
+    def check_pages(self) -> list[int]:
+        """자동 정렬 ‘정렬 확인 필요’ 카드 (뺀 쪽 제외)."""
+        out = []
+        for p in self.pages:
+            info = self.info_for(p)
+            if not info[1] and len(info) > 3 and info[3] == "check":
+                out.append(p)
+        return out
+
     def _visible_list(self) -> list[int]:
+        if self.only_check.isChecked():
+            return self.check_pages()
         return self.warn_pages() if self.only_warn.isChecked() else self.pages
 
     def show_page(self, page: int, refresh: bool = True):
@@ -274,7 +303,19 @@ class PreviewPanel(QWidget):
         if self.isVisible() and not self._timer.isActive():
             self._timer.start()
 
-    def _on_only_warn(self, _on: bool):
+    def _on_only_warn(self, on: bool):
+        if on and self.only_check.isChecked():  # 둘 중 하나만
+            self.only_check.blockSignals(True)
+            self.only_check.setChecked(False)
+            self.only_check.blockSignals(False)
+        self.start = 0
+        self.refresh()
+
+    def _on_only_check(self, on: bool):
+        if on and self.only_warn.isChecked():
+            self.only_warn.blockSignals(True)
+            self.only_warn.setChecked(False)
+            self.only_warn.blockSignals(False)
         self.start = 0
         self.refresh()
 
@@ -305,16 +346,20 @@ class PreviewPanel(QWidget):
                 p = show[i]
                 pm, gray = self._card(p)
                 t.set_card(p, pm, gray)
-                cur, excluded, override = self.info_for(p)
-                t.render(self.regions_for(p), cur, excluded, override, colors)
+                info = self.info_for(p)
+                cur, excluded, override = info[:3]
+                t.render(self.regions_for(p), cur, excluded, override, colors, info[3] if len(info) > 3 else "")
                 t.setVisible(True)
             else:
                 t.page = 0
                 t.setVisible(False)
         legend = " ".join(f"<span style='color:{colors[n].name()}'>■</span> {n}" for n in names)
         self.legend.setText(legend + " · 왼쪽에서 영역을 고치면 바로 반영 · 카드를 누르면 왼쪽에서 편집 · "
-                            "오른쪽 버튼: 이 카드만 따로 영역·빼기 · 빨간 테두리 = 영역에 그림·테두리가 걸침")
-        if self.only_warn.isChecked():
+                            "오른쪽 버튼: 이 카드만 따로 영역·빼기 · 빨간 테두리 = 영역에 그림·테두리가 걸침 또는 정렬 확인")
+        if self.only_check.isChecked():
+            self.range_label.setText(f"<b>정렬 확인 카드 {len(vis)}장</b> (전체 {len(self.pages)}장 중)"
+                                     + (f" · {self.start + 1}–{self.start + len(show)}" if len(vis) > PER_PAGE else ""))
+        elif self.only_warn.isChecked():
             self.range_label.setText(f"<b>주의 카드 {len(vis)}장</b> (전체 {len(self.pages)}장 중)"
                                      + (f" · {self.start + 1}–{self.start + len(show)}" if len(vis) > PER_PAGE else ""))
         else:

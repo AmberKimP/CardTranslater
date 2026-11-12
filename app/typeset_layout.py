@@ -254,11 +254,57 @@ def wrap_sentence_fonts(text: str, fonts: dict) -> tuple[str, dict]:
     return "".join(out), {v: k for k, v in keys.items()}
 
 
+def close_tags_per_line(text: str) -> str:
+    """줄바꿈에서 열린 서식 태그를 닫았다가 다음 줄에서 다시 연다.
+
+    그림 카드는 번역을 줄마다 원문 줄 자리에 따로 넣으므로(줄마다 태그 짝을 검사), 사람이 넣은 줄바꿈이
+    ``<b>은행에서\\n금화를 받고</b>``처럼 태그 안에 있으면 두 줄 모두 짝이 깨져 ‘서식 불일치’가 되고
+    굵게가 사라진다. 이렇게 바꾸면 ``<b>은행에서</b>\\n<b>금화를 받고</b>``가 되어 줄마다 짝이 맞는다.
+    빈 줄은 그대로 둔다. 태그 짝이 원래 깨진 글은 바꾸지 않는다(그대로 ‘서식 불일치’로 알린다)."""
+    if "\n" not in (text or ""):
+        return text
+    _, errors = parse_markup(text)
+    if errors:
+        return text
+    out: list[str] = []
+    opened: list[str] = []  # 연 순서 (글꼴 태그 fN은 b·i·cN과 엇갈릴 수 있다: 닫을 때는 거꾸로)
+    for line in text.split("\n"):
+        if not line.strip():
+            out.append(line)
+            continue
+        head = "".join(f"<{t}>" for t in opened)
+        for m in TAG_RE.finditer(line):
+            name = m.group(2)
+            if m.group(1) == "/":
+                if name in opened:
+                    opened.remove(name)
+            else:
+                opened.append(name)
+        tail = "".join(f"</{t}>" for t in reversed(opened))
+        out.append(head + line + tail)
+    return "\n".join(out)
+
+
+_REOPEN_RE = re.compile(r"</(b|i|c\d+|f\d+)>([ \t]*\n\s*)<\1>")
+
+
+def _span_counts(text: str) -> Counter:
+    """줄바꿈만 사이에 둔 같은 태그(``<b>A</b>\\n<b>B</b>``)는 한 덩어리로 센 태그 수.
+    스캔 원문은 줄마다 태그를 따로 달고 번역은 여러 줄을 한 번에 감싸는 일이 많아(``<b>A\\nB</b>``),
+    그대로 세면 개수가 달라 ‘서식 불일치’가 잘못 난다. 두 쪽 모두 줄마다 닫았다 연 뒤 다시 이어 붙여 센다."""
+    s = close_tags_per_line(text or "")
+    while True:
+        t = _REOPEN_RE.sub(r"\2", s)
+        if t == s:
+            return tag_counts(s)
+        s = t
+
+
 def check_tags(target: str, source: str | None = None) -> list[str]:
     """번역문의 태그 짝 검사 + (원문이 있으면) 종류·개수 비교. 오류 목록을 돌려준다."""
     _, errors = parse_markup(target)
     if source is not None and not errors:
-        a, b = tag_counts(source), tag_counts(target)
+        a, b = _span_counts(source), _span_counts(target)
         if a != b:
             errors.append(f"태그 종류·개수가 원문과 다름 (원문 {dict(a)}, 번역 {dict(b)})")
     return errors
@@ -458,15 +504,18 @@ def wrap_paragraph(para: list[Atom], max_w: float, size: float, tracking: float,
 _LINE_END = re.compile(r"(?:[.!?。．！？…」』”’)）\]］:：]|다)\s*$")
 _WORDY_CH = re.compile(r"[가-힣A-Za-z0-9]")
 _TAG_OR_ICON = re.compile(r"</?[a-z0-9]+>|\[\[[^\]]*\]\]")
+_TRAILING_TAGS = re.compile(r"(?:\s*</?[a-z0-9]+>)+\s*$")
 
 
 def soft_break(prev: str, nxt: str) -> bool:
     """두 줄이 한 문장으로 이어지는가: 앞 줄이 문장 중간에서 끝났고 두 줄 모두 글자가 있는 줄
-    (아이콘·기호만 있는 줄, 아이콘으로 끝난 줄은 따로 둔다). 태그·[[아이콘]]이 든 글이어도 된다."""
+    (아이콘·기호만 있는 줄, 아이콘으로 끝난 줄은 따로 둔다). 태그·[[아이콘]]이 든 글이어도 된다.
+    줄 끝의 서식 태그(close_tags_per_line이 붙인 ``</b>`` 등)는 빼고 끝 글자를 본다."""
     p, n = _TAG_OR_ICON.sub("", prev).strip(), _TAG_OR_ICON.sub("", nxt).strip()
     if not (_WORDY_CH.search(p) and _WORDY_CH.search(n)):
         return False
-    return not _LINE_END.search(prev.strip()) and not prev.rstrip().endswith("]]")
+    end = _TRAILING_TAGS.sub("", prev).strip()
+    return not _LINE_END.search(end) and not end.endswith("]]")
 
 
 def two_line_sentences(lines: list[str]) -> list[int]:

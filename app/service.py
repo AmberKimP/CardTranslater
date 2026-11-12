@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import threading
 import time
@@ -98,6 +99,8 @@ class ComposeResult:
     error: str | None = None
     sheet_images: list[Path] = field(default_factory=list)  # 배열 이미지로 넣었으면 원래 배열로 다시 합친 이미지
     sheet_error: str | None = None  # 합치지 못한 이유 (한글 넣기 결과는 그대로 쓸 수 있다)
+    reused_pages: list[int] = field(default_factory=list)  # 바뀌지 않아 예전 결과를 그대로 쓴 쪽 (F19)
+    composed_pages: list[int] = field(default_factory=list)  # 새로 한글을 넣은 쪽
 
 
 # ---------------------------------------------------------------- 폴더
@@ -468,6 +471,16 @@ def export_excel(project_dir: Path | str, out: Path | str | None = None, pages: 
 
 
 # ---------------------------------------------------------------- 8단계: 한글 넣기
+def _reuse_dir(final_dir: Path, cleared_dir: Path) -> Path | None:
+    """예전 translated/가 같은 지운 결과로 만든 것이면 그 폴더 (바뀐 카드만 다시 넣는다, F19), 아니면 None."""
+    try:
+        old = json.loads((final_dir / "report.json").read_text(encoding="utf-8"))
+        same = Path(old["erase_run"]).resolve() == Path(cleared_dir).resolve()
+    except Exception:  # noqa: BLE001 - 없음·깨짐: 전부 새로 넣는다
+        return None
+    return final_dir if same else None
+
+
 def compose(project_dir: Path | str, *, excel: Path | str | None = None, cleared: Path | str | None = None,
             pages: str | None = None, accept_issues: bool = False, test: bool = False,
             out_root: Path | str = "test_runs", progress: ProgressFn | None = None,
@@ -497,10 +510,11 @@ def compose(project_dir: Path | str, *, excel: Path | str | None = None, cleared
 
     final_dir, run_dir = _output_dirs(project.root, "translated", "compose", test, Path(out_root))
     out_name = "composed.pdf" if test else "translated.pdf"
+    reuse = None if (test or pages) else _reuse_dir(final_dir, cleared_dir)  # 시험·쪽 지정은 늘 전부 새로
     try:
         run_dir, code = run_compose(project.root, cleared_dir, pages, run_dir, cards=cards,
                                     translation_source=source, out_name=out_name,
-                                    progress=progress, cancel=cancel)
+                                    progress=progress, cancel=cancel, reuse_dir=reuse)
         rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
         summary = rep["status_summary"]
         if code:
@@ -512,7 +526,8 @@ def compose(project_dir: Path | str, *, excel: Path | str | None = None, cleared
         _discard(run_dir, final_dir)
         raise
     _commit(run_dir, final_dir)
-    res = ComposeResult("done", final_dir, issues=issues, status_summary=summary, rows=rows)
+    res = ComposeResult("done", final_dir, issues=issues, status_summary=summary, rows=rows,
+                        reused_pages=rep.get("reused_pages", []), composed_pages=rep.get("composed_pages", []))
     if not test:
         _attach_sheet_images(project.root, final_dir, res, progress)
     progress(ProgressEvent("done", 1, 1, "한글 넣기 완료"))
@@ -881,6 +896,11 @@ class GlossaryConfirmResult:
     changed: list[str] = field(default_factory=list)  # 번역이 바뀐 확정 용어 (그 용어가 든 번역은 다시 해야 함)
     blocking: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    # 바뀐 용어마다 {"source", "old", "new", "variants", "category"} (term_change_candidates·apply_term_changes에 넘김)
+    changed_detail: list[dict] = field(default_factory=list)
+    prev_status: str = ""  # 가져오기 전 프로젝트 상태 (바뀐 용어를 모두 반영하면 이 상태로 되돌린다)
+    # 이번 가져오기로 상태가 바뀐 프로젝트마다 그 전 상태 {프로젝트 폴더: 상태} (apply_term_changes에 넘김)
+    prev_statuses: dict = field(default_factory=dict)
 
 
 def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues: bool = False) -> GlossaryConfirmResult:
@@ -895,15 +915,342 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
         return GlossaryConfirmResult("blocked", blocking=["확정할 용어가 없습니다 (번역 열이 모두 비어 있음)"])
     if res.issues and not accept_issues:
         return GlossaryConfirmResult("needs_confirmation", terms=len(res.terms), issues=res.issues)
+    prev_status = info.status
     c = glossary.confirm(info, res.terms)
     # 번역한 뒤 다시 가져와도 번역이 바뀐 용어가 없으면 번역 상태를 그대로 둔다 (바뀌면 다시 번역해야 함)
     # 용어집은 게임 단위: 같은 게임에서 용어집 검증 중이던 프로젝트도 함께 확정된다
+    prevs = {}
     for p_ in workspace.game_projects(info):
         if p_.dir != info.dir and p_.status != "glossary_review":
             continue
         keep = p_.status in ("translating", "translated") and not c["changed"]
+        if not keep and p_.status != "glossary_confirmed":
+            prevs[str(p_.dir)] = p_.status
         workspace.set_status(p_, p_.status if keep else "glossary_confirmed", glossary_version=c["version"])
-    return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues)
+    return GlossaryConfirmResult("confirmed", c["version"], c["terms"], c["changed"], issues=res.issues,
+                                 changed_detail=c.get("changed_detail", []), prev_status=prev_status,
+                                 prev_statuses=prevs)
+
+
+# ---------------------------------------------------------------- 용어 변경 일괄 반영 (PRD F20)
+def _changed_terms(changes: list[dict]) -> list[dict]:
+    """번역이 실제로 바뀐 용어만 (옛 번역이 비었거나 같으면 뺀다)."""
+    return [c for c in changes or [] if c.get("old") and c.get("new") and c["old"] != c["new"]]
+
+
+# 옛 번역 바로 뒤에 붙어도 낱말이 끝난 것으로 보는 조사 (긴 것 먼저). 이 밖의 한글이 붙으면 다른 낱말일 수 있다
+_TERM_JOSA = ("으로서", "으로써", "에서", "에게", "까지", "부터", "보다", "처럼", "으로", "이다", "이며", "이고", "이나",
+              "이라", "을", "를", "은", "는", "이", "가", "과", "와", "로", "에", "의", "도", "만", "나", "라", "며", "고",
+              "다")
+# 받침에 따라 바뀌는 조사: 조사 -> (받침 있을 때, 받침 없을 때)
+_JOSA_PAIRS = {}
+for _a, _b in (("을", "를"), ("은", "는"), ("이", "가"), ("과", "와"), ("이나", "나"), ("이라", "라"), ("이며", "며"),
+               ("이고", "고"), ("이다", "다")):
+    _JOSA_PAIRS[_a] = _JOSA_PAIRS[_b] = (_a, _b)
+
+
+def _is_hangul(ch: str) -> bool:
+    return bool(ch) and "가" <= ch <= "힣"
+
+
+def _fit_josa(word: str, josa: str) -> str:
+    """새 번역의 받침에 맞춘 조사 (금화를 -> 황금을, 마나나 -> 금이나). 받침과 상관없는 조사는 그대로."""
+    last = word[-1:]
+    if not josa or not _is_hangul(last):
+        return josa
+    final = (ord(last) - 0xAC00) % 28  # 받침 (0: 없음, 8: ㄹ)
+    if josa in _JOSA_PAIRS:
+        return _JOSA_PAIRS[josa][0 if final else 1]
+    if josa in ("으로", "로"):
+        return "으로" if final and final != 8 else "로"
+    return josa
+
+
+def _swap_text(text: str, hits: list[dict], protect: list[str]) -> tuple[str, dict, dict, str]:
+    """글 하나에서 옛 번역을 새 번역으로 (긴 낱말 먼저, 한 번에 훑는다).
+    protect(새 번역·같은 칸의 다른 용어 번역)에 든 자리는 건드리지 않는다 (장검 안의 검, 가스 트랩도어 안의 트랩).
+    옛 번역 앞에 한글이 붙었거나 뒤에 조사가 아닌 한글이 붙은 자리는 다른 낱말일 수 있어 바꾸지 않는다.
+    닫는 서식 태그 뒤의 조사도 본다 (<b>마나</b>를 -> <b>체력</b>을).
+    돌려줌: (바꾼 글, {용어 원문: 바꾼 수}, {용어 원문: 못 바꾸고 남은 수 (두 글자 이상 옛 번역만)}, 보호한 자리를 지운 글).
+    한 글자 옛 번역이 낱말 경계에 없으면 다른 낱말 안의 글자로 보고 세지 않는다 (지금 안의 금)."""
+    import re
+
+    words: dict[str, dict | None] = {w: None for w in protect if w}
+    for c in hits:
+        words.setdefault(c["old"], c)  # 다른 용어 번역과 같은 옛 번역은 보호가 먼저
+    if not text or not words:
+        return text, {}, {}, text or ""
+    rx = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
+    out, masked, pos = [], [], 0
+    swapped: dict[str, int] = {}
+    left: dict[str, int] = {}
+    for mo in rx.finditer(text):
+        if mo.start() < pos:
+            continue  # 앞에서 조사까지 바꾼 자리
+        c = words[mo.group(0)]
+        out.append(text[pos:mo.start()])
+        masked.append(text[pos:mo.start()])
+        pos = mo.end()
+        if c is None:
+            out.append(mo.group(0))
+            masked.append("\0")
+            continue
+        key = c.get("source", c["old"])
+        masked.append(mo.group(0))
+        tags = re.match(r"(?:</[a-z0-9]+>)*", text[mo.end():]).group(0)
+        rest = text[mo.end() + len(tags):]
+        if not _is_hangul(rest[:1]):
+            josa = ""
+        else:
+            josa = next((j for j in _TERM_JOSA if rest.startswith(j) and not _is_hangul(rest[len(j):len(j) + 1])), None)
+        if josa is None or _is_hangul(text[mo.start() - 1] if mo.start() else ""):
+            if len(c["old"]) >= 2:
+                left[key] = left.get(key, 0) + 1  # 두 글자 이상이면 그 용어를 쓴 것일 수 있다 (직접 고칠 칸)
+            out.append(mo.group(0))
+            continue
+        swapped[key] = swapped.get(key, 0) + 1
+        out.append(c["new"] + tags + _fit_josa(c["new"], josa))
+        masked.append(tags + josa)
+        pos += len(tags) + len(josa)
+    out.append(text[pos:])
+    masked.append(text[pos:])
+    return "".join(out), swapped, left, "".join(masked)
+
+
+def _term_source_counts(text: str, terms: list[dict]) -> dict[str, int]:
+    """원문에 용어마다 나온 횟수 (이형태 포함, translate.terms_in처럼 긴 용어가 차지한 자리는 빼고 센다)."""
+    from app.glossary import is_phrase, occurrences
+
+    out, rest = {}, text or ""
+    for t in sorted(terms, key=lambda t: -len(t["source"])):
+        forms = sorted([t["source"], *t.get("variants", [])], key=len, reverse=True)
+        phrase = is_phrase(t["source"], t.get("category", ""))
+        tmp, n = (text if phrase else rest), 0
+        for f in forms:
+            k = occurrences(f, tmp)
+            if k:
+                n += k
+                tmp = tmp.replace(f, "　" * len(f))  # 긴 이형태 안의 짧은 이형태를 두 번 세지 않게
+        if n:
+            out[t["source"]] = n
+            if not phrase:
+                rest = tmp
+    return out
+
+
+def _term_plan(value, source: str, changes: list[dict], terms: list[dict]) -> dict:
+    """한 번역(value: 글 또는 태그 목록)에 바뀐 용어를 어떻게 반영할지. 바뀜 후보와 캐시 고치기가 함께 쓴다.
+    source: 원문 (용어 찾기는 확정 용어집 전체로 해서 긴 용어 안의 짧은 용어는 빼고), terms: 확정 용어집.
+    자동으로 바꾸는 것(auto)은 빠짐없이 바꿀 수 있다고 확인될 때만이다: 옛 번역이 남은 용어마다 바꾼 수가 원문에
+    나온 수와 같고, 못 바꾸고 남은 옛 번역·활용형이 없고, 한 글자 옛 번역이 아니고, 바뀐 용어끼리 옛·새 번역이
+    겹치지 않을 때. 나머지는 직접 고칠 칸이다 (잘못 바꾸는 것보다 사람에게 맡기는 편이 낫다).
+    {"hits": 원문에 든 바뀐 용어, "used": 옛 번역이 남은 용어 원문, "swapped": 실제로 바꾼 용어 원문(auto일 때),
+     "auto", "proposed": 바꾼 번역(auto일 때만, 아니면 None)}."""
+    from app.translate import ko_term_used
+
+    by_src = {c["source"]: c for c in changes}
+    counts = _term_source_counts(source, terms)
+    hits = [by_src[s] for s in counts if s in by_src]
+    none = {"hits": hits, "used": [], "swapped": [], "auto": False, "proposed": None}
+    if not hits:
+        return none
+    items = [v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str)]
+    # 바뀐 용어끼리 옛·새 번역이 겹치면(검→방패와 방패→검, 검→장검과 장검→대검) 자동으로 바꾸지 않는다
+    chain = any(a is not b and (a["new"] in b["old"] or b["old"] in a["new"]) for a in hits for b in hits)
+    if chain:
+        used = [c["source"] for c in hits if any(c["old"] in v or ko_term_used(c["old"], v) for v in items)]
+        return {**none, "used": used}
+    protect = [t["ko"] for t in terms if t["source"] in counts and t["source"] not in by_src and t.get("ko")]
+    protect += [c["new"] for c in hits]
+    new_items, swapped, left, inflected = [], {}, {}, set()
+    for v in (value if isinstance(value, list) else [value]):
+        if not isinstance(v, str):
+            new_items.append(v)
+            continue
+        out, sw, lf, masked = _swap_text(v, hits, protect)
+        new_items.append(out)
+        for k, n in sw.items():
+            swapped[k] = swapped.get(k, 0) + n
+        for k, n in lf.items():
+            left[k] = left.get(k, 0) + n
+        for c in hits:  # 옛 번역이 활용된 꼴로만 남음 (버리다 -> 버린다): 직접 고칠 칸
+            if c["old"] not in masked and ko_term_used(c["old"], masked):
+                inflected.add(c["source"])
+    used = [c["source"] for c in hits if c["source"] in set(swapped) | set(left) | inflected]
+    auto = bool(used) and not left and not inflected and all(
+        len(by_src[s]["old"]) >= 2 and swapped.get(s, 0) == counts[s] for s in used)
+    if not auto:
+        return {**none, "used": used}
+    proposed = new_items if isinstance(value, list) else new_items[0]
+    return {"hits": hits, "used": used, "swapped": used, "auto": True, "proposed": proposed}
+
+
+def _swap_terms(value, changes: list[dict], protect: list[str] = ()):
+    """옛 번역을 새 번역으로 바꾼 값 (바꿀 수 없는 자리는 그대로, 검사 없이). 태그 칸(목록)은 하나하나."""
+    if isinstance(value, list):
+        return [_swap_terms(v, changes, protect) for v in value]
+    if not isinstance(value, str) or not changes:
+        return value
+    return _swap_text(value, changes, list(protect) + [c["new"] for c in changes])[0]
+
+
+def _term_cells(project_dir: Path | str, changes: list[dict]) -> list[dict]:
+    """같은 게임의 모든 프로젝트에서 원문에 바뀐 용어가 든 칸 (바뀜 후보가 아닌 칸도 candidate=False로 함께)."""
+    from app import card_edits, glossary, workspace
+    from app.excel_io import source_of
+    from app.extract import load_extracted
+
+    changes = _changed_terms(changes)
+    if not changes:
+        return []
+    info = workspace.load_project_info(project_dir)
+    terms = glossary.load_glossary(info).get("terms", [])
+    out = []
+    for p_ in workspace.game_projects(info):
+        for fd in workspace.file_dirs(p_):
+            try:
+                proj = load_project(fd)
+            except FileNotFoundError:
+                continue  # 영역 템플릿이 없는 그룹
+            extracted = load_extracted(fd)
+            where = "review" if review_xlsx_for(fd) else "draft"
+            base_cards = None
+            edits = card_edits.load(fd)
+            for pno in workspace.included_pages(fd):
+                for reg in proj.template.regions_for(pno):
+                    if reg.kind not in ("text", "tag_pills"):
+                        continue
+                    src, _u = source_of(proj, extracted, pno, reg.name)
+                    text = card_edits.norm(src)
+                    if not text or not _term_plan("", text, changes, terms)["hits"]:
+                        continue
+                    if base_cards is None:  # 검수 엑셀은 느리므로 용어가 든 칸이 있을 때만 읽는다
+                        base_cards = _translation_cards(fd)
+                    entry = (base_cards.get(pno) or {}).get(reg.name)
+                    base = entry.get("ko") if isinstance(entry, dict) else None
+                    e = card_edits.edit_for(edits, pno, reg.name, base)
+                    now = e["ko"] if e else base
+                    plan = _term_plan(now, text, changes, terms)
+                    out.append({"project": p_.name, "project_dir": p_.dir, "file_dir": fd,
+                                "file_key": workspace.file_key(fd), "page": pno, "region": reg.name, "kind": reg.kind,
+                                "source": text, "sources": list(src) if isinstance(src, list) else [src],
+                                "current": card_edits.norm(now),
+                                "proposed": card_edits.norm(plan["proposed"]) if plan["auto"] else None,
+                                "where": where, "terms": plan["used"], "auto": plan["auto"],
+                                "candidate": bool(plan["used"]), "_now": now, "_base": base,
+                                "_proposed": plan["proposed"]})
+    return out
+
+
+def term_change_candidates(project_dir: Path | str, changes: list[dict]) -> list[dict]:
+    """용어집에서 번역이 바뀐 용어(changes: GlossaryConfirmResult.changed_detail)가 든 칸의 바뀜 후보.
+    같은 게임의 모든 프로젝트·파일에서 원문에 그 용어가 있고 지금 쓰는 번역(검수 엑셀 위에 고친 번역, 엑셀이
+    없으면 초벌 번역)에 옛 번역이 남은 칸. [{project, file_dir, file_key, page, region, kind, source, current,
+    proposed(바꿀 번역, 안전하게 바꿀 수 없으면 None), where(review|draft), terms[원문 용어], auto}].
+    옛 번역이 활용된 꼴로만 있거나 다른 낱말에 붙어 있으면 auto=False (직접 고칠 칸)."""
+    return [{k: v for k, v in c.items() if not k.startswith("_") and k not in ("candidate", "sources")}
+            for c in _term_cells(project_dir, changes) if c["candidate"]]
+
+
+@dataclass
+class TermApplyResult:
+    applied: int = 0  # 바꾼 칸
+    skipped: int = 0  # 고른 칸 중 바꾸지 못한 칸 (직접 고쳐야 하거나 그 사이 번역이 바뀜)
+    status_restored: bool = False  # 이 프로젝트는 바뀐 용어를 모두 반영해 다시 번역할 필요가 없음 (상태를 되돌림)
+    restored: list[str] = field(default_factory=list)  # 상태를 되돌린 프로젝트 이름 (같은 게임의 다른 프로젝트 포함)
+
+
+def apply_term_changes(project_dir: Path | str, picks: list[dict], changes: list[dict],
+                       prev_status: str | dict | None = None) -> TermApplyResult:
+    """고른 바뀜 후보(picks: term_change_candidates의 칸)에 새 용어 번역을 넣는다.
+    검수 엑셀은 건드리지 않고(그림이 빠지므로) 고친 번역(card_edits)으로 둔다. 초벌 번역 캐시도 새 용어로 고쳐
+    ⑥ 전체 번역이 그 칸을 다시 번역하지 않게 한다 (고르지 않은 칸은 지금 번역 그대로, 안전하게 바꿀 수 없는
+    캐시 항목은 그대로 두어 ⑥이 다시 번역한다).
+    prev_status: 가져오기 전 상태 — 글(이 프로젝트) 또는 {프로젝트 폴더: 상태} (GlossaryConfirmResult.prev_statuses).
+    바뀐 용어가 든 번역이 모두 새 용어를 쓰게 된 프로젝트는 그 상태(번역 중·번역 완료)로 되돌린다."""
+    from app import card_edits, font_plan, glossary, workspace
+    from app.translate import _stale, check, load_cache, save_cache, terms_in, unique_sources
+
+    changes = _changed_terms(changes)
+    res = TermApplyResult()
+    if not changes:
+        return res
+    info = workspace.load_project_info(project_dir)
+    terms = glossary.load_glossary(info).get("terms", [])
+    cells = _term_cells(info.dir, changes)
+    want = {(str(Path(p["file_dir"]).resolve()), int(p["page"]), p["region"]) for p in picks or []}
+
+    def ident(c):
+        return str(Path(c["file_dir"]).resolve()), int(c["page"]), c["region"]
+    picked = [c for c in cells if ident(c) in want and c["auto"]]
+    res.skipped = len(want) - len(picked)
+    picked_ids = {ident(c) for c in picked}
+    # 번역 캐시는 프로젝트마다 따로: (프로젝트 폴더, 원문)으로 고른 것·고르지 않은 것을 나눈다
+    declined = {(str(c["project_dir"]), s) for c in cells if c["auto"] and ident(c) not in picked_ids
+                for s in c["sources"]}
+    chosen = {(str(c["project_dir"]), s) for c in picked for s in c["sources"]}
+
+    changed_sources: dict[str, set] = {}  # 프로젝트 폴더 -> 캐시를 고친 원문
+    for p_ in workspace.game_projects(info):
+        cache = load_cache(p_.dir)
+        done = set()
+        for s, entry in cache.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("ko"), str):
+                continue
+            if (str(p_.dir), s) in declined and (str(p_.dir), s) not in chosen:
+                continue  # 고르지 않은 칸의 번역은 그대로
+            plan = _term_plan(entry["ko"], s, changes, terms)
+            if not plan["auto"]:
+                continue  # 용어가 없거나 빠짐없이 바꿀 수 없음 (⑥이 다시 번역하게 그대로 둔다)
+            ko = plan["proposed"]
+            used = dict(entry.get("terms_used") or {})
+            for src_ in plan["swapped"]:  # 이 항목에서 실제로 바꾼 용어만 새 번역을 쓴 것으로 적는다
+                used[src_] = next(c["new"] for c in changes if c["source"] == src_)
+            st, missing = check(s, ko, terms)
+            entry.update(ko=ko, terms_used=used, status=st, missing_terms=missing)
+            done.add(s)
+        if done:
+            save_cache(p_.dir, cache)
+            changed_sources[str(p_.dir)] = done
+
+    fresh: set[str] = set()
+    for c in cells:  # 고친 번역(card_edits): 고른 칸은 바꿀 번역, 초벌 번역이 바뀐 칸은 지금 번역을 지킨다
+        is_picked = ident(c) in picked_ids
+        moved = bool(changed_sources.get(str(c["project_dir"]), set()) & set(c["sources"]))
+        if not is_picked and not (c["where"] == "draft" and moved):
+            continue
+        if c["where"] == "review":
+            base = c["_base"]  # 검수 엑셀 값 (캐시를 고쳐도 그대로라 엑셀을 다시 읽지 않는다)
+        else:
+            if str(c["file_dir"]) not in fresh:  # 초벌 번역 칸: 고친 캐시로 파일마다 한 번 다시 읽는다
+                fresh.add(str(c["file_dir"]))
+                _TRANSLATION_CARDS.pop(str(c["file_dir"]), None)
+            entry = (_translation_cards(c["file_dir"]).get(c["page"]) or {}).get(c["region"])
+            base = entry.get("ko") if isinstance(entry, dict) else None
+        card_edits.set_text(c["file_dir"], c["page"], c["region"], c["_proposed"] if is_picked else c["_now"], base)
+        res.applied += int(is_picked)
+
+    prevs = prev_status if isinstance(prev_status, dict) else ({str(info.dir): prev_status} if prev_status else {})
+    names = {c["source"] for c in changes}
+    for p_ in workspace.game_projects(info):  # 프로젝트마다: 바뀐 용어가 든 캐시 번역이 모두 새 용어면 상태를 되돌린다
+        prev = prevs.get(str(p_.dir))
+        if prev not in ("translating", "translated") or p_.status != "glossary_confirmed":
+            continue
+        cache = load_cache(p_.dir)
+        stale = False
+        for s, *_ in unique_sources(glossary.collect_sources(p_)):
+            e = cache.get(s)
+            if e and any(t["source"] in names for t in terms_in(s, terms)) and _stale(e, s, terms):
+                stale = True
+                break
+        if stale:
+            continue
+        workspace.set_status(p_, prev)
+        res.restored.append(p_.name)
+        res.status_restored = res.status_restored or p_.dir == info.dir
+    _clear_review_caches()
+    font_plan._raw_cache.clear()
+    return res
 
 
 # ---------------------------------------------------------------- 5단계: 초벌 번역 (확정 용어집 기준)
@@ -1212,7 +1559,8 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
         rec = {"file": key, "state": r.state, "from": src, "issues": r.issues, "blocking": r.blocking,
                "summary": {k: len(v) for k, v in r.status_summary.items()},
                "dir": str(r.output_dir) if r.output_dir else None,
-               "sheet_images": [str(p) for p in r.sheet_images], "sheet_error": r.sheet_error}
+               "sheet_images": [str(p) for p in r.sheet_images], "sheet_error": r.sheet_error,
+               "reused": len(r.reused_pages), "composed": len(r.composed_pages)}
         out.files.append(rec)
         if r.state in ("blocked", "failed"):
             out.state, out.reason = r.state, f"{key}: {(r.blocking or [r.error or ''])[0]}"
@@ -1414,7 +1762,8 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResul
     try:
         run_dir, code = run_compose(project.root, fd / "cleared", None, run_dir, cards=cards,
                                     translation_source="초벌 번역 (translate/cache.json)", out_name="translated.pdf",
-                                    progress=progress or _noop, cancel=cancel)
+                                    progress=progress or _noop, cancel=cancel,
+                                    reuse_dir=_reuse_dir(final_dir, fd / "cleared"))
         rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
         if code:
             return ComposeResult("failed", run_dir, status_summary=rep["status_summary"],
@@ -1423,7 +1772,8 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> ComposeResul
         _discard(run_dir, final_dir)
         raise
     _commit(run_dir, final_dir)
-    res = ComposeResult("done", final_dir, status_summary=rep["status_summary"])
+    res = ComposeResult("done", final_dir, status_summary=rep["status_summary"],
+                        reused_pages=rep.get("reused_pages", []), composed_pages=rep.get("composed_pages", []))
     _attach_sheet_images(fd, final_dir, res, progress or _noop)
     return res
 
@@ -1932,6 +2282,170 @@ def save_region_template(group_dir: Path | str, data: dict) -> list[str]:
     return []
 
 
+# ---------------------------------------------------------------- 자동 정렬 (PRD 5.8, F21)
+@dataclass
+class AlignResult:
+    state: str  # "done" | "blocked"
+    reason: str = ""
+    reference: dict = field(default_factory=dict)  # {"file": 파일 폴더 이름, "page": 쪽}
+    files: list[dict] = field(default_factory=list)  # [{"file", "dir", "ok": [쪽], "check": [쪽], "manual": [쪽]}]
+
+    @property
+    def ok_count(self) -> int:
+        return sum(len(f["ok"]) for f in self.files)
+
+    @property
+    def check_count(self) -> int:
+        return sum(len(f["check"]) for f in self.files)
+
+
+def _group_files(file_dir: Path) -> list[Path]:
+    """같은 그룹의 파일 폴더 (폴더 이름 순: 화면의 파일 순서와 같다). 그룹 밖 폴더면 자기 자신만."""
+    fd = Path(file_dir)
+    files = fd.parent
+    if files.name != "files" or not (files.parent / "group.json").exists():
+        return [fd]
+    return sorted(p for p in files.iterdir() if p.is_dir())
+
+
+def _align_reference(file_dirs: list[Path], data: dict) -> tuple[Path, int]:
+    """정렬 기준 카드: 그룹 첫 파일의 reference_page (뺀 쪽이면 그 파일에서 처리할 첫 쪽)."""
+    from app import workspace
+
+    fd = Path(file_dirs[0])
+    pages = workspace.included_pages(fd, limited=False) or list(range(1, workspace.page_count(fd) + 1))
+    ref = int(data.get("reference_page", 1) or 1)
+    return fd, (ref if ref in pages else pages[0])
+
+
+def align_group(file_dirs: list, progress: ProgressFn | None = None,
+                cancel: CancelToken | None = None) -> AlignResult:
+    """그룹(파일 폴더들)의 처리할 카드를 기준 카드에 맞춰 각 파일 폴더의 align.json에 쓴다.
+    카드별 그룹·‘이 카드만 따로 영역’ 카드는 맞추지 않는다. 손으로 맞춘 카드(manual)는 그대로 둔다
+    (기준 카드가 바뀌었으면 모두 새로). 이미 읽은(추출한) 카드의 원문은 다시 읽지 않는다."""
+    from app import align, workspace
+
+    progress = progress or _noop
+    fds = [Path(f) for f in file_dirs]
+    if not fds:
+        return AlignResult("blocked", "파일이 없습니다")
+    gdir = fds[0].parent.parent
+    data = load_region_template(gdir)
+    if data.get("layout") == "per_card":
+        return AlignResult("blocked", "카드마다 영역을 정하는 그룹은 자동 정렬하지 않습니다")
+    if not data.get("regions"):
+        return AlignResult("blocked", "공통 영역이 없습니다. 먼저 영역을 그리고 저장하세요")
+    # 기준 파일은 폴더 이름 순 첫 파일 (nudge_alignment의 _group_files와 같은 순서: 부른 쪽 순서와 무관하게)
+    ref_fd, ref_page = _align_reference(sorted(fds), data)
+    reference = {"file": ref_fd.name, "page": ref_page}
+    own = set((data.get("page_regions") or {}).keys())
+    targets, old = [], {}
+    for fd in fds:
+        prev = align.load(fd)
+        old[fd] = (prev.get("pages") or {}) if prev.get("reference") == reference else {}
+        pages = [p for p in workspace.included_pages(fd, limited=False)
+                 if f"{fd.name}/{p}" not in own and (old[fd].get(str(p)) or {}).get("status") != align.STATUS_MANUAL]
+        if fd == ref_fd and ref_page not in pages:
+            pages = [ref_page] + pages
+        targets.append((sorted((fd / "source").glob("*.pdf"))[0], pages))
+
+    def on_page(i, n, _pdf, p):
+        progress(ProgressEvent("align", i, n, f"카드 맞추는 중 {i}/{n}", page=p))
+
+    cancel_check = cancel.check if cancel is not None else None
+    found = align.align_pages(sorted((ref_fd / "source").glob("*.pdf"))[0], ref_page, targets,
+                              on_page=on_page, check_cancel=cancel_check)
+    out = AlignResult("done", reference=reference)
+    for fd, (pdf, pages) in zip(fds, targets):
+        entries = {k: v for k, v in old[fd].items() if v.get("status") == align.STATUS_MANUAL
+                   and f"{fd.name}/{k}" not in own}
+        for p in pages:
+            entries[str(p)] = found[(str(pdf), p)]
+        align.save(fd, {"reference": reference, "pages": entries})
+        out.files.append({"file": workspace.file_key(fd), "dir": str(fd),
+                          "ok": sorted(int(k) for k, v in entries.items() if v.get("status") == align.STATUS_OK),
+                          "check": sorted(int(k) for k, v in entries.items() if v.get("status") == align.STATUS_CHECK),
+                          "manual": sorted(int(k) for k, v in entries.items()
+                                           if v.get("status") == align.STATUS_MANUAL)})
+    progress(ProgressEvent("done", 1, 1, f"맞춘 카드 {out.ok_count}장, 정렬 확인 필요 {out.check_count}장"))
+    return out
+
+
+def align_info(file_dir: Path | str) -> dict:
+    """파일의 자동 정렬 상태 {"reference": {...} | None, "pages": {쪽: {dx, dy, sx, sy, rot, score, status, applied}}}.
+    applied: 영역에 적용하는 정렬인가 (점수가 아주 낮은 ‘정렬 확인 필요’는 적용하지 않는다)."""
+    from app import align
+
+    data = align.load(file_dir)
+    pages = {int(k): {**v, "applied": align.applied(v)} for k, v in (data.get("pages") or {}).items()
+             if str(k).isdigit() and isinstance(v, dict)}
+    return {"reference": data.get("reference"), "pages": pages}
+
+
+def nudge_alignment(file_dir: Path | str, page: int, ddx: float, ddy: float) -> dict | None:
+    """그 카드의 정렬만 손으로 옮긴다 (비율 좌표 ddx·ddy, 상태 manual). 새 정렬 값. 기준 카드는 옮기지 않는다(None)."""
+    from app import align
+
+    fd = Path(file_dir)
+    data = align.load(fd)
+    pages = data.setdefault("pages", {})
+    cur = pages.get(str(int(page)))
+    if data.get("reference") is None:
+        ref_fd, ref_page = _align_reference(_group_files(fd), load_region_template(fd.parent.parent))
+        data["reference"] = {"file": ref_fd.name, "page": ref_page}
+    ref = data["reference"]
+    if (cur or {}).get("status") == align.STATUS_REF or (ref.get("file") == fd.name and int(ref.get("page", 0)) == int(page)):
+        return None
+    cur = dict(cur or {**align.IDENTITY, "score": 0.0})
+    if cur.get("status") != align.STATUS_MANUAL:
+        cur["auto"] = {k: cur.get(k) for k in ("dx", "dy", "sx", "sy", "rot", "score", "status", "method") if k in cur}
+        if not align.applied(cur):  # 적용하지 않던 정렬(믿을 수 없음)이면 화면에 보이던 자리(변환 없음)에서 시작
+            cur.update({k: align.IDENTITY[k] for k in ("dx", "dy", "sx", "sy")})
+    cur["dx"] = round(float(cur.get("dx", 0.0)) + ddx, 5)
+    cur["dy"] = round(float(cur.get("dy", 0.0)) + ddy, 5)
+    cur["status"] = align.STATUS_MANUAL
+    pages[str(int(page))] = cur
+    align.save(fd, data)
+    return cur
+
+
+def reset_alignment(file_dir: Path | str, page: int | None = None) -> dict | None:
+    """정렬 되돌리기. page를 주면 그 카드만: 손으로 맞춘 카드는 자동 정렬 값으로, 자동이면 정렬 없음으로.
+    page가 없으면 이 파일의 정렬을 모두 지운다. 그 카드의 새 정렬 값 (없으면 None)."""
+    from app import align
+
+    fd = Path(file_dir)
+    data = align.load(fd)
+    if page is None:
+        align.save(fd, {})
+        return None
+    pages = data.get("pages") or {}
+    cur = pages.get(str(int(page)))
+    if not cur or cur.get("status") == align.STATUS_REF:
+        return cur
+    if cur.get("status") == align.STATUS_MANUAL and cur.get("auto"):
+        pages[str(int(page))] = cur = dict(cur["auto"])
+    else:
+        pages.pop(str(int(page)), None)
+        cur = None
+    if not any(v.get("status") != align.STATUS_REF for v in pages.values()):
+        pages = {}
+    data["pages"] = pages
+    align.save(fd, data)
+    return cur
+
+
+def align_rect(rect: dict, t: dict | None, inverse: bool = False) -> dict:
+    """화면용: 비율 rect {x, y, w, h}에 정렬 변환을 적용(inverse=True면 거꾸로)한 rect. 자르지 않는다."""
+    from app.regions import RatioRect, align_rect as _fwd, unalign_rect as _inv
+
+    if not t:
+        return dict(rect)
+    r = RatioRect(float(rect["x"]), float(rect["y"]), float(rect["w"]), float(rect["h"]))
+    o = _inv(r, t) if inverse else _fwd(r, t, clip=False)
+    return {"x": o.x, "y": o.y, "w": o.w, "h": o.h}
+
+
 def engine_status() -> dict:
     """쓸 수 있는 엔진: {"claude-code": bool, "api": bool, "message"}. 키 값은 돌려주지 않는다."""
     from app.extract import api_key_source
@@ -2364,9 +2878,9 @@ def _file_json_sig(fd: Path) -> str:
 
 
 def _regions_sig(fd: Path) -> tuple:
-    """파일·그룹의 영역 템플릿(regions.json) 시각 (영역이 바뀌면 칸 목록이 바뀐다)."""
+    """파일·그룹의 영역 템플릿(regions.json)·자동 정렬(align.json) 시각 (영역이 바뀌면 칸 목록이 바뀐다)."""
     out = []
-    for p in (Path(fd) / "regions.json", Path(fd).parent.parent / "regions.json"):
+    for p in (Path(fd) / "regions.json", Path(fd).parent.parent / "regions.json", Path(fd) / "align.json"):
         try:
             out.append(p.stat().st_mtime)
         except OSError:
@@ -2769,6 +3283,8 @@ class TestRunsResult:
     state: str  # done | blocked
     runs: list = field(default_factory=list)  # [TestRunResult]
     reason: str = ""
+    entry: dict | None = None  # 시험 기록(test_history.json)에 남긴 항목
+    summary: dict = field(default_factory=dict)  # 문제 이름 -> 칸(정렬은 카드) 수
 
 
 def test_run_cards(file_dirs: list, n: int, *, out_root: Path | str | None = None,
@@ -2778,7 +3294,6 @@ def test_run_cards(file_dirs: list, n: int, *, out_root: Path | str | None = Non
     from app import workspace
 
     left = int(n)
-    runs = []
     plan = []
     for fd in file_dirs:  # 처리할 쪽 (시험 모드 card_limit 안: 추출·번역한 쪽과 같은 범위)
         if left <= 0:
@@ -2787,18 +3302,62 @@ def test_run_cards(file_dirs: list, n: int, *, out_root: Path | str | None = Non
         if pages:
             plan.append((fd, pages))
             left -= len(pages)
-    for i, (fd, pages) in enumerate(plan):
-        def say(e, _i=i, _fd=fd):  # 파일마다 0%부터 다시 가지 않게 전체 몇 번째 파일인지 붙인다
-            if progress:
-                progress(ProgressEvent(e.stage, e.done, e.total,
-                                       f"{_i + 1}/{len(plan)} {workspace.file_key(Path(_fd))}: {e.message}", e.page))
-        r = test_run(fd, workspace.pages_spec(pages), out_root=out_root, progress=say, cancel=cancel)
-        if r.state != "done":
-            return TestRunsResult("blocked", runs, r.reason)
-        runs.append(r)
+    return test_run_selection(plan, f"앞 {int(n)}장", out_root=out_root, progress=progress, cancel=cancel)
+
+
+def test_run_selection(selection: list, label: str, *, out_root: Path | str | None = None,
+                       progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> TestRunsResult:
+    """고른 카드만 시험 폴더에서 지우기 -> 한글 넣기. selection: [(파일 폴더, [쪽])], label: 시험 기록에 보일 방식
+    ('앞 3장' · '쪽 1, 5' · '어려운 카드 5장'). 끝나면 그룹 폴더의 test_history.json에 남긴다 (최근 5번).
+    프로젝트의 cleared/·translated/는 건드리지 않는다."""
+    from app import workspace
+
+    plan = [(Path(fd), list(pages)) for fd, pages in selection if pages]
+    root = Path(out_root) if out_root else _test_runs_root()
+
+    def listing() -> set:
+        return set(root.iterdir()) if root.is_dir() else set()
+
+    before = listing()
+
+    def cleanup(done: list):
+        """끝내지 못한 시험: 기록에 남지 않으니 이번에 만든 시험 폴더를 지운다 (데이터 폴더/test_runs 안만)."""
+        for r in done:
+            _remove_test_dir(r.run_dir)
+            _remove_test_dir(r.erase_dir)
+        for p in listing() - before:
+            _remove_test_dir(p)
+
+    runs = []
+    try:
+        for i, (fd, pages) in enumerate(plan):
+            def say(e, _i=i, _fd=fd):  # 파일마다 0%부터 다시 가지 않게 전체 몇 번째 파일인지 붙인다
+                if progress:
+                    progress(ProgressEvent(e.stage, e.done, e.total,
+                                           f"{_i + 1}/{len(plan)} {workspace.file_key(_fd)}: {e.message}", e.page))
+            r = test_run(fd, workspace.pages_spec(pages), out_root=out_root, progress=say, cancel=cancel)
+            if r.state != "done":
+                cleanup(runs + [r])
+                return TestRunsResult("blocked", [], r.reason)
+            runs.append(r)
+    except BaseException:  # 취소·오류도 같은 정리
+        cleanup(runs)
+        raise
     if not runs:
         return TestRunsResult("blocked", reason="시험할 카드가 없습니다 (처리할 쪽이 없음)")
-    return TestRunsResult("done", runs)
+    summary = _test_summary([(fd, r) for (fd, _p), r in zip(plan, runs)])
+    entry = {
+        "label": label,
+        "cards": [{"file_key": workspace.file_key(fd), "page": int(p)} for fd, pages in plan for p in pages],
+        "runs": [{"file_key": workspace.file_key(fd), "compose_dir": str(r.run_dir), "erase_dir": str(r.erase_dir)}
+                 for (fd, _p), r in zip(plan, runs)],
+        "summary": summary,
+    }
+    try:  # 기록을 못 남겨도 시험 결과는 보여 준다
+        entry = _record_test(_test_group_dir(plan[0][0]), entry)
+    except OSError as e:
+        logging.getLogger("cardtranslater.test_run").warning("시험 기록을 남기지 못했습니다: %s", e)
+    return TestRunsResult("done", runs, entry=entry, summary=summary)
 
 
 @dataclass
@@ -2842,6 +3401,249 @@ def test_run(file_dir: Path | str, pages: str, *, out_root: Path | str | None = 
     rep = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     _attach_sheet_images(fd, run_dir, None, progress or _noop, pdf_name="composed.pdf", test=True)  # 시험한 쪽만
     return TestRunResult("done", run_dir, er.output_dir, page_list, rep.get("status_summary", {}))
+
+
+# ---------------------------------------------------------------- 시험 실행: 어려운 카드 고르기·기록·비교 (5.9절)
+TEST_HISTORY_FILE = "test_history.json"
+TEST_HISTORY_KEEP = 5  # 최근 시험 몇 번을 남길지 (넘치면 오래된 시험 폴더를 지운다)
+ALIGN_CHECK = "정렬 확인 필요"
+_ICON_TOKEN = re.compile(r"\[\[[^\]]*\]\]")  # [[coin]] · [[?]]
+_FORMAT_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]*>")  # <b> </b> <i> <c1> …
+
+
+def _source_counts(text: str) -> tuple[int, int]:
+    """원문 -> (글자 수, 아이콘 수). 글자 수는 [[아이콘]]·서식 태그·빈칸을 빼고 센다."""
+    icons = len(_ICON_TOKEN.findall(text))
+    plain = _FORMAT_TAG.sub("", _ICON_TOKEN.sub("", text))
+    return len("".join(plain.split())), icons
+
+
+def pick_hard_cards(file_dirs: list, n_long: int = 3, n_icons: int = 2) -> list[dict]:
+    """시험할 어려운 카드: 글자가 가장 긴 카드 n_long장 + 아이콘이 가장 많은 카드 n_icons장 (서로 다른 카드).
+    추출한 원문으로 고르고 처리할 쪽만 본다. 카드가 모자라면 있는 만큼만.
+    [{"file_dir", "file_key", "page", "reason"}] (고른 순서: 긴 카드 먼저)."""
+    from app import workspace
+    from app.extract import load_extracted
+
+    stats = []  # (글자 수, 아이콘 수, 파일 순서, 쪽, 파일 폴더)
+    for order, fd in enumerate(Path(x) for x in file_dirs):
+        try:
+            extracted = load_extracted(fd)
+            included = set(workspace.included_pages(fd))
+        except (OSError, ValueError, KeyError):
+            continue
+        for page, regions in extracted.items():
+            if page not in included:
+                continue
+            text = "\n".join(str((r or {}).get("source") or "") for r in regions.values())
+            chars, icons = _source_counts(text)
+            stats.append((chars, icons, order, page, fd))
+
+    def pick(fd, page, reason):
+        return {"file_dir": str(fd), "file_key": workspace.file_key(fd), "page": int(page), "reason": reason}
+
+    out, taken = [], set()
+    for chars, _i, _o, page, fd in sorted((s for s in stats if s[0] > 0), key=lambda s: (-s[0], s[2], s[3]))[:n_long]:
+        out.append(pick(fd, page, f"글자 가장 긴 카드 ({chars}자)"))
+        taken.add((str(fd), page))
+    icon_cards = [s for s in sorted(stats, key=lambda s: (-s[1], s[2], s[3])) if s[1] > 0
+                  and (str(s[4]), s[3]) not in taken]
+    for _c, icons, _o, page, fd in icon_cards[:n_icons]:
+        out.append(pick(fd, page, f"아이콘 가장 많은 카드 ({icons}개)"))
+    return out
+
+
+def parse_test_pages(file_dir: Path | str, spec: str) -> list[int]:
+    """시험 실행 ‘쪽 지정’ 입력('1, 5, 12-14') -> 쪽 목록. 잘못 적었거나 범위 밖·뺀 쪽이면 ValueError(화면에 보일 문구)."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    # 쉼표로 나눈 칸마다 '5' 또는 '12-14'만 (1-2-3·1 2·-3 같은 것은 막는다)
+    if not all(re.fullmatch(r"\s*(\d+\s*(-\s*\d+\s*)?)?", part) for part in (spec or "").split(",")):
+        raise ValueError("쪽은 1, 5, 12-14처럼 적으세요")
+    pages = parse_page_spec(spec, workspace.page_count(fd))
+    included = set(workspace.included_pages(fd, limited=False))
+    excluded = [p for p in pages if p not in included]
+    if excluded:
+        raise ValueError(f"처리하지 않는(뺀) 쪽입니다: {', '.join(map(str, excluded))}")
+    limited = set(workspace.included_pages(fd))  # 시험 모드(card_limit)면 추출·번역한 앞쪽만
+    not_yet = [p for p in pages if p not in limited]
+    if not_yet:
+        raise ValueError(f"아직 추출·번역하지 않은 쪽입니다 (시험 모드): {', '.join(map(str, not_yet))}")
+    return pages
+
+
+def _test_group_dir(file_dir: Path | str) -> Path:
+    """시험 기록을 둘 곳: 그룹 안 파일이면 그룹 폴더, 아니면(예전 방식) 파일 폴더."""
+    fd = Path(file_dir)
+    g = fd.parent.parent
+    return g if (g / "group.json").exists() else fd
+
+
+def _test_file_dir(group_dir: Path, file_key: str) -> Path | None:
+    """시험 기록의 file_key('그룹/파일') -> 파일 폴더 (그룹 이름을 바꿨어도 찾게 파일 이름만 쓴다).
+    / · \\ 어느 쪽으로 나눠 적었어도 마지막 이름만 쓰고, <그룹>/files 밖을 가리키면 None."""
+    from pathlib import PureWindowsPath
+
+    g = Path(group_dir)
+    if not (g / "group.json").exists():
+        return g
+    name = PureWindowsPath(str(file_key or "")).name  # Windows 경로 규칙은 / 와 \ 를 모두 나눈다
+    if name in ("", ".", ".."):
+        return None
+    files = (g / "files").resolve()
+    fd = g / "files" / name
+    return fd if fd.resolve().parent == files else None
+
+
+def _align_checks(file_dir: Path, pages: list[int]) -> list[int]:
+    """자동 정렬(align.json)에서 ‘정렬 확인 필요’로 남은 쪽 (파일이 없거나 깨졌으면 없음)."""
+    try:
+        data = json.loads((Path(file_dir) / "align.json").read_text(encoding="utf-8"))
+        recs = data.get("pages") or {}
+        return [p for p in pages if isinstance(recs.get(str(p)), dict) and recs[str(p)].get("status") == "check"]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def _test_summary(runs: list) -> dict:
+    """[(파일 폴더, TestRunResult)] -> {문제 이름: 수}. 넘침·글자 축소·서식 불일치·아이콘 오류 등은 칸 수,
+    정렬 확인 필요는 카드 수."""
+    out: dict[str, int] = {}
+    for fd, r in runs:
+        for st, keys in (r.status_summary or {}).items():
+            out[st] = out.get(st, 0) + len(keys)
+        n = len(_align_checks(fd, r.pages))
+        if n:
+            out[ALIGN_CHECK] = out.get(ALIGN_CHECK, 0) + n
+    return out
+
+
+def _test_runs_root() -> Path:
+    return data_dir() / "test_runs"
+
+
+def _remove_test_dir(p: Path | str | None) -> bool:
+    """시험 폴더를 지운다. 데이터 폴더/test_runs 안에 있는 폴더만 (다른 곳은 절대 지우지 않는다)."""
+    if not p:
+        return False
+    try:
+        root = _test_runs_root().resolve()
+        rp = Path(p).resolve()
+    except OSError:
+        return False
+    if rp == root or root not in rp.parents or not rp.is_dir():
+        return False
+    shutil.rmtree(rp, ignore_errors=True)
+    return True
+
+
+def _read_test_history(group_dir: Path) -> list[dict]:
+    try:
+        data = json.loads((Path(group_dir) / TEST_HISTORY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    items = data.get("tests") if isinstance(data, dict) else data
+    return [e for e in items or [] if isinstance(e, dict) and e.get("id")]
+
+
+def _record_test(group_dir: Path, entry: dict) -> dict:
+    """시험 기록 맨 앞에 넣고 최근 TEST_HISTORY_KEEP번만 남긴다. 밀려난 시험의 폴더는 지운다
+    (데이터 폴더/test_runs 안에 있을 때만). 넣은 항목(id·at 붙음)을 돌려준다."""
+    items = _read_test_history(group_dir)
+    ids = {e["id"] for e in items}
+    base = time.strftime("%Y%m%d-%H%M%S")
+    eid, k = base, 1
+    while eid in ids:
+        k += 1
+        eid = f"{base}-{k}"
+    entry = {"id": eid, "at": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}
+    items.insert(0, entry)
+    keep, drop = items[:TEST_HISTORY_KEEP], items[TEST_HISTORY_KEEP:]
+    for old in drop:
+        for run in old.get("runs") or []:
+            _remove_test_dir(run.get("compose_dir"))
+            _remove_test_dir(run.get("erase_dir"))
+    Path(group_dir).mkdir(parents=True, exist_ok=True)
+    p = Path(group_dir) / TEST_HISTORY_FILE
+    tmp = p.with_suffix(".tmp")  # 쓰다가 멈춰도 반쪽짜리 기록이 남지 않게 임시 파일에 쓰고 바꾼다
+    tmp.write_text(json.dumps({"tests": keep}, ensure_ascii=False, indent=2), encoding="utf-8")
+    for i in range(20):  # Windows: 다른 스레드가 마침 읽는 중이면 바꿔 쓰기를 거절한다
+        try:
+            tmp.replace(p)
+            break
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.05)
+    return entry
+
+
+def test_history(group_dir: Path | str) -> list[dict]:
+    """그룹의 최근 시험 (새것부터, 최대 5번). 결과 폴더가 없어진 시험은 뺀다.
+    항목: {"id", "at", "label", "cards": [{"file_key", "page"}], "runs": [{"file_key", "compose_dir", "erase_dir"}],
+    "summary": {문제 이름: 수}}."""
+    out = []
+    for e in _read_test_history(Path(group_dir)):
+        runs = e.get("runs") or []
+        if runs and all(r.get("compose_dir") and Path(r["compose_dir"]).is_dir() for r in runs):
+            out.append(e)
+    return out
+
+
+def _test_entry(group_dir: Path | str, entry_id: str) -> dict | None:
+    return next((e for e in test_history(group_dir) if e["id"] == entry_id), None)
+
+
+def rerun_test(group_dir: Path | str, entry_id: str, progress: ProgressFn | None = None,
+               cancel: CancelToken | None = None, *, out_root: Path | str | None = None) -> TestRunsResult:
+    """기록에 있는 시험과 같은 카드로 다시 시험한다 (새 기록이 생긴다). 영역·서식을 고친 뒤 비교할 때."""
+    entry = _test_entry(group_dir, entry_id)
+    if entry is None:
+        return TestRunsResult("blocked", reason="그 시험 기록이 없습니다 (결과 폴더가 지워졌을 수 있습니다)")
+    selection: list[tuple[Path, list[int]]] = []
+    for c in entry.get("cards") or []:
+        fd = _test_file_dir(Path(group_dir), c.get("file_key") or "")
+        if fd is None:
+            return TestRunsResult("blocked", reason=f"시험 기록의 파일 이름이 잘못됐습니다: {c.get('file_key')}")
+        if selection and selection[-1][0] == fd:
+            selection[-1][1].append(int(c["page"]))
+        else:
+            selection.append((fd, [int(c["page"])]))
+    missing = [str(fd) for fd, _p in selection if not fd.exists()]
+    if missing:
+        return TestRunsResult("blocked", reason="파일이 없습니다: " + ", ".join(missing))
+    return test_run_selection(selection, entry.get("label") or "다시 시험", out_root=out_root,
+                              progress=progress, cancel=cancel)
+
+
+def _test_cards(group_dir: Path, entry: dict) -> dict:
+    """시험 기록 하나 -> {(file_key, 쪽): {"png", "status"}}. 정렬 확인 필요는 지금 align.json으로 본다."""
+    out = {}
+    for run in entry.get("runs") or []:
+        d = Path(run.get("compose_dir") or "")
+        pages = result_pages(d)
+        fd = _test_file_dir(group_dir, run.get("file_key") or "")
+        checks = set(_align_checks(fd, [p["page"] for p in pages])) if fd is not None else set()
+        for p in pages:
+            png = d / f"p{p['page']:03d}.png"
+            st = list(p["status"]) + ([ALIGN_CHECK] if p["page"] in checks else [])
+            out[(run["file_key"], p["page"])] = {"png": png if png.exists() else None, "status": st}
+    return out
+
+
+def compare_tests(group_dir: Path | str, id_a: str, id_b: str) -> list[dict]:
+    """두 시험에 함께 있는 카드마다 결과를 나란히: [{"file_key", "page", "a_png", "b_png", "a_status", "b_status"}]
+    (시험 a의 카드 순서). 기록이 없으면 빈 목록."""
+    g = Path(group_dir)
+    a, b = _test_entry(g, id_a), _test_entry(g, id_b)
+    if a is None or b is None:
+        return []
+    ca, cb = _test_cards(g, a), _test_cards(g, b)
+    order = [(c["file_key"], int(c["page"])) for c in a.get("cards") or []]
+    order += [k for k in ca if k not in order]
+    return [{"file_key": k[0], "page": k[1], "a_png": ca[k]["png"], "b_png": cb[k]["png"],
+             "a_status": ca[k]["status"], "b_status": cb[k]["status"]} for k in order if k in ca and k in cb]
 
 
 def remember_project(project_dir: Path | str) -> None:

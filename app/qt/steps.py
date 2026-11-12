@@ -1520,10 +1520,44 @@ class StepActions:
                 self.import_glossary(path, accept=True)
             return
         self.page.refresh()
+        if getattr(r, "changed_detail", None):  # 번역이 바뀐 용어: 그 용어가 든 칸을 찾아 바뀜 후보로 (F20)
+            job = worker.Job(service.term_change_candidates, self.pdir, r.changed_detail, with_progress=False)
+            worker.run_with_dialog(self.page, "바뀐 용어가 든 칸을 찾는 중", job,
+                                   lambda rows: self._term_changes(r, rows),
+                                   _fail_as(self.page, "바뀐 용어가 든 칸을 찾지 못했습니다"), cancellable=False)
+            return
         QMessageBox.information(self.page, "용어집 확정",
                                 f"게임 용어집 버전 {r.version}, 용어 {r.terms}개."
                                 + (f"\n번역이 바뀐 용어: {', '.join(r.changed)}\n‘번역’을 다시 하면 이 용어가 든 칸만 다시 번역합니다."
                                    if r.changed else "\n번역을 시작하거나 이어 할 수 있습니다."))
+
+    def _term_changes(self, r, rows: list[dict]):
+        """바뀐 용어가 든 칸을 보여 주고, 고른 칸을 한꺼번에 바꾼 뒤 요약을 알린다."""
+        from app.qt.term_changes import TermChangesDialog
+
+        head = f"게임 용어집 버전 {r.version}, 용어 {r.terms}개.\n번역이 바뀐 용어: {', '.join(r.changed)}"
+        redo = "\n‘번역’을 다시 하면 이 용어가 든 칸만 다시 번역합니다."
+        prev = getattr(r, "prev_statuses", None) or r.prev_status  # 상태가 바뀐 프로젝트마다 그 전 상태
+        if not rows:  # 옛 번역을 쓰는 칸이 없음: 초벌 번역 캐시만 맞추고 (다 맞으면 상태를 되돌림) 알린다
+            def done(res):
+                self.page.refresh()
+                QMessageBox.information(self.page, "용어집 확정", head + "\n옛 번역을 쓰는 칸이 없습니다."
+                                        + ("\n다시 번역할 필요가 없습니다." if res.status_restored else redo))
+            job = worker.Job(service.apply_term_changes, self.pdir, [], r.changed_detail, prev_status=prev,
+                             with_progress=False)
+            worker.run_with_dialog(self.page, "초벌 번역을 새 용어로 맞추는 중", job, done,
+                                   _fail_as(self.page, "바뀐 용어를 반영하지 못했습니다"), cancellable=False)
+            return
+        dlg = TermChangesDialog(self.pdir, r.changed_detail, rows, prev, self.page)
+        if not dlg.exec() or dlg.result is None:
+            QMessageBox.information(self.page, "용어집 확정", head + redo)
+            return
+        res = dlg.result
+        self.page.refresh()
+        QMessageBox.information(
+            self.page, "바뀐 용어 반영",
+            f"{res.applied}칸을 바꿨습니다. 검수 엑셀은 그대로이고, 바꾼 번역은 한글 넣기·검수 엑셀 다시 만들기에 반영됩니다."
+            + ("\n다시 번역할 필요가 없습니다." if res.status_restored else redo))
 
     # ---- 번역
     def translate(self):

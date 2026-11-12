@@ -389,16 +389,20 @@ def load_glossary(info: ProjectInfo) -> dict:
 
 
 def confirm(info: ProjectInfo, terms: list[dict]) -> dict:
-    """게임 용어집을 확정한다 (버전 +1, 바뀐 용어 기록)."""
+    """게임 용어집을 확정한다 (버전 +1, 바뀐 용어 기록).
+    changed_detail: 번역이 바뀐 용어마다 {"source", "old", "new", "variants", "category"} (바뀜 후보 찾기용)."""
     terms = [t for t in terms if not is_icon_term(t.get("source", ""))]
     old = load_glossary(info)
     before = {t["source"]: t.get("ko") for t in old.get("terms", [])}
     changed = [t["source"] for t in terms if t["source"] in before and before[t["source"]] != t["ko"]]
+    detail = [{"source": t["source"], "old": before[t["source"]] or "", "new": t["ko"],
+               "variants": list(t.get("variants") or []), "category": t.get("category", "")}
+              for t in terms if t["source"] in changed]
     data = {"game": info.game, "version": int(old.get("version", 0)) + 1,
             "confirmed_at": time.strftime("%Y-%m-%d %H:%M:%S"), "confirmed_in_project": info.name,
             "terms": terms}
     _write(glossary_path(info), data)
-    return {"version": data["version"], "terms": len(terms), "changed": changed}
+    return {"version": data["version"], "terms": len(terms), "changed": changed, "changed_detail": detail}
 
 
 # ---------------------------------------------------------------- 검증 엑셀

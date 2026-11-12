@@ -826,7 +826,8 @@ def learn_tag_colors(project, src_doc, known: dict, tol: float = TAG_COLOR_TOL) 
             words = regs.get(reg.name)
             if not isinstance(words, list) or not words:
                 continue
-            labels = detect_tag_labels(src_doc[pno - 1], project.template.for_page(pno), reg)
+            preg = next((r for r in project.template.regions_for(pno) if r.name == reg.name), reg)  # 정렬·따로 영역
+            labels = detect_tag_labels(src_doc[pno - 1], project.template.for_page(pno), preg)
             if len(labels) != len(words):
                 warns.append(f"p{pno} {reg.name}: 라벨 {len(labels)}개 / 글자 {len(words)}개 -> 건너뜀")
                 continue

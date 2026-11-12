@@ -383,6 +383,10 @@ class ProjectPage(QWidget):
             outs.addWidget(self._step_button(key, fn))
         outs.addStretch(1)
         outs.addWidget(self._step_button("test", self.out.test_run))
+        self.b_test_history = QPushButton("시험 기록")
+        self.b_test_history.setToolTip("최근 시험 5번: 결과 다시 보기 · 같은 카드로 다시 시험 · 두 시험 비교")
+        self.b_test_history.clicked.connect(lambda _c=False: self.out.test_history())
+        outs.addWidget(self.b_test_history)
         # 작업 대상: 목록 바로 위. 목록에서 고른 것이 위 단계 버튼의 범위가 된다
         self.scope_label = QLabel("작업 대상: 전체")
         self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
@@ -633,6 +637,7 @@ class ProjectPage(QWidget):
             "test": ready and st in ("translating", "translated") and any(f.get("translated") for f in files),
         }
         states = self.step_states()
+        self.b_test_history.setEnabled(bool(files))  # 기록이 없으면 누를 때 알려 준다
         for k, b in self.step_buttons.items():
             b.setEnabled(on[k])
             text, what, why = STEP_INFO[k]

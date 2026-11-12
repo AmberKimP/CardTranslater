@@ -30,6 +30,9 @@ def load_project(root: Path) -> Project:
     if not regions.exists():
         raise FileNotFoundError(f"영역 템플릿이 없습니다: {regions} (영역 지정이 필요합니다)")
     template = load_template(regions, file_name=root.name)
+    from app import align  # 자동 정렬 (파일 폴더의 align.json): 공통 영역을 카드마다 옮긴다
+
+    template.align = align.page_transforms(align.load(root))
     samples: dict = {}
     sp = root / "samples.json"
     if sp.exists():

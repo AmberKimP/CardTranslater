@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -59,17 +59,23 @@ class RegionTemplate:
     reference_page: int = 1
     layout: str = LAYOUT_SHARED
     page_sets: dict = field(default_factory=dict)  # 쪽 -> (영역 목록, 보호 영역 목록): 그 카드만의 영역
+    align: dict = field(default_factory=dict)  # 쪽 -> {dx, dy, sx, sy}: 자동 정렬 (app.align, 공통 영역에만 적용)
+
+    def _aligned(self, regs: list[Region], page: int) -> list[Region]:
+        t = self.align.get(page)
+        return [replace(r, rect=align_rect(r.rect, t)) for r in regs] if t else regs
 
     def regions_for(self, page: int) -> list[Region]:
-        """그 쪽(카드)에서 쓸 영역. 카드별 그룹에서 아직 정하지 않은 카드는 빈 목록."""
+        """그 쪽(카드)에서 쓸 영역. 카드별 그룹에서 아직 정하지 않은 카드는 빈 목록.
+        공통 영역은 그 카드의 자동 정렬만큼 옮긴 사본 (따로 영역 카드·카드별 그룹은 옮기지 않는다)."""
         if page in self.page_sets:
             return self.page_sets[page][0]
-        return [] if self.layout == LAYOUT_PER_CARD else self.regions
+        return [] if self.layout == LAYOUT_PER_CARD else self._aligned(self.regions, page)
 
     def protect_for(self, page: int) -> list[Region]:
         if page in self.page_sets:
             return self.page_sets[page][1]
-        return [] if self.layout == LAYOUT_PER_CARD else self.protect
+        return [] if self.layout == LAYOUT_PER_CARD else self._aligned(self.protect, page)
 
     def has_regions(self, page: int) -> bool:
         return bool(self.regions_for(page))
@@ -134,6 +140,24 @@ def load_template(path: Path, file_name: str | None = None) -> RegionTemplate:
 
 
 # ---------------------------------------------------------------- 변환
+
+def align_rect(r: RatioRect, t: dict, clip: bool = True) -> RatioRect:
+    """자동 정렬 변환(비율 좌표 x' = x*sx + dx, y' = y*sy + dy)을 영역에 적용한다.
+    clip: 카드 밖으로 나간 부분은 잘라 낸다 (0~1 안). 다 나가면 크기를 아주 작게 남긴다."""
+    sx, sy = float(t.get("sx", 1.0)), float(t.get("sy", 1.0))
+    x0, y0 = r.x * sx + float(t.get("dx", 0.0)), r.y * sy + float(t.get("dy", 0.0))
+    x1, y1 = x0 + r.w * sx, y0 + r.h * sy
+    if clip:
+        x0, y0 = min(max(x0, 0.0), 1.0 - 1e-4), min(max(y0, 0.0), 1.0 - 1e-4)
+        x1, y1 = min(max(x1, x0 + 1e-4), 1.0), min(max(y1, y0 + 1e-4), 1.0)
+    return RatioRect(x0, y0, x1 - x0, y1 - y0)
+
+
+def unalign_rect(r: RatioRect, t: dict) -> RatioRect:
+    """align_rect의 거꾸로 (자르지 않음): 카드에서 본 영역 -> 기준 카드 좌표."""
+    sx, sy = float(t.get("sx", 1.0)) or 1.0, float(t.get("sy", 1.0)) or 1.0
+    return RatioRect((r.x - float(t.get("dx", 0.0))) / sx, (r.y - float(t.get("dy", 0.0))) / sy, r.w / sx, r.h / sy)
+
 
 def ratio_to_pt(r: RatioRect, page_rect: Box) -> Box:
     """비율 사각형 -> 페이지 pt 사각형."""

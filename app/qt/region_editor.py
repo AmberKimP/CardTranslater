@@ -6,6 +6,9 @@
 - 미리보기(G): 오른쪽에 다른 카드 16장을 같은 영역으로 겹쳐 보여 준다 (app.qt.region_preview). 영역을 고치면 바로 반영.
 - 이 카드만 따로 영역: 공통 영역을 쓰는 그룹에서 상자 크기가 다른 카드만 따로 영역을 둔다 (regions.json page_regions,
   엔진은 그 카드에서 공통 영역 대신 이것을 쓴다).
+- 자동 정렬: 카드마다 조금씩 밀린 그룹에서 공통 영역을 카드마다 옮겨 맞춘다 (service.align_group, 파일 폴더의 align.json).
+  기준이 아닌 카드를 보면 상자를 그 카드의 정렬만큼 옮겨 그리고, 상자를 고치면 기준 카드 좌표로 되돌려 공통 영역을 고친다.
+  Ctrl+화살표(Shift: 크게)는 지금 카드의 정렬만 옮긴다 (바로 align.json에 저장).
 """
 
 from __future__ import annotations
@@ -230,6 +233,7 @@ class PageView(QGraphicsView):
     page_step = Signal(int)  # -1 이전 쪽, +1 다음 쪽
     page_jump = Signal(int)  # 0 첫 쪽, -1 마지막 쪽
     key_action = Signal(str)  # 한 글자 단축키: add_text | add_tag | add_protect | fit | rotate | next_region | prev_region
+    align_nudge = Signal(float, float)  # Ctrl+화살표: 이 카드 정렬만 옮기기 (장면 px)
 
     def __init__(self, scene: PageScene):
         super().__init__(scene)
@@ -346,6 +350,13 @@ class PageView(QGraphicsView):
     def keyPressEvent(self, ev):
         items = [i for i in self.scene().selectedItems() if isinstance(i, RegionItem)]
         k = ev.key()
+        arrows = (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down)
+        if k in arrows and ev.modifiers() & Qt.KeyboardModifier.ControlModifier:  # 이 카드의 정렬만 옮기기
+            step = 10.0 if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0
+            self.align_nudge.emit({Qt.Key.Key_Left: -step, Qt.Key.Key_Right: step}.get(k, 0.0),
+                                  {Qt.Key.Key_Up: -step, Qt.Key.Key_Down: step}.get(k, 0.0))
+            ev.accept()
+            return
         # 쪽 넘기기: PageUp/PageDown은 언제나, 좌우 방향키는 고른 영역이 없을 때 (영역을 고르면 그 영역을 옮긴다)
         if k in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown) or (
                 not items and k in (Qt.Key.Key_Left, Qt.Key.Key_Right)):
@@ -417,6 +428,8 @@ class RegionEditor(QDialog):
         self._loading = False
         self._ov_key: str | None = None  # 공통 영역 그룹에서 지금 보는 카드가 ‘따로 영역’이면 그 카드 키
         self._common: tuple[list, list] = ([], [])  # 따로 영역 카드를 보는 동안 넣어 둔 공통 영역
+        self._view_t: dict | None = None  # 지금 카드에 그린 상자의 정렬 변환 (공통 영역 + 자동 정렬 카드일 때만)
+        self._align_cache: dict = {}  # 파일 폴더 -> {쪽: 정렬 값} (service.align_info)
         self.setWindowTitle(f"영역 지정 — {self.group_dir.name}")
         fit_to_screen(self, 1400, 900, maximize_below=0)
 
@@ -438,6 +451,7 @@ class RegionEditor(QDialog):
         self.view.page_step.connect(self.step_page)
         self.view.page_jump.connect(self.jump_page)
         self.view.key_action.connect(self._key_action)
+        self.view.align_nudge.connect(self.nudge_alignment)
         QShortcut(QKeySequence.StandardKey.Save, self, activated=self.save)
         for seq, fn in (("Ctrl+C", self.copy_regions), ("Ctrl+V", self.paste_regions),
                         ("Ctrl+D", self.duplicate_selected), ("Ctrl+Shift+V", self.copy_previous_card),
@@ -513,6 +527,15 @@ class RegionEditor(QDialog):
                                      "다른 카드는 공통 영역 그대로. 영역을 모두 지우면 이 카드는 처리하지 않습니다. 다시 누르면 공통 영역으로")
         self.override_btn.setStyleSheet("QPushButton:checked { background: #FFF4CC; border: 2px solid #E0A800; font-weight: bold; }")
         self.override_btn.toggled.connect(self._toggle_override)  # 아래 카드 정보 줄에 둔다 (창 최소 폭)
+        self.align_btn = QPushButton("자동 정렬")
+        self.align_btn.setToolTip("카드마다 조금씩 밀리거나 크기가 다른 그룹에서, 공통 영역을 카드마다 테두리·글 상자에 맞춰 옮깁니다.\n"
+                                  "기준은 그룹 첫 파일의 기준 카드입니다. 맞춘 뒤 Ctrl+화살표로 카드마다 미세 조정할 수 있습니다.\n"
+                                  "이미 읽은(추출한) 카드는 다시 읽지 않습니다")
+        self.align_btn.clicked.connect(self.run_alignment)  # 아래 카드 정보 줄에 둔다 (창 최소 폭)
+        self.align_reset_btn = QPushButton("이 카드 정렬 되돌리기")
+        self.align_reset_btn.setToolTip("손으로 맞춘 정렬은 자동 정렬 값으로, 자동 정렬은 정렬 없음(공통 영역 그대로)으로 되돌립니다.\n"
+                                        "바로 저장됩니다")
+        self.align_reset_btn.clicked.connect(self.reset_alignment)
         self.copy_prev = QPushButton("이전 카드 영역 복사")
         self.copy_prev.setToolTip("앞 카드의 영역을 이 카드로 가져옵니다 (Ctrl+Shift+V)")
         self.copy_prev.clicked.connect(self.copy_previous_card)
@@ -682,6 +705,7 @@ class RegionEditor(QDialog):
         help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
                      "고른 영역: 화살표 조금씩 옮기기(Shift: 크게) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
+                     "Ctrl+화살표: 이 카드의 정렬만 옮기기 (모든 상자 함께, Shift: 크게) — 자동 정렬한 공통 영역 그룹\n"
                      "쪽: ←/→(영역을 안 골랐을 때) · PageUp/PageDown · Home/End 처음·끝 · 마우스 휠\n"
                      "F: 화면에 맞춤 · ＋/－ 또는 Ctrl+휠: 확대·축소 · 휠 누른 채 끌기 또는 Space+끌기: 옮기기 · Ctrl+Shift+V: 이전 카드 영역 · "
                      "Ctrl+S 저장 · F1 이 도움말")
@@ -765,10 +789,13 @@ class RegionEditor(QDialog):
         self.status = QLabel()
         self.card_info = QLabel()
         self.card_info.setStyleSheet("color: #0b5cad; font-weight: bold")
+        self.card_info.setMinimumWidth(60)  # 정렬 상태까지 붙어 길어져도 창 최소 폭을 늘리지 않게 (좁으면 잘림)
         self.guide = hint_bar("", "info")  # 다음 할 일 안내 띠
         srow = QHBoxLayout()  # 아래 줄: 미리보기·따로 영역 (위 두 줄은 파일 이름·도구로 이미 넓다)
         srow.addWidget(self.preview_btn)
         srow.addWidget(self.override_btn)
+        srow.addWidget(self.align_btn)
+        srow.addWidget(self.align_reset_btn)
         srow.addWidget(self.card_info)
         srow.addWidget(self.guide, 1)
         srow.addWidget(self.status)
@@ -971,6 +998,7 @@ class RegionEditor(QDialog):
         ratios = [(it, self.ratio_of(it)) for it in self.items()]
         self._load_page()
         ov = self._cards().get(self.card_key())
+        self._view_t = None if ov is not None else self._align_t()  # 새 카드의 자동 정렬 (따로 영역이면 없음)
         if ov is not None:  # 이 카드만 따로 영역 (영역을 다 지운 빈 것도: 그 카드는 처리하지 않는다)
             self._clear_items()
             self._load_dicts(ov.get("regions", []), ov.get("protect_rects", []))
@@ -980,8 +1008,8 @@ class RegionEditor(QDialog):
             self._load_dicts(*self._common)
             self._ov_key = None
         else:
-            for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다
-                it.set_scene_rect(self.rect_from_ratio(r))
+            for it, r in ratios:  # 다른 카드에 같은 비율로 겹쳐 본다 (그 카드의 정렬만큼 옮겨)
+                self._place(it, r)
         self._update_card_info()
         self.view.fit()
         self._sync_preview()
@@ -1072,10 +1100,17 @@ class RegionEditor(QDialog):
             self._syncing_override = True
             self.override_btn.setChecked(bool(getattr(self, "_ov_key", None)) and not self.is_per_card())
             self._syncing_override = False
+        if hasattr(self, "align_btn"):
+            self.align_btn.setVisible(not self.is_per_card())
+            self.align_reset_btn.setVisible(not self.is_per_card())
         if not self.is_per_card():
             n_ov = len(self.overrides())
-            self.card_info.setText(("이 카드: 따로 영역 · " if getattr(self, "_ov_key", None) else "")
-                                   + (f"따로 영역 카드 {n_ov}장" if n_ov else ""))
+            al = self._align_label()
+            self.card_info.setText(" · ".join(x for x in (
+                "이 카드: 따로 영역" if getattr(self, "_ov_key", None) else "",
+                f"따로 영역 카드 {n_ov}장" if n_ov else "", al) if x))
+            e = None if getattr(self, "_ov_key", None) else self._align_pages().get(self.page_spin.value())
+            self.align_reset_btn.setEnabled(bool(e) and e.get("status") != "ref")
             for w in (self.copy_prev, self.copy_rest, self.sync_names):
                 w.setEnabled(False)
             return
@@ -1087,6 +1122,22 @@ class RegionEditor(QDialog):
         total = len(keys)
         self.card_info.setText(f"이 카드: {'영역 ' + str(n) + '개' if n else '영역 없음'} · 지정한 카드 {done}/{total}장")
         self.copy_prev.setEnabled(True)
+
+    def _align_label(self) -> str:
+        """지금 카드의 정렬 상태 글 (공통 영역 그룹, 따로 영역이 아닌 카드)."""
+        if self.is_per_card() or getattr(self, "_ov_key", None):
+            return ""
+        e = self._align_pages().get(self.page_spin.value())
+        if not e:
+            return ""
+        st, score = e.get("status"), float(e.get("score") or 0.0)
+        if st == "ref":
+            return "정렬 기준 카드"
+        if st == "manual":
+            return "정렬: 손으로 맞춤"
+        if st == "check":
+            return f"정렬 확인 필요 (점수 {score:.2f}" + (")" if e.get("applied") else ", 적용 안 함)")
+        return f"정렬: 자동 (점수 {score:.2f})"
 
     def copy_previous_card(self):
         """바로 앞(없으면 가장 가까운 앞) 카드의 영역을 이 카드로 복사한다 (비슷한 카드를 빨리 정하기)."""
@@ -1283,30 +1334,40 @@ class RegionEditor(QDialog):
             self.per_card.blockSignals(False)
             return
         if on:
-            items = self._items_to_dicts()
+            items = self._items_to_dicts()  # 공통 영역이면 기준 카드 좌표
             common = self._common if self._ov_key else items
+            self._view_t = None  # 카드마다 영역은 자동 정렬 없이 보이는 자리 그대로
+            for it in self.items():
+                it._placed = None
+            shown = self._items_to_dicts()
             overrides = {k: v for k, v in self._cards().items() if v.get("regions") or v.get("protect_rects")}
             if self._ov_key:
                 overrides[self._ov_key] = {"regions": items[0], "protect_rects": items[1]}
             self._card_store = {}
             self._current_key = self.card_key()
             self._ov_key = None
-            # 공통 영역을 쓰던 모든 카드에 그대로 남기고, 따로 영역을 둔 카드는 그 영역 그대로
+            # 공통 영역을 쓰던 모든 카드에 그대로 남기고(자동 정렬한 카드는 맞춘 자리로), 따로 영역을 둔 카드는 그 영역 그대로
             for k in self.all_card_keys():
-                self._card_store[k] = copy.deepcopy(overrides.get(k)
-                                                    or {"regions": common[0], "protect_rects": common[1]})
-            self._card_store[self._current_key] = {"regions": items[0], "protect_rects": items[1]}
+                f, _, pg = k.rpartition("/")
+                t = self._align_t(next((fd for fd in self.file_dirs if fd.name == f), None), int(pg))
+                self._card_store[k] = copy.deepcopy(overrides.get(k) or {
+                    "regions": [self._aligned_dict(r, t) for r in common[0]],
+                    "protect_rects": [self._aligned_dict(r, t) for r in common[1]]})
+            self._card_store[self._current_key] = {"regions": shown[0], "protect_rects": shown[1]}
         else:
             self._card_store = {}
             self._current_key = None
             self._ov_key = None
+            self._view_t = self._align_t()  # 지금 카드의 영역이 공통 영역: 이 카드의 정렬을 거꾸로 해 기준 좌표로
             self._common = self._items_to_dicts()
         self._update_card_info()
         self._mark_dirty()
 
     def _load_regions(self):
         self._order = []
+        self._align_cache = {}
         if self.template.get("layout") == "per_card":
+            self._view_t = None
             self._card_store = {k: copy.deepcopy(v) for k, v in (self.template.get("page_regions") or {}).items()}
             self._current_key = self.card_key()
             self._load_card(self._current_key)
@@ -1316,16 +1377,19 @@ class RegionEditor(QDialog):
         self._common = (copy.deepcopy(self.template.get("regions", [])), copy.deepcopy(self.template.get("protect_rects", [])))
         ov = self._cards().get(self.card_key())
         if ov is not None:  # 처음 보이는 카드에 따로 영역이 있으면 그것
+            self._view_t = None
             self._load_dicts(ov.get("regions", []), ov.get("protect_rects", []))
             self._ov_key = self.card_key()
         else:
+            self._view_t = self._align_t()
             self._load_dicts(*self._common)
         self._update_card_info()
 
     def _add_item(self, data: dict, protect: bool) -> RegionItem:
-        it = RegionItem(self.rect_from_ratio(data.get("rect") or {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}),
-                        data, protect)
+        ratio = data.get("rect") or {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
+        it = RegionItem(self.rect_from_ratio(ratio), data, protect)
         self.scene.addItem(it)
+        it._placed = (QRectF(it.rect()), dict(ratio), self._view_t)
         it.refresh()
         self._order.append(it)
         return it
@@ -1343,14 +1407,18 @@ class RegionEditor(QDialog):
             return
         key = self.card_key()
         if on and self._ov_key != key:
-            self._common = self._items_to_dicts()
-            regions, protect = self._common
+            self._common = self._items_to_dicts()  # 기준 카드 좌표
+            self._view_t = None  # 따로 영역은 이 카드에서 보이는 자리 그대로 (자동 정렬을 적용한 자리)
+            for it in self.items():
+                it._placed = None
+            regions, protect = self._items_to_dicts()
             self._cards()[key] = {"regions": copy.deepcopy(regions), "protect_rects": copy.deepcopy(protect)}
             self._ov_key = key
             self.status.setText(f"{self.page_spin.value()}쪽만 따로 영역을 씁니다. 이 카드에 맞게 영역을 고치세요")
         elif not on and self._ov_key == key:
             self._cards().pop(key, None)
             self._clear_items()
+            self._view_t = self._align_t()
             self._load_dicts(*self._common)
             self._ov_key = None
             self.status.setText(f"{self.page_spin.value()}쪽을 공통 영역으로 되돌렸습니다")
@@ -1408,23 +1476,28 @@ class RegionEditor(QDialog):
 
     def _preview_regions(self, page: int) -> list[dict]:
         """미리보기에 그릴 그 카드의 영역 (지금 카드는 편집 중인 값). protect는 kind="protect"."""
+        t = None  # 공통 영역(기준 카드 좌표)이면 그 카드의 자동 정렬만큼 옮겨 그린다
         if page == self.page_spin.value():
             regions, protect = self._items_to_dicts()
+            t = self._view_t
         else:
             key = f"{self.current_file().name}/{page}"
             ov = self._cards().get(key)
             if self.is_per_card() or ov is not None:
                 regions, protect = (ov or {}).get("regions", []), (ov or {}).get("protect_rects", [])
-            elif self._ov_key:
-                regions, protect = self._common
             else:
-                regions, protect = self._items_to_dicts()
+                regions, protect = self._common if self._ov_key else self._items_to_dicts()
+                t = self._align_t(page=page)
+        if t:
+            regions, protect = [self._aligned_dict(r, t) for r in regions], [self._aligned_dict(p, t) for p in protect]
         return list(regions) + [{**p, "kind": "protect"} for p in protect]
 
-    def _preview_info(self, page: int) -> tuple[bool, bool, bool]:
+    def _preview_info(self, page: int) -> tuple[bool, bool, bool, str]:
+        """(지금 카드?, 뺐나?, 따로 영역?, 정렬 상태: "" | ref | ok | check | manual)."""
         key = f"{self.current_file().name}/{page}"
         ov = not self.is_per_card() and key in self.overrides()
-        return page == self.page_spin.value(), page in self._excluded(), ov
+        st = "" if self.is_per_card() or ov else (self._align_pages().get(page) or {}).get("status", "")
+        return page == self.page_spin.value(), page in self._excluded(), ov, st
 
     def _open_from_preview(self, page: int):
         if page in self._excluded():
@@ -1475,15 +1548,139 @@ class RegionEditor(QDialog):
 
     # ------------------------------------------------------------ 좌표
     def ratio_of(self, it: RegionItem) -> dict:
+        """상자의 비율 좌표. 자동 정렬한 카드를 보는 중이면 기준 카드 좌표로 되돌린 값 (공통 영역은 기준 좌표로 저장)."""
+        placed = getattr(it, "_placed", None)
+        if placed is not None and placed[0] == it.rect() and placed[2] == self._view_t:
+            return dict(placed[1])  # 놓은 뒤 움직이지 않았으면 놓을 때 값 그대로 (쪽 밖 자르기·반올림이 쌓이지 않게)
         pr = self.scene.page_rect
         r = it.rect()
-        return {"x": round(r.left() / pr.width(), 4), "y": round(r.top() / pr.height(), 4),
-                "w": round(r.width() / pr.width(), 4), "h": round(r.height() / pr.height(), 4)}
+        d = {"x": r.left() / pr.width(), "y": r.top() / pr.height(),
+             "w": r.width() / pr.width(), "h": r.height() / pr.height()}
+        if self._view_t:
+            d = service.align_rect(d, self._view_t, inverse=True)
+        return {k: round(v, 4) for k, v in d.items()}
 
     def rect_from_ratio(self, d: dict) -> QRectF:
+        """비율 좌표 -> 장면 사각형 (자동 정렬한 카드면 그 카드의 정렬만큼 옮긴 자리)."""
+        if self._view_t:
+            d = service.align_rect(d, self._view_t)
         pr = self.scene.page_rect
         return QRectF(float(d["x"]) * pr.width(), float(d["y"]) * pr.height(),
                       float(d["w"]) * pr.width(), float(d["h"]) * pr.height())
+
+    def _place(self, it: RegionItem, ratio: dict) -> None:
+        """상자를 비율 좌표 자리에 놓고 그 값을 기억한다 (ratio_of가 그대로 돌려준다)."""
+        it.set_scene_rect(self.rect_from_ratio(ratio))
+        it._placed = (QRectF(it.rect()), dict(ratio), self._view_t)
+
+    # ------------------------------------------------------------ 자동 정렬
+    def _align_pages(self, fd: Path | None = None) -> dict:
+        """{쪽: 정렬 값} (파일마다 한 번 읽어 둔다)."""
+        fd = fd or self.current_file()
+        if fd not in self._align_cache:
+            try:
+                self._align_cache[fd] = service.align_info(fd)["pages"]
+            except Exception:  # noqa: BLE001 - 정렬 파일이 깨졌으면 정렬 없음으로
+                self._align_cache[fd] = {}
+        return self._align_cache[fd]
+
+    def _align_t(self, fd: Path | None = None, page: int | None = None) -> dict | None:
+        """그 카드(기본: 지금 카드)에 적용하는 정렬 변환 (공통 영역 그룹에서만. 없으면 None).
+        따로 영역 카드인지는 부르는 쪽이 본다."""
+        if self.is_per_card():
+            return None
+        fd = fd or self.current_file()
+        e = self._align_pages(fd).get(self.page_spin.value() if page is None else int(page))
+        if not e or not e.get("applied"):
+            return None
+        return {k: float(e.get(k, d)) for k, d in (("dx", 0.0), ("dy", 0.0), ("sx", 1.0), ("sy", 1.0))}
+
+    @staticmethod
+    def _aligned_dict(r: dict, t: dict | None) -> dict:
+        """영역 dict의 rect만 정렬만큼 옮긴 사본."""
+        return {**r, "rect": service.align_rect(r["rect"], t)} if t and r.get("rect") else dict(r)
+
+    def _reapply_alignment(self):
+        """정렬 값이 바뀐 뒤: 상자를 같은 기준 좌표의 새 자리로 옮긴다 (영역 자체는 바뀌지 않음)."""
+        ratios = [(it, self.ratio_of(it)) for it in self.items()]
+        self._view_t = None if (self.is_per_card() or self._ov_key) else self._align_t()
+        for it, r in ratios:
+            self._place(it, r)
+        sel = self.selected()
+        if sel is not None:
+            self._to_form(sel)
+        self._update_card_info()
+        if hasattr(self, "preview"):
+            self.preview.schedule()
+
+    def _align_reason_blocked(self) -> str:
+        """지금 카드의 정렬을 손으로 옮길 수 없는 까닭 (옮길 수 있으면 "")."""
+        if self.is_per_card():
+            return "카드마다 영역을 정하는 그룹은 정렬 대신 영역을 직접 옮기세요"
+        if self._ov_key:
+            return "따로 영역 카드는 정렬 대신 영역을 직접 옮기세요"
+        if (self._align_pages().get(self.page_spin.value()) or {}).get("status") == "ref":
+            return "정렬 기준 카드입니다. 기준 카드에서는 영역 자체를 옮기세요"
+        return ""
+
+    def nudge_alignment(self, dx_px: float, dy_px: float):
+        """Ctrl+화살표: 이 카드의 정렬만 옮긴다 (모든 상자 함께, 바로 저장)."""
+        why = self._align_reason_blocked()
+        if why:
+            self.status.setText(why)
+            return
+        pr = self.scene.page_rect
+        if pr.isEmpty():
+            return
+        fd, page = self.current_file(), self.page_spin.value()
+        try:
+            e = service.nudge_alignment(fd, page, dx_px / pr.width(), dy_px / pr.height())
+        except (OSError, ValueError) as ex:
+            show_problem(self, "정렬을 옮기지 못했습니다", str(ex))
+            return
+        if e is None:
+            self.status.setText("정렬 기준 카드입니다. 기준 카드에서는 영역 자체를 옮기세요")
+            return
+        self._align_cache.pop(fd, None)
+        self._reapply_alignment()
+        self.status.setText(f"{page}쪽 정렬을 옮겼습니다 (손으로 맞춤, 바로 저장)")
+
+    def reset_alignment(self):
+        """이 카드 정렬 되돌리기 (손으로 맞춤 -> 자동 값, 자동 -> 정렬 없음)."""
+        if self.is_per_card() or self._ov_key:
+            return
+        fd, page = self.current_file(), self.page_spin.value()
+        e = service.reset_alignment(fd, page)
+        self._align_cache.pop(fd, None)
+        self._reapply_alignment()
+        self.status.setText(f"{page}쪽 정렬을 자동 정렬 값으로 되돌렸습니다" if e else f"{page}쪽 정렬을 없앴습니다 (공통 영역 그대로)")
+
+    def run_alignment(self):
+        """‘자동 정렬’: 그룹의 모든 카드를 기준 카드에 맞춘다 (작업 스레드, 진행률 창)."""
+        if self.is_per_card():
+            QMessageBox.information(self, "자동 정렬", "카드마다 영역을 정하는 그룹은 자동 정렬하지 않습니다")
+            return
+        if self.dirty and not self._confirm_leave():  # 정렬은 저장된 영역(기준 카드·따로 영역 카드)을 본다
+            return
+        from app.qt import worker
+
+        job = worker.Job(service.align_group, list(self.file_dirs))
+        worker.run_with_dialog(self, "카드 맞추는 중", job, self._alignment_done,
+                               lambda m: show_problem(self, "자동 정렬을 하지 못했습니다", m))
+
+    def _alignment_done(self, res):
+        if res.state != "done":
+            QMessageBox.information(self, "자동 정렬", res.reason)
+            return
+        self._align_cache = {}
+        self._reapply_alignment()
+        self._sync_preview(force=True)
+        msg = f"맞춘 카드 {res.ok_count}장, 정렬 확인 필요 {res.check_count}장"
+        self.status.setText(msg)
+        more = ("\n\n‘정렬 확인 필요’ 카드는 미리보기(G)의 ‘정렬 확인 카드만’으로 모아 보고, Ctrl+화살표로 맞추거나 "
+                "‘이 카드 정렬 되돌리기’를 누르세요." if res.check_count else "")
+        QMessageBox.information(self, "자동 정렬", msg + more + "\n\n이미 글자를 읽은(추출한) 카드는 자동으로 다시 읽지 않습니다. "
+                                "지운 카드는 다음 ‘글자 지우기’에서 맞춘 자리로 다시 지웁니다.")
 
     # ------------------------------------------------------------ 목록·선택
     def items(self) -> list[RegionItem]:

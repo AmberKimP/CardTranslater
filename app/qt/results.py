@@ -30,6 +30,18 @@ def status_text(st: list[str]) -> str:
     return ", ".join(STATUS_TEXT.get(x, x) for x in st)
 
 
+# 시험 문제 목록에 앞에서부터 보일 순서와 이름 (5.9절: 넘침, 글자 축소, 서식·아이콘 불일치, 정렬 확인 필요)
+SUMMARY_ORDER = ["넘침", "글자 축소", "서식 불일치", "아이콘 오류", "아이콘 불일치", "정렬 확인 필요"]
+SUMMARY_NAME = {"아이콘 오류": "아이콘 불일치"}
+
+
+def summary_text(summary: dict) -> str:
+    """{문제: 수} -> '넘침 1·글자 축소 2' (없으면 빈 문자열)."""
+    keys = [k for k in SUMMARY_ORDER if summary.get(k)] + sorted(k for k in summary if k not in SUMMARY_ORDER
+                                                                 and summary[k])
+    return "·".join(f"{SUMMARY_NAME.get(k, k)} {summary[k]}" for k in keys)
+
+
 def _open(p: Path):
     from app.qt.main import open_path
 
@@ -39,9 +51,10 @@ def _open(p: Path):
 class ResultViewer(QDialog):
     """한글 넣기 결과를 쪽마다 원본과 나란히 본다. runs: [(이름, 결과 폴더)]."""
 
-    def __init__(self, runs: list[tuple[str, Path]], parent=None, title: str = "결과 보기"):
+    def __init__(self, runs: list[tuple[str, Path]], parent=None, title: str = "결과 보기", note: str = ""):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self._note = note  # 시험 결과일 때 아래 안내에 덧붙일 말 (문제 요약·시험 기록 안내)
         fit_to_screen(self, 1500, 900)  # 낮은 화면에서는 최대화
         self._img_path: Path | None = None
         self.runs = runs
@@ -239,7 +252,8 @@ class ResultViewer(QDialog):
             set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 0", "done")
         self.footer.setText("영역을 고르면 아래에서 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고치고 저장할 수 있습니다."
                             if self.file_dir() is not None
-                            else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다.")
+                            else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다."
+                            + (f" {self._note}" if self._note else ""))
         self.items = [p for p in allp if self.problems(p["status"])] if self.only.isChecked() else allp
         self.pages.clear()
         for p in self.items:
@@ -676,27 +690,60 @@ class GroupPickDialog(QDialog):
         if first is not None:
             first.setChecked(True)
         self.n = None
-        form = QFormLayout()
-        if cards:
+        self.mode = None
+        self._picks: list[dict] = []
+        form = QVBoxLayout()
+        if cards:  # 시험 실행: 앞에서부터 N장 · 쪽 지정 · 어려운 카드 자동 고르기
+            self.mode = QButtonGroup(self)
+            m_front = QRadioButton("앞에서부터")
+            m_pages = QRadioButton("쪽 지정")
+            m_hard = QRadioButton("어려운 카드 자동 고르기 (글자가 가장 긴 3장 + 아이콘이 가장 많은 2장)")
+            for k, rb in enumerate((m_front, m_pages, m_hard)):
+                self.mode.addButton(rb, k)
+            m_front.setChecked(True)
             self.n = QSpinBox()
             self.n.setRange(1, 999)
             self.n.setValue(3)
             self.n.setSuffix(" 장")
             self.n.setToolTip("그룹의 파일 순서대로, 처리할 카드 앞에서부터 이만큼만 시험합니다")
-            form.addRow("몇 장", self.n)
+            row1 = QHBoxLayout()
+            row1.addWidget(m_front)
+            row1.addWidget(self.n)
+            row1.addStretch(1)
+            self.file_combo = QComboBox()
+            self.file_combo.setToolTip("쪽 번호를 적을 파일")
+            self.pages_edit = QLineEdit()
+            self.pages_edit.setPlaceholderText("예: 1, 5, 12-14")
+            self.pages_edit.textEdited.connect(lambda _t: m_pages.setChecked(True))
+            row2 = QHBoxLayout()
+            row2.addWidget(m_pages)
+            row2.addWidget(self.file_combo)
+            row2.addWidget(self.pages_edit, 1)
+            self.picked = grey_note("")
+            self.picked.setWordWrap(True)
+            self.error = QLabel("")
+            self.error.setStyleSheet("color: #C0392B")
+            self.error.setWordWrap(True)
+            self.error.setVisible(False)
+            form.addLayout(row1)
+            form.addLayout(row2)
+            form.addWidget(m_hard)
+            form.addWidget(self.picked)
+            form.addWidget(self.error)
             self.radios.idToggled.connect(lambda i, on: on and self._limit(i))
+            self.mode.idToggled.connect(lambda _i, on: on and self._mode_changed())
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         set_ok_text(bb, "시험 실행" if cards else "다음")
         self.ok_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
         self.ok_btn.setEnabled(first is not None)
         self.radios.idToggled.connect(lambda _i, _on: self.ok_btn.setEnabled(self.radios.checkedId() >= 0))
-        bb.accepted.connect(self.accept)
+        bb.accepted.connect(self._ok if cards else self.accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
         lay.addWidget(page_title(title, 14))
-        lay.addWidget(subtitle("어느 그룹에 할까요?" + (" 고른 그룹의 앞 몇 장만 따로 지우고 한글을 넣어 봅니다 "
+        lay.addWidget(subtitle("어느 그룹에 할까요?" + (" 고른 그룹의 카드 몇 장만 따로 지우고 한글을 넣어 봅니다 "
                                                     "(프로젝트의 지운 카드·한글 카드는 바뀌지 않습니다)." if cards else "")))
         lay.addLayout(box)
         if cards:
@@ -709,6 +756,70 @@ class GroupPickDialog(QDialog):
         n = max(1, _group_cards(self.groups[i]))
         self.n.setMaximum(n)
         self.n.setValue(min(self.n.value(), n))
+        files = self.groups[i]["files"]
+        self.file_combo.clear()
+        for f in files:
+            self.file_combo.addItem(file_label(f.get("key", "")), str(f["dir"]))
+        self.file_combo.setVisible(len(files) > 1)  # 파일이 하나면 고를 것 없음
+        self._picks = []
+        self._mode_changed()
+
+    def _mode_changed(self):
+        """방식이 바뀌거나 그룹이 바뀌면: 어려운 카드는 바로 골라 보여 주고, 오류 문구는 지운다."""
+        self.error.setVisible(False)
+        if self.mode.checkedId() != 2:
+            self.picked.setText("")
+            return
+        g = self.chosen()
+        if g is None:
+            return
+        if not self._picks:
+            try:
+                self._picks = service.pick_hard_cards([f["dir"] for f in g["files"]])
+            except Exception as e:  # noqa: BLE001 - 고르지 못하면 이유를 보여 준다
+                self._picks = []
+                self.picked.setText(f"카드를 고르지 못했습니다: {e}")
+                return
+        if not self._picks:
+            self.picked.setText("고를 카드가 없습니다 (먼저 ① 글자 추출을 하세요)")
+            return
+        self.picked.setText("고른 카드: " + ", ".join(
+            f"{file_label(p['file_key'].split('/')[-1])} p{p['page']}" for p in self._picks)
+            + "\n" + "\n".join(f"  · {file_label(p['file_key'].split('/')[-1])} p{p['page']}: {p['reason']}"
+                               for p in self._picks))
+
+    def selection(self) -> tuple[list, str]:
+        """쪽 지정·어려운 카드: ([(파일 폴더, [쪽])], 기록 이름). 잘못 적었으면 ValueError(보일 문구)."""
+        if self.mode.checkedId() == 1:
+            fd = self.file_combo.currentData()
+            spec = self.pages_edit.text().strip()
+            if not spec:
+                raise ValueError("시험할 쪽을 적으세요 (예: 1, 5, 12-14)")
+            pages = service.parse_test_pages(fd, spec)
+            shown = ", ".join(p.strip() for p in spec.split(",") if p.strip())
+            prefix = f"{file_label(self.file_combo.currentText())} " if self.file_combo.count() > 1 else ""
+            return [(fd, pages)], f"{prefix}쪽 {shown}"
+        sel: list[tuple[str, list[int]]] = []
+        for p in self._picks:  # 같은 파일의 쪽은 한 번에 (고른 순서대로)
+            hit = next((s for s in sel if s[0] == p["file_dir"]), None)
+            if hit:
+                hit[1].append(p["page"])
+            else:
+                sel.append((p["file_dir"], [p["page"]]))
+        if not sel:
+            raise ValueError("고를 카드가 없습니다 (먼저 ① 글자 추출을 하세요)")
+        return sel, f"어려운 카드 {len(self._picks)}장"
+
+    def _ok(self):
+        """시험 실행: 쪽 지정·어려운 카드는 먼저 확인하고, 틀리면 창 안에 이유를 보여 준다."""
+        if self.mode.checkedId() in (1, 2):
+            try:
+                self.selection()
+            except ValueError as e:
+                self.error.setText(str(e))
+                self.error.setVisible(True)
+                return
+        self.accept()
 
     def chosen(self) -> dict | None:
         i = self.radios.checkedId()
@@ -716,6 +827,10 @@ class GroupPickDialog(QDialog):
 
     def cards(self) -> int:
         return self.n.value() if self.n is not None else 0
+
+    def test_mode(self) -> str:
+        """시험 방식: front(앞에서부터 N장) · pages(쪽 지정) · hard(어려운 카드)."""
+        return ("front", "pages", "hard")[max(0, self.mode.checkedId())] if self.mode is not None else "front"
 
 
 class OutputActions:
@@ -852,6 +967,8 @@ class OutputActions:
             summ = ", ".join(f"{k} {v}" for k, v in (f.get("summary") or {}).items())
             lines.append(f"{f['file']}: {state_label(f['state'])} ({f.get('from', '')})" + (f" — {summ}" if summ else "")
                          + (f" — {'; '.join(f.get('blocking') or [])}" if f.get("blocking") else ""))
+            if f.get("reused"):  # 바뀐 카드만 다시 넣었으면 (F19)
+                lines.append(f"    바뀐 카드 {f.get('composed', 0)}장만 다시 넣었습니다 (그대로인 카드 {f['reused']}장)")
             if f.get("sheet_images"):
                 lines.append(f"    원래 배열 이미지 {len(f['sheet_images'])}장: {Path(f['sheet_images'][0]).parent}")
             if f.get("sheet_error"):
@@ -947,7 +1064,14 @@ class OutputActions:
             return
         g = dlg.chosen()
         self.page.select_group(g)
-        job = worker.Job(service.test_run_cards, [f["dir"] for f in g["files"]], dlg.cards())
+        if dlg.test_mode() == "front":
+            job = worker.Job(service.test_run_cards, [f["dir"] for f in g["files"]], dlg.cards())
+        else:
+            sel, label = dlg.selection()
+            job = worker.Job(service.test_run_selection, sel, label)
+        self._run_test_job(job)
+
+    def _run_test_job(self, job):
         bg_erase.run_exclusive(self.page, "시험 실행", job, self._test_done,
                                lambda m: show_failure(self.page, "시험 실행을 끝내지 못했습니다", m))
 
@@ -956,4 +1080,223 @@ class OutputActions:
             show_problem(self.page, "시험 실행을 끝내지 못했습니다", r.reason or "")
             return
         runs = [(f"시험: {x.run_dir.name}", x.run_dir) for x in r.runs]
-        ResultViewer(runs, self.page, title="시험 실행 결과").exec()
+        summ = summary_text(getattr(r, "summary", None) or {})
+        note = f"문제: {summ}. " if summ else "문제 없음. "
+        ResultViewer(runs, self.page, title="시험 실행 결과",
+                     note=note + "이전 시험과 비교하려면 프로젝트 화면의 ‘시험 기록’을 누르세요.").exec()
+
+    # ---- 시험 기록 (최근 5번, 다시 시험·두 시험 비교)
+    def test_history(self):
+        groups = [g for g in self.page.ov["groups"] if g["files"]]
+        if not groups:
+            return
+        sel = self.page._selected()
+        current = None
+        if sel and sel[0] == "group":
+            current = sel[1]
+        elif sel and sel[0] == "file":
+            current = next((g for g in groups if any(str(f["dir"]) == str(sel[1]["dir"]) for f in g["files"])), None)
+        counts = {str(g["dir"]): len(service.test_history(g["dir"])) for g in groups}
+        has = [g for g in groups if counts[str(g["dir"])]]
+        if not has:
+            QMessageBox.information(self.page, "시험 기록", "아직 시험 기록이 없습니다.\n"
+                                    "‘시험 실행’을 하면 그룹마다 최근 5번의 시험이 남습니다.")
+            return
+        if current is None or not counts.get(str(current["dir"])):
+            if len(has) == 1:
+                current = has[0]
+            else:
+                dlg = GroupPickDialog("시험 기록 — 그룹 고르기", groups,
+                                      lambda g: (bool(counts[str(g["dir"])]), f"시험 {counts[str(g['dir'])]}번"
+                                                 if counts[str(g["dir"])] else "기록 없음"), self.page)
+                if not dlg.exec() or dlg.chosen() is None:
+                    return
+                current = dlg.chosen()
+        self.page.select_group(current)
+        TestHistoryDialog(Path(current["dir"]), self.page, on_rerun=self._rerun).exec()
+
+    def _rerun(self, group_dir: Path, entry_id: str):
+        self._run_test_job(worker.Job(service.rerun_test, group_dir, entry_id))
+
+
+def _card_name(file_key: str, page: int) -> str:
+    return f"{file_label(file_key.split('/')[-1])} p{page}"
+
+
+class TestHistoryDialog(QDialog):
+    """그룹의 최근 시험 5번: 결과 보기 · 같은 카드로 다시 시험 · 두 시험 비교 (5.9절 되돌아가기)."""
+
+    def __init__(self, group_dir: Path, parent=None, on_rerun=None):
+        from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
+
+        super().__init__(parent)
+        self.setWindowTitle("시험 기록")
+        self.setMinimumSize(760, 360)
+        self.group_dir = Path(group_dir)
+        self.on_rerun = on_rerun
+        self.entries = service.test_history(self.group_dir)
+        self.table = QTableWidget(len(self.entries), 3)
+        self.table.setHorizontalHeaderLabels(["시각", "방식 · 카드", "문제"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for i, e in enumerate(self.entries):
+            cards = e.get("cards") or []
+            names = ", ".join(_card_name(c["file_key"], c["page"]) for c in cards[:6]) + (" …" if len(cards) > 6 else "")
+            vals = [e.get("at", ""), f"{e.get('label', '')} — {names}", summary_text(e.get("summary") or {}) or "없음"]
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setToolTip(v)
+                self.table.setItem(i, j, it)
+        self.table.resizeColumnToContents(0)
+        self.table.itemSelectionChanged.connect(self._sync)
+        self.b_view = QPushButton("결과 보기")
+        self.b_view.clicked.connect(self.view)
+        self.b_rerun = QPushButton("같은 카드로 다시 시험")
+        self.b_rerun.setToolTip("영역·서식 설정을 고친 뒤 같은 카드로 다시 시험해 새 기록을 남깁니다")
+        self.b_rerun.clicked.connect(self.rerun)
+        self.b_compare = QPushButton("두 시험 비교")
+        self.b_compare.setToolTip("두 줄을 고르면 같은 카드의 결과를 나란히 봅니다")
+        self.b_compare.clicked.connect(self.compare)
+        close = QPushButton("닫기")
+        close.clicked.connect(self.reject)
+        btns = QHBoxLayout()
+        for b in (self.b_view, self.b_rerun, self.b_compare):
+            btns.addWidget(b)
+        btns.addStretch(1)
+        btns.addWidget(close)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+        lay.addWidget(page_title(f"시험 기록 — {self.group_dir.name}", 14))
+        lay.addWidget(subtitle("최근 시험 5번이 남습니다 (오래된 시험 폴더는 지웁니다). "
+                               "한 줄을 고르면 결과 보기·다시 시험, 두 줄을 고르면 비교할 수 있습니다."))
+        lay.addWidget(self.table, 1)
+        lay.addLayout(btns)
+        if self.entries:
+            self.table.selectRow(0)
+        self._sync()
+
+    def selected(self) -> list[dict]:
+        rows = sorted({i.row() for i in self.table.selectionModel().selectedRows()})
+        return [self.entries[r] for r in rows]
+
+    def _sync(self):
+        n = len(self.selected())
+        self.b_view.setEnabled(n == 1)
+        self.b_rerun.setEnabled(n == 1 and self.on_rerun is not None)
+        self.b_compare.setEnabled(n == 2)
+
+    def view(self):
+        sel = self.selected()
+        if len(sel) != 1:
+            return
+        e = sel[0]
+        runs = [(f"시험: {r['file_key']}", Path(r["compose_dir"])) for r in e.get("runs") or []]
+        summ = summary_text(e.get("summary") or {})
+        ResultViewer(runs, self, title=f"시험 결과 — {e.get('at', '')} {e.get('label', '')}",
+                     note=f"문제: {summ}." if summ else "문제 없음.").exec()
+
+    def rerun(self):
+        sel = self.selected()
+        if len(sel) != 1 or self.on_rerun is None:
+            return
+        self.accept()
+        self.on_rerun(self.group_dir, sel[0]["id"])
+
+    def compare(self):
+        sel = self.selected()
+        if len(sel) != 2:
+            return
+        new, old = sel  # 표는 새것부터: 왼쪽에 먼저 한 시험
+        rows = service.compare_tests(self.group_dir, old["id"], new["id"])
+        if not rows:
+            QMessageBox.information(self, "두 시험 비교", "두 시험에 함께 있는 카드가 없습니다")
+            return
+        TestCompareDialog(rows, f"{old.get('at', '')} {old.get('label', '')}",
+                          f"{new.get('at', '')} {new.get('label', '')}", self).exec()
+
+
+class _FitImage(QLabel):
+    """창 크기에 맞춰 비율을 지키며 줄여 보이는 그림."""
+
+    def __init__(self):
+        super().__init__()
+        self._pix: QPixmap | None = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(200, 200)
+        self.setStyleSheet("background: #F3F4F6")
+
+    def set_path(self, p: Path | None):
+        self._pix = QPixmap(str(p)) if p else None
+        if self._pix is not None and self._pix.isNull():
+            self._pix = None
+        self._fit()
+
+    def _fit(self):
+        if self._pix is None:
+            self.setPixmap(QPixmap())
+            self.setText("그림 없음")
+            return
+        self.setText("")
+        self.setPixmap(self._pix.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, e):  # noqa: N802 (Qt)
+        super().resizeEvent(e)
+        self._fit()
+
+
+class TestCompareDialog(QDialog):
+    """두 시험에 함께 있는 카드마다 결과를 좌우로 나란히 (각 쪽의 문제 목록과 함께). rows: service.compare_tests."""
+
+    def __init__(self, rows: list[dict], label_a: str, label_b: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("두 시험 비교")
+        fit_to_screen(self, 1400, 900)
+        self.rows = rows
+        self.i = 0
+        self.pos = QLabel("")
+        self.pos.setStyleSheet("font-weight: bold")
+        self.prev_btn = QPushButton("◀ 이전 카드")
+        self.prev_btn.clicked.connect(lambda: self.go(self.i - 1))
+        self.next_btn = QPushButton("다음 카드 ▶")
+        self.next_btn.clicked.connect(lambda: self.go(self.i + 1))
+        top = QHBoxLayout()
+        top.addWidget(self.prev_btn)
+        top.addWidget(self.pos, 1, Qt.AlignmentFlag.AlignCenter)
+        top.addWidget(self.next_btn)
+        self.img_a, self.img_b = _FitImage(), _FitImage()
+        self.st_a, self.st_b = QLabel(""), QLabel("")
+        sides = QHBoxLayout()
+        for label, img, st in ((label_a, self.img_a, self.st_a), (label_b, self.img_b, self.st_b)):
+            col = QVBoxLayout()
+            col.addWidget(section_title(label))
+            col.addWidget(img, 1)
+            st.setWordWrap(True)
+            col.addWidget(st)
+            sides.addLayout(col, 1)
+        close = QPushButton("닫기")
+        close.clicked.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(top)
+        lay.addLayout(sides, 1)
+        lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
+        self.go(0)
+
+    def go(self, i: int):
+        if not self.rows:
+            return
+        self.i = max(0, min(i, len(self.rows) - 1))
+        r = self.rows[self.i]
+        self.pos.setText(f"{self.i + 1}/{len(self.rows)}  {_card_name(r['file_key'], r['page'])}")
+        self.img_a.set_path(r.get("a_png"))
+        self.img_b.set_path(r.get("b_png"))
+        for st, label in ((r.get("a_status") or [], self.st_a), (r.get("b_status") or [], self.st_b)):
+            probs = ResultViewer.problems(st)
+            label.setText("문제: " + status_text(st) if st else "문제 없음")
+            label.setStyleSheet("color: #C0392B" if probs else "color: #5F6B7A")
+        self.prev_btn.setEnabled(self.i > 0)
+        self.next_btn.setEnabled(self.i < len(self.rows) - 1)

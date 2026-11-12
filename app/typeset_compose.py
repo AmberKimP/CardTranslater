@@ -24,9 +24,10 @@ from app import report
 from app.icons import style_for_compose as icon_style_for
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file
 from app.erase_text import is_icon_line
-from app.typeset_layout import STATUS_OVERFLOW, join_lines_at, min_size_rule, two_line_sentences, wrap_sentence_fonts
+from app.typeset_layout import (STATUS_OVERFLOW, STATUS_TAG_MISMATCH, check_tags, close_tags_per_line, join_lines_at,
+                                 min_size_rule, parse_markup, strip_tags, two_line_sentences, wrap_sentence_fonts)
 from app.font_files import resolve as resolve_font
-from app.typeset import ROOT, TextStyle, TypesetResult, finalize, typeset_region, typeset_tags
+from app.typeset import ROOT, TextStyle, TypesetResult, _bold_variant, finalize, typeset_region, typeset_tags
 from app.typeset_ink import measure_source_ink
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)"
@@ -507,9 +508,15 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         layout = {**layout, "lines": flipped, "dividers_pt": [flip(d) for d in layout.get("dividers_pt") or []]}
     lines_all = layout["lines"]
     secs = layout_sections(layout, rect)
+    # 서식 태그는 칸 전체로 검사한다 (줄마다 나눠 넣으므로 줄 단위로는 원문과 비교할 수 없다, PRD 5.7)
+    tag_errors = check_tags(text or "", source_text)
+    if parse_markup(text or "")[1]:
+        text = strip_tags(text or "")  # 짝이 깨진 칸: 태그를 무시하고 기본 서식으로
+    else:
+        text = close_tags_per_line(text or "")  # 줄바꿈을 걸친 <b>…</b>: 줄마다 닫고 다시 열어 짝을 맞춘다
     ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
     # 아이콘만 있는 줄(큰 칼 두 개 등)은 원본 그대로 남겼다: 글 줄 수가 남은 줄 자리와 맞으면 그 줄들은 빼고 넣는다
-    ko_text = [t for t in ko_lines if not is_icon_line(t)]
+    ko_text = [t for t in ko_lines if not is_icon_line(strip_tags(t))]
     icon_lines_out = False  # 아이콘 줄을 뺐으면 그 앞뒤 줄은 이어진 문장이 아니다 (두 줄 합치기 안 함)
     if len(ko_text) < len(ko_lines) and len(ko_text) == sum(1 for ln in lines_all if not ln.get("keep")):
         icon_lines_out = True
@@ -686,13 +693,13 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         else:
             res = typeset_region(page, r, ko, st, top_anchor=top, draw=draw)
         results.append((res, "slot"))
-    status = sorted({s for r, _ in results for s in r.status})
+    status = sorted({s for r, _ in results for s in r.status} | ({STATUS_TAG_MISMATCH} if tag_errors else set()))
     # 지운 줄보다 읽은(원문) 줄이 적다: 추출이 줄을 빠뜨렸으면 그 줄은 지워지기만 하고 다시 넣지 못한다
     n_src = len([t for t in (source_text or "").split("\n") if t.strip()]) if source_text else None
     if n_src is not None and n_src < len(lines_all):
         status = sorted(set(status) | {STATUS_MISSING_LINE})
     sizes = [r.size for r, _ in results if r.size]
-    errors =[e for r, _ in results for e in r.errors]
+    errors = list(tag_errors) + [e for r, _ in results for e in r.errors if e not in tag_errors]
     if ko_lines and len(ko_lines) != len(lines_all):
         errors_note = f"번역 {len(ko_lines)}줄, 원문 {len(lines_all)}줄: 묶음 안에서 줄바꿈"
     else:
@@ -735,11 +742,12 @@ def erased_pdf_path(erase_run: Path) -> Path:
 def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_dir: Path,
                 cards: dict | None = None, translation_source: str = "samples.json",
                 out_name: str = "composed.pdf", progress=None, cancel=None,
-                workers: int | None = None) -> tuple[Path, int]:
+                workers: int | None = None, reuse_dir: Path | None = None) -> tuple[Path, int]:
     """run_dir(새로 만들 빈 폴더)에 결과를 쓴다. cards가 없으면 samples.json을 쓴다.
 
     progress: app.service.ProgressEvent를 받는 콜백, cancel: app.service.CancelToken (둘 다 선택).
     workers: 동시에 돌릴 프로세스 수 (None이면 쪽 수·CPU에 맞춰, 1이면 나누지 않음: app.parallel).
+    reuse_dir: 예전 결과 폴더. 쪽마다 넣을 재료(compose_sig)가 예전과 같으면 그 쪽은 다시 넣지 않고 예전 쪽을 옮겨 쓴다.
     """
     from app.service import ProgressEvent
 
@@ -790,32 +798,163 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
 
     out_pdf = run_dir / out_name
     ensure_not_source(out_pdf, src_path)
-    w = parallel.worker_count(len(pages), workers)
+    sigs = _compose_sigs(project_dir, project, pages, metas, cards, sha_src_before, sha_erased_before)
+    reuse = _reusable(Path(reuse_dir), out_name, pages, sigs) if reuse_dir else {}
+    todo = [p for p in pages if p not in reuse]  # 바뀐 쪽만 새로 넣는다 (F19)
+    new_pdf = run_dir / ".new.pdf" if reuse else out_pdf
+    if reuse:
+        _p("compose", 0, len(pages), f"바뀐 카드 {len(todo)}장만 다시 넣습니다 (그대로인 카드 {len(reuse)}장)")
+    w = parallel.worker_count(len(todo), workers)
     t_start = time.monotonic()
 
     def serial():
         src_doc = pymupdf.open(stream=src_path.read_bytes(), filetype="pdf")
         er_doc = pymupdf.open(stream=erased_path.read_bytes(), filetype="pdf")
         try:
-            return _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, run_dir, out_pdf,
+            return _compose_chunk(project_dir, project, src_doc, er_doc, todo, metas, cards, run_dir, new_pdf,
                                   _p, cancel)
         finally:  # 취소·오류 때도 닫는다
             src_doc.close()
             er_doc.close()
-    if w <= 1:
-        page_recs = serial()
+    if not todo:
+        new_recs = []
+    elif w <= 1:
+        new_recs = serial()
     else:  # 작업 프로세스를 못 띄웠거나 합친 결과가 다르면 한 프로세스로 (결과는 같다)
-        page_recs = parallel.run_or_fallback(
-            lambda: _compose_parallel(project_dir, erase_run, pages, metas, cards, run_dir, out_pdf, w, _p, cancel),
+        new_recs = parallel.run_or_fallback(
+            lambda: _compose_parallel(project_dir, erase_run, todo, metas, cards, run_dir, new_pdf, w, _p, cancel),
             serial, run_dir)
+    by_page = {r["page"]: r for r in new_recs}
+    if reuse:
+        _assemble_reused(pages, reuse, todo, new_pdf, out_pdf, Path(reuse_dir), run_dir)
+        by_page.update({p: v["rec"] for p, v in reuse.items()})
+    page_recs = [by_page[p] for p in pages]
+    for r in page_recs:
+        r["compose_sig"] = sigs[r["page"]]
     out = _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
-                          translation_source, edit_notes, sha_src_before, sha_erased_before)
+                          translation_source, edit_notes, sha_src_before, sha_erased_before,
+                          reused=[p for p in pages if p in reuse], composed=todo)
     from app import runlog
 
     from app.applog import safe
 
     safe(runlog.log_compose, project.root.name, page_recs, time.monotonic() - t_start, w)
     return out
+
+
+def _compose_sigs(project_dir, project, pages, metas, cards, sha_src, sha_erased) -> dict[int, str]:
+    """쪽마다 결과를 정하는 재료 전부의 지문 {쪽: sha1}. 같으면 예전에 넣은 쪽을 그대로 쓴다 (F19).
+    재료: 번역(고친 번역 반영), 지운 쪽 메타, 영역 서식·지우기 설정, 아이콘 설정·아이콘 그림 파일, 고른 글꼴·크기·정렬,
+    쓰는 글꼴 파일(주·굵게·대체·이웃 굵기의 경로·크기·수정 시각),
+    원본·지운 PDF 해시, 앱 버전."""
+    import hashlib
+
+    from app import font_plan
+    from app.version import VERSION
+
+    icon_style = icon_style_for(project_dir)
+    icons = []
+    if icon_style.get("icons_dir") and Path(icon_style["icons_dir"]).is_dir():
+        root = Path(icon_style["icons_dir"])  # 아래 폴더의 아이콘도 쓴다
+        icons = sorted((f.relative_to(root).as_posix(), f.stat().st_size, f.stat().st_mtime_ns)
+                       for f in root.rglob("*") if f.is_file())
+    font_data = font_plan.load(project_dir)
+
+    def style_fonts(style: dict) -> list[str]:
+        """영역 서식이 쓰는 글꼴 이름: 주 글꼴·굵게·대체(기본값 포함)·문장 글꼴."""
+        font = (style or {}).get("font") or {}
+        names = [font.get("file") or "fonts/notosanskr/NotoSansKR-Regular.ttf",
+                 font.get("fallback_file", "fonts/notosanskr/NotoSansKR-Bold.ttf"), font.get("bold_file")]
+        return [n for n in names + list(((style or {}).get("tag_fonts") or {}).values()) if n]
+
+    def font_files(names) -> list:
+        """글꼴 파일을 바꾸면 다시 넣도록: (이름, 실제 경로, 크기, 수정 시각), 이웃 굵기 파일도 함께."""
+        rows = set()
+        for n in names:
+            p = resolve_font(n)
+            for q in filter(None, (p, _bold_variant.__wrapped__(str(p)))):  # 캐시 없이 지금 있는 파일로
+                q = Path(q)
+                st = q.stat() if q.is_file() else None
+                rows.add((str(n), str(q), st.st_size if st else None, st.st_mtime_ns if st else None))
+        return sorted(rows, key=str)
+
+    region_fonts = [n for r in project.template.regions for n in style_fonts(r.style)]
+    common = {"version": VERSION, "source_sha256": sha_src, "erased_sha256": sha_erased,
+              "styles": {r.name: r.style for r in project.template.regions},
+              "region_erase": {r.name: r.erase for r in project.template.regions},
+              "icon_style": icon_style, "icons": icons}
+    out = {}
+    for pno in pages:
+        card = cards.get(pno)
+        chosen = font_plan.overrides_for_page(font_data, pno)
+        sentences = font_plan.sentences_for_page(font_data, pno, card)
+        names = (region_fonts + list(chosen.values())
+                 + [f for v in sentences.values() for f in v.values()]
+                 + [n for reg in metas[pno].get("regions") or [] for n in style_fonts(reg.get("style_defaults"))])
+        blob = {**common, "page": pno, "card": card, "meta": metas[pno],
+                "fonts": chosen, "sentences": sentences, "font_files": font_files(names),
+                "sizes": font_plan.size_scales_for_page(font_data, pno),
+                "aligns": font_plan.aligns_for_page(font_data, pno)}
+        text = json.dumps(blob, ensure_ascii=False, sort_keys=True, default=str)
+        out[pno] = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    return out
+
+
+def _reusable(reuse_dir: Path, out_name: str, pages: list[int], sigs: dict) -> dict:
+    """예전 결과(reuse_dir)에서 그대로 쓸 쪽 {쪽: {"index": 예전 PDF에서의 쪽 위치, "rec": 예전 쪽 기록}}.
+    예전 report.json·PDF를 읽지 못하면 {} (전부 새로 넣는다)."""
+    try:
+        old = json.loads((reuse_dir / "report.json").read_text(encoding="utf-8"))
+        old_pages = [int(p) for p in old["pages"]]
+        recs = {int(r["page"]): r for r in old["pages_detail"]}
+        with pymupdf.open(reuse_dir / out_name) as d:
+            if d.page_count != len(old_pages):
+                return {}
+    except Exception:  # noqa: BLE001 - 없음·깨짐: 예전 것을 쓰지 않는다
+        return {}
+    out = {}
+    for pno in pages:
+        rec = recs.get(pno)
+        if not rec or pno not in old_pages or rec.get("compose_sig") != sigs[pno]:
+            continue
+        if not (reuse_dir / f"p{pno:03d}.png").exists():
+            continue
+        if any((r or {}).get("font_missing") for r in (rec.get("regions") or {}).values()):
+            continue  # 글꼴이 없어 영역 글꼴로 넣은 쪽: 그 사이 글꼴을 깔았을 수 있으니 다시 넣는다
+        out[pno] = {"index": old_pages.index(pno), "rec": {**rec, "reused": True, "timing": {}}}
+    return out
+
+
+def _assemble_reused(pages, reuse, todo, new_pdf, out_pdf, reuse_dir, run_dir) -> None:
+    """새로 넣은 쪽(new_pdf, todo 순서)과 예전 쪽(reuse_dir)을 pages 순서대로 out_pdf 하나로 합친다.
+    예전 쪽의 PNG·비교 이미지도 run_dir로 옮겨 담는다."""
+    import shutil
+
+    new_index = {p: i for i, p in enumerate(todo)}
+    old = pymupdf.open(stream=(reuse_dir / out_pdf.name).read_bytes(), filetype="pdf")
+    new = pymupdf.open(stream=new_pdf.read_bytes(), filetype="pdf") if todo else None
+    out = pymupdf.open()
+    try:
+        for pno in pages:  # 두 문서의 같은 글꼴 서브셋이 따로 들어갈 수 있다 (그려지는 모양은 같다)
+            if pno in reuse:
+                i = reuse[pno]["index"]
+                out.insert_pdf(old, from_page=i, to_page=i)
+            else:
+                i = new_index[pno]
+                out.insert_pdf(new, from_page=i, to_page=i)
+        out.save(out_pdf, garbage=3, deflate=True)
+    finally:
+        out.close()
+        old.close()
+        if new is not None:
+            new.close()
+    new_pdf.unlink(missing_ok=True)
+    cdir = run_dir / "compare"
+    cdir.mkdir(exist_ok=True)
+    for pno in reuse:
+        shutil.copy2(reuse_dir / f"p{pno:03d}.png", run_dir / f"p{pno:03d}.png")
+        for f in (reuse_dir / "compare").glob(f"p{pno:03d}_*.png"):
+            shutil.copy2(f, cdir / f.name)
 
 
 def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, run_dir, out_pdf, _p, cancel) -> list:
@@ -931,8 +1070,9 @@ def _compose_parallel(project_dir, erase_run, pages, metas, cards, run_dir, out_
 
 
 def _compose_report(project, src_path, erase_run, erased_path, pages, page_recs, run_dir, out_pdf,
-                    translation_source, edit_notes, sha_src_before, sha_erased_before) -> tuple[Path, int]:
-    """칸별 상태 요약·report.json·원본 해시를 쓴다."""
+                    translation_source, edit_notes, sha_src_before, sha_erased_before,
+                    reused: list | None = None, composed: list | None = None) -> tuple[Path, int]:
+    """칸별 상태 요약·report.json·원본 해시를 쓴다. reused: 예전 결과를 그대로 쓴 쪽, composed: 새로 넣은 쪽."""
     # ---- 칸별 상태 요약
     summary: dict[str, list[str]] = {}
     for pr in page_recs:
@@ -960,6 +1100,8 @@ def _compose_report(project, src_path, erase_run, erased_path, pages, page_recs,
         "size_rule": "원문 글자 높이 기준: 시작크기 = 원문 잉크 높이 / 글꼴 보정 배율, min = 시작크기 x 0.8 (한글 글자 높이가 원문의 80% 아래로 가지 않음). 잉크 높이를 모르면 min = max(원문pt x 0.8, min(6pt, 원문pt))",
         "status_summary": summary,
         "card_edit_notes": edit_notes,
+        "reused_pages": list(reused or []),
+        "composed_pages": list(pages if composed is None else composed),
         "pages_detail": page_recs,
     }
     (run_dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
