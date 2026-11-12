@@ -26,8 +26,8 @@ from PySide6.QtWidgets import (
 from app import service
 from app.qt import worker
 from app.qt.dialogs import (
-    PRIMARY_QSS, ask_choice, card, file_label, fit_to_screen, grey_note, hint_bar, page_title, set_hint, set_ok_text,
-    show_error, show_failure, show_problem, subtitle,
+    PRIMARY_QSS, ask_choice, card, file_label, fit_to_screen, grey_note, group_issue_lines, hint_bar, page_title,
+    set_hint, set_ok_text, show_error, show_failure, show_problem, subtitle,
 )
 
 MODE_LABELS = [("double-check", "꼼꼼히 (추천) — 보통 읽기 뒤, 애매한 칸만 정밀 읽기로 한 번 더"),
@@ -150,10 +150,17 @@ def diff_html(texts: list[str], ref: int) -> list[str]:
 
 
 def precise_index(readings: list[dict]) -> int | None:
-    """정밀 읽기 결과의 자리 (없으면 마지막 = 나중에 다시 읽은 결과, 읽은 결과가 없으면 None)."""
+    """정밀 읽기 결과의 자리. ‘이 칸 다시 읽기’로 정밀 읽기를 한 적이 있으면 가장 최근 것
+    (정밀 읽기가 없으면 마지막 = 나중에 다시 읽은 결과, 읽은 결과가 없으면 None)."""
     if not readings:
         return None
-    return next((i for i, rd in enumerate(readings) if reader_name(rd["model"]) == PRECISE), len(readings) - 1)
+    precise = [i for i, rd in enumerate(readings) if reader_name(rd["model"]) == PRECISE]
+    reread = [i for i in precise if readings[i].get("reread")]
+    return reread[-1] if reread else precise[0] if precise else len(readings) - 1
+
+
+REREAD_MODELS = [("opus", "정밀 읽기 (Opus)"), ("sonnet", "보통 읽기 (Sonnet)")]  # ‘이 칸 다시 읽기’ 모델
+REREAD_TAG = " (다시 읽기)"
 
 
 class FitImage(QLabel):
@@ -206,7 +213,7 @@ def _ask_list(parent, title: str, intro: str, items: list[str], question: str) -
     box.setIcon(QMessageBox.Icon.Question)
     box.setText(intro)
     box.setInformativeText(question)
-    box.setDetailedText("\n".join(items))
+    box.setDetailedText(group_issue_lines(items))
     box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
     box.setDefaultButton(QMessageBox.StandardButton.No)
     return box.exec() == QMessageBox.StandardButton.Yes
@@ -314,9 +321,10 @@ class SourceReviewDialog(QDialog):
     COLS = ["쪽", "영역", "원문 확인", "원문"]
     UNREAD = "읽지 않음"
 
-    def __init__(self, files: list[dict], parent=None, only_check: bool = True):
+    def __init__(self, files: list[dict], parent=None, only_check: bool = True, engine: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("원문 확인")
+        self.engine = engine  # ‘이 칸 다시 읽기’ 로그인 방식 (없으면 설정에 저장된 방식)
         fit_to_screen(self, 1300, 940)  # 그림 아래에 사유·읽은 결과 표·편집 칸이 있어 세로로 넉넉히
         self.files = files
         self.file = QComboBox()
@@ -378,12 +386,23 @@ class SourceReviewDialog(QDialog):
         self.save_btn.clicked.connect(self.save_current)
         self.next_btn = QPushButton("저장하고 다음 칸 (Ctrl+Enter)")
         self.next_btn.clicked.connect(self.save_and_next)
+        # 이 칸만 다시 읽기: 결과는 읽은 결과 표와 편집 칸에 넣고, 저장해야 원문이 바뀐다
+        self.reread_model = QComboBox()
+        for k, t in REREAD_MODELS:
+            self.reread_model.addItem(t, k)
+        self.reread_model.setToolTip("다시 읽을 방식 (정밀 읽기가 더 정확하지만 느리고 사용량이 많음)")
+        self.reread_btn = QPushButton("이 칸 다시 읽기")
+        self.reread_btn.setToolTip("그림을 Claude로 다시 읽어 편집 칸에 넣습니다 (저장해야 원문이 바뀝니다)")
+        self.reread_btn.clicked.connect(self.reread_current)
         hint = QLabel("Ctrl+S 저장 · Ctrl+Enter 저장하고 다음 칸 · Alt+↑/↓ 칸 이동")
         hint.setStyleSheet("color: #7B8794")
         self.next_btn.setStyleSheet(PRIMARY_QSS)  # 주 동작 (엔터 기본 버튼으로는 만들지 않는다)
         btns = QHBoxLayout()
         btns.addWidget(self.next_btn)
         btns.addWidget(self.save_btn)
+        btns.addSpacing(12)
+        btns.addWidget(self.reread_btn)
+        btns.addWidget(self.reread_model)
         btns.addStretch(1)
         btns.addWidget(hint)
         # 오른쪽: 위 = 그림(남는 높이를 모두 쓰고, 그림은 늘 칸 안에 다 보이게 맞춘다),
@@ -413,7 +432,7 @@ class SourceReviewDialog(QDialog):
         lay.addWidget(self.guide)
         lay.addWidget(split, 1)
         lay.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        for b in (self.save_btn, self.next_btn):
+        for b in (self.save_btn, self.next_btn, self.reread_btn):
             b.setAutoDefault(False)
         for keys, fn in (("Ctrl+S", self.save_current), ("Ctrl+Return", self.save_and_next),
                          ("Ctrl+Enter", self.save_and_next), ("Alt+Down", lambda: self.move_row(1)),
@@ -568,6 +587,7 @@ class SourceReviewDialog(QDialog):
             self._orig_text = ""
         self.save_btn.setEnabled(bool(self.cells))
         self.next_btn.setEnabled(bool(self.cells))
+        self.reread_btn.setEnabled(bool(self.cells))
 
     def current(self) -> dict | None:
         r = self.table.currentRow()
@@ -607,7 +627,8 @@ class SourceReviewDialog(QDialog):
     def reading_texts(c: dict, known=None) -> list[tuple[str, str]]:
         """[(‘보통 읽기’ 등, 읽은 결과 글)]. 이름을 정한 아이콘은 [[?]] 대신 [[이름]]으로."""
         src = as_text(c["source"])
-        return [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known)) for rd in c["readings"]]
+        return [(reader_name(rd["model"]) + (REREAD_TAG if rd.get("reread") else ""),
+                 fill_icon_names(as_text(rd["source"]), src, known)) for rd in c["readings"]]
 
     def default_text(self, c: dict, texts: list[tuple[str, str]], pi: int | None) -> str:
         """편집 칸의 처음 글. 다시 봐야 하는 칸은 정밀 읽기 결과를 따른다.
@@ -718,6 +739,46 @@ class SourceReviewDialog(QDialog):
         if 0 <= r < len(self.cells):
             self.table.setCurrentCell(r, 0)
 
+    # ---- 이 칸 다시 읽기
+    def reread_current(self):
+        """고른 칸만 Claude로 다시 읽는다. 끝나면 결과를 편집 칸에 넣는다 (저장은 사람이)."""
+        c = self.current()
+        if c is None or not self._confirm_leave():  # 편집 칸을 바꾸므로 고친 글이 있으면 먼저 묻는다
+            return
+        eng = self.engine or service.get_settings().engine
+        st = service.engine_status()
+        if not st.get(eng):
+            show_error(self, "Claude에 연결할 수 없습니다", st["message"],
+                       "‘파일 > 로그인 방식’에서 로그인하거나 다른 방식을 고른 뒤 다시 하세요.")
+            return
+        fd, key = self.file.currentData(), (c["page"], c["region"])
+        model = self.reread_model.currentData()
+        job = worker.Job(service.reread_region, fd, c["page"], c["region"], model=model, engine=eng,
+                         with_progress=False)
+        worker.run_with_dialog(self, f"{c['page']}쪽 {c['region']} 다시 읽는 중", job,
+                               lambda r: self._reread_done(r, fd, key),
+                               _fail_as(self, "다시 읽지 못했습니다"), cancellable=False)
+
+    def _reread_done(self, r, fd: str, key: tuple):
+        if r.state != "done":
+            show_problem(self, f"다시 읽지 못했습니다 ({state_label(r.state)})", r.reason or "",
+                         retry_after=r.retry_after)
+            return
+        if self.file.currentData() != fd:
+            return  # 그사이 다른 파일로 옮겼다
+        self.reload(keep=key)
+        c = self.current()
+        if c is None or (c["page"], c["region"]) != key:
+            return
+        text = fill_icon_names(as_text(r.source), as_text(c["source"]), self._known)
+        self.edit.setPlainText(text)  # _orig_text는 그대로: 저장하지 않고 떠나면 묻는다
+        msg = "다시 읽은 결과를 편집 칸에 넣었습니다. 맞으면 저장하세요."
+        if UNKNOWN_ICON in text:
+            msg += " 이름 없는 아이콘 [[?]]는 저장한 뒤 ‘② 아이콘 정의’에서 정합니다."
+        if r.uncertain:
+            msg += " (다시 읽은 결과도 확실하지 않다고 했습니다. 그림과 비교해 주세요.)"
+        set_hint(self.info, self.info.text() + f'<br><b>{_html.escape(msg)}</b>', "todo")
+
 
 # ================================================================ 아이콘 사전 (새로 정할 것이 없을 때)
 class IconDictionaryDialog(QDialog):
@@ -725,12 +786,14 @@ class IconDictionaryDialog(QDialog):
     ‘다시 정하기’를 고르면 그 아이콘을 원문에서 [[?]]로 되돌린다 (다른 아이콘이 같은 이름으로 잘못 묶였을 때)."""
 
     COLS = ["그림", "이름", "한국어 이름", "뜻(원문)", "표시 크기", "쓰인 곳", "다시 정하기"]
+    UNUSED = "지금 프로젝트에서는 안 쓰임 (다음 프로젝트에서 자동으로 알아봄)"
 
     def __init__(self, rows: list[dict], intro: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("아이콘 사전")
         fit_to_screen(self, 900, 560)
-        self._rows = rows
+        # 지금 프로젝트에서 안 쓰인 아이콘은 아래로 (같은 무리 안에서는 받은 순서 그대로). rows()가 이 순서를 따른다
+        self._rows = rows = sorted(rows, key=lambda r: not r.get("uses"))
         lab = subtitle(intro)
         reset_note = grey_note("‘다시 정하기’를 체크하면 그 아이콘을 원문에서 되돌리고, 저장한 뒤 다시 찾아 이름을 정합니다.")
         self.table = QTableWidget(len(rows), len(self.COLS))
@@ -742,11 +805,13 @@ class IconDictionaryDialog(QDialog):
         self.scales: list[QDoubleSpinBox] = []
         self.resets: list[QCheckBox] = []
         for i, r in enumerate(rows):
+            unused = not r.get("uses")
             img = QTableWidgetItem()
             if r.get("image"):
                 pm = QPixmap(r["image"])
                 if not pm.isNull():
-                    img.setData(Qt.ItemDataRole.DecorationRole, pm.scaledToHeight(40, Qt.TransformationMode.SmoothTransformation))
+                    pm = pm.scaledToHeight(40, Qt.TransformationMode.SmoothTransformation)
+                    img.setData(Qt.ItemDataRole.DecorationRole, self._faded(pm) if unused else pm)
             img.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(i, 0, img)
             name = QTableWidgetItem(r["name"])
@@ -761,9 +826,14 @@ class IconDictionaryDialog(QDialog):
             sp.setToolTip("한글 글자 높이 대비 아이콘 높이")
             self.table.setCellWidget(i, 4, sp)
             self.scales.append(sp)
-            uses = QTableWidgetItem(f"{r.get('uses', 0)}곳")
+            uses = QTableWidgetItem(f"{r.get('uses', 0)}곳" + (f" · {self.UNUSED}" if unused else ""))
             uses.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if unused:
+                uses.setToolTip(self.UNUSED)
             self.table.setItem(i, 5, uses)
+            if unused:  # 흐리게 (고치기는 그대로 된다)
+                for j in (1, 2, 3, 5):
+                    self.table.item(i, j).setForeground(QColor("#999"))
             cb = QCheckBox()
             cb.setToolTip("원문의 이 아이콘을 [[?]]로 되돌리고 사전에서 뺍니다. 다시 찾아 새로 묶고 이름을 정합니다")
             self.table.setCellWidget(i, 6, cb)
@@ -784,6 +854,18 @@ class IconDictionaryDialog(QDialog):
         lay.addWidget(reset_note)
         lay.addWidget(self.table, 1)
         lay.addWidget(bb)
+
+    @staticmethod
+    def _faded(pm: QPixmap) -> QPixmap:
+        """안 쓰인 아이콘 그림: 흐리게."""
+        out = QPixmap(pm.size())
+        out.setDevicePixelRatio(pm.devicePixelRatio())
+        out.fill(Qt.GlobalColor.transparent)
+        p = QPainter(out)
+        p.setOpacity(0.35)
+        p.drawPixmap(0, 0, pm)
+        p.end()
+        return out
 
     def _paint_ko(self, i: int):
         """한국어 이름이 빈 줄은 노랑 (입력하면 지움)."""

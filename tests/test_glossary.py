@@ -79,7 +79,7 @@ def test_finish_extraction_builds_review_and_import_confirms_game_glossary(tmp_p
     _extracted(fd, 1, "[炎]を持つすべての判定にボーナス")
     # 2쪽은 아직 안 읽음 -> 확인 필요
     r = service.finish_extraction(info.dir, client=ClaudeCodeClient(exe="claude", runner=FakeRunner([])))
-    assert r.state == "needs_confirmation" and any("1장만 읽음" in i for i in r.issues)
+    assert r.state == "needs_confirmation" and any(i.startswith("일부만 읽음:") and "장 중 1장" in i for i in r.issues)
 
     _extracted(fd, 2, "[炎]と[毒]の判定")
     run = FakeRunner([_terms_reply([

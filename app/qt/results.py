@@ -957,7 +957,9 @@ class OutputActions:
 
         self.page.refresh()
         if r.state == "needs_confirmation":
-            issues = [f"{f['file']}: {i}" for f in r.files for i in f.get("issues", [])]
+            # ‘문제: 대상’ 모양을 지켜 파일 이름은 대상 앞에 붙인다
+            issues = [f"{h}: {f['file']} / {t}" if sep else f"{i}: {f['file']}"
+                      for f in r.files for i in f.get("issues", []) for h, sep, t in [i.partition(": ")]]
             if _ask_list(self.page, "한글 넣기 확인", "검수 엑셀에 확인할 항목이 있어 그 파일은 넣지 않았습니다.",
                          issues, "확인했으면 이대로 넣을까요?"):
                 self.compose(accept=True)

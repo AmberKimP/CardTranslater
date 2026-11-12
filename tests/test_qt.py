@@ -3314,3 +3314,101 @@ def test_region_editor_auto_alignment_view_nudge_and_preview(qapp, tmp_path):
     assert ed.ratio_of(ed.items()[0])["x"] == pytest.approx(common_x, abs=1e-6) and ed._view_t
     ed.dirty = False
     ed.close()
+
+
+def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path, monkeypatch):
+    """‘이 칸 다시 읽기’: 작업 스레드로 다시 읽고, 결과를 읽은 결과 표와 편집 칸에 넣는다 (저장은 사람이)."""
+    from types import SimpleNamespace as NS
+
+    from app.qt import steps
+    from app.qt.steps import SourceReviewDialog
+    from tests.test_extract import _msg
+
+    info, fd = _project_with_extract(tmp_path)
+    real = service.reread_region
+    calls = []
+
+    class Client:  # 1쪽 이름을 아이콘이 든 글로 읽는다
+        def __init__(self):
+            create = staticmethod(lambda **kw: _msg(1, "盗掘[[?]]フェレット"))
+            self.beta = NS(messages=NS(create=create))
+            self.messages = NS(create=create)
+
+    def fake(fd_, page, region, **k):
+        calls.append((page, region, k))
+        return real(fd_, page, region, model=k["model"], client=Client())
+
+    ran = []
+
+    def run_now(_parent, title, job, on_done, _on_fail=None, cancellable=True):  # 작업 스레드 대신 바로
+        ran.append(title)
+        on_done(job.fn(*job.args, **job.kwargs))
+
+    monkeypatch.setattr(service, "reread_region", fake)
+    monkeypatch.setattr(service, "engine_status", lambda: {"claude-code": True, "api": True, "message": ""})
+    monkeypatch.setattr(steps.worker, "run_with_dialog", run_now)
+    dlg = SourceReviewDialog(service.project_overview(info.dir)["groups"][0]["files"], engine="api")
+    assert dlg.current()["page"] == 1 and dlg.reread_model.currentData() == "opus"
+    # 고친 글이 있으면 먼저 묻는다: 취소 -> 다시 읽지 않음
+    dlg.edit.setPlainText("고치는 중")
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 2)
+    dlg.reread_btn.click()
+    assert not calls and dlg.edit.toPlainText() == "고치는 중"
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)  # 저장 안 함 -> 다시 읽기
+    dlg.reread_btn.click()
+    assert calls == [(1, "이름", {"model": "opus", "engine": "api"})] and ran
+    rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
+    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기", "정밀 읽기 (다시 읽기)"]
+    assert dlg.edit.toPlainText() == "盗掘[[?]]フェレット"
+    assert "다시 읽은 결과를 편집 칸에 넣었습니다" in dlg.info.text() and "② 아이콘 정의" in dlg.info.text()
+    c = next(x for x in service.extracted_cells(fd) if (x["page"], x["region"]) == (1, "이름"))
+    assert c["source"] == "盗賊フェレット" and c["readings"][-1]["reread"]  # 원문은 저장 전까지 그대로
+    # 다시 봐야 하는 칸은 다음에 열어도 가장 최근의 정밀 읽기(다시 읽은 결과)로 시작한다
+    dlg.reload(keep=(1, "이름"))
+    assert dlg.edit.toPlainText() == "盗掘[[?]]フェレット"
+    # 보통 읽기로 다시, 멈춤 상태면 이유를 보여 주고 편집 칸은 그대로
+    shown = []
+    monkeypatch.setattr(steps, "show_problem", lambda _p, title, reason, **k: shown.append((title, reason)))
+    monkeypatch.setattr(service, "reread_region",
+                        lambda *a, **k: service.RereadResult("paused", reason="Claude Code 사용 한도", retry_after="2026-11-12 18:00:00"))
+    dlg.reread_model.setCurrentIndex(1)
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)
+    dlg.edit.setPlainText("그대로")
+    dlg.reread_btn.click()
+    assert shown and "사용 한도" in shown[0][1] and dlg.edit.toPlainText() == "그대로"
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)
+    dlg.close()
+
+
+def test_precise_index_prefers_newest_precise_reread():
+    from app.qt.steps import precise_index
+
+    rds = [{"model": "Sonnet"}, {"model": "Opus"}, {"model": "Opus", "reread": True}, {"model": "Sonnet", "reread": True},
+           {"model": "Opus", "reread": True}]
+    assert precise_index(rds) == 4
+    assert precise_index(rds[:2]) == 1 and precise_index([{"model": "Sonnet"}, {"model": "Sonnet", "reread": True}]) == 1
+
+
+def test_icon_dictionary_unused_rows_sink_and_fade(qapp):
+    from app.qt.steps import IconDictionaryDialog
+
+    rows = [{"name": "a", "ko": "가", "meaning": "", "scale": 1.1, "uses": 0},
+            {"name": "b", "ko": "나", "meaning": "", "scale": 1.2, "uses": 3},
+            {"name": "c", "ko": "", "meaning": "", "scale": 1.3, "uses": 0},
+            {"name": "d", "ko": "라", "meaning": "", "scale": 1.4, "uses": 1}]
+    dlg = IconDictionaryDialog(rows, "사전")
+    names = [dlg.table.item(i, 1).text() for i in range(4)]
+    assert names == ["b", "d", "a", "c"]  # 쓰인 아이콘 먼저, 안 쓰인 아이콘은 아래로 (그 안에서는 원래 순서)
+    uses = dlg.table.item(2, 5)
+    assert uses.text() == "0곳 · " + IconDictionaryDialog.UNUSED and uses.toolTip() == IconDictionaryDialog.UNUSED
+    assert "다음 프로젝트에서 자동으로 알아봄" in uses.text()
+    assert dlg.table.item(2, 1).foreground().color().name() == "#999999"
+    assert dlg.table.item(0, 5).text() == "3곳" and dlg.table.item(0, 1).foreground().color().name() != "#999999"
+    # 고치기는 그대로 되고, rows()는 바뀐 순서의 줄과 맞게 돌려준다
+    dlg.table.item(2, 2).setText("가가")
+    dlg.scales[3].setValue(2.0)
+    dlg.resets[0].setChecked(True)
+    out = {r["name"]: r for r in dlg.rows()}
+    assert out["a"]["ko"] == "가가" and out["c"]["scale"] == 2.0 and out["b"]["reset"] and not out["a"]["reset"]
+    assert out["d"]["scale"] == pytest.approx(1.4) and out["b"]["scale"] == pytest.approx(1.2)
+    dlg.close()

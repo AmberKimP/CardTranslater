@@ -846,13 +846,13 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
     issues = []
     for s in status:
         if not s["has_regions"]:
-            issues.append(f"{s['file']}: 영역 템플릿이 없어 추출하지 못함")
+            issues.append(f"영역 템플릿이 없어 추출하지 못함: {s['file']}")
         elif s["extracted"] < s["pages"] - len(s["failed"]):
-            issues.append(f"{s['file']}: {s['pages']}장 중 {s['extracted']}장만 읽음")
+            issues.append(f"일부만 읽음: {s['file']} ({s['pages']}장 중 {s['extracted']}장)")
         if s["failed"]:
-            issues.append(f"{s['file']}: 실패한 카드 {len(s['failed'])}장 (용어 후보에서 빠짐)")
+            issues.append(f"실패한 카드 (용어 후보에서 빠짐): {s['file']} {len(s['failed'])}장")
         if s["no_verdict"]:
-            issues.append(f"{s['file']}: ‘결론 못 냄’ {s['no_verdict']}칸 (원문이 틀렸을 수 있음)")
+            issues.append(f"‘결론 못 냄’ 칸 (원문이 틀렸을 수 있음): {s['file']} {s['no_verdict']}칸")
     if issues and not accept_issues:
         return GlossaryReviewResult("needs_confirmation", issues=issues)
     # 이름 없는 아이콘이 남아 있으면 용어집으로 넘어가지 않는다 (PRD 2장 3단계 뒤 안전장치)
@@ -2536,7 +2536,8 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "label": "읽지 않음" if r is None else verification_label(r),
                 "uncertain": bool(r and r.get("uncertain")),
                 "note": (r or {}).get("note", ""),
-                "readings": [{"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"]}
+                "readings": [{"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"],
+                              "reread": bool(x.get("reread"))}
                              for x in (r or {}).get("readings") or []],
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
             })
@@ -2593,6 +2594,82 @@ def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
         tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(f)
+
+
+@dataclass
+class RereadResult:
+    state: str  # done | paused | blocked
+    source: object = None  # 다시 읽은 원문 (글자 칸은 문자열, 태그 칸은 목록)
+    uncertain: bool = False
+    note: str = ""
+    spent_usd: float = 0.0  # API로 실제 쓴 비용
+    equiv_usd: float = 0.0  # Claude Code 요금제로 읽은 분량의 API 정가 환산 (청구되지 않음)
+    reason: str = ""  # 멈춘·못 한 이유
+    retry_after: str | None = None
+
+
+def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = "opus",
+                  engine: str | None = None, client=None) -> RereadResult:
+    """원문 확인 화면에서 고른 칸 하나만 다시 읽는다. 결과는 그 칸의 readings에 덧붙이고(reread=True),
+    원문(source)은 바꾸지 않는다 — 사람이 보고 저장할 때 바뀐다. 시험 모드·뺀 쪽이어도 읽는다(사람이 고른 칸).
+    한도·로그인 문제는 state="paused"·"blocked"로 돌려준다 (예외 아님)."""
+    import pymupdf
+
+    from app.extract import Paused, _iso_after, _read_regions_once, make_client, page_file, resolve_model
+    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+
+    log = logging.getLogger("cardtranslater.extract")
+    fd = Path(file_dir)
+    try:
+        model_id = resolve_model(model)
+    except ValueError as e:
+        return RereadResult("blocked", reason=str(e))
+    proj = load_project(fd)
+    reg = next((r for r in proj.template.regions_for(page) if r.name == region), None)
+    if reg is None:
+        return RereadResult("blocked", reason=f"{page}쪽에 ‘{region}’ 영역이 없습니다")
+    if client is None:
+        eng = engine or get_settings().engine
+        try:
+            client = ClaudeCodeClient() if eng == "claude-code" else make_client()
+        except Exception as e:  # noqa: BLE001  (키·claude 명령이 없을 때 등)
+            return RereadResult("blocked", reason=f"Claude에 연결할 수 없습니다: {e}")
+    base = fd / "extract"
+    try:
+        with pymupdf.open(stream=proj.source_pdf.read_bytes(), filetype="pdf") as src_doc:
+            got, spent, equiv = _read_regions_once(client, proj, page, src_doc, model_id, base, [reg])
+    except Paused as p:
+        log.warning("칸 다시 읽기 일시 정지 (%d쪽 %s): %s", page, region, p.reason)
+        return RereadResult("paused", reason=p.reason, retry_after=_iso_after(p.retry_after_s))
+    except NotAvailable as e:
+        return RereadResult("blocked", reason=str(e))
+    except CardError as e:
+        log.warning("칸 다시 읽기 실패 (%d쪽 %s): %s", page, region, e)
+        return RereadResult("blocked", reason=f"다시 읽지 못했습니다: {e}")
+    r = got.get(region)
+    if r is None:
+        return RereadResult("blocked", reason="응답에 이 칸의 결과가 없습니다", spent_usd=spent, equiv_usd=equiv)
+    entry = {"model": model_id, "source": r["source"], "uncertain": bool(r.get("uncertain")),
+             "note": r.get("note", ""), "reread": True, "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+             "cost_usd": round(spent, 6), "cost_equiv_usd": round(equiv, 6)}
+    # 이미 읽은 칸에만 덧붙인다 (아직 읽지 않은 칸은 편집 칸에 넣어 주고, 저장할 때 원문이 생긴다)
+    for f in (page_file(base, page), base / f"page-{page:03d}.json"):
+        if not f.exists():
+            continue
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        cell = (rec.get("regions") or {}).get(region)
+        if cell is None:
+            continue
+        readings = cell.setdefault("readings", [])
+        if not readings and cell.get("source") is not None and not cell.get("edited_by"):
+            # 처음 읽은 결과를 함께 남겨 두 결과를 비교할 수 있게
+            readings.append({"model": cell.get("read_by") or rec.get("model") or "1차", "source": cell["source"]})
+        readings.append(entry)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(f)
+    log.info("칸 다시 읽음: %d쪽 %s (%s)", page, region, model_id)
+    return RereadResult("done", r["source"], bool(r.get("uncertain")), r.get("note", ""), spent, equiv)
 
 
 # ---------------------------------------------------------------- 화면용: 아이콘 이름 확인 (2차)

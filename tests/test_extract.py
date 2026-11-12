@@ -589,3 +589,48 @@ def test_extract_logs_failed_card_with_api_detail_and_times(tmp_path, caplog):
     assert any("1쪽 읽기 실패: 요청 오류" in m for m in msgs)
     t = next(m for m in msgs if m.startswith("[시간] ① 글자 추출"))
     assert "Claude 요청" in t and "카드 1장 읽음" in t and "실패 1" in t and "엔진 api" in t
+
+
+def test_reread_region_appends_reading_and_keeps_source(tmp_path):
+    """원문 확인 ‘이 칸 다시 읽기’: 그 칸만 다시 읽어 readings에 덧붙이고 원문은 그대로 둔다 (두 파일 모두)."""
+    proj = make_project(tmp_path, pages=1)
+    base = extract_dir(proj)
+    (base / "pages").mkdir(parents=True)
+    rec = {"page": 1, "model": "claude-sonnet-5-5", "regions": {"이름": {"source": "HELL0", "uncertain": True, "note": ""}}}
+    for f in (base / "pages" / "page-001.json", base / "page-001.json"):
+        f.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    c = FakeClient()
+    r = service.reread_region(proj, 1, "이름", model="opus", client=c)
+    assert r.state == "done" and r.source == "HELLO" and r.spent_usd > 0 and len(c.calls) == 1
+    assert c.calls[0]["model"] == "claude-opus-5-5"
+    for f in (base / "pages" / "page-001.json", base / "page-001.json"):
+        cell = json.loads(f.read_text(encoding="utf-8"))["regions"]["이름"]
+        assert cell["source"] == "HELL0" and cell["uncertain"]  # 원문은 사람이 저장할 때 바뀐다
+        first, again = cell["readings"]
+        assert first == {"model": "claude-sonnet-5-5", "source": "HELL0"}
+        assert again["reread"] and again["model"] == "claude-opus-5-5" and again["source"] == "HELLO" and again["at"]
+    # 한 번 더 읽으면 덧붙기만 한다
+    assert service.reread_region(proj, 1, "이름", model="sonnet", client=FakeClient()).state == "done"
+    cell = load_extracted(proj)[1]["이름"]
+    assert [x["model"] for x in cell["readings"]] == ["claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]
+
+
+def test_reread_region_paused_and_blocked_states(tmp_path):
+    proj = make_project(tmp_path, pages=1)
+    service.extract(proj, client=FakeClient(), model="sonnet", engine="api")
+    before = (extract_dir(proj) / "pages" / "page-001.json").read_text(encoding="utf-8")
+    rl = anthropic.RateLimitError("rate limited", response=_resp(429, {"retry-after": "30"}), body=None)
+    r = service.reread_region(proj, 1, "이름", client=FakeClient(fail_at={0: rl}))
+    assert r.state == "paused" and "429" in r.reason and r.retry_after
+    assert (extract_dir(proj) / "pages" / "page-001.json").read_text(encoding="utf-8") == before
+    assert service.reread_region(proj, 1, "없는칸", client=FakeClient()).state == "blocked"
+    assert service.reread_region(proj, 1, "이름", model="gpt", client=FakeClient()).state == "blocked"
+    bad = anthropic.BadRequestError("bad", response=_resp(400), body=None)
+    r = service.reread_region(proj, 1, "이름", client=FakeClient(fail_at={0: bad}))
+    assert r.state == "blocked" and "다시 읽지 못했습니다" in r.reason
+
+
+def test_reread_region_unread_page_returns_text_without_writing(tmp_path):
+    proj = make_project(tmp_path, pages=1)
+    r = service.reread_region(proj, 1, "이름", client=FakeClient())
+    assert r.state == "done" and r.source == "HELLO" and not (extract_dir(proj) / "pages").exists()

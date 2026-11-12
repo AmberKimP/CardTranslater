@@ -8,6 +8,10 @@
 2. ``import_review``: 사용자가 이름을 확정하면 사전(``games/<게임>/icons/``)에 그림·뜻·한국어 이름을 저장하고
    원문의 ``[[?]]``를 ``[[이름]]``으로 바꾼다. ‘아이콘 아님’은 원문에서 뺀다. 같은 이름을 쓴 묶음은 하나로 합친다.
 
+아이콘 옆에 인쇄된 숫자(``2[[?]]``)는 그림에 함께 자르고, 원문에서는 확정할 때(또는 사전과 모양·숫자가 같아
+자동으로 바꿀 때)만 뺀다. 뺀 숫자는 칸의 ``icon_numbers``에 적어 두어 ‘다시 정하기’가 되살린다.
+숫자가 다르면 모양이 같아도 다른 아이콘이다 (모양 비교는 작은 숫자를 거의 보지 못한다).
+
 화면 코드를 모른다 (PySide6 전환 대비). 위치는 영역을 바로 세운 이미지 좌표에서만 다루므로
 180도 돌린 영역도 같은 방식으로 처리되고, 저장되는 아이콘 그림은 언제나 바로 선 모양이다.
 """
@@ -556,18 +560,6 @@ def strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
         text = text[:s] + text[e:]
     text = re.sub(r"(?<=\S)[ 　]{2,}(?=\S)", " ", text)
     return "\n".join(ln.strip(" 　") for ln in text.split("\n"))
-
-
-def strip_in_extract(file_dir: Path, page: int, region: str, original: str, spans: list[tuple[int, int]]) -> None:
-    """추출 결과의 원문에서 아이콘에 넣은 숫자를 뺀다 (원문이 그사이 바뀌지 않았을 때만)."""
-    for f in _extract_files(file_dir, page):
-        rec = json.loads(f.read_text(encoding="utf-8"))
-        r = rec["regions"].get(region)
-        if not r or r.get("source") != original:
-            continue
-        r["source"] = strip_spans(original, spans)
-        r["icon_number_note"] = "아이콘 옆·위 숫자를 아이콘에 넣고 원문에서 뺌"
-        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, int, int], bool]]:
@@ -1121,6 +1113,107 @@ def _extract_files(file_dir: Path, page: int) -> list[Path]:
     return [p for p in (base / "pages" / f"page-{page:03d}.json", base / f"page-{page:03d}.json") if p.exists()]
 
 
+def num_key(s: str | None) -> str:
+    """숫자 비교용 (전각 ２ = 2)."""
+    return unicodedata.normalize("NFKC", s or "").strip()
+
+
+def entry_number(e: dict) -> str | None:
+    """사전 항목이 그림에 넣은 숫자 ("" = 없음). 예전 항목(number 키 없음)은 None."""
+    return num_key(e["number"]) if isinstance(e.get("number"), str) else None
+
+
+def number_allows(entry_num: str | None, occ_num: str) -> bool:
+    """사전 항목과 자리의 숫자가 맞아 자동으로 바꿔도 되는가. 예전 항목은 숫자 없는 자리와만."""
+    return occ_num == "" if entry_num is None else entry_num == occ_num
+
+
+def apply_icons(text: str, mapping: dict[int, str], strip: dict[int, dict] | None = None,
+                numbers: list | None = None) -> tuple[str, list[dict], int]:
+    """i번째 [[?]]를 mapping대로 바꾸고, strip[i] = {"text", "side"}인 자리는 옆 숫자를 원문에서 뺀다.
+    숫자는 지금 원문에서 다시 찾는다(사람이 그사이 지웠거나 다른 숫자면 빼지 않음).
+    돌려줌 (새 원문, 칸의 icon_numbers, 이번에 뺀 숫자 수).
+    icon_numbers = [{"index": 칸에서 몇 번째 [[…]] (0부터), "name", "text", "side", "sep"}] (‘다시 정하기’가 되살림).
+    numbers = 칸에 이미 있던 icon_numbers (아이콘 아님으로 빠진 [[?]]만큼 번호를 당긴다)."""
+    toks = list(TOKEN_RE.finditer(text))
+    ph = [ti for ti, t in enumerate(toks) if t.group(1) == "?"]
+    spans, found = [], {}
+    for j, want in (strip or {}).items():
+        name = mapping.get(j, "")
+        if j >= len(ph) or not name or name.startswith("="):
+            continue
+        t = toks[ph[j]]
+        hit = number_near(text, t.start(), t.end())
+        if hit is None or hit[0] != want.get("side", hit[0]) or num_key(text[hit[1]:hit[2]]) != num_key(want.get("text")):
+            continue
+        sep = text[hit[2]:t.start()] if hit[0] == "before" else text[t.end():hit[1]]
+        spans.append((hit[1], hit[2]))
+        found[ph[j]] = {"name": name, "text": text[hit[1]:hit[2]], "side": hit[0], "sep": sep}
+    # [[…]] 번호: ‘아이콘 아님’으로 빠지거나 글자가 된 [[?]] 뒤는 당겨진다
+    new_idx, k = {}, 0
+    for ti, t in enumerate(toks):
+        if t.group(1) == "?":
+            v = mapping.get(ph.index(ti))
+            if v is not None and (v == "" or v.startswith("=")):
+                continue
+        new_idx[ti] = k
+        k += 1
+    out = strip_spans(text, spans) if spans else text
+    out = replace_placeholders(out, mapping)
+    nums = [{**e, "index": new_idx[e["index"]]} for e in (numbers or [])
+            if isinstance(e, dict) and isinstance(e.get("index"), int) and e["index"] in new_idx]
+    nums += [{"index": new_idx[ti], **v} for ti, v in sorted(found.items())]
+    return out, nums, len(found)
+
+
+def apply_region(file_dir: Path, page: int, region: str, mapping: dict[int, str],
+                 strip: dict[int, dict] | None = None, note: str = "") -> str | None:
+    """추출 결과 칸에 apply_icons를 적용해 저장한다. 돌려줌: 바뀐 원문(pages/ 파일 기준, 없으면 None)."""
+    got = None
+    for f in _extract_files(file_dir, page):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec["regions"].get(region)
+        if not r or not isinstance(r.get("source"), str):
+            continue
+        src, nums, n_strip = apply_icons(r["source"], mapping, strip, r.get("icon_numbers"))
+        r["source"] = src
+        if nums:
+            r["icon_numbers"] = nums
+        else:
+            r.pop("icon_numbers", None)
+        if n_strip:
+            r["icon_number_note"] = "아이콘 옆·위 숫자를 아이콘에 넣고 원문에서 뺌"
+        if note:
+            r["icon_note"] = note
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        if got is None:
+            got = src
+    return got
+
+
+def restore_numbers(src: str, name: str, numbers: list | None) -> tuple[str, list[dict], int]:
+    """[[name]]을 [[?]]로 되돌리며 icon_numbers에 적어 둔 숫자를 제자리에 되살린다.
+    돌려줌 (새 원문, 남은 icon_numbers, 되돌린 수). [[…]] 수는 그대로라 다른 번호는 바뀌지 않는다."""
+    toks = list(TOKEN_RE.finditer(src))
+    by_idx = {e["index"]: e for e in (numbers or [])
+              if isinstance(e, dict) and e.get("name") == name and isinstance(e.get("index"), int)}
+    used, n, out = set(), 0, src
+    for ti in reversed(range(len(toks))):
+        t = toks[ti]
+        if t.group(1) != name:
+            continue
+        n += 1
+        rep = PLACEHOLDER
+        e = by_idx.get(ti)
+        if e and e.get("text"):
+            sep = e.get("sep", "")
+            rep = f"{e['text']}{sep}{PLACEHOLDER}" if e.get("side") == "before" else f"{PLACEHOLDER}{sep}{e['text']}"
+            used.add(ti)
+        out = out[:t.start()] + rep + out[t.end():]
+    rest = [e for e in (numbers or []) if not (isinstance(e, dict) and e.get("index") in used and e.get("name") == name)]
+    return out, rest, n
+
+
 def apply_to_extract(file_dir: Path, page: int, region: str, mapping: dict[int, str], note: str = "") -> None:
     for f in _extract_files(file_dir, page):
         rec = json.loads(f.read_text(encoding="utf-8"))
@@ -1167,8 +1260,12 @@ def reset_icon(info, name: str) -> int:
             for r in (rec.get("regions") or {}).values():
                 src = r.get("source")
                 if isinstance(src, str) and tok in src:
-                    k = src.count(tok)
-                    r["source"] = src.replace(tok, PLACEHOLDER)
+                    # 아이콘에 넣으며 원문에서 뺀 숫자도 제자리에 되살린다 (2[[상자]] -> 2[[?]])
+                    r["source"], rest, k = restore_numbers(src, name, r.get("icon_numbers"))
+                    if rest:
+                        r["icon_numbers"] = rest
+                    else:
+                        r.pop("icon_numbers", None)
                     r["icon_note"] = f"아이콘 다시 정하기 ([[{name}]] 되돌림)"
                     changed = True
                     if f.parent.name == "pages":
@@ -1206,6 +1303,13 @@ class Occurrence:
     order: int = 0  # 그 줄에서 몇 번째 아이콘 (1부터)
     box: list = field(default_factory=list)  # 영역 이미지(CROP_DPI)에서 잘라 낸 자리 [x0, y0, x1, y1]
     manual: bool = False  # 사람이 카드 보기에서 직접 잡은 자리
+    # 그림에 함께 넣은 옆 숫자 {"text", "start", "end", "side"} (찾을 때 원문 기준). 원문에서는 확정할 때 뺀다
+    number: dict = field(default_factory=dict)
+
+    @property
+    def num(self) -> str:
+        """묶기·사전 비교에 쓰는 숫자: 손으로 잡은 자리는 숫자를 원문에 남기므로 ""."""
+        return "" if self.manual else num_key((self.number or {}).get("text"))
 
 
 @dataclass
@@ -1255,12 +1359,7 @@ def scan(info, work: Path) -> ScanResult:
     if work.exists():
         shutil.rmtree(work)
     (work / "crops").mkdir(parents=True)
-    d = load_dictionary(info)
-    known = {}
-    for name, e in d["icons"].items():
-        p = icons_dir(info) / e.get("file", f"{name}.png")
-        if p.exists():
-            known[name] = shape_pair(load_png(p))
+    known = _known_shapes(info)
     res = ScanResult()
     n = 0
     for fd in game_file_dirs(info):
@@ -1278,7 +1377,7 @@ def scan(info, work: Path) -> ScanResult:
                 img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
-                auto_map, left, strips = {}, [], []
+                auto_map, auto_strip, left = {}, {}, []
                 for k, ti in enumerate(ph):
                     n += 1
                     oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
@@ -1288,35 +1387,34 @@ def scan(info, work: Path) -> ScanResult:
                     if box is None:
                         oc.reason = why
                     else:
-                        # 아이콘 바로 앞·뒤(또는 위)에 인쇄된 숫자는 아이콘의 일부로: 그림에 넣고 원문에서 뺀다
+                        # 아이콘 바로 앞·뒤(또는 위)에 인쇄된 숫자는 아이콘의 일부로 그림에 넣는다. 원문에서 빼는 것은
+                        # 사람이 확정할 때 (손으로 다시 잡거나 ‘아이콘 아님’이면 숫자를 남겨야 하므로)
                         num = number_near(text, tokens[ti].start(), tokens[ti].end())
                         if num is not None:
                             nb = absorb_number(img, box, num[0], num[2] - num[1])
                             if nb is not None:
                                 box = nb
-                                strips.append((num[1], num[2]))
+                                oc.number = {"text": text[num[1]:num[2]], "start": num[1], "end": num[2],
+                                             "side": num[0]}
                         oc.box = [int(v) for v in box]
                         rgba = cut_out(img, box)
                         png = work / "crops" / f"{oc.id}.png"
                         save_png(rgba, png)
                         oc.png = str(png)
-                        sh = shape_pair(rgba)
-                        if known:
-                            name, s = max(((nm, same_icon(sh, ks)) for nm, ks in known.items()), key=lambda t: t[1])
-                            if s >= SAME_SHAPE:
-                                oc.match, oc.score = name, s
+                        oc.match, oc.score = best_known(shape_pair(rgba), known, oc.num)
                     if oc.match:
                         auto_map[k] = oc.match
+                        if oc.number:
+                            auto_strip[k] = oc.number
                         res.auto[oc.match] = res.auto.get(oc.match, 0) + 1
                     else:
                         left.append(oc)
-                if strips:  # [[?]] 순서는 그대로라 아래 자동 이름 바꾸기와 겹치지 않는다
-                    strip_in_extract(fd, pno, rname, text, strips)
-                    stripped = strip_spans(text, strips).replace("\n", " / ")
-                    for oc in left:
-                        oc.context = stripped
-                if auto_map:
-                    apply_to_extract(fd, pno, rname, auto_map, note="아이콘 사전과 모양이 같아 자동으로 바꿈")
+                if auto_map:  # 사전과 모양·숫자가 같은 것: 바로 바꾸고 그 숫자는 원문에서 뺀다
+                    now = apply_region(fd, pno, rname, auto_map, auto_strip,
+                                       note="아이콘 사전과 모양이 같아 자동으로 바꿈")
+                    if now is not None:
+                        for oc in left:
+                            oc.context = now.replace("\n", " / ")
                 for j, oc in enumerate(left):  # 자동으로 바꾼 것을 뺀 순서
                     oc.index = j
                     res.occurrences.append(oc)
@@ -1329,13 +1427,16 @@ def scan(info, work: Path) -> ScanResult:
 
 def _group(res: ScanResult) -> None:
     shapes = {o.id: shape_pair(load_png(Path(o.png))) for o in res.occurrences if o.png}
+    by_id = {o.id: o for o in res.occurrences}
     reps: list[tuple[str, str]] = []  # (묶음, 대표 occurrence id)
     for o in res.occurrences:
         if not o.png:
             o.group = f"위치 못 찾음 {o.id}"
             res.groups[o.group] = {"rep": "", "count": 1}
             continue
-        g = next((g for g, rid in reps if same_icon(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
+        # 옆 숫자가 다르면 모양이 같아도 다른 묶음 (상자+2·상자+5)
+        g = next((g for g, rid in reps if by_id[rid].num == o.num
+                  and same_icon(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
         if g is None:
             g = f"g{len(reps) + 1:02d}"
             reps.append((g, o.id))
@@ -1360,7 +1461,9 @@ def _save_scan(work: Path, res: ScanResult) -> None:
 
 def load_scan(work: Path) -> ScanResult:
     data = json.loads((Path(work) / "scan.json").read_text(encoding="utf-8"))
-    return ScanResult([Occurrence(**o) for o in data["occurrences"]], data["groups"], data.get("auto", {}))
+    keys = set(Occurrence.__dataclass_fields__)  # 예전 scan.json(number 없음)도, 모르는 키가 있어도 읽힌다
+    return ScanResult([Occurrence(**{k: v for k, v in o.items() if k in keys}) for o in data["occurrences"]],
+                      data["groups"], data.get("auto", {}))
 
 
 # ---------------------------------------------------------------- 사람이 아이콘 자리 잡기 (카드 보기)
@@ -1411,13 +1514,22 @@ def place_info(info, work: Path, occ_id: str) -> dict:
 
 
 def _known_shapes(info) -> dict:
+    """사전 이름 -> (모양, 그림에 넣은 숫자 | None=예전 항목)."""
     d = load_dictionary(info)
     out = {}
     for name, e in d["icons"].items():
         p = icons_dir(info) / e.get("file", f"{name}.png")
         if p.exists():
-            out[name] = shape_pair(load_png(p))
+            out[name] = (shape_pair(load_png(p)), entry_number(e))
     return out
+
+
+def best_known(sh, known: dict, occ_num: str) -> tuple[str, float]:
+    """사전에서 모양이 같은 아이콘 (이름, 점수). 옆 숫자가 다르면 후보가 아니다 (상자+2를 상자+5로 바꾸지 않게:
+    모양 비교는 숫자를 거의 보지 못한다). 없으면 ("", 0)."""
+    cand = [(nm, same_icon(sh, ks)) for nm, (ks, en) in known.items() if number_allows(en, occ_num)]
+    nm, s = max(cand, key=lambda t: t[1], default=("", 0.0))
+    return (nm, s) if s >= SAME_SHAPE else ("", 0.0)
 
 
 def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]) -> dict:
@@ -1456,17 +1568,12 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     best, best_s = None, SAME_SHAPE
     for g, info_g in res.groups.items():
         rep = by_id.get(info_g.get("rep") or "")
-        if rep is None or not rep.png:
+        if rep is None or not rep.png or rep.num != o.num:  # 옆 숫자가 다르면 다른 아이콘
             continue
         s = same_icon(sh, shape_pair(load_png(Path(rep.png))))
         if s >= best_s:
             best, best_s = g, s
-    match = ""
-    known = _known_shapes(info)
-    if known:
-        nm, s = max(((nm, same_icon(sh, ks)) for nm, ks in known.items()), key=lambda t: t[1])
-        if s >= SAME_SHAPE:
-            match = nm
+    match = best_known(sh, _known_shapes(info), o.num)[0]
     if best is not None:
         g = best
         res.groups[g]["count"] += 1
@@ -1622,6 +1729,12 @@ class IconImport:
     replaced: int = 0
 
 
+def _group_num(res: ScanResult, by_id: dict, g: str) -> str:
+    """묶음 대표 자리의 옆 숫자 (사전 항목 number로 적는 그대로의 글자, 손으로 잡은 자리는 "")."""
+    o = by_id.get(res.groups.get(g, {}).get("rep") or "")
+    return "" if o is None or o.manual else (o.number or {}).get("text", "")
+
+
 def import_review(info, xlsx: Path, work: Path) -> IconImport:
     """검증 엑셀을 읽어 사전에 넣고 원문 [[?]]를 바꾼다. 막는 문제가 있으면 아무것도 바꾸지 않는다."""
     from openpyxl import load_workbook
@@ -1685,6 +1798,9 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
             for k in ("meaning", "ko", "scale"):
                 if m.get(k) is not None:
                     e[k] = m[k]
+            seen = [g for g in groups if res.groups[g].get("rep")]
+            if entry_number(e) is None and seen:  # 예전 항목: 가장 많이 나온 묶음의 숫자를 적어 둔다
+                e["number"] = _group_num(res, by_id, max(seen, key=lambda g: res.groups[g].get("count", 0)))
             out.reused.append(name)
         else:
             # 대표 그림: 가장 많이 나온 묶음의 그림 (합친 작은 묶음은 잘못 잘린 조각일 수 있음)
@@ -1694,6 +1810,7 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
             save_png(load_png(Path(best)), dst / f"{name}.png")
             d["icons"][name] = {"file": f"{name}.png", "meaning": m.get("meaning", ""), "ko": m.get("ko", ""),
                                 "scale": m.get("scale", DEFAULT_SCALE), "valign": "center",
+                                "number": _group_num(res, by_id, top),
                                 "from_project": info.name}
             out.added.append(name)
         samples = dst / "samples" / name
@@ -1702,11 +1819,19 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
             shutil.copy2(p, samples / f"{info.name}_{Path(p).name}")
     save_dictionary(info, d)
     # 원문 바꾸기 (칸마다 한 번에)
+    # 옆 숫자는 아이콘 이름으로 정했고 상자를 손으로 잡지 않았고 사전 그림의 숫자와 같을 때만 원문에서 뺀다
+    # (‘아이콘 아님’·손으로 잡은 자리는 숫자를 남긴다. 숫자가 다른 묶음을 같은 이름으로 합치면 숫자를 남겨 수량을 지킨다)
     per_region: dict[tuple, dict[int, str]] = {}
+    strips: dict[tuple, dict[int, dict]] = {}
     for o in res.occurrences:
-        per_region.setdefault((o.file, o.page, o.region), {})[o.index] = decision[o.group]
+        key = (o.file, o.page, o.region)
+        name = decision[o.group]
+        per_region.setdefault(key, {})[o.index] = name
+        e = d["icons"].get(name) if name and not name.startswith("=") else None
+        if e is not None and o.number and not o.manual and entry_number(e) == o.num:
+            strips.setdefault(key, {})[o.index] = o.number
     for (f, page, region), mapping in per_region.items():
-        apply_to_extract(_occ_dir(info, f), page, region, mapping)
+        apply_region(_occ_dir(info, f), page, region, mapping, strips.get((f, page, region)))
         out.removed += sum(1 for v in mapping.values() if v == "")
         out.replaced += sum(1 for v in mapping.values() if v)
     shutil.rmtree(work, ignore_errors=True)

@@ -228,6 +228,37 @@ def explain_error(text: str) -> tuple[str, str] | None:
     return None
 
 
+_LIST_BREAKERS = (": ", "(", ")", "=", "←", "→", "—", "\n")
+
+
+def _split_keys(target: str) -> list[str]:
+    """‘a, b, c’처럼 이름만 쉼표로 이은 것이 분명할 때만 낱개로 쪼갠다. 그 밖의 글이 섞였으면 그대로 한 줄."""
+    parts = [p.strip() for p in target.split(", ")]
+    if len(parts) < 2 or any(not p or len(p) > 40 for p in parts) or any(b in target for b in _LIST_BREAKERS):
+        return [target]
+    return parts
+
+
+def group_issue_lines(items: list[str]) -> str:
+    """‘문제: 대상’ 목록을 문제별로 묶는다: 문제 줄(몇 건) 다음에 대상을 한 줄씩. 처음 나온 순서를 지킨다.
+    대상이 하나뿐이어도 똑같이 보이고, ‘: ’가 없는 줄은 ‘기타’ 아래에 둔다."""
+    groups: dict[str, list[str]] = {}
+    plain: list[str] = []
+    for it in items:
+        it = (it or "").strip()
+        if not it:
+            continue
+        head, sep, target = it.partition(": ")
+        if not sep or not head.strip() or not target.strip():
+            plain.append(it)
+            continue
+        groups.setdefault(head.strip(), []).extend(_split_keys(target.strip()))
+    blocks = [f"{h} ({len(t)}건)\n" + "\n".join(f"  - {x}" for x in t) for h, t in groups.items()]
+    if plain:
+        blocks.append(f"기타 ({len(plain)}건)\n" + "\n".join(f"  - {x}" for x in plain))
+    return "\n\n".join(blocks)
+
+
 def show_error(parent, title: str, why: str, todo: str = "", detail: str | None = None,
                warn: bool = True) -> QMessageBox:
     """오류·경고 창. 제목=무엇이 안 됐는지, 본문=왜, 아래=무엇을 하면 되는지, 원문 메시지는 ‘자세히 보기’에."""
@@ -264,7 +295,9 @@ def show_failure(parent, title: str, message: str) -> QMessageBox:
 def show_problem(parent, title: str, reason: str, todo: str = "", retry_after: str | None = None,
                  detail: str | None = None) -> QMessageBox:
     """엔진이 ‘할 수 없음·멈춤·실패’ 상태와 이유를 돌려준 경우. reason은 엔진이 쓴 한국어 이유."""
-    full = "\n\n".join(x for x in ((reason or "").strip(), (detail or "").strip()) if x)
+    rlines = [x for x in (reason or "").splitlines() if x.strip()]
+    shown = group_issue_lines(rlines) if len(rlines) > 1 else (reason or "").strip()  # 여러 줄이면 문제별로 묶어 보임
+    full = "\n\n".join(x for x in (shown, (detail or "").strip()) if x)
     if retry_after:
         return show_error(parent, title, "Claude 사용 한도에 걸려 멈췄습니다.",
                           f"{retry_after} 이후 다시 누르면 멈춘 곳부터 이어서 합니다.", full)

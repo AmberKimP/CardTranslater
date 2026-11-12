@@ -232,3 +232,140 @@ def test_set_partner_does_not_take_printed_number_or_plus():
     seq = list("それをした場合") + ["■", "+", "2"]
     cells = [(i * 60, 100, i * 60 + 50, 150) for i in range(7)] + [(430, 80, 520, 170), (525, 80, 600, 170), (610, 100, 650, 150)]
     assert _set_partner(cells[7], cells, seq, 7, 55.0, 90.0) == cells[7]
+
+
+# ---------------------------------------------------------------- 아이콘 옆 숫자: 확정할 때만 빼고, 숫자가 다르면 다른 아이콘
+def _num_project(root, name, digits):
+    """쪽마다 'AB {숫자}● CD' 카드 (숫자 ""이면 숫자 없음). 원문은 'AB 2[[?]]CD'처럼 읽혔다고 둔다."""
+    import json
+
+    from app import workspace
+    from tests.test_icons import _regions
+
+    pdf = root / "src" / name / "cards.pdf"
+    doc = pymupdf.open()
+    for dg in digits:
+        pg = doc.new_page(width=250, height=180)
+        pg.insert_text((40, 120), "AB", fontsize=12)
+        if dg:
+            pg.insert_text((56, 120), dg, fontsize=12)
+        pg.draw_circle((70, 116), 4.5, color=(0.85, 0.1, 0.1), fill=(0.85, 0.1, 0.1))
+        pg.insert_text((80, 120), "CD", fontsize=12)
+    pdf.parent.mkdir(parents=True)
+    doc.save(pdf)
+    info, _ = workspace.create_project(name, "G", root=root)
+    workspace.add_files(info, [pdf], "카드", new_group=True, regions_from=_regions(root / f"{name}_regions.json"))
+    fd = workspace.file_dirs(info)[0]
+    d = fd / "extract" / "pages"
+    d.mkdir(parents=True)
+    for p, dg in enumerate(digits, start=1):
+        (d / f"page-{p:03d}.json").write_text(json.dumps({"page": p, "model": "m", "regions": {
+            "본문": {"source": f"AB {dg}[[?]]CD" if dg else "AB[[?]]CD", "uncertain": False, "note": ""}}}),
+            encoding="utf-8")
+    return info, fd
+
+
+def _cell(fd, page):
+    import json
+    return json.loads((fd / "extract" / "pages" / f"page-{page:03d}.json").read_text(encoding="utf-8"))["regions"]["본문"]
+
+
+def _blind_shape(monkeypatch):
+    """실제 버그처럼 모양 비교가 숫자를 보지 못하는 경우 (상자+2·상자+5가 같은 모양으로 나옴)."""
+    monkeypatch.setattr(icons, "same_icon", lambda a, b: 1.0)
+
+
+def test_apply_icons_strips_number_and_restore_puts_it_back():
+    t = "AB 2 [[?]] [[?]]\n[[?]]+1"
+    out, nums, n = icons.apply_icons(t, {0: "crate", 1: "book", 2: ""}, {0: {"text": "2", "side": "before"},
+                                                                      2: {"text": "+1", "side": "after"}})
+    assert out == "AB [[crate]] [[book]]\n+1" and n == 1  # ‘아이콘 아님’(빼기)은 숫자를 남긴다
+    assert nums == [{"index": 0, "name": "crate", "text": "2", "side": "before", "sep": " "}]
+    # 사람이 그사이 숫자를 고쳤으면 빼지 않는다
+    out2, nums2, n2 = icons.apply_icons("3[[?]]", {0: "crate"}, {0: {"text": "2", "side": "before"}})
+    assert out2 == "3[[crate]]" and nums2 == [] and n2 == 0
+    back, rest, k = icons.restore_numbers(out, "crate", nums)
+    assert back == "AB 2 [[?]] [[book]]\n+1" and rest == [] and k == 1
+    # 앞의 [[?]]가 ‘아이콘 아님’으로 빠지면 이미 적어 둔 번호를 당긴다
+    out3, nums3, _ = icons.apply_icons("[[?]] x [[coin]]", {0: ""}, None,
+                                       [{"index": 1, "name": "coin", "text": "5", "side": "before", "sep": ""}])
+    assert out3 == " x [[coin]]"
+    assert nums3 == [{"index": 0, "name": "coin", "text": "5", "side": "before", "sep": ""}]
+    assert icons.restore_numbers(out3, "coin", nums3)[0] == " x 5[[?]]"
+
+
+def test_scan_keeps_number_until_confirm_and_splits_groups_by_number(tmp_path, monkeypatch):
+    from app import service
+
+    _blind_shape(monkeypatch)
+    info, fd = _num_project(tmp_path, "1차", ["2", "5", "5", "2"])
+    service.find_icons(info.dir, suggest=False)
+    assert [_cell(fd, p)["source"] for p in (1, 2)] == ["AB 2[[?]]CD", "AB 5[[?]]CD"]  # 찾을 때는 원문 그대로
+    res = icons.load_scan(info.game_dir / "work" / "icons")
+    assert {o.page: o.number["text"] for o in res.occurrences} == {1: "2", 2: "5", 3: "5", 4: "2"}
+    by_num = {}
+    for o in res.occurrences:
+        by_num.setdefault(o.number["text"], set()).add(o.group)
+    assert len(by_num["2"]) == len(by_num["5"]) == 1 and by_num["2"] != by_num["5"]  # 숫자가 다르면 다른 묶음
+    g2, g5 = next(iter(by_num["2"])), next(iter(by_num["5"]))
+    # 4쪽은 손으로 다시 잡는다 -> 숫자는 원문에 남기고, 숫자 없는 묶음으로 옮긴다
+    o4 = next(o for o in res.occurrences if o.page == 4)
+    r = service.set_icon_box(info.dir, o4.id, o4.box)
+    assert r["group"] not in (g2, g5) and r["new_group"]
+    out = service.confirm_icons(info.dir, [{"group": g2, "name": "crate_2", "ko": "상자 2"},
+                                           {"group": g5, "not_icon": True},
+                                           {"group": r["group"], "name": "crate", "ko": "상자"}])
+    assert out.state == "confirmed", out.blocking
+    c1 = _cell(fd, 1)
+    assert c1["source"] == "AB [[crate_2]]CD"  # 이름으로 정한 보통 상자: 숫자를 아이콘에 넣고 원문에서 뺀다
+    assert c1["icon_numbers"] == [{"index": 0, "name": "crate_2", "text": "2", "side": "before", "sep": ""}]
+    assert _cell(fd, 2)["source"] == "AB 5CD"  # 아이콘 아님: 숫자는 남는다
+    assert _cell(fd, 4)["source"] == "AB 2[[crate]]CD" and "icon_numbers" not in _cell(fd, 4)  # 손으로 잡은 자리
+    d = icons.load_dictionary(info)["icons"]
+    assert d["crate_2"]["number"] == "2" and d["crate"]["number"] == ""
+
+    # 사전 ‘다시 정하기’: [[crate_2]] -> [[?]]와 함께 숫자 2도 제자리에
+    assert service.update_icon_dictionary(info.dir, [{"name": "crate_2", "reset": True}])["reset"] == {"crate_2": 1}
+    c1 = _cell(fd, 1)
+    assert c1["source"] == "AB 2[[?]]CD" and "icon_numbers" not in c1
+
+
+def test_dictionary_auto_match_needs_same_number(tmp_path, monkeypatch):
+    import json
+
+    from app import service
+
+    _blind_shape(monkeypatch)
+    info, fd = _num_project(tmp_path, "1차", ["5"])
+    service.find_icons(info.dir, suggest=False)
+    g = icons.load_scan(info.game_dir / "work" / "icons").occurrences[0].group
+    assert service.confirm_icons(info.dir, [{"group": g, "name": "crate_5", "ko": "상자 5"}]).state == "confirmed"
+    assert _cell(fd, 1)["source"] == "AB [[crate_5]]CD"
+
+    # 다음 프로젝트: 5는 모델·사람 없이 바로 바꾸고 숫자를 뺀다, 2는 모양이 같아도 사람 확인으로
+    info2, fd2 = _num_project(tmp_path, "2차", ["2", "5"])
+    r = service.find_icons(info2.dir, suggest=False)
+    assert r.auto == {"crate_5": 1} and r.state == "icons_review" and r.occurrences == 1
+    assert _cell(fd2, 2)["source"] == "AB [[crate_5]]CD" and _cell(fd2, 2)["icon_numbers"][0]["text"] == "5"
+    assert _cell(fd2, 1)["source"] == "AB 2[[?]]CD"
+
+    # 예전 사전 항목(number 키 없음)은 숫자가 붙은 자리와 자동으로 맞추지 않는다 (숫자 없는 자리와만)
+    dp = icons.dictionary_path(info)
+    dic = json.loads(dp.read_text(encoding="utf-8"))
+    dic["icons"]["crate_5"].pop("number")
+    dp.write_text(json.dumps(dic, ensure_ascii=False), encoding="utf-8")
+    info3, fd3 = _num_project(tmp_path, "3차", ["5", ""])
+    r3 = service.find_icons(info3.dir, suggest=False)
+    assert r3.auto == {"crate_5": 1} and _cell(fd3, 2)["source"] == "AB[[crate_5]]CD"
+    assert _cell(fd3, 1)["source"] == "AB 5[[?]]CD"
+
+
+def test_old_scan_json_without_number_still_loads(tmp_path):
+    import json
+
+    (tmp_path / "scan.json").write_text(json.dumps({"occurrences": [{
+        "id": "o001", "file": "f", "file_key": "k", "page": 1, "region": "본문", "index": 0, "context": "AB[[?]]CD",
+        "png": "", "reason": "x", "group": "위치 못 찾음 o001", "match": "", "score": 0.0, "line": 1, "order": 1,
+        "box": [], "manual": False}], "groups": {"위치 못 찾음 o001": {"rep": "", "count": 1}}}), encoding="utf-8")
+    o = icons.load_scan(tmp_path).occurrences[0]
+    assert o.number == {} and o.num == ""

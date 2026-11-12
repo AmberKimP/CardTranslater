@@ -544,7 +544,7 @@ def import_review(info: ProjectInfo, xlsx: Path) -> ReviewImport:
             unchanged_checks.append(f"{src} = {ko}")
     for ko, srcs in by_ko.items():
         if len(srcs) > 1:
-            res.issues.append(f"번역 '{ko}'을(를) 여러 원문이 함께 씀: {', '.join(srcs)}")
+            res.issues.append(f"여러 원문이 함께 쓰는 번역: '{ko}' ← {', '.join(srcs)}")
     if unchanged_checks:
         res.issues.append(f"‘번역 확인’ 용어를 추천 번역 그대로 확정 {len(unchanged_checks)}개 (다른 후보를 봤는지 확인): "
                           + ", ".join(unchanged_checks[:20]) + (" …" if len(unchanged_checks) > 20 else ""))
