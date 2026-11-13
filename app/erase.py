@@ -691,6 +691,7 @@ PICTURE_MIN_INK = 3.0  # 찾은 글자 줄의 폭 합계가 글자 크기의 이
 PICTURE_COVER_MIN = 0.6  # 기존 방식이 이 획의 이만큼도 못 덮었으면 (글자를 놓쳤으면) 획 방식으로 바꾼다
 PICTURE_STRAY_MAX = 0.25 # 기존 방식이 획 둘레 밖을 이만큼(획 마스크 넓이 대비) 넘게 지우면 (그림을 뭉개면) 바꾼다
 PICTURE_UNNARROW = 1.25  # 영역 전체에서 찾은 획이 좁힌 글자 상자 안의 이 배수를 넘으면 좁히지 않는다
+PICTURE_FULL_RECHECK = 0.9  # 좁힌 글자 상자가 영역의 이만큼 이상이면 영역 전체로 다시 찾지 않는다 (거의 같은 결과)
 PICTURE_GROW_PX = 3 # 획 둘레 번짐·흰 테(글로우)까지 지울 폭
 PICTURE_SIGMA = 4.0  # 채울 때 둘레 픽셀을 평균하는 폭(px)
 
@@ -797,11 +798,13 @@ def _stroke_lines(hat: np.ndarray, box: tuple[int, int, int, int]) -> tuple[np.n
     return keep, glyph, total_w, allowed
 
 
-def picture_text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None):
+def picture_text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None,
+                      texture: float = 0.0):
     """그림 배경 위 글자를 획 모양으로 찾는다. 믿을 만한 글자 줄이 없으면 None.
 
     img: H×W×3 uint8 (상자 둘레에 여유가 있는 자른 그림), box: (x0, y0, x1, y1). app.erase_text.TextMask를 돌려준다
     (mask = 획 + 둘레 PICTURE_GROW_PX, core = 획). 어두운 글자와 밝은 글자 중 줄이 더 길게 잡히는 쪽을 고른다.
+    texture: 기록할 배경 결 값 (기존 방식이 잰 값을 그대로 넘긴다: 여기서 다시 재지 않는다).
     """
     from app import erase_text
 
@@ -822,12 +825,12 @@ def picture_text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: 
     mask = cv2.dilate(core.astype(np.uint8), _disk(PICTURE_GROW_PX)).astype(bool) & allowed
     if protect is not None:
         mask &= ~protect
-    inbox = np.zeros((H, W), bool)
-    inbox[max(0, y0):y1, max(0, x0):x1] = True
-    sel = inbox & ~cv2.dilate(mask.astype(np.uint8), _disk(2)).astype(bool)
-    texture = float(np.median(erase_text._local_std(lum)[sel])) if sel.sum() > 50 else 99.0
     return erase_text.TextMask(mask, core & allowed, True, texture, glyph,
                                ["그림 배경: 글자를 획 모양으로 찾음"], [])
+
+
+def _box_area(b) -> int:
+    return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
 
 
 def prefer_picture_mask(tm, alt) -> bool:
@@ -1548,16 +1551,16 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         picture_bg = bool(tm.busy)
         picture_strokes = False
         if picture_bg:
-            alt = picture_text_mask(look, lb, prot)
-            if lb != lb_region:
+            alt = picture_text_mask(look, lb, prot, tm.texture)
+            if lb != lb_region and _box_area(lb) < PICTURE_FULL_RECHECK * _box_area(lb_region):
                 # 그림 배경에서는 '글자 상자'로 좁힌 것이 빗나갈 수 있다 (밝은 그림 띠를 상자로 봄): 영역 전체에서
                 # 글자 줄이 뚜렷이 더 잡히면 좁히지 않는다
-                full = picture_text_mask(sub, lb_region, prot)
+                full = picture_text_mask(sub, lb_region, prot, tm.texture)
                 if full is not None and full.core.sum() > PICTURE_UNNARROW * (alt.core.sum() if alt is not None else 0):
                     alt, lb, core, look = full, lb_region, lb_region, sub
                     tm = erase_text.text_mask(look, lb, prot, size_box=lb_region)
             if prefer_picture_mask(tm, alt):
-                alt.texture = tm.texture  # 배경 결 값은 기존 방식으로 잰 것을 그대로 기록한다
+                alt.texture = tm.texture  # 좁힌 상자를 풀었으면 tm을 다시 쟀으므로 그 값으로
                 tm, picture_strokes = alt, True
         if lb != lb_region:
             # 지울 픽셀은 상자 몸통 안으로만: 밖(띠 테두리·그림)까지 번지면 채울 때 그 색이 끌려와 얼룩이 생긴다

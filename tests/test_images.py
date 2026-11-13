@@ -675,3 +675,53 @@ def test_add_files_dialog_manual_boxes_on_pdf_pages(tmp_path):
     f = service.project_overview(info.dir)["groups"][0]["files"][0]
     assert f["pages"] == 5
     assert workspace.file_settings(Path(f["dir"]))["from_images"]["manual"]
+
+
+def test_add_files_dialog_pdf_runtime_error_mid_add(tmp_path, monkeypatch):
+    """두 번째 PDF를 넣다 pymupdf 오류(RuntimeError 계열)가 나도 창이 멈추지 않는다: 앞 파일은 들어갔으니 목록을 새로 고치게
+    창을 닫고 못 넣은 것을 알린다. 처음부터 실패하면 아무것도 넣지 않고 알린다."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import PySide6.QtWidgets as W
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt import dialogs
+    from app.qt.dialogs import AddFilesDialog
+
+    QApplication.instance() or QApplication([])
+    info, _ = workspace.create_project("p", "G", root=tmp_path)
+    a = _grid_pdf(tmp_path / "in" / "a.pdf", pages=1)
+    b = _grid_pdf(tmp_path / "in" / "b.pdf", pages=1)
+    real = service.add_images
+    n = {"calls": 0}
+
+    def flaky(*args, **kw):
+        n["calls"] += 1
+        if n["calls"] == 2:
+            raise RuntimeError("cannot open broken document")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(service, "add_images", flaky)
+    infos, problems = [], []
+    monkeypatch.setattr(W.QMessageBox, "information", staticmethod(lambda *x, **k: infos.append(x[2])))
+    monkeypatch.setattr(dialogs, "show_problem", lambda *x, **k: problems.append(x[1]))
+    dlg = AddFilesDialog(info.dir, files=[str(a), str(b)])
+    dlg.r_grid.setChecked(True)
+    dlg.cols.setValue(3)
+    dlg.rows.setValue(2)
+    dlg.new_name.setText("카드")
+    dlg.accept()
+    assert dlg.result_info and len(dlg.result_info["added"]) == 1
+    assert any("나머지 파일을 넣지 못했습니다" in t and "broken" in t for t in infos)
+    assert problems == []
+    dlg.finished.emit(0)
+
+    # 첫 파일부터 실패: 아무것도 넣지 않고 문제를 알린다 (창은 열린 채)
+    n["calls"] = 1
+    dlg2 = AddFilesDialog(info.dir, files=[str(a)])
+    dlg2.r_grid.setChecked(True)
+    dlg2.new_name.setText("카드2")
+    dlg2.accept()
+    assert dlg2.result_info is None and problems == ["파일을 넣지 못했습니다"]
+    dlg2.finished.emit(0)

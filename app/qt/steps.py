@@ -1263,6 +1263,7 @@ class IconReviewDialog(QDialog):
         self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         # 머리글을 누르면 그 열로 정렬 (다시 누르면 반대로). 줄 번호(‘3번’)는 보이는 순서대로 다시 매긴다
         self._sort: tuple[int, bool] | None = None  # (열, 내림차순)
+        self._card_of: dict = {}  # 카드 번호로 정렬했을 때 묶음 -> ((파일, 쪽), 문제 카드인가)
         hh = self.table.horizontalHeader()
         hh.setSectionsClickable(True)
         hh.sectionClicked.connect(self._sort_by)
@@ -1380,6 +1381,7 @@ class IconReviewDialog(QDialog):
         self.table.setColumnWidth(self.C_COUNT, 64)  # 등장 수는 좁게
         self.table.resizeColumnToContents(self.C_PAGES)
         self.table.setColumnWidth(self.C_PAGES, min(max(self.table.columnWidth(self.C_PAGES), 72), 160))
+        self._paint_card_bands(groups)
         hh = self.table.horizontalHeader()
         if self._sort:
             hh.setSortIndicatorShown(True)
@@ -1457,8 +1459,12 @@ class IconReviewDialog(QDialog):
 
     def _sorted(self, groups: list[dict], keep: dict) -> list[dict]:
         if not self._sort:
+            self._card_of = {}
             return list(groups)
         col, desc = self._sort
+        if col == self.C_PAGES:
+            return self._sorted_by_card(groups, keep, desc)
+        self._card_of = {}
 
         def key(g):
             k = keep.get(g["group"], {})
@@ -1477,8 +1483,6 @@ class IconReviewDialog(QDialog):
                 return (k.get("scale", 1.1),)
             if col == self.C_COUNT:
                 return (g["count"],)
-            if col == self.C_PAGES:
-                return (min((w["page"] for w in g.get("where", [])), default=0),)
             return ((g["examples"][0] if g["examples"] else ""),)
 
         out = sorted(groups, key=key, reverse=desc)
@@ -1486,6 +1490,57 @@ class IconReviewDialog(QDialog):
             out = [g for g in out if key(g)[0] is not True] + [g for g in out if key(g)[0] is True] \
                 if col in (2, 3, 4) else out
         return out
+
+    @staticmethod
+    def _cards(g: dict) -> list[tuple[str, int]]:
+        """그 아이콘이 나온 카드 (파일, 쪽) — 파일·쪽 순, 겹치지 않게."""
+        return sorted({(str(w.get("file_dir") or ""), int(w["page"])) for w in g.get("where", [])})
+
+    @staticmethod
+    def _is_problem(g: dict, k: dict) -> bool:
+        """확정 전에 손봐야 하는 줄: 위치 못 찾음·이름 빈 칸·한국어 이름 빈 칸 (‘아이콘 아님’이면 아님)."""
+        if k.get("not_icon", g.get("not_icon")):
+            return False
+        same = k.get("same")
+        named = bool(str(k.get("name", g.get("suggest") or "")).strip()) or bool(same)
+        ko = str(k.get("ko", g.get("ko") or "")).strip()  # 화면에 적은 한국어 이름 (엔진의 issue는 처음 제안 기준)
+        return not g.get("image") or not named or not ko
+
+    def _sorted_by_card(self, groups: list[dict], keep: dict, desc: bool) -> list[dict]:
+        """카드 번호로 묶어 정렬: 줄마다 첫 카드 아래에 두고, 문제 줄이 있는 카드를 맨 위로 (그 안에서도 문제 줄 먼저).
+        내림차순은 카드 순서만 뒤집는다 (문제 카드는 그대로 위). 화면 띠 색을 위해 self._card_of에 줄의 카드를 남긴다."""
+        first = {g["group"]: (self._cards(g) or [("", 0)])[0] for g in groups}
+        bad = {g["group"]: self._is_problem(g, keep.get(g["group"], {})) for g in groups}
+        bad_cards = {first[g] for g, b in bad.items() if b}
+        order = sorted(set(first.values()), reverse=desc)
+        rank = {c: i for i, c in enumerate(order)}
+        out = sorted(groups, key=lambda g: (first[g["group"]] not in bad_cards, rank[first[g["group"]]],
+                                            not bad[g["group"]], -g["count"]))
+        self._card_of = {g["group"]: (first[g["group"]], first[g["group"]] in bad_cards) for g in out}
+        return out
+
+    def _paint_card_bands(self, groups: list[dict]) -> None:
+        """카드 번호로 정렬했을 때: 같은 카드의 줄은 같은 띠 색 (문제 카드는 붉은 띠), 카드 번호 칸은 그 카드를 앞에."""
+        if not self._card_of:
+            return
+        files = {c[0] for g in groups for c in self._cards(g)}
+        prev, band = None, 0
+        for i, g in enumerate(groups):
+            card, bad = self._card_of[g["group"]]
+            if card != prev:
+                band ^= 1
+                prev = card
+            color = ("#FBE3E3" if band else "#F6D0D0") if bad else ("#EEF3FA" if band else "#FFFFFF")
+            label = (f"{Path(card[0]).name[:12]}:{card[1]}" if len(files) > 1 else str(card[1])) if card[1] else ""
+            rest = [t for t in self._pages_text(g).split(", ") if t and t != label]
+            it = self.table.item(i, self.C_PAGES)
+            it.setText(label + (f" (또 {', '.join(rest)})" if rest else ""))
+            if bad:
+                it.setToolTip("이 카드에 확정 전에 손봐야 할 아이콘이 있습니다 (위치 못 찾음·이름 빈 칸)\n" + it.toolTip())
+            for col in (self.C_COUNT, self.C_PAGES, self.C_EX):
+                cell = self.table.item(i, col)
+                if cell is not None:
+                    cell.setBackground(QBrush(QColor(color)))
 
     def select_group(self, group: str | None) -> None:
         """그 묶음의 줄을 골라 보이게 한다 (카드 보기를 닫은 뒤)."""

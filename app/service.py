@@ -223,10 +223,10 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         if cancel:
             cancel.check()
         progress(ProgressEvent("erase", i, n, f"{pno}쪽 지우는 중", pno))
-        srcs = erase_sources(extracted.get(pno))
+        srcs, kept = erase_sources(extracted.get(pno))
         t_page = time.monotonic()
         tpl = project.template.for_page(pno)
-        skip = icon_only_regions(srcs)
+        skip = icon_only_regions(srcs, kept)
         if skip:  # 아이콘(과 숫자·기호)만 있는 칸: 지우지도 한글을 넣지도 않고 원본 그대로 (메타에 없으면 한글 넣기도 건너뛴다)
             tpl.regions = [reg for reg in tpl.regions if reg.name not in skip]
         with applog.context(프로젝트=project.root.name, 쪽=pno):
@@ -241,7 +241,7 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
             "source_page": pno,
             "output_pdf": pdf_name,
             "output_page_index": i,
-            "erase_sig": erase_sig(project, pno, srcs, card_modes.get(str(pno))),
+            "erase_sig": erase_sig(project, pno, srcs, card_modes.get(str(pno)), kept),
             **r.meta,
         })
         results.append(r)
@@ -1524,44 +1524,45 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     return out
 
 
-def erase_sig(project, page: int, sources: dict, modes: dict | None) -> str:
-    """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식). 바뀌면 다시 지워야 한다."""
+def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=()) -> str:
+    """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식·‘번역 안 함’ 칸). 바뀌면 다시 지워야 한다."""
     import hashlib
 
     regs = [{"name": r.name, "kind": r.kind, "rect": r.rect.to_dict(), "style": r.style, "erase": r.erase}
             for r in project.template.regions_for(int(page))]
-    d = {"src": sources or {}, "regions": regs, "modes": modes or {}}
-    skip = icon_only_regions(sources)
+    # ‘번역 안 함’ 칸은 원문 대신 표시를 넣는다 (1.15.0과 같은 서명이 되게: 이미 지운 쪽을 괜히 다시 지우지 않는다)
+    src_sig = {k: (dict(KEEP_ORIGINAL) if k in kept else v) for k, v in (sources or {}).items()}
+    d = {"src": src_sig, "regions": regs, "modes": modes or {}}
+    skip = icon_only_regions(sources, kept)
     if skip:  # 아이콘만 있는 칸을 건너뛰게 된 뒤로는 예전에 지운 쪽도 다시 지운다 (없는 쪽은 서명이 그대로)
         d["icon_only"] = skip
     blob = json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
 
-KEEP_ORIGINAL = {"keep_original": True}  # 지우기 원문 자리에 넣는 표시: 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸
+KEEP_ORIGINAL = {"keep_original": True}  # 서명(erase_sig)에서만 쓰는 표시: 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸
 
 
-def erase_sources(regions: dict | None) -> dict:
-    """쪽의 추출 결과 -> 지우기에 넘길 {칸: 원문}. ‘번역 안 함’으로 정한 칸은 원문 대신 KEEP_ORIGINAL
-    (원본 그대로 두고, 표시를 바꾸면 지운 결과의 서명도 바뀌어 다시 지운다)."""
-    return {k: (dict(KEEP_ORIGINAL) if v.get("keep_original") else v.get("source"))
-            for k, v in (regions or {}).items()}
+def erase_sources(regions: dict | None) -> tuple[dict, set]:
+    """쪽의 추출 결과 -> 지우기에 넘길 ({칸: 원문 글(또는 None)}, ‘번역 안 함’으로 정한 칸 이름들).
+    원문 사전에는 늘 글만 든다. ‘번역 안 함’ 칸은 원본 그대로 두고, 표시를 바꾸면 서명도 바뀌어 다시 지운다."""
+    regions = regions or {}
+    return ({k: v.get("source") for k, v in regions.items()},
+            {k for k, v in regions.items() if v.get("keep_original")})
 
 
-def icon_only_regions(sources: dict | None) -> list[str]:
+def icon_only_regions(sources: dict | None, kept=()) -> list[str]:
     """원문이 아이콘(과 숫자·기호)만으로 된 칸 이름 (예: ‘[[sword]][[sword]]’, ‘2[[coin]] [[book]]’),
-    그리고 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸 (KEEP_ORIGINAL).
+    그리고 사람이 ‘전체가 아이콘 — 번역 안 함’으로 정한 칸 (kept).
     번역해도 같으므로 글자 지우기·한글 넣기를 하지 않고 원본 그대로 둔다. 아이콘이 하나도 없는 칸(빈 칸·숫자만)은
     넣지 않는다 (그런 칸은 예전처럼 처리)."""
     from app.erase_text import is_icon_line
     from app.icons import TOKEN_RE
 
-    out = []
+    out = set(kept)
     for name, src in (sources or {}).items():
-        if isinstance(src, dict) and src.get("keep_original"):
-            out.append(name)
-        elif isinstance(src, str) and TOKEN_RE.search(src) and is_icon_line(src):
-            out.append(name)
+        if isinstance(src, str) and TOKEN_RE.search(src) and is_icon_line(src):
+            out.add(name)
     return sorted(out)
 
 
@@ -1618,9 +1619,9 @@ def stale_erased_pages(file_dir: Path | str) -> list[int]:
         pno = int(m.get("source_page") or f.stem.split("-")[-1])
         if not sig:
             continue
-        srcs = erase_sources(extracted.get(pno))
+        srcs, kept = erase_sources(extracted.get(pno))
         try:
-            now = erase_sig(project, pno, srcs, modes.get(str(pno)))
+            now = erase_sig(project, pno, srcs, modes.get(str(pno)), kept)
         except Exception:  # noqa: BLE001 - 그 쪽 영역이 없어짐 등
             continue
         if now != sig:

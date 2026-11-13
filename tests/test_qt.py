@@ -3696,3 +3696,36 @@ def test_source_review_keep_original_button(qapp, tmp_path):
     dlg.keep_btn.click()
     cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))
     assert not cell["keep_original"] and not dlg.keep_btn.isChecked()
+
+
+def test_icon_review_sort_by_card_groups_and_problem_cards_first(qapp):
+    """카드 번호 정렬: 줄마다 첫 카드 아래, 문제 줄(위치 못 찾음·이름 빈 칸)이 있는 카드가 맨 위, 내림차순은 카드 순서만 뒤집음."""
+    from app.qt.steps import IconReviewDialog
+
+    class S:
+        _cards = staticmethod(IconReviewDialog._cards)
+        _is_problem = staticmethod(IconReviewDialog._is_problem)
+
+    def g(name, pages, image=True, suggest="x", count=1, ko="이름", not_icon=False):
+        return {"group": name, "where": [{"file_dir": "f", "page": p} for p in pages], "image": "a.png" if image else "",
+                "suggest": suggest, "count": count, "ko": ko, "issue": "" if ko else "한국어 이름 없음",
+                "not_icon": not_icon}
+
+    groups = [g("a", [1, 5]), g("b", [7], image=False), g("c", [3]), g("d", [7, 2]), g("e", [3], suggest=""),
+              g("f", [9], image=False, not_icon=True)]
+    s = S()
+    out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {}, False)]
+    # 문제 카드: 3(e 이름 빈 칸), 7(b 위치 못 찾음). d의 첫 카드는 2라 2 아래. f는 ‘아이콘 아님’이라 문제 아님
+    assert out == ["e", "c", "b", "a", "d", "f"]
+    assert s._card_of["e"] == (("f", 3), True) and s._card_of["d"] == (("f", 2), False)
+    out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {}, True)]
+    assert out == ["b", "e", "c", "f", "d", "a"]
+    # 화면에 적은 이름이 있으면 문제가 아니다
+    out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {"e": {"name": "lily"}}, False)]
+    assert out[0] == "b"
+    # 한국어 이름: 엔진 제안이 비었어도 화면에 적었으면 문제가 아니고, 제안을 지웠으면 문제다
+    groups2 = [g("a", [1], ko=""), g("c", [3])]
+    assert [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups2, {}, False)] == ["a", "c"]
+    assert [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups2, {"a": {"ko": "백합"}, "c": {"ko": ""}},
+                                                                 False)] == ["c", "a"]
+
