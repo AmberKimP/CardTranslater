@@ -3729,3 +3729,93 @@ def test_icon_review_sort_by_card_groups_and_problem_cards_first(qapp):
     assert [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups2, {"a": {"ko": "백합"}, "c": {"ko": ""}},
                                                                  False)] == ["c", "a"]
 
+
+
+def test_source_review_next_goes_to_next_cell_to_check_and_splitter_widens(qapp, tmp_path):
+    """‘저장하고 다음 칸’: 확인할 칸이 남아 있으면 바로 다음 칸이 아니라 다음 확인할 칸으로. 왼쪽 표는 끌어 넓힐 수 있다."""
+    from app.qt.steps import SourceReviewDialog
+
+    info, fd = _project_with_extract(tmp_path)
+    p = fd / "extract" / "pages" / "page-002.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["태그"]["uncertain"] = True  # 2쪽 태그도 확인할 칸
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files, only_check=False)
+    dlg.resize(1300, 900)
+    dlg.show()
+    qapp.processEvents()
+    keys = [(c["page"], c["region"]) for c in dlg.cells]
+    assert dlg.current()["page"] == 1 and dlg.current()["region"] == "이름"
+    dlg.edit.setPlainText("盗掘フェレット")
+    dlg.save_and_next()
+    assert (dlg.current()["page"], dlg.current()["region"]) == (2, "태그")  # (1, 태그)·(2, 이름)은 건너뜀
+    assert keys.index((2, "태그")) > keys.index((1, "태그"))
+    # 나눔 막대: 표를 넓게 끌면 실제로 넓어진다 (오른쪽이 최소 크기로 막지 않음)
+    total = sum(dlg.split.sizes())
+    dlg.split.setSizes([int(total * 0.65), total - int(total * 0.65)])
+    qapp.processEvents()
+    assert dlg.split.sizes()[0] >= int(total * 0.6)
+    dlg.close()
+
+
+def test_finish_issues_no_opens_source_review_on_unresolved_cell(qapp, tmp_path, monkeypatch):
+    """용어집 만들기의 ‘아래 항목이 남아 있습니다’에서 아니요: 원문 확인을 그 파일의 ‘결론 못 냄’ 칸을 골라 연다."""
+    from app.qt import steps
+
+    from app.qt.main import MainWindow
+
+    info, fd = _project_with_extract(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    acts = steps.StepActions(win.project)
+    opened = {}
+
+    class FakeReview:
+        def __init__(self, files, parent=None, only_check=True, engine=None, focus_key=None, focus_label=None):
+            opened.update(files=[f["key"] for f in files], key=focus_key, label=focus_label)
+            self.saved = 0
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(steps, "SourceReviewDialog", FakeReview)
+    monkeypatch.setattr(steps, "_ask_list", lambda *a, **k: False)
+    key = workspace.file_key(fd)
+    # finish_extraction은 게임 단위 키(프로젝트/그룹/파일)로 적는다
+    gkey = workspace.game_file_key(fd)
+    assert gkey != key and gkey.endswith(key)
+    r = service.GlossaryReviewResult("needs_confirmation", issues=[f"‘결론 못 냄’ 칸 (원문이 틀렸을 수 있음): {gkey} 1칸"])
+    acts._finish_done(r)
+    assert opened == {"files": [key], "key": key, "label": "결론 못 냄"}
+    # 실제 창: 그 칸을 골라 연다
+    monkeypatch.undo()
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = steps.SourceReviewDialog(files, only_check=False, focus_key=key, focus_label="결론 못 냄")
+    assert dlg.current()["label"] == "결론 못 냄"
+    dlg.close()
+
+
+def test_icon_confirm_offers_reread_of_changed_cells(qapp, tmp_path, monkeypatch):
+    """아이콘 정의 확정 뒤 아이콘 자리가 바뀐 칸이 있으면 다시 읽을지 묻고, 예면 그 칸들을 다시 읽는다."""
+    from app.qt import steps
+
+    from app.qt.main import MainWindow
+
+    info = _project(tmp_path)
+    win = MainWindow(root=tmp_path)
+    win.open_project(info.dir)
+    acts = steps.StepActions(win.project)
+    cells = [{"file_dir": tmp_path, "page": 1, "region": "본문"}]
+    ran = {}
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 0)
+    monkeypatch.setattr(acts, "_engine", lambda: "api")
+
+    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True):
+        ran["fn"], ran["args"] = job.fn, job.args
+        on_done({"done": 1, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0})
+
+    monkeypatch.setattr(steps.worker, "run_with_dialog", fake_run)
+    monkeypatch.setattr(steps.QMessageBox, "question", lambda *a, **k: steps.QMessageBox.StandardButton.No)
+    acts._reread_icon_cells(cells)
+    assert ran["fn"] is service.reread_cells and ran["args"][0] == cells

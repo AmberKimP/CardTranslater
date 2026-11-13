@@ -443,6 +443,26 @@ def _grid_in_area(rgb: np.ndarray, cols: int, rows: int) -> tuple[int, int]:
     return best
 
 
+def _apply_equal_size(rgb: np.ndarray, cut: SheetCut) -> None:
+    """cut.boxes를 같은 크기로 맞춘다 (맞췄으면 크기 경고를 빼고 알린다)."""
+    if len(cut.boxes) < 2:
+        return
+    H, W = rgb.shape[:2]
+    # 그림 끝에 걸려 잘린 카드는 원래 작다: 크기가 고른지 볼 때 뺀다
+    inner = [b for b in cut.boxes if b[0] > 0 and b[1] > 0 and b[2] < W and b[3] < H] or cut.boxes
+    ws = [b[2] - b[0] for b in inner]
+    hs = [b[3] - b[1] for b in inner]
+    spread = max((max(ws) - min(ws)) / max(1.0, float(np.median(ws))), (max(hs) - min(hs)) / max(1.0, float(np.median(hs))))
+    if cut.gutters_found and spread <= EQUAL_SIZE_SPREAD:  # 틈이 보이고 크기도 고르다: 그대로
+        return
+    boxes, size = _fit_equal_size(rgb, cut.boxes)
+    if size is None:
+        return
+    cut.boxes = boxes
+    cut.warnings = [x for x in cut.warnings if not x.startswith(("크기가 다른 카드", "카드 위치에 맞춰", "카드 사이 경계를"))]
+    cut.warnings.append(f"카드 크기가 같다고 보고 카드 끝 선에 맞춰 잘랐습니다 (카드 {size[0]}×{size[1]}px)")
+
+
 def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) -> SheetCut:
     """이미지 한 장(frame: 여러 쪽 TIFF의 몇 번째)을 cols×rows 카드로 자른다.
     스캔에 카드 말고 다른 것(자·모눈종이·빈 종이)이 있으면 카드가 있는 곳만 쓰고, 카드가 없는 칸은 뺀다."""
@@ -455,6 +475,7 @@ def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) ->
     area, cmask, k = _card_area(rgb)
     if area is None:
         _cut_grid(rgb, cols, rows, cut)
+        _apply_equal_size(rgb, cut)
         return cut
     # 카드 둘레에 바탕을 조금 남긴다 (틈 찾기는 그림 가장자리 색을 바탕으로 본다)
     pad = int(0.006 * max(w, h))
@@ -481,11 +502,175 @@ def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) ->
                if abs((b[2] - b[0]) - mw) > mw * 0.08 or abs((b[3] - b[1]) - mh) > mh * 0.08]
         if odd:
             cut.warnings.append(f"크기가 다른 카드가 있습니다: {', '.join(map(str, odd))}번째 (잘못 잘렸을 수 있음)")
+    _apply_equal_size(rgb, cut)
     notes = ["카드가 아닌 부분(자·종이 등)은 빼고 카드가 있는 곳만 잘랐습니다"]
     if len(kept) < cols * rows:
         notes.append(f"카드 {len(kept)}장을 찾았습니다 ({cols}×{rows} 자리 중 빈 자리는 뺌)")
     cut.warnings[:0] = notes
     return cut
+
+
+EQUAL_PITCH_RANGE = (0.9, 1.1)  # 카드 크기(반복 간격) 찾기: 처음 자른 칸 크기(중앙값)의 이 범위에서
+EQUAL_PITCH_TRUST = 0.04  # 반복 간격이 처음 자른 칸 크기(중앙값)와 이만큼 넘게 다르면 믿지 않고 중앙값을 카드 크기로
+EQUAL_PHASE_SHIFT = 0.06  # 카드 경계 자리 찾기: 처음 자른 경계 둘레 카드 크기의 ±6%
+#   (카드 안에도 끝 선처럼 보이는 가로줄이 있다: 제목 아래 띠 등, 카드 위에서 약 26%. 범위를 넓히면 그쪽을 잡는다)
+EQUAL_CARD_SHIFT = 0.02  # 카드마다 제 끝 선이 뚜렷하면 이만큼(카드 크기 대비)까지 따로 옮긴다 (손으로 놓아 조금씩 어긋남)
+EQUAL_EDGE_MIN = 0.3  # 카드 하나의 끝 선이 그 변 길이의 이만큼 이상 이어져야 그 카드만 따로 옮긴다
+EQUAL_SIZE_SPREAD = 0.02  # 처음 자른 카드 크기가 이만큼 넘게 들쭉날쭉하면 (틈을 잘못 찾음) 같은 크기로 다시 맞춘다
+
+
+def _edge_maps(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """카드 끝 선 지도 (세로 선, 가로 선): 가는 그림자(어두움) 바로 옆에 밝은 선(카드 종이 단면)."""
+    import cv2
+
+    lum = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]), cv2.COLOR_RGB2GRAY)
+    bright, dark = (lum >= 235).astype(np.uint8), (lum <= 120).astype(np.uint8)
+    ev = cv2.dilate(bright, np.ones((1, 7), np.uint8)) & cv2.dilate(dark, np.ones((1, 7), np.uint8))
+    eh = cv2.dilate(bright, np.ones((7, 1), np.uint8)) & cv2.dilate(dark, np.ones((7, 1), np.uint8))
+    return ev, eh
+
+
+def _pitch(lum: np.ndarray, axis: int, size0: float) -> int | None:
+    """카드가 한 줄로 반복되는 간격 (px): 밝기 변화량 윤곽의 자기상관이 가장 큰 간격 (size0의 EQUAL_PITCH_RANGE 안).
+    같은 카드 틀(제목 띠·숫자 원·테두리)이 카드마다 같은 자리에 있어 간격이 또렷하다. 못 찾으면 None."""
+    # axis=0: 가로 방향 반복 (열마다 가로 밝기 변화량), axis=1: 세로 방향 반복
+    g = np.abs(np.diff(lum, axis=1)).mean(axis=0) if axis == 0 else np.abs(np.diff(lum, axis=0)).mean(axis=1)
+    lo, hi = int(size0 * EQUAL_PITCH_RANGE[0]), int(size0 * EQUAL_PITCH_RANGE[1])
+    if hi >= len(g) or lo < 4:
+        return None
+    p = g - g.mean()
+    f = np.fft.rfft(p, 2 * len(p))
+    ac = np.fft.irfft(f * np.conj(f))[:len(p)]
+    k = lo + int(np.argmax(ac[lo:hi + 1]))
+    return k if ac[k] > 0 else None
+
+
+def _phase(prof: np.ndarray, pitch: int, phase0: float, r: int) -> float:
+    """카드 경계 자리 (pitch로 나눈 나머지): phase0 둘레 ±r에서 모든 경계 자리의 끝 선 세기 합이 가장 큰 곳.
+    끝 선이 거의 없으면 phase0."""
+    n = len(prof)
+    best, best_v = phase0, 0.0
+    for d in range(-r, r + 1):
+        ph = phase0 + d
+        idx = np.arange(int(round(ph)) % pitch, n, pitch)
+        v = float(prof[idx].sum()) if len(idx) else 0.0
+        if v > best_v:
+            best, best_v = ph, v
+    return best if best_v >= 0.3 else phase0
+
+
+def _fit_equal_size(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
+                    ) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
+    """카드가 있는 곳(+찾는 범위 여유)만 잘라 맞춘다 (큰 스캔에서 메모리·시간을 줄인다). _fit_equal_size_in 참고."""
+    if len(boxes) < 2:
+        return boxes, None
+    H, W = rgb.shape[:2]
+    w0 = float(np.median([b[2] - b[0] for b in boxes]))
+    h0 = float(np.median([b[3] - b[1] for b in boxes]))
+    mx, my = int(w0 * (EQUAL_PHASE_SHIFT + 2 * EQUAL_CARD_SHIFT)) + 8, int(h0 * (EQUAL_PHASE_SHIFT + 2 * EQUAL_CARD_SHIFT)) + 8
+    cx0, cy0 = max(0, min(b[0] for b in boxes) - mx), max(0, min(b[1] for b in boxes) - my)
+    cx1, cy1 = min(W, max(b[2] for b in boxes) + mx), min(H, max(b[3] for b in boxes) + my)
+    sub = rgb[cy0:cy1, cx0:cx1]
+    local = [(x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0) for x0, y0, x1, y1 in boxes]
+    out, size = _fit_equal_size_in(sub, local)
+    if size is None:
+        return boxes, None
+    return [(x0 + cx0, y0 + cy0, x1 + cx0, y1 + cy0) for x0, y0, x1, y1 in out], size
+
+
+def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
+                       ) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
+    """한 시트의 카드는 크기가 같다 (붙어 있는 배열): 카드 크기와 경계 자리를 시트 전체에서 정해 모든 카드를 같은 크기로.
+
+    1. 카드 크기 = 카드 틀이 반복되는 간격 (_pitch). 처음 자른 칸 크기 ±10% 안에서.
+    2. 경계 자리 = 처음 자른 안쪽 경계 둘레 ±EQUAL_PHASE_SHIFT에서 시트 전체 끝 선이 가장 잘 맞는 곳 (_phase).
+    3. 카드마다 제 끝 선이 뚜렷하면 ±EQUAL_CARD_SHIFT 안에서 따로 맞춘다.
+    반환: (상자, (가로, 세로) 또는 None = 맞추지 않음)."""
+    import cv2
+
+    if len(boxes) < 2:
+        return boxes, None
+    H, W = rgb.shape[:2]
+    lum = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    w0 = float(np.median([b[2] - b[0] for b in boxes]))
+    h0 = float(np.median([b[3] - b[1] for b in boxes]))
+    # 카드가 있는 곳만 본다 (둘레의 자·모눈종이는 짧은 간격으로 반복돼 카드 간격을 가린다)
+    ux0, uy0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    ux1, uy1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+    pw, ph = _pitch(lum[uy0:uy1, ux0:ux1], 0, w0), _pitch(lum[uy0:uy1, ux0:ux1], 1, h0)
+    # 카드마다 그림이 많이 달라 반복 간격이 흐리면 엉뚱한 간격이 나온다: 처음 자른 크기(중앙값)와 많이 다르면 그 중앙값을 쓴다
+    if pw is None or abs(pw / w0 - 1) > EQUAL_PITCH_TRUST:
+        pw = int(round(w0))
+    if ph is None or abs(ph / h0 - 1) > EQUAL_PITCH_TRUST:
+        ph = int(round(h0))
+    ev, eh = _edge_maps(rgb)
+    ex = np.zeros(W, np.float32)
+    ey = np.zeros(H, np.float32)
+    ex[ux0:ux1] = ev[uy0:uy1, ux0:ux1].mean(axis=0)  # 카드 영역의 끝 선 윤곽
+    ey[uy0:uy1] = eh[uy0:uy1, ux0:ux1].mean(axis=1)
+
+    def phase0(starts: list[int], pitch: int) -> float:
+        # 처음 자른 경계(첫 줄은 그림 끝·여백이라 뺌)의 pitch 나머지: 원 위의 평균
+        inner = [v for v in starts if v > min(starts) + 0.5 * pitch] or starts
+        ang = np.array(inner, np.float64) * (2 * np.pi / pitch)
+        m = np.arctan2(np.sin(ang).mean(), np.cos(ang).mean())
+        return float((m % (2 * np.pi)) * pitch / (2 * np.pi))
+
+    fx = _phase(ex, pw, phase0([b[0] for b in boxes], pw), int(pw * EQUAL_PHASE_SHIFT) + 2)
+    fy = _phase(ey, ph, phase0([b[1] for b in boxes], ph), int(ph * EQUAL_PHASE_SHIFT) + 2)
+    cvx = np.cumsum(ev, axis=0, dtype=np.int32)
+    chy = np.cumsum(eh, axis=1, dtype=np.int32)
+
+    def own(cum: np.ndarray, lo: int, hi: int, at: int, vertical: bool) -> float:
+        if hi - lo < 8:
+            return 0.0
+        n = cum.shape[1] if vertical else cum.shape[0]
+        if not 0 <= at < n:
+            return 0.0
+        if vertical:
+            return float(cum[hi - 1, at] - (cum[lo - 1, at] if lo > 0 else 0)) / (hi - lo)
+        return float(cum[at, hi - 1] - (cum[at, lo - 1] if lo > 0 else 0)) / (hi - lo)
+
+    sx, sy = int(pw * EQUAL_CARD_SHIFT) + 1, int(ph * EQUAL_CARD_SHIFT) + 1
+    starts = [(int(round(fx + round((x0 - fx) / pw) * pw)), int(round(fy + round((y0 - fy) / ph) * ph)))
+              for x0, y0, _x1, _y1 in boxes]
+    bands = [((max(0, int(ny + 0.1 * ph)), min(H, int(ny + 0.9 * ph))), (max(0, int(nx + 0.1 * pw)), min(W, int(nx + 0.9 * pw))))
+             for nx, ny in starts]
+
+    def best_shift(cum, lo, hi, at, n, r, vertical):
+        """이 카드를 크기 n으로 ±r 안에서 옮겨 볼 때 (옮길 양, 두 끝 선 중 약한 쪽 세기, 센 쪽 세기)."""
+        cand = [(min(own(cum, lo, hi, at + d, vertical), own(cum, lo, hi, at + n + d, vertical)),
+                 max(own(cum, lo, hi, at + d, vertical), own(cum, lo, hi, at + n + d, vertical)), -abs(d), d)
+                for d in range(-r, r + 1)]
+        both, one, _neg, d = max(cand)
+        return d, both, one
+
+    def size_for(pitch, cum, r, vertical):
+        """카드 크기: 줄끼리 조금씩 어긋나면 반복 간격(pitch)이 카드 크기와 다르다. pitch ±EQUAL_CARD_SHIFT에서
+        카드마다 두 끝 선이 다 맞는 크기 (약한 쪽 끝 선 세기 합이 가장 큰 것, 같으면 pitch에 가까운 것)."""
+        best_n, best_v = pitch, -1.0
+        for n in sorted(range(pitch - r, pitch + r + 1), key=lambda v: abs(v - pitch)):
+            v = 0.0
+            for (nx, ny), ((ya, yb), (xa, xb)) in zip(starts, bands):
+                at, (lo, hi) = (nx, (ya, yb)) if vertical else (ny, (xa, xb))
+                v += best_shift(cum, lo, hi, at, n, r, vertical)[1]
+            if v > best_v + 1e-6:
+                best_n, best_v = n, v
+        return best_n
+
+    cw = size_for(pw, cvx, sx, True)
+    chh = size_for(ph, chy, sy, False)
+    out = []
+    for (nx, ny), ((ya, yb), (xa, xb)) in zip(starts, bands):
+        # 이 카드의 끝 선이 뚜렷하면 조금 옮긴다
+        d, _both, one = best_shift(cvx, ya, yb, nx, cw, sx, True)
+        if one >= EQUAL_EDGE_MIN:
+            nx += d
+        d, _both, one = best_shift(chy, xa, xb, ny, chh, sy, False)
+        if one >= EQUAL_EDGE_MIN:
+            ny += d
+        out.append((max(0, nx), max(0, ny), min(W, nx + cw), min(H, ny + chh)))
+    return out, (cw, chh)
 
 
 BOUND_OPEN_FRAC = 0.004  # 바깥 여백 찾기: 이 굵기(그림 긴 변 대비)보다 가는 선·작은 점(스캔 잡음)은 지우고 본다

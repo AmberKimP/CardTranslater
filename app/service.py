@@ -703,13 +703,36 @@ def list_groups(project_dir: Path | str) -> list[dict]:
     return workspace.list_groups(workspace.load_project_info(project_dir))
 
 
-def add_files(project_dir: Path | str, files: list, group: str, *, new_group: bool = False,
-              regions_from: Path | str | None = None) -> dict:
-    """파일을 그룹에 넣는다. 화면은 먼저 list_groups로 기존 그룹을 보여 주고 ‘기존 그룹 / 새 그룹’을 고르게 한다."""
+def back_to_extracting(info) -> bool:
+    """프로젝트를 ‘추출 중’으로 되돌린다 (용어집 버전 기록도 뺀다). 이미 추출 중이면 그대로. 바꿨으면 True.
+
+    새 카드를 넣었거나, 파일을 모두 지웠거나, 게임 용어집·아이콘 사전을 지웠을 때: 저장된 진행 상태(용어집 확정·번역 끝)가
+    지금 데이터와 맞지 않아 아이콘 정의~전체 번역이 끝난 것처럼 보이던 문제. 확정된 용어와 번역 캐시는 남으므로 다시 할 때
+    새 카드의 용어·번역만 새로 한다."""
     from app import workspace
 
-    return workspace.add_files(workspace.load_project_info(project_dir), files, group, new_group=new_group,
-                               regions_from=regions_from)
+    if info.status == "extracting" and "glossary_version" not in info.extra:
+        return False
+    data = workspace._read(info.dir / "project.json")
+    data["status"] = "extracting"
+    data.pop("glossary_version", None)
+    workspace._write(info.dir / "project.json", data)
+    info.status = "extracting"
+    info.extra.pop("glossary_version", None)
+    return True
+
+
+def add_files(project_dir: Path | str, files: list, group: str, *, new_group: bool = False,
+              regions_from: Path | str | None = None) -> dict:
+    """파일을 그룹에 넣는다. 화면은 먼저 list_groups로 기존 그룹을 보여 주고 ‘기존 그룹 / 새 그룹’을 고르게 한다.
+    새 파일이 들어가면 프로젝트를 ‘추출 중’으로 되돌린다 (새 카드는 아직 읽지도 번역하지도 않았다)."""
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    r = workspace.add_files(info, files, group, new_group=new_group, regions_from=regions_from)
+    if r.get("added"):
+        back_to_extracting(info)
+    return r
 
 
 @dataclass
@@ -809,6 +832,8 @@ class IconImportResult:
     replaced: int = 0
     removed: int = 0
     blocking: list[str] = field(default_factory=list)
+    # 아이콘 자리가 바뀌어 ③ 원문 확인에서 다시 읽어 확인할 칸 [{"file_dir", "page", "region"}]
+    changed_cells: list[dict] = field(default_factory=list)
 
 
 def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
@@ -822,7 +847,8 @@ def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
     r = icons.import_review(info, Path(xlsx), work)
     if r.blocking:
         return IconImportResult("blocked", blocking=r.blocking)
-    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed)
+    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed,
+                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells])
 
 
 # ---------------------------------------------------------------- 추출 완료 -> 용어집 검증 -> 확정 (PRD 5.3 가)
@@ -2685,6 +2711,7 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "readings": readings + rereads,
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
                 "keep_original": bool(r and r.get("keep_original")),  # 전체가 아이콘 — 번역 안 함
+                "icon_changed": list((r or {}).get("icon_changed") or []),  # ② 아이콘 정의에서 자리가 바뀜
             })
     return out
 
@@ -2727,6 +2754,7 @@ def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
         r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
         old = r.get("source")
         r["uncertain"] = False
+        r.pop("icon_changed", None)  # 아이콘 정의 뒤 확인할 칸: 사람이 보고 저장했으니 풀린다
         if old == source:  # 고치지 않고 저장 = 사람이 보고 맞다고 확인함
             r["checked_by"] = "사람"
             if not r.get("edited_by"):
@@ -2755,6 +2783,31 @@ class RereadResult:
     equiv_usd: float = 0.0  # Claude Code 요금제로 읽은 분량의 API 정가 환산 (청구되지 않음)
     reason: str = ""  # 멈춘·못 한 이유
     retry_after: str | None = None
+
+
+def reread_cells(cells: list[dict], *, model: str = "opus", engine: str | None = None, client=None,
+                 progress: ProgressFn | None = None, cancel: CancelToken | None = None) -> dict:
+    """여러 칸을 차례로 다시 읽는다 (② 아이콘 정의에서 아이콘 자리가 바뀐 칸 등). cells: [{"file_dir", "page", "region"}].
+    결과는 칸마다 rereads에 덧붙고 원문은 그대로다 (③ 원문 확인에서 사람이 비교해 고른다).
+    {"done": 읽은 수, "failed": [(칸, 이유)], "state": done|paused|blocked, "reason", "retry_after", "spent_usd"}.
+    한도에 걸리면 거기서 멈춘다 (남은 칸은 ‘확인 필요’로 남아 원문 확인에서 하나씩 다시 읽을 수 있다)."""
+    progress = progress or _noop
+    out = {"done": 0, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0}
+    for i, c in enumerate(cells):
+        if cancel:
+            cancel.check()
+        progress(ProgressEvent("reread", i, len(cells), f"{c['page']}쪽 {c['region']} 다시 읽는 중"))
+        r = reread_region(c["file_dir"], c["page"], c["region"], model=model, engine=engine, client=client)
+        out["spent_usd"] += r.spent_usd
+        if r.state == "done":
+            out["done"] += 1
+        elif r.state in ("paused", "blocked"):
+            out.update(state=r.state, reason=r.reason, retry_after=r.retry_after)
+            break
+        else:
+            out["failed"].append((f"{c['page']}쪽 {c['region']}", r.reason))
+    progress(ProgressEvent("reread", len(cells), len(cells), "다시 읽기 끝"))
+    return out
 
 
 def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = "opus",
@@ -3032,7 +3085,8 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> IconImportResult
     r = icons.import_rows(info, xl, work)
     if r.blocking:
         return IconImportResult("blocked", blocking=r.blocking)
-    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed)
+    return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed,
+                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells])
 
 
 # ---------------------------------------------------------------- 화면용: 결과 보기·테스트 실행 (3차)
@@ -4052,6 +4106,12 @@ def delete_game(game: Path | str, root: Path | None = None, with_projects: bool 
         for p in mine:
             delete_project(p["dir"])
     dest = _to_trash(gdir, root, f"game-{gdir.name}")
+    if not with_projects:  # 남은 프로젝트: 용어집·아이콘 사전이 없어졌으니 ‘용어집 확정·번역 끝’ 상태가 맞지 않는다
+        for p in mine:
+            try:
+                back_to_extracting(workspace.load_project_info(p["dir"]))
+            except (OSError, ValueError, KeyError):
+                pass
     s = settings.load()
     if s.last_project:
         lp = Path(s.last_project)
@@ -4104,7 +4164,10 @@ def delete_group(project_dir: Path | str, group: str) -> Path:
     gdir = workspace.group_dir(info, group)
     if not (gdir / "group.json").exists():
         raise KeyError(f"그룹이 없습니다: {group}")
-    return _to_trash(gdir, info.dir.parent.parent, f"group-{info.dir.name}-{gdir.name}")
+    dest = _to_trash(gdir, info.dir.parent.parent, f"group-{info.dir.name}-{gdir.name}")
+    if not workspace.file_dirs(info):  # 파일이 하나도 남지 않으면 처음부터
+        back_to_extracting(info)
+    return dest
 
 
 def delete_file(file_dir: Path | str) -> Path:
@@ -4115,7 +4178,10 @@ def delete_file(file_dir: Path | str) -> Path:
     info = workspace.project_of(fd)
     if info is None or fd.parent.name != "files":
         raise ValueError(f"그룹 안의 파일 폴더가 아닙니다: {fd}")
-    return _to_trash(fd, info.dir.parent.parent, f"file-{info.dir.name}-{fd.parent.parent.name}-{fd.name}")
+    dest = _to_trash(fd, info.dir.parent.parent, f"file-{info.dir.name}-{fd.parent.parent.name}-{fd.name}")
+    if not workspace.file_dirs(info):  # 파일이 하나도 남지 않으면 처음부터
+        back_to_extracting(info)
+    return dest
 
 
 # ---------------------------------------------------------------- 화면용: 로그인 (Claude 구독 / API 키)
@@ -4348,4 +4414,6 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
                                **({"pdf": Path(origin_pdf).name} if origin_pdf else {}),
                                "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
+    if fd is not None:
+        back_to_extracting(workspace.load_project_info(project_dir))  # 새 카드: add_files와 같은 이유
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])

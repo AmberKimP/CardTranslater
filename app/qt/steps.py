@@ -331,7 +331,9 @@ class SourceReviewDialog(QDialog):
     COLS = ["쪽", "영역", "원문 확인", "원문"]
     UNREAD = "읽지 않음"
 
-    def __init__(self, files: list[dict], parent=None, only_check: bool = True, engine: str | None = None):
+    def __init__(self, files: list[dict], parent=None, only_check: bool = True, engine: str | None = None,
+                 focus_key: str | None = None, focus_label: str | None = None):
+        """focus_key: 처음 보여 줄 파일 키, focus_label: 그 파일에서 처음 고를 칸의 원문 확인 상태 (예: ‘결론 못 냄’)."""
         super().__init__(parent)
         self.setWindowTitle("원문 확인")
         self.engine = engine  # ‘이 칸 다시 읽기’ 로그인 방식 (없으면 설정에 저장된 방식)
@@ -434,12 +436,19 @@ class SourceReviewDialog(QDialog):
         rl.addLayout(self.pick_row)
         rl.addWidget(self.edit)
         rl.addLayout(btns)
+        # 왼쪽 표를 끌어 넓힐 수 있게: 오른쪽(그림·읽은 결과·편집 칸)이 제 최소 크기를 크게 잡으면 나눔 막대가 움직이지 않는다
+        right.setMinimumWidth(380)
+        self.table.setMinimumWidth(240)
+        for col in (0, 1, 2):  # 쪽·영역·원문 확인은 내용 폭으로, 원문 열이 나머지를 쓴다
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         split = QSplitter()
+        split.setChildrenCollapsible(False)
         split.addWidget(self.table)
         split.addWidget(right)
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        split.setSizes([500, 750])
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setSizes([560, 680])  # 표 45% (원문이 덜 잘리게)
+        self.split = split
         close = QPushButton("닫기")
         close.setAutoDefault(False)
         close.clicked.connect(self.accept)
@@ -463,10 +472,18 @@ class SourceReviewDialog(QDialog):
         self._shown_cell: dict | None = None
         self._shown_file: str | None = None
         self._orig_text = ""
+        if focus_key:  # 고칠 칸이 있는 파일부터 (용어집 만들기에서 ‘남은 항목’을 고치러 왔을 때)
+            i = next((k for k, f in enumerate(files) if f["key"] == focus_key), -1)
+            if i >= 0:
+                self.file.setCurrentIndex(i)
         self._file_idx = self.file.currentIndex()
         self.file.currentIndexChanged.connect(self._on_file_changed)
         self.only.toggled.connect(self._on_only_toggled)
         self.reload()
+        if focus_label:
+            i = next((k for k, c in enumerate(self.cells) if c["label"] == focus_label), None)
+            if i is not None:
+                self.table.setCurrentCell(i, 0)
 
     @staticmethod
     def needs_check(c: dict) -> bool:
@@ -765,7 +782,8 @@ class SourceReviewDialog(QDialog):
         self.reload(keep=(c["page"], c["region"]))
 
     def save_and_next(self):
-        """저장하고 다음 칸으로. ‘확인할 칸만’일 때는 저장한 칸이 목록에서 빠지므로 같은 줄 번호가 다음 칸이다."""
+        """저장하고 다음 칸으로: 확인할 칸이 남아 있으면 (지금 칸 뒤에서, 없으면 처음부터) 다음 확인할 칸으로 간다.
+        확인할 칸이 없으면 바로 다음 칸. ‘확인할 칸만’일 때는 저장한 칸이 목록에서 빠지므로 같은 줄 번호부터 찾는다."""
         c = self.current()
         if c is None:
             return
@@ -775,7 +793,11 @@ class SourceReviewDialog(QDialog):
         self._save_shown()
         self.reload(keep=key)  # 새 목록을 만든 뒤 다음 칸을 찾는다
         idx = next((i for i, x in enumerate(self.cells) if (x["page"], x["region"]) == key), None)
-        nxt = r if idx is None else idx + 1
+        start = r if idx is None else idx + 1
+        order = list(range(start, len(self.cells))) + list(range(0, min(start, len(self.cells))))
+        nxt = next((i for i in order if self.needs_attention(self.cells[i]) and i != idx), None)
+        if nxt is None:  # 확인할 칸이 없다: 바로 다음 칸
+            nxt = start
         if 0 <= nxt < len(self.cells) and nxt != self.table.currentRow():
             self.table.setCurrentCell(nxt, 0)
 
@@ -1002,8 +1024,11 @@ class IconPlaceView(QWidget):
                 p.setPen(QColor("white"))
                 p.drawText(QRectF(r.left(), ty, tw, th), Qt.AlignmentFlag.AlignCenter, label)
 
-        for b, label in self.marks:
-            frame(b, "#2E8B57", label)
+        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가])
+            if rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
+                frame(b, "#9A6A00", label, dash=True)
+            else:
+                frame(b, "#2E8B57", label)
         if self.guess and not self.new:
             frame(self.guess, "#E67E22", "예상 위치", dash=True)
         if self.box:
@@ -1126,7 +1151,8 @@ class IconPlaceDialog(QDialog):
         QApplication.restoreOverrideCursor()
         pm = QPixmap()
         pm.loadFromData(p["png"], "PNG")
-        marks = [(m["box"], f"[[{m['name']}]]" if m.get("name") else self.row_label(m.get("group", "")))
+        marks = [(m["box"], (f"[[{m['name']}]]" if m.get("name") else self.row_label(m.get("group", "")))
+                  + (" · 위치 못 찾음" if m.get("guess") else ""), bool(m.get("guess")))
                  for m in p["marks"]]
         self.view.set_data(pm, p["box"], p["guess"], marks)
         if w.get("png"):
@@ -1776,13 +1802,16 @@ class StepActions:
                      retry_after=r.retry_after, detail="\n".join(lines))
 
     # ---- 원문 확인
-    def review_sources(self, only_check: bool = True):
+    def review_sources(self, only_check: bool = True, focus_key: str | None = None, focus_label: str | None = None):
         files = self.page.scoped_files()  # 그리드에서 고른 범위
+        if focus_key and not any(f["key"] == focus_key for f in files):  # 고칠 파일이 범위 밖이면 그 파일도 넣는다
+            allf = [f for g in self.page.ov["groups"] for f in g["files"]]
+            files = files + [f for f in allf if f["key"] == focus_key]
         if not files:
             return
         # ‘이 칸 다시 읽기’: 이번에 ① 글자 추출에서 고른 로그인 방식 (아직 안 했으면 설정에 저장된 방식)
         eng = self.extract_engine or service.get_settings().engine
-        dlg = SourceReviewDialog(files, self.page, only_check, engine=eng)
+        dlg = SourceReviewDialog(files, self.page, only_check, engine=eng, focus_key=focus_key, focus_label=focus_label)
         dlg.exec()
         if dlg.saved:
             self.page.refresh()
@@ -1827,8 +1856,43 @@ class StepActions:
                                     f"새로 넣음: {', '.join(r.added) or '-'}\n사전에 있던 것: {', '.join(r.reused) or '-'}\n"
                                     f"원문에서 바꿈 {r.replaced}곳, 뺌 {r.removed}곳")
             self.page.refresh()
+            if r.changed_cells:
+                self._reread_icon_cells(r.changed_cells)
             return True
         return False
+
+    def _reread_icon_cells(self, cells: list[dict]):
+        """② 아이콘 정의에서 아이콘 자리가 바뀐 칸 (손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음):
+        모델이 그 자리를 잘못 읽었을 수 있다. 지금 다시 읽을지 묻고, ③ 원문 확인으로 이어 준다."""
+        n = len(cells)
+        c = ask_choice(self.page, "아이콘이 바뀐 칸 다시 읽기",
+                       f"아이콘 자리가 바뀐 칸이 {n}개 있습니다 (손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음).\n"
+                       "그 자리를 모델이 잘못 읽었을 수 있습니다. 지금 다시 읽을까요?",
+                       [(f"{n}칸 다시 읽기", "accept"), ("나중에 (원문 확인에서)", "reject")], default=0,
+                       informative="다시 읽은 결과는 ③ 원문 확인의 ‘읽은 결과’에 들어가고, 원문은 사람이 보고 저장할 때 바뀝니다.\n"
+                                   "이 칸들은 ‘확인 필요’로 표시되어 원문 확인의 확인할 칸에 나옵니다.")
+        if c != 0:
+            return
+        eng = self._engine()
+        if eng is None:
+            return
+        job = worker.Job(service.reread_cells, cells, engine=eng)
+        worker.run_with_dialog(self.page, f"아이콘이 바뀐 칸 {n}개 다시 읽는 중", job, self._reread_icon_done,
+                               _fail_as(self.page, "다시 읽지 못했습니다"), cancellable=True)
+
+    def _reread_icon_done(self, r: dict):
+        self.page.refresh()
+        if r["state"] != "done":
+            show_problem(self.page, f"다시 읽기를 멈췄습니다 ({state_label(r['state'])})", r["reason"] or "",
+                         f"{r['done']}칸을 다시 읽었습니다. 남은 칸은 ③ 원문 확인에서 ‘이 칸 다시 읽기’로 읽을 수 있습니다.",
+                         retry_after=r.get("retry_after"))
+        elif r["failed"]:
+            show_problem(self.page, "일부 칸을 다시 읽지 못했습니다", "", "③ 원문 확인에서 그 칸을 다시 읽어 보세요.",
+                         items=[f"{k}: {why}" for k, why in r["failed"]])
+        if QMessageBox.question(self.page, "원문 확인",
+                                f"다시 읽은 {r['done']}칸을 ③ 원문 확인에서 비교해 확인할까요?") \
+                == QMessageBox.StandardButton.Yes:
+            self.review_sources(only_check=True)
 
     # ---- 추출 완료 -> 용어집 검증
     def finish(self, accept: bool = False):
@@ -1851,8 +1915,11 @@ class StepActions:
     def _finish_done(self, r):
         self.page.refresh()
         if r.state == "needs_confirmation":
-            if _ask_list(self.page, "용어집 만들기 확인", "아래 항목이 남아 있습니다.", r.issues, "그래도 용어집을 만들까요?"):
+            if _ask_list(self.page, "용어집 만들기 확인", "아래 항목이 남아 있습니다.", r.issues,
+                         "그래도 용어집을 만들까요? (‘아니요’를 누르면 그 항목을 고치는 창으로 갑니다)"):
                 self.finish(accept=True)
+            else:
+                self._fix_finish_issues(r.issues)
             return
         if r.state == "icons_review":
             QMessageBox.information(self.page, "아이콘 먼저", f"먼저 ‘② 아이콘 정의’를 해야 합니다: {r.reason}")
@@ -1865,6 +1932,42 @@ class StepActions:
                          retry_after=r.retry_after)
             return
         self.review_glossary()  # 바로 프로그램 안에서 번역을 확인·확정 (엑셀은 그 창에서 따로 내보내기·가져오기)
+
+    def _fix_finish_issues(self, issues: list[str]):
+        """용어집 만들기에서 남은 항목을 고치는 곳으로 간다: ‘결론 못 냄’ → ③ 원문 확인(그 파일의 첫 칸을 골라),
+        영역 템플릿 없음 → 영역 지정, 일부만 읽음·실패한 카드 → ① 글자 추출 (이어서 읽기)."""
+        # 항목의 파일 이름은 게임 단위 키 ‘프로젝트/그룹/파일’ (같은 게임의 다른 프로젝트 것일 수도 있다).
+        # 원문 확인은 이 프로젝트의 ‘그룹/파일’로 찾으므로 이 프로젝트 것만 고른다
+        prefix = f"{self.page.ov['name']}/"
+        mine = [f["key"] for g in self.page.ov["groups"] for f in g["files"]]
+        other = None
+        for it in issues:
+            m = re.match(r"‘결론 못 냄’ 칸 \(원문이 틀렸을 수 있음\): (.+) \d+칸$", it)
+            if not m:
+                continue
+            key = m.group(1)
+            key = key[len(prefix):] if key.startswith(prefix) else key
+            if key in mine:
+                self.review_sources(only_check=True, focus_key=key, focus_label="결론 못 냄")
+                return
+            other = other or m.group(1)
+        if other:  # 같은 게임의 다른 프로젝트에 있는 칸: 그 프로젝트를 열어 고쳐야 한다
+            QMessageBox.information(self.page, "다른 프로젝트의 칸",
+                                    f"‘결론 못 냄’ 칸이 같은 게임의 다른 프로젝트에 있습니다: {other}\n"
+                                    "그 프로젝트를 열어 ‘③ 원문 확인’에서 고치세요.")
+            return
+        if any(it.startswith("영역 템플릿이 없어") for it in issues):
+            g = next((g for g in self.page.ov["groups"] if g["files"] and not g["has_regions"]), None)
+            if g is not None:
+                self.page._open_editor(g)  # 영역이 없는 그룹의 영역 지정 창
+            else:
+                self.page.edit_regions()
+            return
+        if any(it.startswith(("일부만 읽음", "실패한 카드")) for it in issues):
+            ans = QMessageBox.question(self.page, "글자 추출 이어 하기",
+                                       "아직 읽지 않았거나 읽지 못한 카드가 있습니다. ‘① 글자 추출’로 이어서 읽을까요?")
+            if ans == QMessageBox.StandardButton.Yes:
+                self.extract()
 
     # ---- 용어집 확정 (프로그램 안 표; 엑셀은 그 창에서 따로)
     def review_glossary(self):

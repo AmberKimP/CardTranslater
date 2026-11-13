@@ -725,3 +725,62 @@ def test_add_files_dialog_pdf_runtime_error_mid_add(tmp_path, monkeypatch):
     dlg2.accept()
     assert dlg2.result_info is None and problems == ["파일을 넣지 못했습니다"]
     dlg2.finished.emit(0)
+
+
+def _touching_sheet(card=(300, 420)):
+    """붙어 있는 3×3 카드 (모두 같은 틀: 제목 띠·카드 안 가로줄). 카드 끝은 가는 그림자 + 밝은 단면.
+    손으로 놓은 듯: 둘째 줄은 옆으로 6px, 셋째 줄은 4px 틈을 두고 놓임 (겹치지는 않는다). 반환: (그림, 참 상자)."""
+    cw, ch = card
+    H, W = 3 * ch + 50, 3 * cw + 50
+    img = np.full((H, W, 3), 120, np.uint8)
+    rng = np.random.default_rng(3)
+    truth = []
+    for r in range(3):
+        for c in range(3):
+            dx, dy = {1: (6, 0), 2: (0, 4)}.get(r, (0, 0))
+            x0, y0 = 20 + c * cw + dx, 20 + r * ch + dy
+            img[y0:y0 + ch, x0:x0 + cw] = (210, 205, 190)
+            img[y0 + 40:y0 + 90, x0 + 60:x0 + cw - 60] = (170, 60, 70)  # 제목 띠
+            img[y0 + int(0.26 * ch):y0 + int(0.26 * ch) + 3, x0 + 10:x0 + cw - 10] = (40, 40, 40)  # 카드 안 가로줄
+            img[y0 + 3:y0 + 5, x0 + 10:x0 + cw - 10] = (250, 250, 250)  # 카드 안쪽 밝은 단면 (끝 선)
+            img[y0 + ch - 5:y0 + ch - 3, x0 + 10:x0 + cw - 10] = (250, 250, 250)
+            img[y0 + 10:y0 + ch - 10, x0 + 3:x0 + 5] = (250, 250, 250)
+            img[y0 + 10:y0 + ch - 10, x0 + cw - 5:x0 + cw - 3] = (250, 250, 250)
+            img[y0:y0 + 2, x0:x0 + cw] = (60, 60, 60)  # 가는 그림자
+            img[y0 + ch - 2:y0 + ch, x0:x0 + cw] = (60, 60, 60)
+            img[y0:y0 + ch, x0:x0 + 2] = (60, 60, 60)
+            img[y0:y0 + ch, x0 + cw - 2:x0 + cw] = (60, 60, 60)
+            for _ in range(6):  # 카드마다 다른 글자 덩어리
+                cx, cy = int(rng.integers(x0 + 40, x0 + cw - 40)), int(rng.integers(y0 + 160, y0 + ch - 40))
+                img[cy - 4:cy + 4, cx - 25:cx + 25] = (50, 50, 50)
+            truth.append((x0, y0, x0 + cw, y0 + ch))
+    return img, truth
+
+
+def test_fit_equal_size_recovers_card_edges_from_bad_cuts():
+    """처음 자른 칸이 틀려도 (카드 크기의 5% 어긋남·크기 들쭉날쭉) 같은 크기라는 전제로 카드 끝 선에 맞춘다.
+    카드 안의 가로줄(위에서 26%)에는 끌리지 않는다."""
+    img, truth = _touching_sheet()
+    bad = [(x0 - 15 + 4 * (i % 3), y0 + 18 - 3 * (i // 3), x1 - 15 - 6 * (i % 2), y1 + 18) for i, (x0, y0, x1, y1)
+           in enumerate(truth)]
+    boxes, size = images._fit_equal_size(img, bad)
+    assert size is not None and abs(size[0] - 300) <= 4 and abs(size[1] - 420) <= 4
+    # 붙은 두 카드의 끝 선은 몇 px 안에 겹쳐 있어 어느 쪽 끝인지 ±몇 px는 가리지 못한다 (카드 크기의 2%까지)
+    assert max(abs(a - b) for bx, tb in zip(boxes, truth) for a, b in zip(bx, tb)) <= 6
+    widths = {b[2] - b[0] for b in boxes}
+    assert max(widths) - min(widths) <= 1  # 모두 같은 크기
+
+
+def test_cut_sheet_keeps_clean_gutter_sheets_as_is(tmp_path):
+    """틈이 보이고 크기도 고른 배열은 같은 크기 맞추기를 하지 않는다 (예전 결과 그대로)."""
+    W, H, cw, ch, g = 980, 1340, 300, 420, 20
+    im = Image.new("RGB", (W, H), (240, 240, 240))
+    d = ImageDraw.Draw(im)
+    for r in range(3):
+        for c in range(3):
+            x0, y0 = 20 + c * (cw + g), 20 + r * (ch + g)
+            d.rectangle([x0, y0, x0 + cw - 1, y0 + ch - 1], fill=(120 + 30 * c, 80, 90 + 20 * r))
+    im.save(tmp_path / "g.png")
+    cut = images.cut_sheet(tmp_path / "g.png", 3, 3)
+    assert not any("같다고 보고" in w for w in cut.warnings)
+    assert len(cut.boxes) == 9

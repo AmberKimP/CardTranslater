@@ -1529,20 +1529,68 @@ def place_info(info, work: Path, occ_id: str) -> dict:
         if t.group(1) == "?":
             j = ph.index(ti)
             x = by_index.get(j)
-            if x is None:
-                continue
-            box = x.box or (list(locate(img, text, ti)[0] or []) if x.png else [])
-            if x.id == o.id:
+            box = (x.box or (list(locate(img, text, ti)[0] or []) if x.png else [])) if x is not None else []
+            if x is not None and x.id == o.id:
                 out["box"] = box or None
                 if not box:
                     out["guess"] = estimate(img, text, ti)
-            elif box and not x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
+            elif x is not None and x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
+                continue
+            elif box:
                 out["marks"].append({"box": box, "group": x.group, "occ": x.id})
+            else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
+                g = estimate(img, text, ti)
+                if g is not None:
+                    out["marks"].append({"box": list(g), "group": x.group if x is not None else "",
+                                         "occ": x.id if x is not None else "", "guess": True})
         else:
             box = locate(img, text, ti)[0]
+            if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
+                box = match_known(info, img, t.group(1), text)
+            guess = False
+            if box is None:
+                box, guess = estimate(img, text, ti), True
             if box is not None:
-                out["marks"].append({"box": list(box), "name": t.group(1)})
+                out["marks"].append({"box": list(box), "name": t.group(1), **({"guess": True} if guess else {})})
     return out
+
+
+MATCH_KNOWN_MIN = 0.6  # 사전 그림으로 찾을 때 이 이상 닮아야 그 자리로 본다 (정규화 상관)
+
+
+def match_known(info, img: np.ndarray, name: str, text: str) -> tuple[int, int, int, int] | None:
+    """사전 아이콘 그림(name)을 칸 그림 안에서 찾는다 (여러 크기로 맞춰 봄). (x0, y0, x1, y1) 또는 None.
+    크기는 글 줄 높이의 0.6~2.4배 사이에서 본다 (글 속 아이콘·아이콘만 있는 줄)."""
+    import cv2
+
+    e = load_dictionary(info)["icons"].get(name)
+    if not e:
+        return None
+    pth = icons_dir(info) / e.get("file", f"{name}.png")
+    if not pth.exists():
+        return None
+    tpl = load_png(pth)
+    if tpl.ndim == 3 and tpl.shape[2] == 4:  # 투명한 곳은 칸 바탕(중간 회색)으로
+        a = tpl[..., 3:4].astype(np.float32) / 255.0
+        tpl = (tpl[..., :3].astype(np.float32) * a + 200.0 * (1 - a)).astype(np.uint8)
+    g_img = cv2.cvtColor(np.ascontiguousarray(img[..., :3]), cv2.COLOR_RGB2GRAY)
+    g_tpl = cv2.cvtColor(np.ascontiguousarray(tpl[..., :3]), cv2.COLOR_RGB2GRAY)
+    n_lines = max(1, len([ln for ln in text.split("\n") if ln.strip()]))
+    line_h = img.shape[0] / n_lines
+    best, best_box = MATCH_KNOWN_MIN, None
+    for f in np.linspace(0.6, 2.4, 13):
+        h = int(round(line_h * f))
+        w = int(round(g_tpl.shape[1] * h / max(1, g_tpl.shape[0])))
+        if h < 8 or w < 8 or h > g_img.shape[0] or w > g_img.shape[1]:
+            continue
+        t = cv2.resize(g_tpl, (w, h), interpolation=cv2.INTER_AREA)
+        if float(t.std()) < 4:
+            continue
+        r = cv2.matchTemplate(g_img, t, cv2.TM_CCOEFF_NORMED)
+        _mn, mx, _l, loc = cv2.minMaxLoc(r)
+        if mx > best:
+            best, best_box = mx, (loc[0], loc[1], loc[0] + w, loc[1] + h)
+    return best_box
 
 
 def _known_shapes(info) -> dict:
@@ -1870,6 +1918,9 @@ class IconImport:
     reused: list[str] = field(default_factory=list)
     removed: int = 0
     replaced: int = 0
+    # 아이콘 자리가 바뀐 칸 [(파일 폴더, 쪽, 칸)]: 손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음.
+    # 모델이 그 자리를 잘못 읽었을 수 있어 ③ 원문 확인에서 다시 읽고 확인해야 한다 (확인 필요로 표시해 둔다)
+    changed_cells: list = field(default_factory=list)
 
 
 def _group_num(res: ScanResult, by_id: dict, g: str) -> str:
@@ -2012,9 +2063,17 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
     # 막는다. 예전 항목(None)은 어떤 숫자와도 같지 않아 빼지 않는다)
     per_region: dict[tuple, dict[int, str]] = {}
     strips: dict[tuple, dict[int, dict]] = {}
+    changed: dict[tuple, list[str]] = {}
     for o in res.occurrences:
         key = (o.file, o.page, o.region)
         name = decision[o.group]
+        gi = res.groups.get(o.group, {})
+        # 찾기가 스스로 합친 세트(auto)는 사람이 바꾼 것이 아니고 읽은 글자도 그대로라 다시 읽지 않는다
+        why = ("손으로 자리를 다시 잡음" if o.manual else "세트로 합침" if (gi.get("absorbed") and not gi.get("auto"))
+               else "" if (o.set_of or gi.get("auto")) else "아이콘 아님" if (not name or name.startswith("="))
+               else "위치를 못 찾음" if not (o.box or o.png) else "")
+        if why:
+            changed.setdefault(key, []).append(why)
         per_region.setdefault(key, {})[o.index] = name
         e = d["icons"].get(name) if name and not name.startswith("=") else None
         if e is not None and o.number and not o.manual and entry_number(e) == o.num:
@@ -2023,5 +2082,28 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         apply_region(_occ_dir(info, f), page, region, mapping, strips.get((f, page, region)))
         out.removed += sum(1 for v in mapping.values() if v == "")
         out.replaced += sum(1 for v in mapping.values() if v)
+    for (f, page, region), whys in changed.items():
+        fd = _occ_dir(info, f)
+        mark_icon_changed(fd, page, region, sorted(set(whys)))
+        out.changed_cells.append((fd, page, region))
     shutil.rmtree(work, ignore_errors=True)
     return out
+
+
+ICON_CHANGED_NOTE = "② 아이콘 정의에서 아이콘 자리가 바뀜"
+
+
+def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -> None:
+    """아이콘 자리가 바뀐 칸을 ‘확인 필요’로 표시한다 (③ 원문 확인이 그 칸을 보여 주고, 다시 읽어 비교하게).
+    사람이 원문 확인에서 저장하면 풀린다."""
+    for f in _extract_files(file_dir, page):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec["regions"].get(region)
+        if not r or not isinstance(r.get("source"), str):
+            continue
+        r["uncertain"] = True
+        r["icon_changed"] = whys
+        note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
+        r["note"] = note if not r.get("note") or ICON_CHANGED_NOTE in r["note"] else f"{r['note']} / {note}"
+        r.pop("checked_by", None)
+        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
