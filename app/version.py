@@ -4,4 +4,4 @@
     올릴 때는 CHANGELOG.md에 바뀐 점을 적고, 릴리스 커밋에 git 태그 vX.Y.Z를 붙인다.
 """
 
-VERSION = "1.15.1"
+VERSION = "1.16.0"

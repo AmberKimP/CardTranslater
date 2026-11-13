@@ -133,6 +133,7 @@ ERASE_LABELS = {
     "pattern": "주변 무늬로 채우기",
     "rect_avg": "사각형으로 덮기",
     "inpaint": "뒤 그림 이어 채우기",
+    "picture": "복잡한 그림 배경",
 }
 
 

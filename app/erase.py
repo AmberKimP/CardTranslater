@@ -1550,7 +1550,21 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         # 그림을 넓게 지우려 할 때만 바꾼다 (단색·무늬 배경과 기존 방식이 잘 맞은 그림 배경은 그대로)
         picture_bg = bool(tm.busy)
         picture_strokes = False
-        if picture_bg:
+        pic = None  # ‘복잡한 그림 배경’ 방식으로 찾은 글자 (app.erase_picture)
+        picture_tried = mode == "picture" or (mode == "auto" and picture_bg)
+        no_text = False  # 읽은 원문에 글자가 없어 일부러 지우지 않는 칸
+        if picture_tried:
+            # ‘복잡한 그림 배경’ (사람이 골랐거나, 자동인데 배경이 그림): 따로 만든 방식으로 찾고 채운다.
+            # 글자 줄을 못 찾으면 아래 기존 방식으로 (자동이면 획 방식, 사람이 골랐으면 색으로 고른 결과)
+            from app import erase_picture
+
+            picture_bg = True
+            src0 = (sources or {}).get(name)
+            pic, tm = erase_picture.region_text_mask(sub, lb_region, prot, tm, src0, name in (sources or {}))
+            no_text = pic is None and any("원문에 글자가 없어" in n_ for n_ in tm.notes)
+            if pic is not None:
+                lb, core, look = lb_region, lb_region, sub
+        if picture_bg and pic is None and mode == "auto" and not no_text:
             alt = picture_text_mask(look, lb, prot, tm.texture)
             if lb != lb_region and _box_area(lb) < PICTURE_FULL_RECHECK * _box_area(lb_region):
                 # 그림 배경에서는 '글자 상자'로 좁힌 것이 빗나갈 수 있다 (밝은 그림 띠를 상자로 봄): 영역 전체에서
@@ -1588,8 +1602,17 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             lay = erase_text.match_source_lines(tm, lay, src, icon_rows=rows or None,
                                                 img=None if picture_strokes else look, allowed_px=ok_px)
         # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
+        if pic is not None:
+            # 글 속 아이콘이라기엔 너무 큰 상자는 아이콘 찾기가 그림에 속은 것: 통째로 지우면 큰 아이콘·그림이 망가진다
+            lim = INLINE_ICON_SCALE_RANGE[1] * pic.glyph_px
+            found = [f_ for f_ in found if f_[2] or max(f_[1][2] - f_[1][0], f_[1][3] - f_[1][1]) <= 1.5 * lim]
         icons_found = _inline_icons(found, lay, tm)
-        if picture_strokes and mode == "auto":
+        if pic is not None:
+            from app import erase_picture
+
+            filled, changed = erase_picture.fill_region(sub, tm, pic, prot, seed=seed)
+            used = "picture"
+        elif picture_strokes and mode == "auto":
             # 획만 좁게 잡은 마스크: 인페인팅 + 둘레 결로 채운다 (방식 이름은 그대로 inpaint)
             m_fill = grow_halo(sub, tm.mask, prot)
             if lb != lb_region:
@@ -1614,6 +1637,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             # 배경이 그림인가, 글자를 획 모양으로 다시 찾았는가 (화면이 주의 표시를 할 때 쓴다)
             "picture_bg": picture_bg, "picture_strokes": picture_strokes,
         }
+        if picture_tried:
+            from app import erase_picture
+
+            text_mask_meta[name]["picture"] = erase_picture.picture_meta(pic)
         if picture_bg and changed.any():
             warnings.append(f"[{name}] {PICTURE_BG_WARNING}")
         if lb != lb_region:

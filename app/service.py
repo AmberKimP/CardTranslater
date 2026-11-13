@@ -1918,7 +1918,8 @@ REGION_KINDS = ("text", "tag_pills")
 # 글자 지우기 방식 (그림 카드, app.erase_text). [(키, 화면 문구)]
 ERASE_MODES = [("auto", "자동 (배경 보고 고름)"), ("solid", "단색: 주변 색으로 덮기"),
                ("pattern", "무늬: 주변 무늬로 채우기"), ("rect_avg", "그림: 사각형 + 평균색"),
-               ("inpaint", "그림: 뒤 그림 유추해 채우기")]
+               ("inpaint", "그림: 뒤 그림 유추해 채우기"),
+               ("picture", "복잡한 그림 배경: 획 모양으로 찾아 그림 결 따라 채우기")]  # app.erase_picture
 ALIGNS = ("left", "center", "right")
 
 

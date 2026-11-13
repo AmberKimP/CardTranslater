@@ -40,6 +40,7 @@ MODE_LABELS = {
     "pattern": "무늬: 주변 무늬로 채우기",
     "rect_avg": "그림: 사각형 + 평균색",
     "inpaint": "그림: 뒤 그림 유추해 채우기",
+    "picture": "복잡한 그림 배경: 획 모양으로 찾아 그림 결 따라 채우기",  # app.erase_picture. fill_text는 이 방식을 모른다: erase_page가 따로 채운다
 }
 STRONG = 60.0  # 배경과 이만큼(RGB 최대 채널) 다르면 글자 후보
 WEAK = 30.0  # 글자에 붙은 테두리·그림자로 넓힐 때의 기준
