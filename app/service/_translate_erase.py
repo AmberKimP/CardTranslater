@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import workspace
 from app.project import load_project
 from app.service import _base
 from app.service import _erase_compose
@@ -276,9 +277,7 @@ def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool =
             r["checked_by"] = "사람"
         else:
             r.pop("keep_original", None)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
     _review._clear_review_caches()  # 번역 검수 줄(이 칸이 빠지거나 다시 나옴)·진행 수를 새로 센다
 
 

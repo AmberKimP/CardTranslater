@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app import workspace
 from app.project import load_project
 from app.service import _base
 from app.service import _extract
@@ -126,9 +127,7 @@ def save_source(file_dir: Path | str, page: int, region: str, source) -> None:
             r["edited_by"] = "사람"
             r["note"] = (f"사람이 고침 (모델: {json.dumps(old, ensure_ascii=False)})" if old is not None
                          else "사람이 입력")
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
 
 
 @dataclass
@@ -239,9 +238,7 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
                 cell.pop("readings", None)
         cell.setdefault("rereads", []).append(entry)
         cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
     log.info("칸 다시 읽음: %d쪽 %s (%s)", page, region, model_id)
     return RereadResult("done", r["source"], bool(r.get("uncertain")), r.get("note", ""), spent, equiv)
 
@@ -343,6 +340,28 @@ def absorb_icon_run(project_dir: Path | str, host_occ: str, occ_ids: list[str]) 
     except OSError:
         pass
     return {"groups": groups}
+
+
+def overlapping_icons(marks: list[dict], box, exclude: str = "") -> list[str]:
+    """카드 보기 표시(icon_place의 marks) 중 box와 겹친 다른 [[?]] 자리 id (흡수 후보)."""
+    from app import icons
+
+    return icons.overlapping_occ(marks, box, exclude)
+
+
+def split_icon_box(project_dir: Path | str, occ_id: str, part_box) -> dict:
+    """한 자리 상자에 아이콘이 둘이면 둘로: part_box(그중 하나)와 나머지. 원문에 [[?]]가 하나 늘어난다.
+    {"first", "second", "groups"}. 나눌 수 없으면 ValueError."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.split_icon(info, work, occ_id, part_box)
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
+        pass
+    return r
 
 
 def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:

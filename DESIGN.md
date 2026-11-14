@@ -80,3 +80,41 @@ Apple HIG 기반 가이드(모바일·웹용)를 검토해 **그대로 쓰는 �
 2. 주 버튼은 하나, 오른쪽 끝. 버튼 글이 잘리면 줄을 나눈다 (예: 원문 확인 — 위 줄 ‘이 칸’ 도구, 아래 줄 저장).
 3. 내용은 흰 칸, 바탕은 회색. 여백은 4의 배수.
 4. 바꾼 화면은 실제 창으로 캡처해 직접 보고 확인한다.
+5. 새 창은 창 번호를 받는다 (아래 표).
+
+## 창 번호·버튼 코드
+
+창 제목 앞에 `[2B]`처럼 번호가 붙는다 (숫자 = 작업 단계, 0 = 단계 밖 창, 9 = 결과 보기). 기능을 물을 때 이 번호로 가리킨다.
+**Ctrl+D**: 디버깅 모드 — 버튼 글자 대신 `2B-03` 같은 버튼 코드가 보이고, 누르면 코드만 복사된다 (동작 안 함). 다시 Ctrl+D로 끈다.
+버튼 코드의 순번은 그 창에서 버튼을 만든 순서다 (줄마다 생기는 버튼은 줄 수에 따라 달라질 수 있다).
+
+새 창을 만들면 `app/qt/ui_codes.py`의 `WINDOW_CODES`와 이 표에 함께 넣는다.
+
+| 번호 | 창 | 클래스 |
+| :--- | :--- | :--- |
+| 0A | 홈 | `HomePage` |
+| 0B | 프로젝트 화면 | `ProjectPage` |
+| 0C | 새 프로젝트 | `NewProjectDialog` |
+| 0D | 파일 넣기 | `AddFilesDialog` |
+| 0E | 카드 자리 직접 그리기 | `CardBoxesDialog` |
+| 0F | 영역 지정 | `RegionEditor` |
+| 0G | 뺄 쪽 | `ExcludePagesDialog` |
+| 0H | 설정 | `SettingsDialog` |
+| 0I | 로그인 | `LoginDialog` |
+| 0J | 릴리스 노트 | `ReleaseNotesDialog` |
+| 0K | 라이선스 | `LicenseDialog` |
+| 0Z | 알림·질문 | `QMessageBox` |
+| 1A | 글자 추출 | `ExtractDialog` |
+| 2A | 아이콘 정의 | `IconReviewDialog` |
+| 2B | 카드 보기 · 아이콘 자리 잡기 | `IconPlaceDialog` |
+| 2C | 아이콘 사전 | `IconDictionaryDialog` |
+| 3A | 원문 확인 | `SourceReviewDialog` |
+| 5A | 용어집 확정 | `GlossaryReviewDialog` |
+| 5B | 바뀐 용어 반영 | `TermChangesDialog` |
+| 6A | 번역 검수 | `TranslationReviewDialog` |
+| 8A | 한글 글꼴 고르기 | `FontPlanDialog` |
+| 8B | 글꼴 추가 | `AddFontDialog` |
+| 9A | 결과 보기 | `ResultViewer` |
+| 9B | 그룹 고르기 | `GroupPickDialog` |
+| 9C | 시험 기록 | `TestHistoryDialog` |
+| 9D | 두 시험 비교 | `TestCompareDialog` |

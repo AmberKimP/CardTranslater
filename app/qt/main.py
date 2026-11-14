@@ -236,8 +236,19 @@ class HomePage(QWidget):
                 f"(데이터 폴더의 휴지통(.trash)에 남습니다).\n게임 ‘{p['game']}’의 용어집·아이콘 사전·검수 엑셀은 그대로 둡니다.") \
                 != QMessageBox.StandardButton.Yes:
             return
+        self._when_eraser_idle(lambda: self._delete_project(p))
+
+    def _when_eraser_idle(self, fn):
+        """뒤에서 지우던 스레드가 완전히 끝난 뒤 fn() (지우는 중인 폴더를 옮기면 반쯤 남는다)."""
+        bg = self.win.project.bg
+        bg.stop()
+        if not bg.idle:
+            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 삭제합니다")
+        bg.when_idle(fn)
+
+    def _delete_project(self, p: dict):
         try:
-            dest = service.delete_project(p["dir"])
+            service.delete_project(p["dir"])
         except OSError as e:
             show_problem(self, "프로젝트를 삭제하지 못했습니다", str(e),
                          "이 프로젝트의 엑셀·PDF가 열려 있으면 닫고 다시 하세요.")
@@ -267,6 +278,9 @@ class HomePage(QWidget):
         if QMessageBox.question(self, "게임 삭제", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
+        self._when_eraser_idle(lambda: self._delete_game(game))
+
+    def _delete_game(self, game: str):
         try:
             service.delete_game(game, self.win.root, with_projects=True)
         except (OSError, FileNotFoundError) as e:
@@ -1027,6 +1041,9 @@ class MainWindow(QMainWindow):
             pass
 
     def show_home(self):
+        # 홈에서는 뒤에서 지우기를 멈춘다: 계속 돌면 게임·프로젝트 삭제가 지우는 중인 폴더를 옮기다 반쯤 남는다
+        self.project.bg.stop()
+        self.project.project_dir = None
         self.home.refresh()
         self.stack.setCurrentWidget(self.home)
 
@@ -1085,6 +1102,9 @@ def main(argv: list[str] | None = None) -> int:
     from app.qt import theme
 
     theme.apply(app)  # 앱 전체 모양 (둥근 칸·버튼 구분·여백)
+    from app.qt import ui_codes
+
+    ui_codes.install(app)  # 창 제목 앞 번호 [2B], Ctrl+D 버튼 코드 디버깅 모드
     ko = install_korean(app)  # 표준 버튼(취소·예·아니요)을 한국어로
     args = list(argv if argv is not None else sys.argv)
     if "--selftest" in args:  # exe 점검: 창을 띄우지 않고 결과를 JSON으로 쓴다

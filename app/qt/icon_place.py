@@ -141,7 +141,8 @@ class IconPlaceDialog(QDialog):
                         '<span style="color:#E67E22">■</span> 예상 위치(못 찾았을 때, 점선) &nbsp; '
                         '<span style="color:#D62828">■</span> 새로 잡은 자리')
         hint = hint_bar("아이콘을 마우스로 끌어 감싸세요 (테두리까지 조금 넉넉하게). 다시 끌면 새로 잡습니다.\n"
-                        "‘이 자리로 저장’을 누르면 그 자리로 그림을 다시 잘라 같은 모양끼리 다시 묶습니다.", "info")
+                        "‘이 자리로 저장’을 누르면 그 자리로 그림을 다시 잘라 같은 모양끼리 다시 묶습니다. "
+                        "한 상자에 아이콘이 둘이면 하나만 감싸 ‘둘로 나누기’.", "info")
         self.save_btn = QPushButton("이 자리로 저장")
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save)
@@ -154,6 +155,19 @@ class IconPlaceDialog(QDialog):
                                    "둘을 하나의 아이콘으로 보고 이 자리는 원문에서 뺍니다 (예: 문양 셋이 붙은 아이콘).")
         self.absorb_btn.clicked.connect(self._absorb)
         self.absorb_btn.hide()
+        self.overlap_btn = QPushButton("겹친 아이콘 흡수")  # 다른 [[?]] 자리가 이 아이콘 자리와 겹침: 같은 그림을 둘로 읽은 것
+        self.overlap_btn.setToolTip("이 아이콘 자리와 겹친 다른 아이콘([[?]])을 이 아이콘에 포함합니다.\n"
+                                    "같은 그림을 원문에서 두 번 읽은 경우: 겹친 자리는 원문에서 빠집니다.\n"
+                                    "새로 끌어 감쌌으면 그 자리로 저장한 뒤 흡수합니다.")
+        self.overlap_btn.clicked.connect(self._absorb_overlaps)
+        self.overlap_btn.hide()
+        self._overlaps: list[str] = []
+        self.split_btn = QPushButton("둘로 나누기")
+        self.split_btn.setToolTip("지금 자리(파랑) 안에 아이콘이 둘 있을 때: 그중 하나를 끌어 감싼 뒤 누르세요.\n"
+                                  "감싼 것과 나머지가 서로 다른 아이콘이 되고, 원문에 [[?]]가 하나 늘어납니다.")
+        self.split_btn.clicked.connect(self._split)
+        self.split_btn.setEnabled(False)
+        self._place: dict = {}
         self._run_host: str | None = None
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
@@ -167,6 +181,8 @@ class IconPlaceDialog(QDialog):
         btns = QHBoxLayout()
         btns.addWidget(self.status, 1)
         btns.addWidget(self.absorb_btn)
+        btns.addWidget(self.overlap_btn)
+        btns.addWidget(self.split_btn)
         btns.addWidget(self.not_icon_btn)
         btns.addWidget(self.save_btn)
         btns.addWidget(close)
@@ -209,6 +225,8 @@ class IconPlaceDialog(QDialog):
                   + (" · 위치 못 찾음" if m.get("guess") else ""), bool(m.get("guess")))
                  for m in p["marks"]]
         self.view.set_data(pm, p["box"], p["guess"], marks)
+        self._place = p
+        self._update_tools()
         if w.get("png"):
             self.crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
         else:
@@ -233,6 +251,22 @@ class IconPlaceDialog(QDialog):
 
     def _drawn(self):
         self.save_btn.setEnabled(self.view.new is not None)
+        self._update_tools()
+
+    def _update_tools(self):
+        """겹친 아이콘 흡수·둘로 나누기 버튼: 지금 자리(또는 새로 감싼 자리)를 보고 켠다."""
+        p = self._place
+        i = self.combo.currentIndex()
+        occ = self.where[i]["occ"] if 0 <= i < len(self.where) else ""
+        box = self.view.new or p.get("box")
+        self._overlaps = service.overlapping_icons(p.get("marks") or [], box, exclude=occ) if box else []
+        n = len(self._overlaps)
+        self.overlap_btn.setText(f"겹친 아이콘 {n}개 흡수" if n > 1 else "겹친 아이콘 흡수")
+        self.overlap_btn.setVisible(bool(n))
+        ui = getattr(QApplication.instance(), "_ui_codes", None)
+        if ui is not None:
+            ui.relabel(self.overlap_btn)  # Ctrl+D 디버깅 중이면 버튼 코드를 그대로
+        self.split_btn.setEnabled(bool(p.get("box")) and self.view.new is not None)
 
     def _save(self):
         box = self.view.new
@@ -270,7 +304,14 @@ class IconPlaceDialog(QDialog):
         rev = service.icon_review(self.project_dir) or {"groups": []}
         gg = next((x for x in rev["groups"] if x["group"] == r["group"]), {})
         # 여러 아이콘을 한 세트로 합쳤으면 그림이 바뀌었으므로 (예전 한 개짜리 제안은 맞지 않음) 다시 제안 받는다
-        if (merged and gg.get("count", 1) <= 1 and not r.get("dict")) or                 (r.get("new_group") and not r.get("dict") and not gg.get("suggest")):
+        again = (merged and gg.get("count", 1) <= 1 and not r.get("dict")) or \
+            (r.get("new_group") and not r.get("dict") and not gg.get("suggest"))
+        if merged:  # 세트로 합쳤으면 닫지 않는다: 합친 그림을 이 창에서 바로 보여 준다
+            if again:
+                self._suggest(r["group"], close=False)
+            else:
+                self.outcome = ("saved", self._refresh(w["occ"]) or r["group"])
+        elif again:
             self._suggest(r["group"])  # 제안을 받은 뒤 닫는다
         else:
             self.accept()  # 저장했으면 닫고 이름 정하기 표로 돌아간다
@@ -310,17 +351,85 @@ class IconPlaceDialog(QDialog):
         else:
             self.accept()
 
-    def _suggest(self, group: str):
-        """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다)."""
+    def _suggest(self, group: str, close: bool = True):
+        """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다).
+        close=False: 제안을 받은 뒤 창을 닫지 않고 바뀐 그림을 다시 보여 준다 (세트로 합침·나눔·흡수)."""
+        i = self.combo.currentIndex()
+        occ = self.where[i]["occ"] if 0 <= i < len(self.where) else None
+        after = self.accept if close else (lambda: self._refresh(occ))
         eng = service.get_settings().engine
-        if not service.engine_status().get(eng):  # 연결할 수 없으면 제안 없이 닫는다 (이름은 표에서 직접 적는다)
-            self.accept()
+        if not service.engine_status().get(eng):  # 연결할 수 없으면 제안 없이 (이름은 표에서 직접 적는다)
+            after()
             return
 
         def done(res):
             self.on_saved({"suggested": group, **(res or {})})  # 표를 다시 채워 제안을 넣는다 (적어 둔 값은 그대로)
-            self.accept()
+            after()
 
         job = worker.Job(service.suggest_icon_name, self.project_dir, group, engine=eng, with_progress=False)
-        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done, lambda _m: self.accept(),
+        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done, lambda _m: after(),
                                cancellable=False)
+
+    def _refresh(self, select_occ: str | None = None, extra: list[str] | None = None) -> str | None:
+        """자리 목록·그림을 다시 읽어 이 창에서 바로 보여 준다 (닫지 않음). extra: 새로 생긴 자리 id.
+        돌려줌: select_occ가 지금 들어 있는 묶음 (닫은 뒤 표가 고를 줄)."""
+        rev = service.icon_review(self.project_dir) or {"groups": []}
+        group = next((g["group"] for g in rev["groups"] if any(w["occ"] == select_occ for w in g.get("where", []))), None)
+        by_occ = {w["occ"]: w for g in rev["groups"] for w in g.get("where", [])}
+        ids = [w["occ"] for w in self.where] + [o for o in (extra or []) if o not in {w["occ"] for w in self.where}]
+        self.where = [dict(by_occ[o]) for o in ids if o in by_occ]
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        for w in self.where:
+            self.combo.addItem(self._item_text(w), w["occ"])
+        idx = next((k for k, w in enumerate(self.where) if w["occ"] == select_occ), 0)
+        self.combo.setCurrentIndex(idx)
+        self.combo.blockSignals(False)
+        if not self.where:  # 보여 줄 자리가 없음: 예전 그림·버튼을 남기지 않는다
+            self._place = {}
+            self.view.set_data(QPixmap(), None, None, [])
+            self._update_tools()
+            return group
+        self._load()
+        return group
+
+    def _absorb_overlaps(self):
+        """겹친 [[?]] 자리들을 지금 아이콘에 포함한다 (같은 그림을 두 번 읽음: 그 자리들은 원문에서 빠진다)."""
+        i = self.combo.currentIndex()
+        if i < 0 or not self._overlaps:
+            return
+        w = self.where[i]
+        if self.view.new is not None:  # 새로 감쌌으면 그 자리로 먼저 저장
+            try:
+                service.set_icon_box(self.project_dir, w["occ"], self.view.new)
+            except ValueError as e:
+                show_problem(self, "자리를 저장하지 못했습니다", str(e), "아이콘을 조금 더 크게 감싸 주세요.")
+                return
+            except Exception as e:  # noqa: BLE001
+                show_error(self, "자리를 저장하지 못했습니다", e)
+                return
+        try:
+            service.absorb_icon_run(self.project_dir, w["occ"], list(self._overlaps))
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "아이콘을 흡수하지 못했습니다", e)
+            return
+        self.on_saved({})
+        self.outcome = ("saved", self._refresh(w["occ"]))
+
+    def _split(self):
+        """지금 자리 상자 안의 아이콘 둘을 나눈다: 새로 감싼 것 하나 + 나머지."""
+        i = self.combo.currentIndex()
+        if i < 0 or self.view.new is None:
+            return
+        w = self.where[i]
+        try:
+            r = service.split_icon_box(self.project_dir, w["occ"], self.view.new)
+        except ValueError as e:
+            show_problem(self, "둘로 나누지 못했습니다", str(e), "지금 자리(파랑) 안에서 아이콘 하나만 감싸 주세요.")
+            return
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "둘로 나누지 못했습니다", e)
+            return
+        self.outcome = ("saved", r["groups"][0])
+        self.on_saved({})
+        self._refresh(w["occ"], extra=[r["second"]])

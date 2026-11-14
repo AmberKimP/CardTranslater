@@ -824,10 +824,11 @@ class AddFilesDialog(QDialog):
                 if ri.file_dir:
                     warnings.insert(0, f"이미지 {len(imgs)}장 → 카드 {ri.pages}장 ({ri.file_dir.name})")
         except (FileExistsError, KeyError, ValueError, OSError, RuntimeError) as e:  # pymupdf 오류는 RuntimeError 계열
-            if not added:
+            group_made = self.r_new.isChecked() and not new  # 새 그룹은 앞 파일에서 이미 만들어졌다 (다시 만들 수 없음)
+            if not added and not group_made:
                 show_problem(self, "파일을 넣지 못했습니다", str(e).strip("'"))
                 return
-            # 앞 파일은 이미 들어갔다: 창을 닫아 목록을 새로 고치고, 못 넣은 것을 알린다
+            # 앞 파일이 들어갔거나 새 그룹이 만들어졌다: 창을 닫아 목록을 새로 고치고, 못 넣은 것을 알린다
             skipped.append(f"나머지 파일을 넣지 못했습니다: {str(e).strip(chr(39))}")
         self.result_info = {"group": group, "added": added, "skipped": skipped, "has_regions": has_regions,
                             "warnings": warnings}

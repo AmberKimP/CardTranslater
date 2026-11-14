@@ -456,7 +456,7 @@ class RegionEditor(QDialog):
         self.view.align_nudge.connect(self.nudge_alignment)
         QShortcut(QKeySequence.StandardKey.Save, self, activated=self.save)
         for seq, fn in (("Ctrl+C", self.copy_regions), ("Ctrl+V", self.paste_regions),
-                        ("Ctrl+D", self.duplicate_selected), ("Ctrl+Shift+V", self.copy_previous_card),
+                        ("Ctrl+Shift+D", self.duplicate_selected), ("Ctrl+Shift+V", self.copy_previous_card),
                         ("F1", lambda: self.help_btn.toggle())):
             sc = QShortcut(QKeySequence(seq), self, activated=fn)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -706,7 +706,7 @@ class RegionEditor(QDialog):
         sl.addStretch(1)
         help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
                      "고른 영역: 화살표 조금씩 옮기기(Shift: 크게) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
-                     "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+D: 복제\n"
+                     "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+Shift+D: 복제 (Ctrl+D는 앱 전체 디버깅 모드)\n"
                      "Ctrl+화살표: 이 카드의 정렬만 옮기기 (모든 상자 함께, Shift: 크게) — 자동 정렬한 공통 영역 그룹\n"
                      "쪽: ←/→(영역을 안 골랐을 때) · PageUp/PageDown · Home/End 처음·끝 · 마우스 휠\n"
                      "F: 화면에 맞춤 · ＋/－ 또는 Ctrl+휠: 확대·축소 · 휠 누른 채 끌기 또는 Space+끌기: 옮기기 · Ctrl+Shift+V: 이전 카드 영역 · "

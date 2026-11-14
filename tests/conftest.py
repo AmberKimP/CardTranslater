@@ -1,6 +1,41 @@
 """테스트가 실제 Claude Code·API를 부르지 않게 막는다 (비용·요금제 사용량 방지)."""
 
+import hashlib
+import os
+from pathlib import Path
+
 import pytest
+
+# 이 PC 사용자의 실제 파일: 테스트가 끝난 뒤 바뀌었으면 실패시킨다 (예전에 last_project가 pytest 임시 폴더로 바뀌었음)
+_REAL_USER_FILES = [Path(os.environ.get("APPDATA") or Path.home() / ".cardtranslater") / "CardTranslater" / n
+                    for n in ("settings.json", "api_key.bin")]
+
+
+def _digest(p: Path) -> str | None:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def pytest_sessionstart(session):
+    session.config._real_user_files = {p: _digest(p) for p in _REAL_USER_FILES}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    before = getattr(session.config, "_real_user_files", {})
+    changed = [str(p) for p, d in before.items() if _digest(p) != d]
+    if changed:
+        session.exitstatus = 1
+        print("\n[conftest] 테스트가 실제 사용자 파일을 바꿨습니다: " + ", ".join(changed))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_files(monkeypatch, tmp_path_factory):
+    """설정(settings.json)·API 키·로그를 임시 폴더로: 테스트가 사용자의 실제 설정을 바꾸지 않게."""
+    d = tmp_path_factory.mktemp("userfiles")
+    monkeypatch.setenv("CARDTRANSLATER_SETTINGS", str(d / "settings.json"))
+    monkeypatch.setenv("CARDTRANSLATER_LOG_DIR", str(d / "logs"))
 
 
 @pytest.fixture(autouse=True)

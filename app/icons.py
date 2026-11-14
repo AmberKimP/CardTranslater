@@ -27,6 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
+from app import workspace
+
 PLACEHOLDER = "[[?]]"
 PLACEHOLDER_RE = re.compile(r"\[\[\?\]\]")
 TOKEN_RE = re.compile(r"\[\[([^\[\]]*)\]\]")
@@ -1188,7 +1190,7 @@ def apply_region(file_dir: Path, page: int, region: str, mapping: dict[int, str]
             r["icon_number_note"] = "아이콘 옆·위 숫자를 아이콘에 넣고 원문에서 뺌"
         if note:
             r["icon_note"] = note
-        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
         if got is None:
             got = src
     return got
@@ -1262,9 +1264,7 @@ def reset_icon(info, name: str) -> int:
                     if f.parent.name == "pages":
                         n += k
             if changed:
-                tmp = f.with_suffix(".tmp")
-                tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-                tmp.replace(f)
+                workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
     d = load_dictionary(info)
     e = d["icons"].pop(name, None)
     save_dictionary(info, d)
@@ -1543,12 +1543,15 @@ def place_info(info, work: Path, occ_id: str) -> dict:
             elif x is not None and x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
                 continue
             elif box:
-                out["marks"].append({"box": box, "group": x.group, "occ": x.id})
+                out["marks"].append({"box": box, "group": x.group, "occ": x.id,
+                                     **({"not_icon": True} if res.groups.get(x.group, {}).get("not_icon") else {})})
             else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
                 g = estimate(img, text, ti)
                 if g is not None:
                     out["marks"].append({"box": list(g), "group": x.group if x is not None else "",
-                                         "occ": x.id if x is not None else "", "guess": True})
+                                         "occ": x.id if x is not None else "", "guess": True,
+                                         **({"not_icon": True} if x is not None
+                                            and res.groups.get(x.group, {}).get("not_icon") else {})})
         else:
             box = locate(img, text, ti)[0]
             if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
@@ -1817,6 +1820,105 @@ def absorb_into(info, work: Path, host_id: str, occ_ids: list[str]) -> list[str]
         res.groups[g]["absorbed"] = host_id
     _save_scan(work, res)
     return groups
+
+
+OVERLAP_MIN = 0.4  # 겹친 넓이가 작은 쪽 상자의 이만큼이면 ‘겹친 아이콘’ (흡수 후보)
+
+
+def _overlap_ratio(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return ix * iy / small if small > 0 else 0.0
+
+
+def overlapping_occ(marks: list[dict], box, exclude: str = "") -> list[str]:
+    """카드 보기 표시(place_info의 marks) 중 box와 겹친 다른 [[?]] 자리 id (이미 이름이 있는 [[이름]]은 빼고).
+    한 아이콘을 두 [[?]]로 읽어 두 자리가 같은 그림을 가리키면, 한쪽에 흡수시켜 다른 쪽을 원문에서 뺀다."""
+    if not box:
+        return []
+    return [m["occ"] for m in marks
+            if m.get("occ") and m["occ"] != exclude and m.get("box") and not m.get("not_icon") and not m.get("guess")
+            and _overlap_ratio(box, m["box"]) >= OVERLAP_MIN]
+
+
+def split_icon(info, work: Path, occ_id: str, part_box) -> dict:
+    """한 자리로 잡힌 상자 안에 아이콘이 둘이면 둘로 나눈다. part_box: 사람이 감싼 그중 하나.
+    지금 상자에서 part_box를 뺀 나머지가 다른 하나다 (나란히: 가로로, 위아래: 세로로 가른다).
+    원문에는 그 [[?]] 바로 뒤에 [[?]]를 하나 더 넣고 (읽는 순서: 왼쪽·위가 먼저), 새 자리를 만든다.
+    돌려줌 {"first": 앞 자리 id, "second": 새 자리 id, "groups": [앞 묶음, 뒤 묶음]}. 나눌 수 없으면 ValueError."""
+    from app.extract import load_extracted
+
+    work = Path(work)
+    res = load_scan(work)
+    o = next((x for x in res.occurrences if x.id == occ_id), None)
+    if o is None:
+        raise ValueError("그 아이콘 자리를 찾지 못했습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
+    if not o.box:
+        raise ValueError("이 아이콘은 아직 자리가 없습니다: 먼저 아이콘 둘을 함께 감싸 ‘이 자리로 저장’을 하세요")
+    bx0, by0, bx1, by1 = o.box
+    px0, py0, px1, py1 = (float(v) for v in part_box)
+    # 지금 상자 밖으로 끈 부분은 잘라 낸다 (나중에 그림 끝에서 잘려 한쪽이 없어지지 않게: 원문을 바꾸기 전에 확인)
+    px0, px1 = sorted((min(max(px0, bx0), bx1), min(max(px1, bx0), bx1)))
+    py0, py1 = sorted((min(max(py0, by0), by1), min(max(py1, by0), by1)))
+    pcx, pcy = (px0 + px1) / 2, (py0 + py1) / 2
+    bcx, bcy = (bx0 + bx1) / 2, (by0 + by1) / 2
+    # 감싼 상자가 지금 상자의 폭을 덜 차지하면 좌우로, 높이를 덜 차지하면 위아래로 가른다
+    horizontal = (px1 - px0) / max(1, bx1 - bx0) <= (py1 - py0) / max(1, by1 - by0)
+    if horizontal:
+        part_first = pcx < bcx
+        cut = px1 if part_first else px0
+        a, b = ([bx0, by0, cut, by1], [cut, by0, bx1, by1])
+    else:
+        part_first = pcy < bcy
+        cut = py1 if part_first else py0
+        a, b = ([bx0, by0, bx1, cut], [bx0, cut, bx1, by1])
+    if part_first:
+        a = [px0, py0, px1, py1]
+    else:
+        b = [px0, py0, px1, py1]
+    if min(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]) < 4:
+        raise ValueError("나눈 한쪽이 너무 작습니다: 아이콘 하나만 감싸 주세요 (지금 상자 안에서)")
+    # 원문: 그 [[?]] 뒤에 [[?]] 하나 더
+    fd = _occ_dir(info, o.file)
+    src = (load_extracted(fd).get(o.page, {}).get(o.region) or {}).get("source")
+    if not isinstance(src, str):
+        raise ValueError("이 칸의 원문을 찾지 못했습니다")
+    ph = [t for t in TOKEN_RE.finditer(src) if t.group(1) == "?"]
+    if o.index >= len(ph):
+        raise ValueError("원문의 [[?]] 자리가 바뀌었습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
+    t = ph[o.index]
+    tpos = [m.start() for m in TOKEN_RE.finditer(src)].index(t.start())  # 모든 [[…]] 중 몇째 (icon_numbers 순번)
+    new_src = src[:t.end()] + "[[?]]" + src[t.end():]
+    for f in _extract_files(fd, o.page):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = (rec.get("regions") or {}).get(o.region)
+        if r is not None and r.get("source") == src:
+            r["source"] = new_src
+            r["icon_note"] = "카드 보기에서 아이콘 하나를 둘로 나눔"
+            for e in r.get("icon_numbers") or []:  # 아이콘에 넣은 숫자의 자리: 뒤 아이콘들은 하나씩 밀린다
+                if isinstance(e, dict) and isinstance(e.get("index"), int) and e["index"] > tpos:
+                    e["index"] += 1
+            workspace._write(f, rec)
+    # 같은 칸의 뒤 자리들은 순번이 하나씩 밀린다
+    same = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)]
+    for x in same:
+        if x.index > o.index:
+            x.index += 1
+        if x.line == o.line and x.order > o.order:
+            x.order += 1
+        x.context = new_src.replace("\n", " / ")
+    nums = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
+    new_id = f"o{max(nums, default=0) + 1:03d}"
+    g = f"위치 못 찾음 {new_id}"
+    res.occurrences.insert(res.occurrences.index(o) + 1, Occurrence(
+        new_id, o.file, o.file_key, o.page, o.region, o.index + 1, new_src.replace("\n", " / "),
+        group=g, line=o.line, order=o.order + 1, reason="카드 보기에서 나눈 자리"))
+    res.groups[g] = {"rep": "", "count": 1}
+    _save_scan(work, res)
+    r1 = set_manual_box(info, work, o.id, a)  # 두 자리 모두 그 상자로 다시 잘라 같은 모양끼리 다시 묶는다
+    r2 = set_manual_box(info, work, new_id, b)
+    return {"first": o.id, "second": new_id, "groups": [r1["group"], r2["group"]]}
 
 
 def resolve_suggested_name(info, res: "ScanResult", group: str) -> str:
@@ -2176,4 +2278,4 @@ def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -
         note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
         r["note"] = note if not r.get("note") or ICON_CHANGED_NOTE in r["note"] else f"{r['note']} / {note}"
         r.pop("checked_by", None)
-        f.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)

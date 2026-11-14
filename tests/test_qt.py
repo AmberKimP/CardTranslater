@@ -3620,7 +3620,7 @@ def test_icon_place_dialog_save_offers_to_absorb_adjacent(qapp, tmp_path, monkey
     place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg)
     asked = []
     monkeypatch.setattr("app.qt.icon_place.ask_choice", lambda *a, **k: asked.append(a[1]) or 0)
-    monkeypatch.setattr(place, "_suggest", lambda _g: place.accept())  # 실제 Claude 이름 제안은 부르지 않는다
+    monkeypatch.setattr(place, "_suggest", lambda _g, close=True: place.accept())  # 실제 Claude 이름 제안은 부르지 않는다
     place.view.new = list(service.icon_place(info.dir, host)["box"])
     place._save()
     assert asked == ["붙어 있는 아이콘"]

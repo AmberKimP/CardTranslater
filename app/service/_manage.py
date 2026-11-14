@@ -417,16 +417,29 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     fd = Path(r["added"][0])
     keep = fd / "source" / "images"
     keep.mkdir(parents=True, exist_ok=True)
-    for f in imgs:  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
-        shutil.copyfile(f, keep / f.name)
-    if origin_pdf:  # source/ 바로 아래에는 카드 PDF 하나만 둔다 (원래 PDF는 images/에)
-        shutil.copyfile(origin_pdf, keep / Path(origin_pdf).name)
+    # 사본 이름: 다른 폴더의 같은 이름(front/1.png, back/1.png)이 서로 덮지 않게 겹치면 _2, _3을 붙인다
+    names: list[str] = []
+    for f in imgs:
+        nm, k = f.name, 2
+        while nm.lower() in {x.lower() for x in names}:
+            nm, k = f"{f.stem}_{k}{f.suffix}", k + 1
+        names.append(nm)
+    pdf_name = None
+    if origin_pdf:
+        pdf_name, k = Path(origin_pdf).name, 2
+        while pdf_name.lower() in {x.lower() for x in names}:
+            pdf_name, k = f"{Path(origin_pdf).stem}_{k}{Path(origin_pdf).suffix}", k + 1
+    # 설정을 먼저 쓴다: 사본 복사가 중간에 실패해도 나중에 원래 배열로 다시 합칠 정보는 남는다
     settings = workspace.file_settings(fd)
-    settings["from_images"] = {"files": [f.name for f in imgs], "cols": cols, "rows": rows,
+    settings["from_images"] = {"files": names, "cols": cols, "rows": rows,
                                **({"manual": True} if boxes is not None else {}),
-                               **({"pdf": Path(origin_pdf).name} if origin_pdf else {}),
+                               **({"pdf": pdf_name} if pdf_name else {}),
                                "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
+    for f, nm in zip(imgs, names):  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
+        shutil.copyfile(f, keep / nm)
+    if origin_pdf:  # source/ 바로 아래에는 카드 PDF 하나만 둔다 (원래 PDF는 images/에)
+        shutil.copyfile(origin_pdf, keep / pdf_name)
     if fd is not None:
         _extract.back_to_extracting(workspace.load_project_info(project_dir))  # 새 카드: add_files와 같은 이유
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])
