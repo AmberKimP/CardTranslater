@@ -36,8 +36,14 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
         for reg in proj.template.regions_for(pno):
             r = (ext.get(pno) or {}).get(reg.name)
             readings = [row(x) for x in model_readings(r or {})]
-            # 다시 읽은 결과는 마지막 것만 보여 준다 (읽을 때마다 표에 줄이 쌓이지 않게. 기록은 파일에 모두 남는다)
-            rereads = [row(x, reread=True) for x in cell_rereads(r or {})][-1:]
+            # 다시 읽은 결과는 마지막 것만 보여 준다 (읽을 때마다 표에 줄이 쌓이지 않게. 기록은 파일에 모두 남는다).
+            # 마지막이 정밀 읽기(Opus)가 아니면 가장 최근 정밀 읽기도 함께 (편집 칸 기본값·비교 기준이 그것이다)
+            all_re = cell_rereads(r or {})
+            keep = all_re[-1:]
+            if keep and "opus" not in (keep[0].get("model") or "").lower():
+                opus = [x for x in all_re[:-1] if "opus" in (x.get("model") or "").lower()]
+                keep = opus[-1:] + keep
+            rereads = [row(x, reread=True) for x in keep]
             if rereads and not readings and r is not None and r.get("source") is not None:
                 first = "지금 원문" if r.get("edited_by") else (r.get("read_by") or "처음 읽은 결과")
                 readings = [row({"model": first, "source": r["source"]}, original=True)]
@@ -78,13 +84,11 @@ def icon_reread_pending(file_dirs) -> list[dict]:
 def skip_icon_reread(cells: list[dict]) -> None:
     """원문 확인을 열 때 먼저 다시 읽기를 이 칸들은 하지 않는다 (취소했거나 그 칸만 읽지 못함).
     ‘확인 필요’·icon_changed는 그대로라 원문 확인에서 보이고 ‘이 칸 다시 읽기’로 읽을 수 있다."""
-    from app.extract import page_file
+    from app.icons import _extract_files
 
     for c in cells:
         fd, page, region = Path(c["file_dir"]), c["page"], c["region"]
-        for f in (page_file(fd / "extract", page), fd / "extract" / f"page-{page:03d}.json"):
-            if not f.exists():
-                continue
+        for f in _extract_files(fd, page):
             rec = json.loads(f.read_text(encoding="utf-8"))
             cell = (rec.get("regions") or {}).get(region)
             if cell is None or "icon_reread" not in cell:
@@ -185,6 +189,9 @@ def reread_cells(cells: list[dict], *, model: str = "opus", engine: str | None =
             skip_icon_reread([c])  # 다음에 원문 확인을 열 때 또 읽지(돈을 쓰지) 않는다 — ‘이 칸 다시 읽기’로 읽는다
         elif r.state in ("paused", "blocked"):
             out.update(state=r.state, reason=r.reason, retry_after=r.retry_after)
+            # 한도·로그인: 남은 칸은 다음에 원문 확인을 열 때 또 자동으로 읽지 않는다 (또 한도에 걸려 못 넘어감).
+            # ‘확인 필요’·icon_changed는 남아 원문 확인에서 ‘이 칸 다시 읽기’로 읽는다
+            skip_icon_reread(cells[i:])
             break
         else:
             out["failed"].append((f"{c['page']}쪽 {c['region']}", r.reason))

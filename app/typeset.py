@@ -370,6 +370,10 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
             cy = baseline - (ht - hb) / 2 * size
             p = m.icon_path(a.text)
             if p and p.exists():
+                if fill_shape is not None and fill_shape.text_cont:
+                    # 외곽선 줄: 아이콘 왼쪽 글자 채움을 먼저 그린다 (그리는 순서 = 읽는 순서, 가짜 굵게 획이 아이콘을 덮지 않게)
+                    fill_shape.commit()
+                    fill_shape = None
                 r_icon = pymupdf.Rect(x, cy - h / 2, x + w, cy + h / 2)
                 if rot:
                     r_icon = _rotate_rect(r_icon, style.pivot)

@@ -102,13 +102,13 @@ def test_vertical_placeholders_on_same_box_keep_first_box(tmp_path, monkeypatch)
     assert not occ[1].box and not occ[1].set_of  # 다른 줄은 자동으로 세트가 되지 않는다
 
 
-# ---------------------------------------------------------------- 4. 아이콘 아님·합친 자리는 ‘위치 못 찾음’으로 보이지 않는다
+# ---------------------------------------------------------------- 4. 아이콘 아님·합친 자리는 ‘위치 못 찾음’이 아니라 정한 자리로 보인다
 def test_place_info_skips_not_icon_partner_guess(tmp_path):
     info, fd = _project(tmp_path, "skip", pages=1)
     host, extra = _add_run_partner(info, fd)
     service.set_icon_not_icon(info.dir, extra)
     p = service.icon_place(info.dir, host)
-    assert not [m for m in p["marks"] if m.get("guess")]
+    assert not [m for m in p["marks"] if m.get("guess") and not m.get("settled")]
 
 
 def test_place_info_skips_absorbed_partner_guess(tmp_path):
@@ -116,7 +116,7 @@ def test_place_info_skips_absorbed_partner_guess(tmp_path):
     host, extra = _add_run_partner(info, fd)
     service.absorb_icon_run(info.dir, host, [extra])
     p = service.icon_place(info.dir, host)
-    assert not [m for m in p["marks"] if m.get("guess")]
+    assert not [m for m in p["marks"] if m.get("guess") and not m.get("settled")]
 
 
 # ---------------------------------------------------------------- 6·9. 외곽선: 줄마다 스트림 하나, q/Q는 감싸지 않는다
@@ -176,17 +176,18 @@ def test_region_edge_just_outside_rect_resizes_when_zoomed(qapp):
     sc.setSceneRect(sc.page_rect)
     v = QGraphicsView(sc)
     v.resize(800, 600)
-    v.scale(4, 4)
+    v.scale(2, 2)  # 고른 영역은 굵은 테두리(3)가 상자 밖 1.5까지 잡히므로, 그보다 넓은 띠가 생기는 배율
     it = RegionItem(QRectF(50, 20, 40, 30), {"name": "본문", "kind": "text"})
     sc.addItem(it)
-    sc.add_kind = "text"  # 그리기 모드여도 새 영역을 그리지 않고 가장자리를 잡는다
+    sc.add_kind = "text"  # 그리기 모드여도 고른 영역은 새 영역을 그리지 않고 가장자리를 잡는다
+    it.setSelected(True)
     v.show()
     qapp.processEvents()
     v.centerOn(it)
     qapp.processEvents()
-    start = v.mapFromScene(QPointF(90, 35)) + type(v.mapFromScene(QPointF(0, 0)))(4, 0)  # 오른쪽 변 바로 밖 4px
+    start = v.mapFromScene(QPointF(90, 35)) + type(v.mapFromScene(QPointF(0, 0)))(5, 0)  # 오른쪽 변 바로 밖 5px
     assert not it.contains(it.mapFromScene(v.mapToScene(start)))
-    assert sc.region_at(v.mapToScene(start)) is it
+    assert sc.edge_outside(v.mapToScene(start)) is it
     end = start + type(start)(40, 0)
     QTest.mousePress(v.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
     QTest.mouseMove(v.viewport(), end)

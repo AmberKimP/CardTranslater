@@ -78,8 +78,10 @@ class IconPlaceView(QWidget):
                 p.setPen(QColor("white"))
                 p.drawText(QRectF(r.left(), ty, tw, th), Qt.AlignmentFlag.AlignCenter, label)
 
-        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가])
-            if rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
+        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가[, 아이콘 아님·합침으로 정했나]])
+            if len(rest) > 1 and rest[1]:  # 아이콘 아님·옆에 합친 자리: 정해진 것이라 회색 점선 (어디였는지만)
+                frame(b, "#8A8A8A", label, dash=True, width=1)
+            elif rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
                 frame(b, "#9A6A00", label, dash=True)
             else:
                 frame(b, "#2E8B57", label)
@@ -221,8 +223,10 @@ class IconPlaceDialog(QDialog):
         QApplication.restoreOverrideCursor()
         pm = QPixmap()
         pm.loadFromData(p["png"], "PNG")
+        settled = {"not_icon": " · 아이콘 아님", "absorbed": " · 옆 아이콘에 합침"}
         marks = [(m["box"], (f"[[{m['name']}]]" if m.get("name") else self.row_label(m.get("group", "")))
-                  + (" · 위치 못 찾음" if m.get("guess") else ""), bool(m.get("guess")))
+                  + (settled.get(m.get("settled"), "") or (" · 위치 못 찾음" if m.get("guess") else "")),
+                  bool(m.get("guess")), bool(m.get("settled")))
                  for m in p["marks"]]
         self.view.set_data(pm, p["box"], p["guess"], marks)
         self._place = p

@@ -103,14 +103,16 @@ class RegionItem(QGraphicsRectItem):
             e += "r"
         return e
 
+    def cursor_at(self, p: QPointF) -> Qt.CursorShape:
+        """p(이 영역 좌표)에서 누르면 할 일의 커서: 가장자리면 크기 조절 방향, 아니면 옮기기."""
+        return {"t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
+                "l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
+                "tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
+                "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor}.get(
+            self._edges(p), Qt.CursorShape.SizeAllCursor)
+
     def hoverMoveEvent(self, ev):
-        e = self._edges(ev.pos())
-        cur = {"t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
-               "l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
-               "tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
-               "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor}.get(
-            e, Qt.CursorShape.SizeAllCursor)
-        self.setCursor(cur)
+        self.setCursor(self.cursor_at(ev.pos()))
         super().hoverMoveEvent(ev)
 
     def edge_tolerance(self) -> float:
@@ -197,8 +199,9 @@ class PageScene(QGraphicsScene):
         self.item_class = RegionItem  # 새로 그릴 상자의 종류 (카드 자리 그리기 창은 CardBox)
         self._new: RegionItem | None = None
         self._start = QPointF()
+        self._edge_cursor = False  # 상자 바로 밖 가장자리에 크기 조절 커서를 보이는 중
 
-    def region_at(self, pos: QPointF) -> "RegionItem | None":
+    def region_at(self, pos: QPointF, outside: bool = True) -> "RegionItem | None":
         """그 자리의 맨 위 영역 (상자 또는 이름표를 누름). items()는 위(z가 큰 것)부터 준다.
         쪽 그림(QGraphicsPixmapItem)에 parentItem()을 부르지 않는다: PySide6 6.11~6.12에서 그 호출이 힙을 깨뜨려
         창을 닫거나 앱을 끝낼 때 죽었다 (0xC0000374·0xC0000005). 우리 영역만 골라 본다."""
@@ -207,14 +210,26 @@ class PageScene(QGraphicsScene):
             lab = it.label
             if it.sceneBoundingRect().contains(pos) or (lab.isVisible() and lab.sceneBoundingRect().contains(pos)):
                 return it
+        if not outside:
+            return None
         for it in regs:  # 어느 영역 안도 아니면: 가장자리를 잡을 수 있는 거리(화면 EDGE px)만큼 상자 밖도 그 영역으로 본다
             tol = it.edge_tolerance()
             if it.rect().adjusted(-tol, -tol, tol, tol).contains(it.mapFromScene(pos)):
                 return it
         return None
 
+    def edge_outside(self, pos: QPointF) -> "RegionItem | None":
+        """상자 바로 밖 가장자리(화면 EDGE px 안)여서 누르면 크기를 바꿀 영역. 그리기 모드에서는 지금 고른 영역만:
+        붙어 있는 다른 영역 바로 옆에서 새 영역을 그리려는 누름이 그 영역 크기 조절로 바뀌지 않게."""
+        if self.region_at(pos, outside=False) is not None:
+            return None
+        it = self.region_at(pos)
+        if it is not None and self.add_kind and not it.isSelected():
+            return None
+        return it
+
     def mousePressEvent(self, ev):
-        target = self.region_at(ev.scenePos())
+        target = self.region_at(ev.scenePos(), outside=False) or self.edge_outside(ev.scenePos())
         if target is not None and ev.button() == Qt.MouseButton.LeftButton:
             p = target.mapFromScene(ev.scenePos())
             lab = target.label
@@ -248,7 +263,23 @@ class PageScene(QGraphicsScene):
             self._new.set_scene_rect(QRectF(self._start, ev.scenePos()))
             ev.accept()
             return
+        if ev.buttons() == Qt.MouseButton.NoButton:
+            self._update_edge_cursor(ev.scenePos())
         super().mouseMoveEvent(ev)
+
+    def _update_edge_cursor(self, pos: QPointF) -> None:
+        """상자 바로 밖 가장자리에서도 크기 조절 커서를 보인다 (영역의 hover는 상자 안에서만 온다)."""
+        views = self.views()
+        if not views or getattr(views[0], "_space", False):  # 스페이스로 화면 옮기는 중: 손 커서 그대로
+            return
+        vp = views[0].viewport()
+        it = self.edge_outside(pos)
+        if it is not None:
+            vp.setCursor(it.cursor_at(it.mapFromScene(pos)))
+            self._edge_cursor = True
+        elif self._edge_cursor:
+            vp.setCursor(Qt.CursorShape.ArrowCursor)
+            self._edge_cursor = False
 
     def mouseReleaseEvent(self, ev):
         if self._new is not None:

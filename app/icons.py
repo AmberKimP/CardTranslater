@@ -1382,11 +1382,14 @@ def scan(info, work: Path) -> ScanResult:
                 host_k: dict[tuple, int] = {}  # 그 아이콘의 [[?]] 순번 (같은 줄인지 볼 때)
                 set_n: dict[tuple, int] = {}  # 그 자리에 들어간 아이콘 수
                 auto_map, auto_strip, left = {}, {}, []
+                occ_of: dict[int, Occurrence] = {}
+                contested: set[int] = set()  # 다른 줄의 [[?]]도 같은 자리로 잡힌 첫 자리 (그 자리가 누구 것인지 모른다)
                 for k, ti in enumerate(ph):
                     n += 1
                     oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
                                     text.replace("\n", " / "))
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
+                    occ_of[k] = oc
                     box, why = located[k]
                     if k in clash:
                         # 글자를 사이에 둔 다른 [[?]]와 같은 자리로 잡힘: 어느 쪽이 맞는지 모른다. 그대로 두면 서로 다른 아이콘이
@@ -1407,6 +1410,7 @@ def scan(info, work: Path) -> ScanResult:
                         # 앞 아이콘과 같은 자리로 잡혔는데 세트 모양이 아님(또는 세트가 끝남): 찾기 실수로 보고 직접 잡게 한다
                         # (같은 그림을 잘라 두면 앞 아이콘과 한 묶음이 되어 같은 이름이 두 번 들어간다)
                         set_n[key] = 0
+                        contested.add(host_k[key])
                         box, why = None, "앞 아이콘과 같은 자리로 잡혀 위치를 못 찾음"
                     if box is None:
                         oc.reason = why
@@ -1437,6 +1441,21 @@ def scan(info, work: Path) -> ScanResult:
                         res.auto[oc.match] = res.auto.get(oc.match, 0) + 1
                     else:
                         left.append(oc)
+                for hk in sorted(contested & auto_map.keys()):
+                    # 첫 자리는 찾은 그대로 보여 주되 사전 이름을 확인 없이 넣지 않는다 (그 상자가 아랫자리 아이콘일 수 있다):
+                    # 이름은 ② 검토에 제안만 한다
+                    name = auto_map.pop(hk)
+                    auto_strip.pop(hk, None)
+                    res.auto[name] -= 1
+                    if not res.auto[name]:
+                        del res.auto[name]
+                    oc = occ_of[hk]
+                    oc.match, oc.hint = "", name
+                    for o in left:
+                        if o.set_of == oc.id:
+                            o.set_name = ""
+                    left.append(oc)
+                left.sort(key=lambda o: o.index)  # 아직 그 칸의 [[?]] 순번 k (아래에서 자동으로 바꾼 것을 뺀 순서로 바뀜)
                 if auto_map:  # 사전과 모양·숫자가 같은 것: 바로 바꾸고 그 숫자는 원문에서 뺀다
                     now = apply_region(fd, pno, rname, auto_map, auto_strip,
                                        note="아이콘 사전과 모양이 같아 자동으로 바꿈")
@@ -1552,12 +1571,14 @@ def place_info(info, work: Path, occ_id: str) -> dict:
                                      **({"not_icon": True} if res.groups.get(x.group, {}).get("not_icon") else {})})
             else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
                 gi = res.groups.get(x.group, {}) if x is not None else {}
-                if gi.get("not_icon") or gi.get("absorbed"):  # 아이콘 아님·옆 아이콘에 합친 자리: 더 찾을 것이 없다
-                    continue
+                # 아이콘 아님·옆 아이콘에 합친 자리: 더 찾을 것은 없지만 어디였는지는 보여 준다 (확인·되돌리기).
+                # 화면은 ‘위치 못 찾음’(주황)과 다르게 회색으로 그린다
+                settled = "absorbed" if gi.get("absorbed") else "not_icon" if gi.get("not_icon") else ""
                 g = estimate(img, text, ti)
                 if g is not None:
                     out["marks"].append({"box": list(g), "group": x.group if x is not None else "",
-                                         "occ": x.id if x is not None else "", "guess": True})
+                                         "occ": x.id if x is not None else "", "guess": True,
+                                         **({"settled": settled} if settled else {})})
         else:
             box = locate(img, text, ti)[0]
             if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
@@ -1959,14 +1980,22 @@ def resolve_suggested_name(info, res: "ScanResult", group: str) -> str:
                 return "same_row"  # 다른 줄과 같은 그림: 같은 이름 그대로 (확정할 때 한 아이콘이 된다)
     if name not in taken:
         return ""
-    # coin_2 -> coin_3 처럼 이미 있는 이름의 번호만 이어 간다. dice_6처럼 숫자에 뜻이 있는 이름은 떼지 않는다 (dice_6_2)
-    stem = re.sub(r"_\d+$", "", name)
-    base = stem if stem and stem != name and stem in taken else name
+    gi["suggest"] = free_name(name, taken)  # 그림이 다른 아이콘: 다른 이름
+    return "renamed"
+
+
+def free_name(name: str, taken: set) -> str:
+    """name이 이미 있을 때 쓸 다른 이름.
+    coin·coin_2가 있으면 coin_2 -> coin_3 처럼 이미 있는 번호만 이어 간다 (coin, coin_2, …, coin_N이 빠짐없이 있을 때만).
+    그 밖에는 숫자에 뜻이 있는 이름으로 보고 떼지 않는다: dice·dice_6만 있으면 dice_6_2, gold_2만 있으면 gold_2_2
+    (이름 제안은 gold_2처럼 그림의 숫자를 이름에 넣으므로, 번호를 바꾸면 다른 값이 된다)."""
+    m = re.fullmatch(r"(.+)_(\d+)", name)
+    copies = bool(m) and m.group(1) in taken and all(f"{m.group(1)}_{i}" in taken for i in range(2, int(m.group(2))))
+    base = m.group(1) if copies else name
     k = 2
     while f"{base}_{k}" in taken:
         k += 1
-    gi["suggest"] = f"{base}_{k}"  # 그림이 다른 아이콘: 다른 이름
-    return "renamed"
+    return f"{base}_{k}"
 
 
 # ---------------------------------------------------------------- 이름 제안 (모델)
