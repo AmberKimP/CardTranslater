@@ -85,6 +85,44 @@ def set_card_erase_mode(file_dir: Path | str, page: int, region: str, mode: str 
     workspace._write(fd / "file.json", data)
 
 
+def card_text_offset(file_dir: Path | str, page: int, region: str) -> tuple[float, float]:
+    """결과 보기에서 옮긴 이 카드·이 영역의 글 위치 (dx, dy) pt (오른쪽·아래가 +). 옮기지 않았으면 (0.0, 0.0)."""
+    from app.typeset_compose import text_offsets_for_page
+
+    return text_offsets_for_page(Path(file_dir), int(page)).get(region, (0.0, 0.0))
+
+
+def card_text_offsets(file_dir: Path | str, page: int) -> dict:
+    """이 카드에서 옮긴 영역 모두 {영역: (dx, dy)} pt."""
+    from app.typeset_compose import text_offsets_for_page
+
+    return text_offsets_for_page(Path(file_dir), int(page))
+
+
+def set_card_text_offset(file_dir: Path | str, page: int, region: str, dx: float, dy: float) -> None:
+    """이 카드의 이 영역 글을 원래 자리에서 (dx, dy) pt만큼 옮겨 넣는다 (둘 다 0이면 옮긴 것을 지움).
+    file.json에 적는다. 한글 넣기 재료(compose_sig)에 들어가므로 recompose_file이 이 쪽만 다시 넣는다."""
+    from app import workspace
+    from app.typeset_compose import TEXT_OFFSETS_KEY
+
+    dx, dy = float(dx), float(dy)
+    if not all(abs(v) < 1e4 for v in (dx, dy)):  # NaN·터무니없는 값
+        raise ValueError(f"옮길 거리가 이상합니다: {dx}, {dy}")
+    fd = Path(file_dir)
+    data = workspace.file_settings(fd)
+    offs = data.setdefault(TEXT_OFFSETS_KEY, {})
+    card = offs.setdefault(str(int(page)), {})
+    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+        card[region] = [round(dx, 3), round(dy, 3)]
+    else:
+        card.pop(region, None)
+    if not card:
+        offs.pop(str(int(page)), None)
+    if not offs:
+        data.pop(TEXT_OFFSETS_KEY, None)
+    workspace._write(fd / "file.json", data)
+
+
 def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
     """결과 보기에서 고칠 칸의 지금 값: {"ko": 쓰는 번역(글, 태그 칸은 줄마다), "base": 엑셀·초벌 번역 그대로,
     "edited": 결과 보기에서 고쳤나, "font": 이 카드만 고른 글꼴(없으면 ''), "region_font": 영역 글꼴, "kind",
@@ -129,7 +167,7 @@ def split_paragraphs(text: str) -> list[str]:
 
 
 _TRANSLATION_CARDS: dict = {}
-_NOT_FOR_CARDS = ("card_edits", "review_checked", "erase_modes")  # 번역 읽기와 상관없는 file.json 키
+_NOT_FOR_CARDS = ("card_edits", "review_checked", "erase_modes", "text_offsets")  # 번역 읽기와 상관없는 file.json 키
 
 
 def _file_json_sig(fd: Path) -> str:

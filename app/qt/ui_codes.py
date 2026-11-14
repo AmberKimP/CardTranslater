@@ -45,6 +45,7 @@ WINDOW_CODES: dict[str, tuple[str, str]] = {
 }
 PAGE_CLASSES = ("HomePage", "ProjectPage")  # 메인 창 안의 화면: 메인 창 제목이 지금 화면의 번호를 따른다
 ORIG = "_ui_code_orig_text"
+ORIG_MIN = "_ui_code_orig_min"  # 디버깅 모드 전 버튼 최소 크기 (끌 때 되돌린다)
 
 
 def code_of(w: QWidget | None) -> str | None:
@@ -143,6 +144,11 @@ class UiCodes(QObject):
         code = button_code(b)
         b.setProperty(ORIG, b.text())
         b.setProperty("_ui_code", code)
+        # 글자가 짧은 코드로 바뀌어도 버튼 크기는 그대로 (배치가 바뀌어 버튼을 찾기 어렵지 않게)
+        b.setProperty(ORIG_MIN, [b.minimumWidth(), b.minimumHeight()])
+        hint = b.sizeHint()
+        b.setMinimumSize(max(b.minimumWidth(), b.width() if b.isVisible() else 0, hint.width()),
+                         max(b.minimumHeight(), hint.height()))
         b.setText(code)
 
     def _unlabel(self, b: QAbstractButton):
@@ -151,6 +157,10 @@ class UiCodes(QObject):
             return
         if b.text() == b.property("_ui_code"):  # 그 사이 화면이 글자를 바꿨으면 그것을 둔다
             b.setText(orig)
+        old = b.property(ORIG_MIN)
+        if old:
+            b.setMinimumSize(int(old[0]), int(old[1]))
+        b.setProperty(ORIG_MIN, None)
         b.setProperty(ORIG, None)
         b.setProperty("_ui_code", None)
 

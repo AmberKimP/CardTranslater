@@ -2405,9 +2405,18 @@ def test_region_editor_skips_excluded_pages(qapp, tmp_path):
     ed.dirty = ed2.dirty = False
 
 
+def _delete_current(place):
+    """카드 보기 목록에서 지금 자리를 골라 ‘삭제 (아이콘 아님)’ (1.21.0: ‘이 자리는 아이콘 아님’ 버튼은 목록 삭제로 합침)."""
+    occ = place._cur()["occ"]
+    for k in range(place.items.count()):
+        it = place.items.item(k)
+        it.setSelected(it.data(Qt.ItemDataRole.UserRole) == occ)
+    place.del_btn.click()
+
+
 def test_icon_place_dialog_not_icon_closes_and_checks_row(qapp, tmp_path, monkeypatch):
-    """자리 잡기 창의 ‘이 자리는 아이콘 아님’: 창을 닫고, 이름 정하기 표의 그 줄은 ‘아이콘 아님’이 체크되어 있다
-    (그 줄에 적어 둔 값이 있어도). 묶음에 자리가 하나뿐이면 옮기지 않고 그 줄을 표시한다."""
+    """카드 보기 목록의 ‘삭제 (아이콘 아님)’: 이름 정하기 표의 그 줄은 ‘아이콘 아님’이 체크되어 있다
+    (그 줄에 적어 둔 값이 있어도). 묶음에 자리가 하나뿐이면 옮기지 않고 그 줄을 표시한다. 창은 닫지 않는다."""
     from PySide6.QtWidgets import QDialog
 
     from app.qt.icon_place import IconPlaceDialog
@@ -2421,8 +2430,8 @@ def test_icon_place_dialog_not_icon_closes_and_checks_row(qapp, tmp_path, monkey
     g = dlg.review["groups"][i]
     dlg.widgets[i][1].setText("coin")  # 적어 둔 값이 있는 줄
     place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg)
-    place._not_icon()
-    assert place.result() == QDialog.DialogCode.Accepted
+    _delete_current(place)
+    assert place.result() != QDialog.DialogCode.Accepted
     rows = {w[0]: w for w in dlg.widgets}
     occ = g["where"][0]["occ"]
     target = next(x["group"] for x in dlg.review["groups"] if any(w["occ"] == occ for w in x["where"]))
@@ -2433,7 +2442,7 @@ def test_icon_place_dialog_not_icon_closes_and_checks_row(qapp, tmp_path, monkey
     dlg.widgets[j][1].setText("coin")
     assert not dlg.widgets[j][4].isChecked()
     place2 = IconPlaceDialog(info.dir, rest, dlg._row_label, dlg._after_place, dlg)
-    place2._not_icon()
+    _delete_current(place2)
     j = next(k for k, w in enumerate(dlg.widgets) if w[0] == rest["group"])
     assert dlg.widgets[j][4].isChecked() and dlg.widgets[j][1].text() == "coin"
 

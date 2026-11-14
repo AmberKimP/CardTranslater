@@ -526,10 +526,19 @@ class IconReviewDialog(QDialog):
         self.table.scrollToItem(self.table.item(i, 0), QTableWidget.ScrollHint.EnsureVisible)
         self.widgets[i][1].setFocus()
 
-    def _after_place(self, r: dict):
+    def _after_place(self, r: dict) -> bool:
+        """카드 보기에서 바꾼 뒤 표를 다시 채운다. 돌려줌: 새 줄이 예전 줄의 이름을 이어받았는가."""
         keep = self._capture()
-        if r.get("old_gone") and r.get("new_group") and r["old"] in keep:
-            keep[r["group"]] = keep.pop(r["old"])  # 혼자 있던 줄을 옮긴 것: 적어 둔 값 그대로
+        inherited = False
+        if r.get("new_group") and r.get("old") in keep:
+            # 다시 잡아 새 줄이 생김: 같은 아이콘의 자리를 고친 것이므로 예전 줄에 적어 둔 값을 이어받는다
+            # (혼자였던 줄은 옮기고, 묶음에 남은 자리가 있으면 복사)
+            if r.get("old_gone"):
+                k = keep.pop(r["old"])
+            else:  # 예전 줄에 다른 자리가 남음: 이름을 복사하면 같은 이름 두 줄이 된다 → ‘같은 아이콘: 예전 줄’로
+                k = {**keep[r["old"]], "name": "", "meaning": "", "ko": "", "same": ("group", r["old"])}
+            keep[r["group"]] = k
+            inherited = bool(str(k.get("name", "")).strip()) or bool(k.get("same"))
             if r.get("dict"):
                 keep[r["group"]]["same"] = ("known", r["dict"])
         sg = r.get("suggested")
@@ -538,6 +547,7 @@ class IconReviewDialog(QDialog):
         review = service.icon_review(self.project_dir)
         if review:
             self._fill(review, keep)
+        return inherited
 
     @staticmethod
     def _paint_ko_edit(edit: QLineEdit):

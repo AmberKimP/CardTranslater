@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -143,6 +143,36 @@ class ResultViewer(QDialog):
                                   "한글 넣기는 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
         self.edit_align = QComboBox()
         self.edit_align.setToolTip("이 카드의 이 영역만 한글을 놓는 방법")
+        # 글자 위치: 이 카드의 이 영역 한글을 통째로 옮긴다 (pt, 오른쪽·아래가 +)
+        self.off_x, self.off_y = QDoubleSpinBox(), QDoubleSpinBox()
+        for sb, axis in ((self.off_x, "가로 (오른쪽 +)"), (self.off_y, "세로 (아래 +)")):
+            sb.setRange(-200.0, 200.0)
+            sb.setSingleStep(0.5)
+            sb.setDecimals(1)
+            sb.setSuffix(" pt")
+            sb.setMaximumWidth(84)
+            sb.setToolTip(f"이 카드의 이 영역 한글을 {axis}으로 옮깁니다. 0이면 원래 자리. 저장하면 다시 넣습니다.")
+            sb.valueChanged.connect(lambda _v: self._mark_dirty())
+        orow = QHBoxLayout()
+        orow.setSpacing(4)
+        orow.addWidget(self.off_x)
+        orow.addWidget(self.off_y)
+        self.nudge_btns = []
+        for txt, dx, dy, tip in (("←", -1, 0, "왼쪽으로 1pt"), ("→", 1, 0, "오른쪽으로 1pt"),
+                                 ("↑", 0, -1, "위로 1pt"), ("↓", 0, 1, "아래로 1pt")):
+            b = QPushButton(txt)
+            b.setFixedWidth(26)
+            b.setAutoDefault(False)
+            b.setToolTip(tip + " (Shift를 누른 채면 5pt)")
+            b.clicked.connect(lambda _c=False, a=dx, c=dy: self.nudge_text(a, c))
+            orow.addWidget(b)
+            self.nudge_btns.append(b)
+        self.off_zero = QPushButton("원래 자리")
+        self.off_zero.setAutoDefault(False)
+        self.off_zero.setToolTip("옮긴 것을 0으로 (저장하면 원래 자리에 다시 넣습니다)")
+        self.off_zero.clicked.connect(lambda: (self.off_x.setValue(0.0), self.off_y.setValue(0.0)))
+        orow.addWidget(self.off_zero)
+        orow.addStretch(1)
         srow = QHBoxLayout()
         srow.addWidget(self.edit_size)
         srow.addSpacing(16)
@@ -165,6 +195,7 @@ class ResultViewer(QDialog):
         self.para_label = QLabel("문단 글꼴")
         form.addRow(self.para_label, self.para_box)
         form.addRow("글자 크기", srow)
+        form.addRow("위치", orow)
         form.addRow("지우기", self.erase_mode)
         self.preview_btn = QPushButton("미리 보기")
         self.preview_btn.setToolTip("저장하기 전에 이 칸을 한글 넣기와 똑같이 그려 봅니다 (지우기 방식 바꾼 것은 저장해야 보입니다)")
@@ -447,7 +478,18 @@ class ResultViewer(QDialog):
         self.erase_mode.setEnabled(erase_ok)
         for w in (self.edit_text, self.edit_font, self.erase_mode, self.edit_size, self.edit_align):
             w.blockSignals(False)
-        self._edit = {"page": p["page"], "region": name, "info": info,
+        try:
+            off = tuple(service.card_text_offset(fd, p["page"], name))
+        except Exception:  # noqa: BLE001 - 표시만
+            off = (0.0, 0.0)
+        for sb, v in ((self.off_x, off[0]), (self.off_y, off[1])):
+            sb.blockSignals(True)
+            sb.setValue(float(v))
+            sb.blockSignals(False)
+        text_kind = (ei or {}).get("kind", "text") == "text"  # 태그 영역은 라벨을 다시 그려 옮기면 두 번 그려질 수 있다
+        for w in (self.off_x, self.off_y, self.off_zero, *self.nudge_btns):
+            w.setEnabled(not kept and text_kind)
+        self._edit = {"page": p["page"], "region": name, "info": info, "offset": (float(off[0]), float(off[1])),
                       "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok}
         self._para_picks = dict(info["paragraph_fonts"])
         self._rebuild_paragraphs(load=True)
@@ -519,7 +561,23 @@ class ResultViewer(QDialog):
                 or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
                 or self._size_value() != info["size"]
                 or (self.edit_align.currentData() or "") != info["align"]
+                or self._offset_changed()
                 or (info["paragraph_mode"] and self._para_fonts() != self._saved_paras()))
+
+    def _offset(self) -> tuple[float, float]:
+        return round(self.off_x.value(), 2), round(self.off_y.value(), 2)
+
+    def _offset_changed(self) -> bool:
+        e = getattr(self, "_edit", None)
+        return bool(e) and self._offset() != tuple(round(v, 2) for v in e.get("offset", (0.0, 0.0)))
+
+    def nudge_text(self, dx: float, dy: float) -> None:
+        """글자 위치 화살표: 1pt씩 (Shift를 누른 채면 5pt)."""
+        from PySide6.QtWidgets import QApplication
+
+        step = 5.0 if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0
+        self.off_x.setValue(self.off_x.value() + dx * step)
+        self.off_y.setValue(self.off_y.value() + dy * step)
 
     def _mark_dirty(self):
         e = self._edit
@@ -534,6 +592,8 @@ class ResultViewer(QDialog):
             bits.append("크기·정렬: 이 카드만 따로")
         if e["info"]["paragraph_fonts"]:
             bits.append("문단 글꼴: 이 카드만 따로")
+        if any(e.get("offset", (0.0, 0.0))):
+            bits.append("위치: 옮김")
         if self._dirty():
             bits.append("저장하지 않은 고침 있음")
         self.edit_note.setText(" · ".join(bits))
@@ -552,6 +612,8 @@ class ResultViewer(QDialog):
             cb.setCurrentIndex(0)
         if e["erase_ok"]:
             self.erase_mode.setCurrentIndex(0)
+        self.off_x.setValue(0.0)
+        self.off_y.setValue(0.0)
 
     def preview_edit(self):
         e, fd = self._edit, self.file_dir()
@@ -595,6 +657,8 @@ class ResultViewer(QDialog):
                                    else None)
             if erase_changed:
                 service.set_card_erase_mode(fd, page, region, self.erase_mode.currentData())
+            if self._offset_changed():
+                service.set_card_text_offset(fd, page, region, *self._offset())
         except Exception as ex:  # noqa: BLE001
             show_error(self, "저장하지 못했습니다", ex)
             return

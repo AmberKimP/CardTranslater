@@ -413,6 +413,70 @@ def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
     return r
 
 
+def reopen_icon(project_dir: Path | str, anchor_occ: str, ti: int) -> dict:
+    """카드 보기: 이름을 정한 아이콘(그 칸 ti번째 토큰)을 다시 고칠 수 있게 [[?]] 자리로 연다. {"occ", "group"}."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.reopen_icon(info, work, anchor_occ, int(ti))
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
+        pass
+    return r
+
+
+def icon_box_problem(project_dir: Path | str, occ_id: str, box) -> str:
+    """사람이 잡으려는 상자가 아이콘 하나로 맞지 않으면 그 이유 (글자 두 줄 높이인데 글자와 섞임), 맞으면 ""."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    o = next(x for x in icons.load_scan(work).occurrences if x.id == occ_id)
+    _fd, img, text = icons._occ_region(info, o)
+    return icons.tall_box_problem(img, text, box)
+
+
+def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) -> dict:
+    """카드 보기 ‘이 칸 원본 그대로’: 그 자리가 있는 칸을 한글화하지 않는다 (set_keep_original).
+    켜면 그 칸의 [[?]] 자리들은 이름이 필요 없으므로 ‘아이콘 아님’으로 한다 (되돌리기로 풀 수 있다).
+    {"file_dir", "page", "region", "keep", "not_icon": [자리 id]}"""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    res = icons.load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    fd = icons._occ_dir(info, o.file)
+    from app.service._translate_erase import set_keep_original
+    set_keep_original(fd, o.page, o.region, keep)
+    done = []
+    if keep:
+        for x in res.occurrences:
+            gi = res.groups.get(x.group, {})
+            if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of \
+                    and not gi.get("not_icon") and not gi.get("absorbed"):
+                icons.set_not_icon(info, work, x.id)
+                done.append(x.id)
+        try:
+            icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+        except OSError:
+            pass
+    return {"file_dir": fd, "page": o.page, "region": o.region, "keep": keep, "not_icon": done}
+
+
+def cell_kept(project_dir: Path | str, occ_id: str) -> bool:
+    """그 자리가 있는 칸이 ‘원본 그대로’인가."""
+    from app import icons, workspace
+    from app.extract import load_extracted
+
+    info = workspace.load_project_info(project_dir)
+    o = next(x for x in icons.load_scan(info.game_dir / "work" / "icons").occurrences if x.id == occ_id)
+    r = load_extracted(icons._occ_dir(info, o.file)).get(o.page, {}).get(o.region) or {}
+    return bool(r.get("keep_original"))
+
+
 def restore_icon(project_dir: Path | str, occ_id: str) -> dict:
     """카드 보기: ‘아이콘 아님’·옆 아이콘에 포함으로 정한 자리를 다시 아이콘 자리로 (검증 엑셀도 새로). {"group"}.
     되돌릴 것이 없으면 ValueError."""

@@ -29,6 +29,15 @@ def _removed(c: dict) -> bool | None:
     return None if n is None else bool(n)
 
 
+class RowTable(QTableWidget):
+    """줄을 골라도 가로 스크롤은 그대로 두는 표 (긴 원문 칸을 누르면 오른쪽 끝으로 밀려 쪽·상태 열이 안 보이던 문제)."""
+
+    def scrollTo(self, index, hint=QAbstractItemView.ScrollHint.EnsureVisible):  # noqa: N802 - Qt 이름
+        h = self.horizontalScrollBar().value()
+        super().scrollTo(index, hint)
+        self.horizontalScrollBar().setValue(h)
+
+
 class SourceReviewDialog(QDialog):
     """파일의 추출 결과를 칸마다 보고, 잘못 읽은 원문을 이미지와 비교해 고친다.
 
@@ -64,7 +73,7 @@ class SourceReviewDialog(QDialog):
         top.addStretch(1)
         top.addWidget(self.count)
         self.guide = hint_bar("", "info")
-        self.table = QTableWidget(0, len(self.COLS))
+        self.table = RowTable(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)

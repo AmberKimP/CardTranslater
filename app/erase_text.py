@@ -836,10 +836,13 @@ def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
     return changed
 
 
-def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None) -> list[dict]:
+def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None,
+                 glyph_px: float | None = None) -> list[dict]:
     """찾은 줄이 원문보다 많을 때 원문에 없는 줄을 고른다.
     줄 폭이 원문 줄 길이(글자 수)와 가장 잘 맞게 남는 줄을 뺀다 (원문이 빠뜨린 숫자 타일·카드 번호 등).
-    폭이 같게 맞으면 상자 위·아래 끝에 붙은 줄(띠 안으로 들어온 그림 조각)을 먼저, 그다음 글자가 작은 줄부터 뺀다."""
+    폭이 같게 맞으면 상자 위·아래 끝에 붙은 줄(띠 안으로 들어온 그림 조각)을 먼저 뺀다. 그다음은 영역의 대표 글자
+    크기(glyph_px)를 알면 그와 가장 다른 줄부터 (주사위 속 큰 숫자·작은 카드 번호), 모르면 글자가 작은 줄부터 뺀다.
+    (원문이 한 줄이면 폭 맞춤은 늘 같아서, 작은 줄부터 빼면 진짜 글 줄 대신 주사위 숫자 줄이 남았다: 2쪽)"""
     from itertools import combinations
 
     from app.icons import TOKEN_RE, _line_units
@@ -868,7 +871,9 @@ def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None) 
         txt = [(i, j) for i, j in zip(keep, range(len(src))) if not icon_only[j]] or list(zip(keep, range(len(src))))
         r = sum(widths[i] for i, _j in txt) / max(sum(units[j] for _i, j in txt), 1e-6)
         err = sum(abs(widths[i] - units[j] * r) for i, j in txt) / max(sum(widths[i] for i, _j in txt), 1)
-        key = (round(err, 2), sum(1 for i in keep if at_edge(lines[i])), sum(lines[i]["glyph_h"] for i in drop))
+        size_key = (-sum(abs(lines[i]["glyph_h"] - glyph_px) for i in drop) if glyph_px
+                    else sum(lines[i]["glyph_h"] for i in drop))
+        key = (round(err, 2), sum(1 for i in keep if at_edge(lines[i])), size_key)
         if best_key is None or key < best_key:
             best, best_key = drop, key
     if best is None or best_key[0] >= 0.35:
@@ -911,7 +916,7 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
             src = src_text
         elif len(lines) == len(src_text):
             src = src_text
-    extra = _extra_lines(lines, src, lay.get("box_y"))
+    extra = _extra_lines(lines, src, lay.get("box_y"), tm.glyph_px or None)
     kept = [ln for ln in lines if ln not in extra]
     restore = list(extra)
     if len(kept) == len(src):

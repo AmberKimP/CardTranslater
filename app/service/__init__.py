@@ -90,11 +90,13 @@ from app.service._settings import (  # noqa: F401
 )
 from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
-    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, restore_icon, suggest_icon_name, icon_dictionary,
+    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, cell_kept,
+    suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons,
 )
 from app.service._review import (  # noqa: F401
-    result_pages, card_erase_info, set_card_erase_mode, card_edit_info, split_paragraphs, _TRANSLATION_CARDS,
+    result_pages, card_erase_info, set_card_erase_mode, card_text_offset, card_text_offsets, set_card_text_offset,
+    card_edit_info, split_paragraphs, _TRANSLATION_CARDS,
     _NOT_FOR_CARDS, _file_json_sig, _regions_sig, _translation_cards, _translation_cards_read, save_card_edit,
     card_preview, REVIEW_STATUS, _review_check, _review_file_rows, _review_counts, _excel_info, review_rows,
     _review_row, check_review_text, save_review, set_review_checked, resolve_review_conflict, _REVIEW_PROGRESS,

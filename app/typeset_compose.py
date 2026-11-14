@@ -115,7 +115,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
                  base_dir: Path = ROOT, styles: dict | None = None,
                  region_erase: dict | None = None, fonts: dict | None = None,
                  sentence_fonts: dict | None = None, sizes: dict | None = None,
-                 aligns: dict | None = None) -> dict:
+                 aligns: dict | None = None, offsets: dict | None = None) -> dict:
     """지운 페이지 사본(page)에 한 장의 카드 번역을 그린다. 칸별 기록 dict를 돌려준다.
 
     styles: {영역 이름: style}. 지금 regions.json의 서식(글꼴·자간 등). 지우기를 다시 돌리지 않고
@@ -124,11 +124,18 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
     sentence_fonts: {영역 이름: {문장 번호: 글꼴 파일}} — ‘문장마다 글꼴’ 영역(style.font_mode="sentence")에서만 쓴다.
     sizes: {영역 이름: 글자 크기 배율} — 글꼴 창에서 정한 크기 (원문 크기 기준).
     aligns: {영역 이름: left | center | right} — 글꼴 창에서 정한 정렬. 영역 서식의 정렬보다 우선한다.
+    offsets: {영역 이름: (dx, dy)} — 결과 보기에서 옮긴 글 위치 (pt, 오른쪽·아래가 +). 배치는 원래대로 하고
+    그 영역이 그린 것 전체를 그만큼 옮긴다 (기록의 줄 상자도 옮긴 자리로).
     """
     card = card or {}
     out: dict = {}
+    pending = None  # 옮길 영역: (이름, 그리기 전 내용 스트림, (dx, dy))
     for reg in meta["regions"]:
+        pending = _finish_offset(page, pending, out)
         name = reg["name"]
+        off = _offset_of(offsets, name)
+        if off:
+            pending = (name, _content_xrefs(page), off)
         style_d = (styles or {}).get(name) or reg.get("style_defaults") or {}
         chosen = (fonts or {}).get(name)
         missing = None
@@ -281,7 +288,87 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             draw_rect = _rot_rect(draw_rect, pivot)
         rec.update(source_ink=ink.to_dict(), draw_rect_pt=[round(v, 3) for v in draw_rect], **rd)
         out[name] = rec
+    _finish_offset(page, pending, out)
     return out
+
+
+# ---------------------------------------------------------------- 결과 보기에서 옮긴 글 위치
+TEXT_OFFSETS_KEY = "text_offsets"  # file.json: {"쪽": {"영역": [dx, dy]}} (pt, 오른쪽·아래가 +)
+
+
+def text_offsets_for_page(file_dir, page: int) -> dict:
+    """file.json에 적은 이 쪽의 영역별 글 위치 옮김 {영역: (dx, dy)} (없으면 {})."""
+    from app.workspace import file_settings
+
+    try:
+        raw = (file_settings(Path(file_dir)).get(TEXT_OFFSETS_KEY) or {}).get(str(int(page))) or {}
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for name, v in raw.items():
+        try:
+            dx, dy = float(v[0]), float(v[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+            out[name] = (dx, dy)
+    return out
+
+
+def _offset_of(offsets: dict | None, name: str) -> tuple[float, float] | None:
+    """영역의 (dx, dy) pt. 없거나 0이면 None."""
+    v = (offsets or {}).get(name)
+    if not v:
+        return None
+    dx, dy = float(v[0]), float(v[1])
+    return (dx, dy) if abs(dx) > 1e-6 or abs(dy) > 1e-6 else None
+
+
+def _content_xrefs(page: pymupdf.Page) -> list[int]:
+    """페이지 내용 스트림 xref 목록. 처음이면 예전 내용을 q…Q로 감싸 둔다 (이후 그리는 것은 새 스트림으로만 붙는다)."""
+    if not page.is_wrapped:
+        page.wrap_contents()
+    return list(page.get_contents())
+
+
+def _shift_box(b, dx: float, dy: float) -> list[float]:
+    return [round(b[0] + dx, 3), round(b[1] + dy, 3), round(b[2] + dx, 3), round(b[3] + dy, 3)]
+
+
+def _finish_offset(page: pymupdf.Page, pending, out: dict) -> None:
+    """pending 영역이 그린 새 내용 스트림을 (dx, dy)만큼 옮긴다 (스트림마다 q, 옮기기 cm, …, Q).
+    글·아이콘·외곽선·다시 그린 라벨이 함께 움직인다. 기록(out[이름])의 줄 상자·그린 칸도 옮기고 offset_pt를 남긴다."""
+    if not pending:
+        return None
+    name, before, (dx, dy) = pending
+    doc = page.parent
+    # 페이지 좌표(아래가 +)의 이동을 PDF 좌표(위가 +)로
+    inv = ~(page.transformation_matrix)
+    p0 = pymupdf.Point(0, 0) * page.derotation_matrix * inv
+    p1 = pymupdf.Point(dx, dy) * page.derotation_matrix * inv
+    tx, ty = p1.x - p0.x, p1.y - p0.y
+    old = set(before)
+    head = f"q 1 0 0 1 {tx:.4f} {ty:.4f} cm\n".encode("ascii")
+    for xref in page.get_contents():
+        if xref in old:
+            continue
+        body = doc.xref_stream(xref) or b""
+        if body.strip() in (b"q", b"Q", b""):
+            # PyMuPDF가 그릴 때 예전 내용을 다시 감싼 q·Q(앞뒤 따로 붙은 스트림)는 그대로 둔다: 감싸면 짝이 깨진다
+            # (외곽선 줄은 ActualText로 끝나 ‘감싼 페이지’로 안 보여, 다음 글자를 그릴 때마다 다시 감싼다)
+            continue
+        doc.update_stream(xref, head + body + b"\nQ\n")
+    rec = out.get(name)
+    if rec is not None:
+        rec["offset_pt"] = [round(dx, 3), round(dy, 3)]
+        if rec.get("line_boxes_pt"):
+            rec["line_boxes_pt"] = [_shift_box(b, dx, dy) for b in rec["line_boxes_pt"]]
+        if rec.get("draw_rect_pt"):
+            rec["draw_rect_pt"] = _shift_box(rec["draw_rect_pt"], dx, dy)
+        for r in rec.get("results") or []:  # 태그 라벨마다
+            if r.get("line_boxes_pt"):
+                r["line_boxes_pt"] = [_shift_box(b, dx, dy) for b in r["line_boxes_pt"]]
+    return None
 
 
 # ---------------------------------------------------------------- 그림 카드: 원문 줄 자리에 한 줄씩
@@ -378,6 +465,88 @@ def text_accents(ln: dict, icons: list[dict]) -> list[dict]:
     return out
 
 
+def _tagged_fractions(src_line: str) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
+    """원문 한 줄에서 색 태그(<cN>) 안·밖 글자가 줄 폭의 어디쯤인지 (0~1 구간 목록 두 개: 밖, 안).
+    글자 폭은 어림한다 (전각 1, 반각 0.55, 공백 0.3, 아이콘 1.2). 색 태그가 없거나 짝이 깨졌으면 None."""
+    from app.typeset_layout import to_atoms
+
+    spans, errs = parse_markup(src_line or "")
+    if errs or not any(sp.fmt.color_tag for sp in spans):
+        return None
+    if len({sp.fmt.color_tag for sp in spans if sp.fmt.color_tag}) > 1:
+        return None  # 색 태그가 여러 가지면 어느 색이 어느 태그인지 위치만으로 가릴 수 없다 (그대로 둔다)
+    atoms = to_atoms(spans)
+    w = []
+    for a in atoms:
+        if a.kind == "icon":
+            w.append(1.2)
+        elif a.kind == "space":
+            w.append(0.3)
+        elif a.kind == "char":
+            w.append(1.0 if ord(a.text) >= 0x2E80 else 0.55)
+        else:
+            w.append(0.0)
+    total = sum(w) or 1.0
+    plain: list[tuple[float, float]] = []
+    tagged: list[tuple[float, float]] = []
+    x = 0.0
+    for a, wi in zip(atoms, w):
+        if wi and a.kind in ("char", "icon"):
+            (tagged if a.fmt.color_tag else plain).append((x / total, (x + wi) / total))
+        x += wi
+    return (plain, tagged) if plain and tagged else None
+
+
+def swap_line_accents(lines: list[dict], src_lines: list[str] | None) -> list[dict]:
+    """줄 기본색(가장 넓은 색)이 사실은 색 태그(<cN>) 쪽인 줄을 바로잡는다.
+
+    지우기는 줄에서 가장 넓은 색을 줄 색, 나머지를 강조색(c1…)으로 잰다. 원문 ‘加える.<c1>(以降…)</c1>’처럼
+    빨간 괄호 글이 태그 밖 글보다 길면 빨강이 줄 색이 되고 회색이 c1이 되어, 번역에서 태그 밖 ‘추가한다.’가 빨갛고
+    <c1> 안이 회색으로 그려졌다 (5·12쪽). 원문 줄의 태그 위치와 강조색 위치를 견주어, 강조색이 태그 밖 글자 자리에
+    더 많이 있으면 줄 색과 그 강조색을 맞바꾼다. src_lines: 줄마다 원문 (줄 수가 다르면 None → 그대로)."""
+    if not src_lines or len(src_lines) != len(lines):
+        return lines
+    out = []
+    for ln, src in zip(lines, src_lines):
+        acc = ln.get("accents") or []
+        fr = _tagged_fractions(src) if acc else None
+        b = ln.get("bbox_pt")
+        if not fr or not b or b[2] - b[0] <= 0:
+            out.append(ln)
+            continue
+        plain, tagged = fr
+        x0, w = b[0], b[2] - b[0]
+
+        def cover(a, parts):
+            return sum(max(0.0, min(v, x0 + q * w) - max(u, x0 + p * w)) for u, v in a.get("x_pt") or [] for p, q in parts)
+
+        best = max(acc, key=lambda a: cover(a, plain) - cover(a, tagged))
+        plain_w = sum((q - p) * w for p, q in plain)
+        # 확실할 때만 바꾼다: 강조색이 태그 밖 글자 자리의 절반 이상을 덮고, 태그 안보다 두 배 넘게 덮을 때
+        # (태그 없는 색 숫자·낱말이나 원문에 없는 ☆ 때문에 위치가 조금 어긋난 줄을 뒤집지 않게)
+        if not (cover(best, plain) >= 0.5 * plain_w and cover(best, plain) > 2 * cover(best, tagged)):
+            out.append(ln)
+            continue
+        others = [a for a in acc if a is not best]
+        out.append({**ln, "color": best["color"],
+                    "accents": [{"color": ln["color"], "x_pt": []}] + others})
+    return out
+
+
+def _source_lines_for(lines: list[dict], source_text: str | None) -> list[str] | None:
+    """원문 줄을 지우기가 잰 줄에 하나씩 맞춘 목록. 줄 수가 같으면 그대로, 아이콘만 있는 원문 줄을 빼야 같으면 뺀 것
+    (원본 그대로 남긴 아이콘 줄 자리가 없을 때). 맞출 수 없으면 None."""
+    src = [t for t in (source_text or "").split("\n") if t.strip()]
+    if not src:
+        return None
+    if len(src) == len(lines):
+        return src
+    text_only = [t for t in src if not is_icon_line(strip_tags(t))]
+    if len(text_only) == len(lines):
+        return text_only
+    return None
+
+
 def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pivot=None,
                 icon_fit: dict | None = None, **kw) -> TextStyle:
     """원문 줄 모양(색·테두리·굵기·정렬·다른 색 낱말)을 따른 서식. 영역 서식에 직접 적은 값이 먼저다."""
@@ -415,15 +584,27 @@ def measured_icon_scales(layout: dict) -> dict:
     return {k: float(np.median(v)) for k, v in by.items()}
 
 
+_OPENING = re.compile(r"\s*(?:</?(?:b|i|c\d+)>)*\s*(?:[「『（(［【〔〈《“‘｢]|\[(?!\[))")  # 여는 괄호·따옴표로 시작하는 원문 줄 ([[아이콘]] 빼고)
 _SENTENCE_END = re.compile(r"(?:[.!?。．！？」』”’)）\]］]|다)\s*$")
 
 
 def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
     """줄을 문장으로 묶는다 (번역 줄이 ‘다’·마침표·닫는 괄호로 끝나면 문장 끝, 아이콘만 남긴 줄도 끝).
-    두 줄 이상인 문장마다 {"x0", "x1", "align"}: 가장 왼쪽·오른쪽, 그리고 원문 줄들이 맞춰진 쪽
-    (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것). 반환: id(줄) -> 그 문장."""
+    두 줄 이상인 문장마다 {"x0", "x1", "align"}: 왼쪽 시작점(왼쪽 정렬이면 줄 시작점의 가운데 값, 아니면 가장 왼쪽)·
+    가장 오른쪽, 그리고 원문 줄들이 맞춰진 쪽 (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것. 줄에 지우기가 본
+    정렬(align)이 있으면 left와 그 정렬들 가운데서만). 줄의 "_src"(원문 줄)가 있으면 여는 괄호로 시작하는 줄은
+    왼쪽 시작점을 잴 때 뺀다. 반환: id(줄) -> 그 문장."""
     out: dict[int, dict] = {}
     cur: list[dict] = []
+
+    def plain_start(ln) -> bool:
+        return not _OPENING.match(ln.get("_src") or "")
+
+    # 글 칸의 왼쪽 여백: 왼쪽 정렬 줄들 시작점의 가운데 값 (여는 괄호로 시작하는 줄은 빼고).
+    # 한 문장 안 줄만 보면 두 줄 중 하나가 괄호 줄, 하나가 잉크로 못 잡은 아이콘(☆) 뒤에서 시작하는 줄일 때 맞출 데가 없다
+    lefts = [ln["bbox_pt"][0] for ln in src
+             if ln.get("align", "left") == "left" and not ln.get("keep") and plain_start(ln)]
+    margin = float(np.median(lefts)) if len(lefts) >= 2 else None
 
     def close():
         if len(cur) >= 2:
@@ -431,7 +612,24 @@ def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
             x1s = [ln["bbox_pt"][2] for ln in cur]
             cxs = [(a + b) / 2 for a, b in zip(x0s, x1s)]
             spread = {"left": max(x0s) - min(x0s), "right": max(x1s) - min(x1s), "center": max(cxs) - min(cxs)}
-            blk = {"x0": min(x0s), "x1": max(x1s), "align": min(spread, key=spread.get)}
+            if all("align" in ln for ln in cur):
+                # 지우기가 줄마다 본 정렬(크게 들여 쓴 줄만 right, 가운데 줄만 center)에 없는 정렬은 고르지 않는다.
+                # 양쪽 맞춤 원문은 줄 오른쪽 끝이 고르게 맞아 ‘오른쪽 정렬’로 보였다: 줄 앞 아이콘(☆)을 잉크로 못 잡은
+                # 줄이 들어가 보이면 왼쪽 시작점이 오른쪽으로 밀렸다 (8쪽 ‘［에피소드 카드」의…’)
+                allowed = {"left"} | {ln["align"] for ln in cur}
+                spread = {k: v for k, v in spread.items() if k in allowed}
+            align = min(spread, key=spread.get)
+            x0 = min(x0s)
+            if align == "left":
+                # 왼쪽 시작점: 여는 괄호(［「 등)로 시작하는 원문 줄은 괄호 잉크가 글자보다 왼쪽으로 나와 있어 빼고 본
+                # 줄 시작점의 가운데 값 (가장 왼쪽 줄에 맞추면 글 전체가 왼쪽으로 쏠렸다: 11쪽).
+                # 문장이 글 칸 왼쪽 여백에 닿아 있으면 여백에 맞춘다
+                gh = float(np.median([ln["glyph_h_pt"] for ln in cur]))
+                if margin is not None and abs(min(x0s) - margin) <= gh:
+                    x0 = margin  # (여백보다 한참 왼쪽에서 시작한 문장을 여백까지 밀지 않는다)
+                else:
+                    x0 = float(np.median([ln["bbox_pt"][0] for ln in cur if plain_start(ln)] or x0s))
+            blk = {"x0": x0, "x1": max(x1s), "align": align}
             for ln in cur:
                 out[id(ln)] = blk
         cur.clear()
@@ -464,6 +662,7 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
     if not lines or not (text or "").strip() or layout.get("dividers_pt"):
         return None  # 구분선 위아래가 다른 칸: 한 덩어리로 넣으면 선을 넘고 서식이 섞인다 (넘친 글자는 결과 보기에 알린다)
     lines = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in lines]
+    lines = swap_line_accents(lines, _source_lines_for(lines, source_text))
     gh = float(np.median([ln["glyph_h_pt"] for ln in lines]))
     # 가장 많은 줄의 서식(색·굵기·테두리)으로: 맨 위 이름 줄(빨간 굵은 글자 등) 서식으로 본문까지 그리지 않게
     style_of = lambda ln: (ln.get("color"), bool(ln.get("bold")), ln.get("stroke_color"))  # noqa: E731
@@ -528,6 +727,10 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         return None
     # 아이콘 자리에서 잰 색은 <cN> 색이 아니다 (돌리기 전 페이지 좌표에서 아이콘 상자와 견준다)
     good = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in good]
+    src_of = _source_lines_for(good, source_text)
+    good = swap_line_accents(good, src_of)
+    if src_of:  # 줄마다 원문 (문장 묶음의 왼쪽 시작점을 잴 때 괄호로 시작하는 줄을 가린다)
+        good = [{**ln, "_src": s} for ln, s in zip(good, src_of)]
     layout = {**layout, "lines": good}
     pivot = None
     if int(style_d.get("rotate", 0)) % 360 == 180:
@@ -677,8 +880,11 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
                 blk = block_of.get(id(ln))
                 if blk and not (style_d.get("align") or ""):
-                    # 여러 줄 문장: 문장 전체의 가장 왼쪽·오른쪽을 기준으로 같은 정렬 (줄마다 시작점이 달라지지 않게)
-                    b = (blk["x0"], b[1], blk["x1"], b[3])
+                    # 여러 줄 문장: 문장 전체의 왼쪽 시작점·가장 오른쪽을 기준으로 같은 정렬 (줄마다 시작점이 달라지지 않게).
+                    # 왼쪽 정렬인데 원문에서 글자 높이 넘게 들여 쓴 줄은 그 자리에서 시작한다: 줄 앞에 지우지 않은
+                    # 아이콘(원문에 적히지 않은 ☆ 등)이 남아 있으면 한글이 그 위에 겹친다 (8쪽 마지막 줄)
+                    x0b = b[0] if blk["align"] == "left" and b[0] - blk["x0"] > gh else blk["x0"]
+                    b = (x0b, b[1], blk["x1"], b[3])
                     st.align = blk["align"]
                 pad = 0.5 * gh
                 cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
@@ -944,7 +1150,8 @@ def _compose_sigs(project_dir, project, pages, metas, cards, sha_src, sha_erased
         blob = {**common, "page": pno, "card": card, "meta": metas[pno],
                 "fonts": chosen, "sentences": sentences, "font_files": font_files(names),
                 "sizes": font_plan.size_scales_for_page(font_data, pno),
-                "aligns": font_plan.aligns_for_page(font_data, pno)}
+                "aligns": font_plan.aligns_for_page(font_data, pno),
+                "offsets": text_offsets_for_page(project_dir, pno)}
         text = json.dumps(blob, ensure_ascii=False, sort_keys=True, default=str)
         out[pno] = hashlib.sha1(text.encode("utf-8")).hexdigest()
     return out
@@ -1035,7 +1242,8 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
             rec = compose_page(out_doc[i], src_doc[pno - 1], metas[pno], cards.get(pno), ROOT, styles, region_erase,
                                font_plan.overrides_for_page(font_data, pno),
                                font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
-                               font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno))
+                               font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno),
+                               text_offsets_for_page(project_dir, pno))
         for name in metas[pno].get("icon_only_regions") or []:  # 건너뛴 칸도 결과 보기에 보이게 (원본 그대로)
             rec.setdefault(name, {"name": name, "status": [STATUS_ICON_ONLY], "drawn": False, "lines": [],
                                   "errors": [], "warnings": [], "overflow_text": ""})
