@@ -364,7 +364,7 @@ class IconReviewDialog(QDialog):
         else:
             hh.setSortIndicatorShown(False)
         n_issue = sum(1 for g in groups if g.get("issue"))
-        n_lost = sum(1 for g in groups if not g["image"])
+        n_lost = sum(1 for g in groups if not g["image"] and not g.get("not_icon"))  # 아이콘 아님으로 정한 자리는 뺀다
         set_hint(self.steps_text,
                  f"정할 아이콘 {len(groups)}개"
                  + (f" · 한국어 이름이 빈 {n_issue}개(노랑)는 맨 위" if n_issue else "")
@@ -567,8 +567,21 @@ class IconReviewDialog(QDialog):
             meaning.setToolTip("")
         same.setEnabled(not not_icon.isChecked())
         not_icon.setEnabled(not merged)
+        self._paint_lost(r)
         if hasattr(self, "widgets") and len(self.widgets) == self.table.rowCount():
             self._paint_dups()
+
+    LOST_COLOR, LOST_DONE_COLOR = "#FFE066", "#E0E0E0"  # 위치 못 찾음: 손볼 것(노랑) / 아이콘 아님으로 정함(회색)
+
+    def _paint_lost(self, r: int) -> None:
+        """‘위치 못 찾음’ 칸 색: 아이콘 아님을 체크하면 더 손볼 것이 없으므로 회색 (옆 아이콘에 포함된 칸은 그대로)."""
+        cell = self.table.item(r, 0)
+        groups = getattr(self, "review", {}).get("groups") or []
+        if cell is None or r >= len(groups) or groups[r]["image"] or cell.text() != "위치 못 찾음":
+            return
+        done = self.widgets[r][4].isChecked()
+        cell.setBackground(QBrush(QColor(self.LOST_DONE_COLOR if done else self.LOST_COLOR)))
+        cell.setForeground(QColor("#777") if done else QColor("black"))
 
     def _dup_names(self) -> dict[str, list[int]]:
         """‘(새 아이콘)’ 줄끼리 이름이 같은 것 {이름: [줄 번호]}. 확정하면 첫 줄 그림 하나로 합쳐진다."""

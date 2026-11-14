@@ -23,6 +23,12 @@ from app.qt.step_common import (
 
 
 # ================================================================ 원문 확인
+def _removed(c: dict) -> bool | None:
+    """칸에서 ② 아이콘 정의가 [[?]]를 뺀 적이 있나 (None = 모름: 기록 전에 정한 칸)."""
+    n = c.get("icon_removed")
+    return None if n is None else bool(n)
+
+
 class SourceReviewDialog(QDialog):
     """파일의 추출 결과를 칸마다 보고, 잘못 읽은 원문을 이미지와 비교해 고친다.
 
@@ -409,7 +415,8 @@ class SourceReviewDialog(QDialog):
         """[(‘보통 읽기’ 등, 읽은 결과 글)]. 이름을 정한 아이콘은 [[?]] 대신 [[이름]]으로."""
         src = as_text(c["source"])
         return [(reader_name(rd["model"]) + (REREAD_TAG if rd.get("reread") else ""),
-                 fill_icon_names(as_text(rd["source"]), src, known)) for rd in c["readings"]]
+                 fill_icon_names(as_text(rd["source"]), src, known, _removed(c)))
+                for rd in c["readings"]]
 
     def default_text(self, c: dict, texts: list[tuple[str, str]], pi: int | None) -> str:
         """편집 칸의 처음 글. 다시 봐야 하는 칸은 정밀 읽기 결과를 따른다.
@@ -565,7 +572,7 @@ class SourceReviewDialog(QDialog):
             QMessageBox.information(self, "다시 읽기", f"{key[0]}쪽 {key[1]} 칸을 찾지 못해 다시 읽은 결과를 보여 주지 못했습니다.\n"
                                     f"다시 읽은 결과: {as_text(r.source)}")
             return
-        text = fill_icon_names(as_text(r.source), as_text(c["source"]), self._known)
+        text = fill_icon_names(as_text(r.source), as_text(c["source"]), self._known, _removed(c))
         self.edit.setPlainText(text)  # _orig_text는 그대로: 저장하지 않고 떠나면 묻는다
         msg = "다시 읽은 결과를 편집 칸에 넣었습니다. 맞으면 저장하세요."
         if UNKNOWN_ICON in text:

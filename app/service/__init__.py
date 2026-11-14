@@ -90,7 +90,7 @@ from app.service._settings import (  # noqa: F401
 )
 from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
-    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, suggest_icon_name, icon_dictionary,
+    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, restore_icon, suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons,
 )
 from app.service._review import (  # noqa: F401

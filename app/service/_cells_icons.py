@@ -44,6 +44,9 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 opus = [x for x in all_re[:-1] if "opus" in (x.get("model") or "").lower()]
                 keep = opus[-1:] + keep
             rereads = [row(x, reread=True) for x in keep]
+            if any("opus" in (x.get("model") or "").lower() for x in keep):
+                # 정밀 읽기로 다시 읽었으면 처음의 정밀 읽기는 보이지 않는다 (같은 모델의 예전 결과라 헷갈림. 기록은 파일에)
+                readings = [x for x in readings if "opus" not in x["model"].lower()]  # 표시 이름 Opus·모델 id 모두
             if rereads and not readings and r is not None and r.get("source") is not None:
                 first = "지금 원문" if r.get("edited_by") else (r.get("read_by") or "처음 읽은 결과")
                 readings = [row({"model": first, "source": r["source"]}, original=True)]
@@ -57,6 +60,8 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
                 "keep_original": bool(r and r.get("keep_original")),  # 전체가 아이콘 — 번역 안 함
                 "icon_changed": list((r or {}).get("icon_changed") or []),  # ② 아이콘 정의에서 자리가 바뀜
+                # ② 아이콘 정의에서 ‘아이콘 아님’으로 뺀 [[?]] 수 (None = 그 기록 전에 정한 칸·정한 적 없음)
+                "icon_removed": None if (r or {}).get("icon_removed") is None else int(r["icon_removed"]),
             })
     return out
 
@@ -341,12 +346,13 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.set_manual_box(info, work, occ_id, tuple(box))
-    # 바로 옆에 붙은 [[?]] 중 합칠 후보: 못 찾은 자리, 그리고 찾은 자리 중 이 상자 안에 들어오는 것 (세트를 한 상자로 잡음)
+    # 바로 옆에 붙은 [[?]] 중 합칠 후보: 못 찾은 자리, 그리고 찾은 자리 중 이 상자와 겹친 것 (세트를 한 상자로 잡음).
+    # 겹친 넓이가 작은 쪽 상자의 OVERLAP_MIN 이상이면 후보 (‘겹친 아이콘 흡수’와 같은 기준. 가운데 점으로 보면
+    # 상자를 몇 px 작게 그렸을 때 옆 아이콘이 빠졌다)
     part = icons.run_partners(info, work, occ_id)
     boxes = {o.id: o.box for o in icons.load_scan(work).occurrences}
-    x0, y0, x1, y1 = r["box"]
-    covered = [i for i in part["boxed"] if boxes.get(i) and x0 <= (boxes[i][0] + boxes[i][2]) / 2 <= x1
-               and y0 <= (boxes[i][1] + boxes[i][3]) / 2 <= y1]
+    covered = [i for i in part["boxed"] if boxes.get(i)
+               and icons._overlap_ratio(r["box"], boxes[i]) >= icons.OVERLAP_MIN]
     r["run_unfound"] = part["unfound"] + covered
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
@@ -400,6 +406,21 @@ def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.set_not_icon(info, work, occ_id)
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
+        pass
+    return r
+
+
+def restore_icon(project_dir: Path | str, occ_id: str) -> dict:
+    """카드 보기: ‘아이콘 아님’·옆 아이콘에 포함으로 정한 자리를 다시 아이콘 자리로 (검증 엑셀도 새로). {"group"}.
+    되돌릴 것이 없으면 ValueError."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.restore_icon(info, work, occ_id)
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:

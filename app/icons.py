@@ -1190,6 +1190,10 @@ def apply_region(file_dir: Path, page: int, region: str, mapping: dict[int, str]
             r["icon_number_note"] = "아이콘 옆·위 숫자를 아이콘에 넣고 원문에서 뺌"
         if note:
             r["icon_note"] = note
+        n_removed = sum(1 for v in mapping.values() if not v or v.startswith("="))
+        # ‘아이콘 아님’으로 [[?]]를 뺐거나 글자로 바꾼 수 (0도 적는다: 아이콘을 정한 칸이라는 표시).
+        # 다시 읽은 결과의 그 자리 [[?]]를 원문 확인이 되살리지 않게 (저장해도 남김)
+        r["icon_removed"] = int(r.get("icon_removed") or 0) + n_removed
         workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
         if got is None:
             got = src
@@ -1554,12 +1558,14 @@ def place_info(info, work: Path, occ_id: str) -> dict:
     toks = list(TOKEN_RE.finditer(text))
     ph = [ti for ti, t in enumerate(toks) if t.group(1) == "?"]  # 지금 원문의 j번째 [[?]] = index j인 자리
     by_index = {x.index: x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)}
-    out = {"image": img, "box": None, "guess": None, "marks": []}
+    out = {"image": img, "box": None, "guess": None, "marks": [], "items": []}
     for ti, t in enumerate(toks):
         if t.group(1) == "?":
             j = ph.index(ti)
             x = by_index.get(j)
             box = (x.box or (list(locate(img, text, ti)[0] or []) if x.png else [])) if x is not None else []
+            if x is not None:
+                out["items"].append(_place_item(res, x, box))
             if x is not None and x.id == o.id:
                 out["box"] = box or None
                 if not box:
@@ -1567,8 +1573,12 @@ def place_info(info, work: Path, occ_id: str) -> dict:
             elif x is not None and x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
                 continue
             elif box:
+                gi = res.groups.get(x.group, {})
+                settled = "absorbed" if gi.get("absorbed") else "not_icon" if gi.get("not_icon") else ""
+                # 아이콘 아님·옆 아이콘에 포함으로 정한 자리는 상자가 있어도 회색 (일반 아이콘과 헷갈리지 않게)
                 out["marks"].append({"box": box, "group": x.group, "occ": x.id,
-                                     **({"not_icon": True} if res.groups.get(x.group, {}).get("not_icon") else {})})
+                                     **({"not_icon": True} if gi.get("not_icon") else {}),
+                                     **({"settled": settled} if settled else {})})
             else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
                 gi = res.groups.get(x.group, {}) if x is not None else {}
                 # 아이콘 아님·옆 아이콘에 합친 자리: 더 찾을 것은 없지만 어디였는지는 보여 준다 (확인·되돌리기).
@@ -1588,7 +1598,28 @@ def place_info(info, work: Path, occ_id: str) -> dict:
                 box, guess = estimate(img, text, ti), True
             if box is not None:
                 out["marks"].append({"box": list(box), "name": t.group(1), **({"guess": True} if guess else {})})
+            out["items"].append({"occ": "", "group": "", "name": t.group(1), "state": "named",
+                                 "box": list(box) if box is not None else None})
     return out
+
+
+def _place_item(res: "ScanResult", x: "Occurrence", box) -> dict:
+    """카드 보기 목록의 한 줄: {"occ", "group", "name": "", "state", "box", "host"}.
+    state: found(찾음) | manual(직접 잡음) | lost(위치 못 찾음) | not_icon | absorbed(host 자리에 포함) | set(찾기가 합친 세트)."""
+    gi = res.groups.get(x.group, {})
+    host = gi.get("absorbed") or x.set_of or ""
+    if x.set_of or (gi.get("absorbed") and gi.get("auto")):
+        state = "set"
+    elif gi.get("absorbed"):
+        state = "absorbed"
+    elif gi.get("not_icon"):
+        state = "not_icon"
+    elif not x.png:
+        state = "lost"
+    else:
+        state = "manual" if x.manual else "found"
+    return {"occ": x.id, "group": x.group, "name": "", "state": state, "box": list(box) if box else None,
+            "host": host}
 
 
 MATCH_KNOWN_MIN = 0.6  # 사전 그림으로 찾을 때 이 이상 닮아야 그 자리로 본다 (정규화 상관)
@@ -1837,6 +1868,39 @@ def run_partners(info, work: Path, occ_id: str) -> dict:
             continue
         out["boxed" if x.png else "unfound"].append(x.id)
     return out
+
+
+def restore_icon(info, work: Path, occ_id: str) -> dict:
+    """카드 보기에서 ‘아이콘 아님’·옆 아이콘에 포함으로 정한 자리를 다시 아이콘 자리로 (그 자리만).
+    찾기가 스스로 합친 세트의 나머지 자리(auto)는 되돌리지 않는다. {"group"}. 되돌릴 것이 없으면 ValueError."""
+    work = Path(work)
+    res = load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    gi = res.groups.get(o.group, {})
+    if o.set_of or gi.get("auto") or not (gi.get("not_icon") or gi.get("absorbed")):
+        raise ValueError("되돌릴 것이 없는 자리입니다 (아이콘 아님·포함으로 정한 자리만 되돌립니다)")
+    if gi.get("count", 1) > 1:  # 묶음 전체를 아이콘 아님으로 한 경우: 이 자리만 빼서 새 묶음으로 (다른 카드는 그대로)
+        gi["count"] -= 1
+        if gi.get("rep") == o.id:
+            rest = [x for x in res.occurrences if x.group == o.group and x.id != o.id and x.png]
+            gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
+        if o.png:
+            nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
+            o.group = f"g{max(nums, default=0) + 1:02d}"
+            res.groups[o.group] = {"rep": o.id, "count": 1}
+        else:
+            o.group = f"위치 못 찾음 {o.id}"
+            res.groups[o.group] = {"rep": "", "count": 1}
+    else:
+        gi.pop("not_icon", None)
+        gi.pop("absorbed", None)
+        if not o.png and not o.group.startswith("위치 못 찾음"):  # 그림이 없으면 ‘위치 못 찾음’ 줄로
+            del res.groups[o.group]
+            o.group = f"위치 못 찾음 {o.id}"
+            gi = res.groups.setdefault(o.group, {"rep": "", "count": 1})
+            gi.pop("not_icon", None)
+    _save_scan(work, res)
+    return {"group": o.group}
 
 
 def absorb_into(info, work: Path, host_id: str, occ_ids: list[str]) -> list[str]:

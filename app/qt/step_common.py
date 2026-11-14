@@ -80,17 +80,26 @@ def _units(text: str) -> list[str]:
     return _UNIT_RE.findall(text or "")
 
 
-def fill_icon_names(reading: str, source: str, known=None) -> str:
+def fill_icon_names(reading: str, source: str, known=None, removed: bool | None = None) -> str:
     """읽은 결과 속 이름 없는 아이콘 [[?]]를, 지금 원문의 같은 자리에 있는 [[이름]]으로 바꾼다.
 
     모델이 읽은 결과에는 아이콘 이름을 정하기 전의 [[?]]가 남아 있고, 이름을 정하면 원문만 [[이름]]이 된다.
-    두 글을 맞춰 보아 같은 자리의 아이콘만 바꾼다. known이 있으면 그 안의 이름(사전에서 정한 것)만."""
+    두 글을 맞춰 보아 같은 자리의 아이콘만 바꾼다. known이 있으면 그 안의 이름(사전에서 정한 것)만.
+    removed: ② 아이콘 정의에서 이 칸의 [[?]]를 ‘아이콘 아님’으로 뺀 적이 있음 (칸의 icon_removed).
+    None이면 원문에 이름을 정한 아이콘이 있을 때 그렇다고 본다 (icon_removed를 적기 전에 정한 칸).
+    그런 칸에서 원문의 아이콘을 모두 정했는데(원문에 [[?]]가 없음) 읽은 결과의 아이콘이 더 많으면, 남는 [[?]]는
+    뺀 자리다: 그 자리는 원문 글자를 따른다 (그대로 두면 저장할 때 [[?]]가 되살아난다).
+    아이콘을 정한 적 없는 칸에서 다시 읽기가 새로 찾은 [[?]]는 그대로 둔다."""
     a = _units(reading)
     if UNKNOWN_ICON not in a:
         return reading
     b, out = _units(source), list(a)
     ia = [i for i, u in enumerate(a) if ICON_TOKEN_RE.fullmatch(u)]
     jb = [j for j, u in enumerate(b) if ICON_TOKEN_RE.fullmatch(u)]
+    if removed is None:
+        removed = any(ICON_TOKEN_RE.fullmatch(b[j]) and b[j] != UNKNOWN_ICON for j in jb)
+    if removed and len(ia) > len(jb) and UNKNOWN_ICON not in b:
+        return _fill_dropping_removed(a, b, known)
     if ia and len(ia) == len(jb):
         # 아이콘 수가 같으면 순서대로 짝짓는다 (옆 글자·빈칸이 조금 달라도: ‘2 [[?]]’ ↔ ‘2[[crate]]’,
         # ‘[[?]]工房 / ’ ↔ ‘[[workshop]]/’ — 글자 단위로 맞추면 이런 곳은 이름을 못 붙였다)
@@ -109,6 +118,35 @@ def fill_icon_names(reading: str, source: str, known=None) -> str:
                 if known is None or n[2:-2] in known:
                     out[i] = n
     return "".join(out)
+
+
+def _fill_dropping_removed(a: list[str], b: list[str], known=None) -> str:
+    """fill_icon_names에서 읽은 결과(a)의 아이콘이 원문(b)보다 많을 때: 아이콘을 한 기호로 보고 두 글을 맞춘다.
+    짝이 맞는 아이콘은 원문 이름으로, 짝이 없는 [[?]]는 빼고, 아이콘만 다른 곳은 원문 글자로 (‘아이콘 아님’에 적은 글자)."""
+    def norm(u):
+        return "<icon>" if ICON_TOKEN_RE.fullmatch(u) else u
+
+    out = list(a)
+    pre: dict[int, str] = {}  # 그 자리 앞에 넣을 원문 글자 (insert). i1 == len(a)면 맨 뒤
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, [norm(u) for u in a], [norm(u) for u in b],
+                                               autojunk=False).get_opcodes():
+        if op == "insert":
+            # 원문에만 있는 것 (‘아이콘 아님’에 적은 글자 등): 원문을 따라 그 자리에 넣는다
+            pre[i1] = pre.get(i1, "") + "".join(b[j1:j2])
+            continue
+        qs = [i for i in range(i1, i2) if ICON_TOKEN_RE.fullmatch(a[i])]
+        names = [b[j] for j in range(j1, j2) if ICON_TOKEN_RE.fullmatch(b[j])]
+        if op == "replace" and qs and not names:
+            # 아이콘으로 읽었는데 원문은 글자(또는 비움): 원문을 따른다
+            out[i1:i2] = ["".join(b[j1:j2])] + [""] * (i2 - i1 - 1)
+            continue
+        for k, i in enumerate(qs):
+            if k < len(names):
+                if a[i] == UNKNOWN_ICON and (known is None or names[k][2:-2] in known):
+                    out[i] = names[k]
+            elif a[i] == UNKNOWN_ICON:
+                out[i] = ""  # 원문에 없는 아이콘 자리: ‘아이콘 아님’으로 뺀 자리 (옆 빈칸은 읽은 그대로)
+    return "".join(pre.get(i, "") + u for i, u in enumerate(out)) + pre.get(len(a), "")
 
 
 def _marked_html(units: list[str], marks: set[int]) -> str:

@@ -6,7 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget,
+                               QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 from app import service
 from app.qt import worker
 from app.qt.dialogs import ask_choice, fit_to_screen, hint_bar, show_error, show_problem
@@ -78,8 +79,10 @@ class IconPlaceView(QWidget):
                 p.setPen(QColor("white"))
                 p.drawText(QRectF(r.left(), ty, tw, th), Qt.AlignmentFlag.AlignCenter, label)
 
-        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가[, 아이콘 아님·합침으로 정했나]])
-            if len(rest) > 1 and rest[1]:  # 아이콘 아님·옆에 합친 자리: 정해진 것이라 회색 점선 (어디였는지만)
+        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가[, 아이콘 아님·합침으로 정했나[, 목록에서 고름]]])
+            if len(rest) > 2 and rest[2]:  # 목록에서 고른 자리: 보라 굵은 테두리
+                frame(b, "#7B2CBF", label, dash=bool(rest[0] or rest[1]), width=3)
+            elif len(rest) > 1 and rest[1]:  # 아이콘 아님·옆에 합친 자리: 정해진 것이라 회색 점선 (어디였는지만)
                 frame(b, "#8A8A8A", label, dash=True, width=1)
             elif rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
                 frame(b, "#9A6A00", label, dash=True)
@@ -141,7 +144,9 @@ class IconPlaceDialog(QDialog):
         legend = QLabel('<span style="color:#2E8B57">■</span> 이미 찾은 아이콘 &nbsp; '
                         '<span style="color:#1F6FEB">■</span> 이 아이콘의 지금 자리 &nbsp; '
                         '<span style="color:#E67E22">■</span> 예상 위치(못 찾았을 때, 점선) &nbsp; '
-                        '<span style="color:#D62828">■</span> 새로 잡은 자리')
+                        '<span style="color:#D62828">■</span> 새로 잡은 자리 &nbsp; '
+                        '<span style="color:#7B2CBF">■</span> 목록에서 고름 &nbsp; '
+                        '<span style="color:#8A8A8A">■</span> 아이콘 아님·포함')
         hint = hint_bar("아이콘을 마우스로 끌어 감싸세요 (테두리까지 조금 넉넉하게). 다시 끌면 새로 잡습니다.\n"
                         "‘이 자리로 저장’을 누르면 그 자리로 그림을 다시 잘라 같은 모양끼리 다시 묶습니다. "
                         "한 상자에 아이콘이 둘이면 하나만 감싸 ‘둘로 나누기’.", "info")
@@ -171,13 +176,46 @@ class IconPlaceDialog(QDialog):
         self.split_btn.setEnabled(False)
         self._place: dict = {}
         self._run_host: str | None = None
+        self._cur_occ: str | None = None  # 목록에서 고른 지금 자리 (None이면 위 콤보의 자리)
+        self._cell_where: dict[str, dict] = {}  # 이 칸 자리들의 정보 (그림 조각·직접 잡음·카드 이름)
+        self._cell_key: frozenset | None = None  # _cell_where를 읽은 자리들 (같으면 다시 읽지 않는다)
+        # ---- 이 칸의 아이콘 목록: 고르고 수정(끌어 감싸 저장)·삭제(아이콘 아님)·합치기·되돌리기
+        self.items = QListWidget()
+        self.items.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.items.setMinimumWidth(230)
+        self.items.setToolTip("이 카드 칸의 아이콘 자리 (원문 순서). 누르면 그 자리를 그림에서 고칩니다.\n"
+                              "Ctrl·Shift로 여러 개를 고르면 삭제·합치기를 한꺼번에 합니다.")
+        self.items.itemClicked.connect(self._item_clicked)
+        self.items.itemSelectionChanged.connect(self._selection_changed)
+        self.del_btn = QPushButton("삭제 (아이콘 아님)")
+        self.del_btn.setToolTip("고른 자리들을 ‘아이콘 아님’으로 합니다 (확정하면 원문에서 빠짐). 창은 닫지 않습니다.")
+        self.del_btn.clicked.connect(self._delete_selected)
+        self.merge_btn = QPushButton("합치기")
+        self.merge_btn.setToolTip("목록에서 2개 이상 고르면 하나의 아이콘으로 합칩니다 (나머지는 원문에서 빠짐).\n"
+                                  "문양 여러 개가 붙은 한 아이콘을 따로 읽었을 때.")
+        self.merge_btn.clicked.connect(self._merge_selected)
+        self.restore_btn = QPushButton("되돌리기")
+        self.restore_btn.setToolTip("‘아이콘 아님’·포함으로 정한 자리를 다시 아이콘 자리로 되돌립니다.")
+        self.restore_btn.clicked.connect(self._restore_selected)
+        for b in (self.del_btn, self.merge_btn, self.restore_btn):
+            b.setEnabled(False)
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
         side = QVBoxLayout()
         side.addWidget(QLabel("잘라 낸 그림:"))
         side.addWidget(self.crop)
         side.addStretch(1)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("<b>이 칸의 아이콘</b>"))
+        left.addWidget(self.items, 1)
+        edit_hint = QLabel("수정: 목록에서 고르고 그림에서 끌어 감싼 뒤 ‘이 자리로 저장’")
+        edit_hint.setWordWrap(True)
+        edit_hint.setStyleSheet("color: #666")
+        left.addWidget(edit_hint)
+        for b in (self.del_btn, self.merge_btn, self.restore_btn):
+            left.addWidget(b)
         mid = QHBoxLayout()
+        mid.addLayout(left)
         mid.addWidget(self.view, 1)
         mid.addLayout(side)
         btns = QHBoxLayout()
@@ -194,7 +232,7 @@ class IconPlaceDialog(QDialog):
         lay.addLayout(mid, 1)
         lay.addWidget(legend)
         lay.addLayout(btns)
-        self.combo.currentIndexChanged.connect(lambda _i: self._load())
+        self.combo.currentIndexChanged.connect(self._combo_changed)
         # 처음 볼 자리: 못 찾은 것 -> 직접 잡은 것(다시 고치러 왔을 때) -> 첫째
         first = next((i for i, w in enumerate(self.where) if not w.get("png")),
                      next((i for i, w in enumerate(self.where) if w.get("manual")), 0))
@@ -208,11 +246,168 @@ class IconPlaceDialog(QDialog):
         tag = " (직접 잡음)" if w.get("manual") else ("" if w.get("png") else " (위치 못 찾음)")
         return w["label"] + tag
 
-    def _load(self):
+    def _combo_changed(self, _i: int) -> None:
+        self._cur_occ = None  # 다른 카드: 그 묶음의 자리부터
+        self._load()
+
+    def _cur(self) -> dict | None:
+        """지금 자리 (목록에서 고른 자리, 없으면 위 콤보의 자리): {"occ", "png", "manual", "label", …}."""
+        if self._cur_occ:
+            w = next((w for w in self.where if w["occ"] == self._cur_occ), None) or self._cell_where.get(self._cur_occ)
+            if w is not None:
+                return w
+            self._cur_occ = None  # 없어진 자리: 콤보의 자리로
         i = self.combo.currentIndex()
-        if i < 0:
+        return self.where[i] if 0 <= i < len(self.where) else None
+
+    STATE_TEXT = {"found": "찾음", "manual": "직접 잡음", "lost": "위치 못 찾음", "not_icon": "아이콘 아님",
+                  "named": "확정됨"}
+    ACTIONABLE = ("found", "manual", "lost", "not_icon", "absorbed")  # 목록에서 합칠 수 있는 자리
+
+    def _item_label(self, it: dict) -> str:
+        return f"[[{it['name']}]]" if it.get("name") else self.row_label(it.get("group", ""))
+
+    def _fill_items(self, p: dict, cur: str) -> None:
+        """이 칸의 아이콘 목록을 다시 채운다 (고른 줄은 그대로 고른 채, 지금 자리는 늘 고름)."""
+        keep = {o for o, _st in self._selected()}
+        label_of = {it["occ"]: self._item_label(it) for it in p.get("items", []) if it.get("occ")}
+        self.items.blockSignals(True)
+        self.items.clear()
+        for k, it in enumerate(p.get("items", []), 1):
+            st = it["state"]
+            if st in ("absorbed", "set"):
+                host = label_of.get(it.get("host"), "옆 아이콘")
+                txt = f"{host}에 포함" if st == "absorbed" else f"{host} 세트 (자동)"
+            else:
+                txt = self.STATE_TEXT.get(st, st)
+            mine = bool(it.get("occ")) and it["occ"] == cur
+            row = QListWidgetItem(f"{'▶ ' if mine else ''}{k}. {self._item_label(it)} — {txt}")
+            row.setData(Qt.ItemDataRole.UserRole, it.get("occ") or "")
+            row.setData(Qt.ItemDataRole.UserRole + 1, st)
+            if st in ("not_icon", "absorbed", "set", "named"):
+                row.setForeground(QColor("#888"))
+            elif st == "lost":
+                row.setForeground(QColor("#B35C00"))
+            if mine:
+                f = row.font()
+                f.setBold(True)
+                row.setFont(f)
+            if st in ("named", "set"):  # 이미 정한 이름·찾기가 합친 세트: 볼 수만 있다
+                row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.items.addItem(row)
+            if it.get("occ") and it["occ"] in keep:  # 지금 자리는 굵게만 (고르지 않으면 삭제에 들어가지 않는다)
+                row.setSelected(True)
+        self.items.blockSignals(False)
+        self._list_tools()
+
+    def _selected(self) -> list[tuple[str, str]]:
+        """목록에서 고른 자리 [(occ, 상태)] (원문 순서)."""
+        return [(it.data(Qt.ItemDataRole.UserRole), it.data(Qt.ItemDataRole.UserRole + 1))
+                for it in sorted(self.items.selectedItems(), key=self.items.row) if it.data(Qt.ItemDataRole.UserRole)]
+
+    def _item_clicked(self, item: QListWidgetItem) -> None:
+        occ = item.data(Qt.ItemDataRole.UserRole)
+        mods = QApplication.keyboardModifiers()
+        if not occ or occ == (self._cur() or {}).get("occ") or not item.isSelected() or \
+                mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            return  # Ctrl·Shift로 여러 개를 고르는 중에는 지금 자리를 바꾸지 않는다
+        self.select_item(occ)
+
+    def select_item(self, occ: str) -> None:
+        """목록의 그 자리를 지금 자리로 (그림에서 고친다). 위 콤보에 있는 자리면 콤보도 그 자리로."""
+        idx = next((k for k, w in enumerate(self.where) if w["occ"] == occ), None)
+        if idx is not None:
+            self.combo.blockSignals(True)
+            self.combo.setCurrentIndex(idx)
+            self.combo.blockSignals(False)
+            self._cur_occ = None
+        else:
+            self._cur_occ = occ
+        self._load()
+
+    def _selection_changed(self) -> None:
+        self._list_tools()
+        self._repaint_selection()
+
+    def _repaint_selection(self) -> None:
+        sel = {o for o, _st in self._selected()}
+        self.view.marks = [(*m[:4], bool(m[5]) and m[5] in sel, m[5]) if len(m) > 5 else m for m in self.view.marks]
+        self.view.update()
+
+    def _list_tools(self) -> None:
+        sel = self._selected()
+        self.del_btn.setEnabled(any(st in ("found", "manual", "lost") for _o, st in sel))
+        host, others = self._merge_plan()
+        self.merge_btn.setEnabled(bool(host and others))
+        if host and others:
+            k = next((i + 1 for i in range(self.items.count())
+                      if self.items.item(i).data(Qt.ItemDataRole.UserRole) == host), 0)
+            self.merge_btn.setText(f"합치기 ({len(others) + 1}개 → {k}번)")
+        else:
+            self.merge_btn.setText("합치기")
+        n_sel = sum(1 for _o, st in sel if st in self.ACTIONABLE)
+        self.merge_btn.setToolTip(
+            "고른 자리들을 하나의 아이콘으로 합칩니다 (나머지는 원문에서 빠짐).\n"
+            "합쳐질 자리: 고른 것 중 지금 자리(파랑), 아니면 상자가 있는 첫 자리."
+            + ("\n고른 자리에 상자가 있는 것(찾음·직접 잡음)이 없습니다: 하나를 먼저 끌어 감싸 저장하세요."
+               if n_sel >= 2 and not host else ""))
+        self.restore_btn.setEnabled(any(st in ("not_icon", "absorbed") for _o, st in sel))
+        ui = getattr(QApplication.instance(), "_ui_codes", None)
+        if ui is not None:
+            ui.relabel(self.merge_btn)
+
+    def _after_list_action(self, cur: str | None) -> None:
+        self.on_saved({})  # 이름 정하기 표를 새로 채운다 (줄 번호가 바뀔 수 있음)
+        self.outcome = ("saved", self._refresh(cur))
+
+    def _delete_selected(self) -> None:
+        occs = [o for o, st in self._selected() if st in ("found", "manual", "lost")]
+        if not occs:
             return
-        w = self.where[i]
+        try:
+            for o in occs:
+                service.set_icon_not_icon(self.project_dir, o)
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "‘아이콘 아님’으로 정하지 못했습니다", e)
+        self._after_list_action((self._cur() or {}).get("occ") or occs[0])
+
+    def _merge_plan(self) -> tuple[str | None, list[str]]:
+        """목록에서 고른 자리들을 합칠 계획 (합쳐질 자리, 그 자리에 포함할 자리들).
+        합쳐질 자리: 고른 것 중 지금 자리(상자가 있을 때), 아니면 상자가 있는 첫 자리. 2개 이상 골라야 한다."""
+        sel = [(o, st) for o, st in self._selected() if st in self.ACTIONABLE]
+        if len(sel) < 2:
+            return None, []
+        cur = (self._cur() or {}).get("occ")
+        boxed = [o for o, st in sel if st in ("found", "manual")]
+        host = cur if cur in boxed else (boxed[0] if boxed else None)
+        return host, [o for o, _st in sel if o != host] if host else []
+
+    def _merge_selected(self) -> None:
+        host, others = self._merge_plan()
+        if not host or not others:
+            return
+        try:
+            service.absorb_icon_run(self.project_dir, host, others)
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "아이콘을 합치지 못했습니다", e)
+            return
+        self._after_list_action(host)
+
+    def _restore_selected(self) -> None:
+        occs = [o for o, st in self._selected() if st in ("not_icon", "absorbed")]
+        if not occs:
+            return
+        try:
+            for o in occs:
+                service.restore_icon(self.project_dir, o)
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "되돌리지 못했습니다", e)
+        self._after_list_action((self._cur() or {}).get("occ") or occs[0])
+
+    def _load(self):
+        w = self._cur()
+        if w is None:
+            return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             p = service.icon_place(self.project_dir, w["occ"])
@@ -224,12 +419,17 @@ class IconPlaceDialog(QDialog):
         pm = QPixmap()
         pm.loadFromData(p["png"], "PNG")
         settled = {"not_icon": " · 아이콘 아님", "absorbed": " · 옆 아이콘에 합침"}
+        self._place = p
+        self._cell_info(p)
+        self._fill_items(p, w["occ"])
+        sel = {o for o, _st in self._selected()}
+        # (상자, 이름, 예상 위치, 정한 자리, 목록에서 고름, 자리 id)
         marks = [(m["box"], (f"[[{m['name']}]]" if m.get("name") else self.row_label(m.get("group", "")))
                   + (settled.get(m.get("settled"), "") or (" · 위치 못 찾음" if m.get("guess") else "")),
-                  bool(m.get("guess")), bool(m.get("settled")))
+                  bool(m.get("guess")), bool(m.get("settled")), bool(m.get("occ")) and m.get("occ") in sel,
+                  m.get("occ") or "")
                  for m in p["marks"]]
         self.view.set_data(pm, p["box"], p["guess"], marks)
-        self._place = p
         self._update_tools()
         if w.get("png"):
             self.crop.setPixmap(QPixmap(w["png"]).scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
@@ -253,6 +453,18 @@ class IconPlaceDialog(QDialog):
             self.status.setText("자동으로 찾지 못했습니다. 아이콘을 끌어 감싸세요.")
         self.save_btn.setEnabled(False)
 
+    def _cell_info(self, p: dict) -> None:
+        """목록의 다른 자리(다른 묶음)를 고를 때 쓸 그림 조각·직접 잡음 정보."""
+        occs = {it["occ"] for it in p.get("items", []) if it.get("occ")} - {w["occ"] for w in self.where}
+        if not occs:
+            self._cell_where = {}
+            return
+        if frozenset(occs) == self._cell_key:  # 같은 칸: 다시 읽지 않는다 (_refresh가 비운다)
+            return
+        self._cell_key = frozenset(occs)
+        rev = service.icon_review(self.project_dir) or {"groups": []}
+        self._cell_where = {w["occ"]: dict(w) for g in rev["groups"] for w in g.get("where", []) if w["occ"] in occs}
+
     def _drawn(self):
         self.save_btn.setEnabled(self.view.new is not None)
         self._update_tools()
@@ -260,8 +472,7 @@ class IconPlaceDialog(QDialog):
     def _update_tools(self):
         """겹친 아이콘 흡수·둘로 나누기 버튼: 지금 자리(또는 새로 감싼 자리)를 보고 켠다."""
         p = self._place
-        i = self.combo.currentIndex()
-        occ = self.where[i]["occ"] if 0 <= i < len(self.where) else ""
+        occ = (self._cur() or {}).get("occ", "")
         box = self.view.new or p.get("box")
         self._overlaps = service.overlapping_icons(p.get("marks") or [], box, exclude=occ) if box else []
         n = len(self._overlaps)
@@ -274,10 +485,9 @@ class IconPlaceDialog(QDialog):
 
     def _save(self):
         box = self.view.new
-        if not box:
+        w = self._cur()
+        if not box or w is None:
             return
-        i = self.combo.currentIndex()
-        w = self.where[i]
         try:
             r = service.set_icon_box(self.project_dir, w["occ"], box)
         except ValueError as e:
@@ -322,10 +532,9 @@ class IconPlaceDialog(QDialog):
 
     def _not_icon(self):
         """지금 고른 자리만 ‘아이콘 아님’ 줄로 옮긴다."""
-        i = self.combo.currentIndex()
-        if i < 0:
+        w = self._cur()
+        if w is None:
             return
-        w = self.where[i]
         try:
             r = service.set_icon_not_icon(self.project_dir, w["occ"])
         except Exception as e:  # noqa: BLE001
@@ -337,11 +546,11 @@ class IconPlaceDialog(QDialog):
 
     def _absorb(self):
         """지금 자리를 바로 옆 아이콘(상자가 이 자리까지 감쌈)에 포함: 이 자리는 원문에서 뺀다."""
-        i = self.combo.currentIndex()
-        if i < 0 or not self._run_host:
+        w = self._cur()
+        if w is None or not self._run_host:
             return
         try:
-            service.absorb_icon_run(self.project_dir, self._run_host, [self.where[i]["occ"]])
+            service.absorb_icon_run(self.project_dir, self._run_host, [w["occ"]])
         except Exception as e:  # noqa: BLE001
             show_error(self, "아이콘을 합치지 못했습니다", e)
             return
@@ -358,8 +567,7 @@ class IconPlaceDialog(QDialog):
     def _suggest(self, group: str, close: bool = True):
         """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다).
         close=False: 제안을 받은 뒤 창을 닫지 않고 바뀐 그림을 다시 보여 준다 (세트로 합침·나눔·흡수)."""
-        i = self.combo.currentIndex()
-        occ = self.where[i]["occ"] if 0 <= i < len(self.where) else None
+        occ = (self._cur() or {}).get("occ")
         after = self.accept if close else (lambda: self._refresh(occ))
         eng = service.get_settings().engine
         if not service.engine_status().get(eng):  # 연결할 수 없으면 제안 없이 (이름은 표에서 직접 적는다)
@@ -378,6 +586,7 @@ class IconPlaceDialog(QDialog):
         """자리 목록·그림을 다시 읽어 이 창에서 바로 보여 준다 (닫지 않음). extra: 새로 생긴 자리 id.
         돌려줌: select_occ가 지금 들어 있는 묶음 (닫은 뒤 표가 고를 줄)."""
         rev = service.icon_review(self.project_dir) or {"groups": []}
+        self._cell_where, self._cell_key = {}, None  # 묶음이 바뀌었을 수 있다
         group = next((g["group"] for g in rev["groups"] if any(w["occ"] == select_occ for w in g.get("where", []))), None)
         by_occ = {w["occ"]: w for g in rev["groups"] for w in g.get("where", [])}
         ids = [w["occ"] for w in self.where] + [o for o in (extra or []) if o not in {w["occ"] for w in self.where}]
@@ -386,8 +595,12 @@ class IconPlaceDialog(QDialog):
         self.combo.clear()
         for w in self.where:
             self.combo.addItem(self._item_text(w), w["occ"])
-        idx = next((k for k, w in enumerate(self.where) if w["occ"] == select_occ), 0)
-        self.combo.setCurrentIndex(idx)
+        idx = next((k for k, w in enumerate(self.where) if w["occ"] == select_occ), None)
+        # 목록에서 고른 다른 묶음의 자리면 그 자리를 그대로 지금 자리로 (콤보는 그 묶음의 자리만 있다)
+        self._cur_occ = select_occ if idx is None and select_occ and select_occ in by_occ else None
+        if self._cur_occ:  # 다른 묶음의 자리 정보는 방금 읽은 것으로 (비워 두면 _cur()가 콤보 자리로 돌아간다)
+            self._cell_where = {self._cur_occ: dict(by_occ[self._cur_occ])}
+        self.combo.setCurrentIndex(idx or 0)
         self.combo.blockSignals(False)
         if not self.where:  # 보여 줄 자리가 없음: 예전 그림·버튼을 남기지 않는다
             self._place = {}
@@ -399,10 +612,9 @@ class IconPlaceDialog(QDialog):
 
     def _absorb_overlaps(self):
         """겹친 [[?]] 자리들을 지금 아이콘에 포함한다 (같은 그림을 두 번 읽음: 그 자리들은 원문에서 빠진다)."""
-        i = self.combo.currentIndex()
-        if i < 0 or not self._overlaps:
+        w = self._cur()
+        if w is None or not self._overlaps:
             return
-        w = self.where[i]
         if self.view.new is not None:  # 새로 감쌌으면 그 자리로 먼저 저장
             try:
                 service.set_icon_box(self.project_dir, w["occ"], self.view.new)
@@ -422,10 +634,9 @@ class IconPlaceDialog(QDialog):
 
     def _split(self):
         """지금 자리 상자 안의 아이콘 둘을 나눈다: 새로 감싼 것 하나 + 나머지."""
-        i = self.combo.currentIndex()
-        if i < 0 or self.view.new is None:
+        w = self._cur()
+        if w is None or self.view.new is None:
             return
-        w = self.where[i]
         try:
             r = service.split_icon_box(self.project_dir, w["occ"], self.view.new)
         except ValueError as e:

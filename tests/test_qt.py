@@ -2070,8 +2070,8 @@ def test_fill_icon_names_uses_confirmed_names():
     # 아이콘 수가 같으면 옆 글자·빈칸이 달라도 순서대로 이름을 붙인다 (예전에는 [[?]]로 남았다)
     assert fill_icon_names("2 [[?]] [[?]]", "2[[crate]] [[book]]") == "2 [[crate]] [[book]]"
     assert fill_icon_names("[[?]]工房 / [[?]]馬車", "[[workshop]]/[[wagon]]\n工房 馬車") == "[[workshop]]工房 / [[wagon]]馬車"
-    # 수가 다르면 짝이 분명한 곳만 (짝이 없는 [[?]]는 그대로)
-    assert fill_icon_names("[[?]]のとき [[?]]を得る", "のとき [[seal]]を得る") == "[[?]]のとき [[seal]]を得る"
+    # 원문 아이콘을 모두 정했는데 읽은 아이콘이 더 많으면: 짝이 없는 [[?]]는 ‘아이콘 아님’으로 뺀 자리라 뺀다 (1.20.0)
+    assert fill_icon_names("[[?]]のとき [[?]]を得る", "のとき [[seal]]を得る") == "のとき [[seal]]を得る"
 
 
 def _project_with_icon_cell(tmp_path):
@@ -3495,7 +3495,8 @@ def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path,
     dlg.reread_btn.click()
     assert calls == [(1, "이름", {"model": "opus", "engine": "api"})] and ran
     rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
-    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기", "정밀 읽기 (다시 읽기)"]
+    # 정밀 읽기로 다시 읽었으면 처음의 정밀 읽기 줄은 숨긴다 (1.20.0)
+    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기 (다시 읽기)"]
     assert dlg.edit.toPlainText() == "盗掘[[?]]フェレット"
     assert "다시 읽은 결과를 편집 칸에 넣었습니다" in dlg.info.text() and "② 아이콘 정의" in dlg.info.text()
     c = next(x for x in service.extracted_cells(fd) if (x["page"], x["region"]) == (1, "이름"))

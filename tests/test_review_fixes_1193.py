@@ -197,3 +197,23 @@ def test_stroked_fill_before_inline_icon(tmp_path):
     imgs = [i for i, s in enumerate(streams) if b" Do" in s]
     assert fills and imgs
     assert fills[0] < imgs[0] < fills[-1]  # 왼쪽 글자 채움 → 아이콘 → 오른쪽 글자 채움 (읽는 순서)
+
+
+# ---------------------------------------------------------------- 2A: 위치 못 찾음 줄에 ‘아이콘 아님’을 체크하면 회색
+def test_lost_row_turns_grey_when_not_icon(qapp, tmp_path):
+    from PySide6.QtGui import QColor
+
+    from app.qt.icon_review import IconReviewDialog
+
+    info, fd = _project(tmp_path, "grey", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
+    r = next(i for i, g in enumerate(dlg.review["groups"]) if not g["image"])
+    cell, not_icon = dlg.table.item(r, 0), dlg.widgets[r][4]
+    assert cell.text() == "위치 못 찾음"
+    assert cell.background().color() == QColor(dlg.LOST_COLOR)
+    not_icon.setChecked(True)
+    assert cell.background().color() == QColor(dlg.LOST_DONE_COLOR)
+    not_icon.setChecked(False)
+    assert cell.background().color() == QColor(dlg.LOST_COLOR)
+    dlg.close()
