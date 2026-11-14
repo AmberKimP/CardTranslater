@@ -217,8 +217,32 @@ class SourceReviewDialog(QDialog):
                 self.table.setCurrentCell(i, 0)
 
     @staticmethod
+    def kept_with_text(c: dict) -> bool:
+        """‘원본 그대로’ 칸인데 원문에 아이콘·숫자·기호 말고 글자도 있는가 (글자도 번역하지 않고 남는다)."""
+        if not c.get("keep_original"):
+            return False
+        return service.has_text_besides_icons(as_text(c["source"]))
+
+    @staticmethod
+    def kept_paragraphs(c: dict) -> list[str]:
+        """아이콘 문단만 원본 그대로인 칸의 남긴 문단 (원문 줄을 이어 붙인 것, 줄이 이어지면 한 문단)."""
+        rows = as_text(c["source"]).split("\n")
+        out, prev = [], None
+        for i in c.get("keep_lines") or []:
+            if i >= len(rows):
+                continue
+            if prev is not None and i == prev + 1 and out:
+                out[-1] += "\n" + rows[i]
+            else:
+                out.append(rows[i])
+            prev = i
+        return out
+
+    @staticmethod
     def needs_check(c: dict) -> bool:
-        return c["uncertain"] or c["label"] in ("결론 못 냄", SourceReviewDialog.UNREAD)
+        # 글자도 있는 ‘원본 그대로’ 칸은 ‘확인할 칸만’ 목록에도 보인다 (글자가 번역되지 않고 남는지 확인)
+        return c["uncertain"] or c["label"] in ("결론 못 냄", SourceReviewDialog.UNREAD) or \
+            SourceReviewDialog.kept_with_text(c) or c.get("keep_mode") == "broken"
 
     @staticmethod
     def needs_attention(c: dict) -> bool:
@@ -318,12 +342,19 @@ class SourceReviewDialog(QDialog):
                 src = c["source"]
                 text = "\n".join(src) if isinstance(src, list) else (src or "")
                 unread = c["label"] == self.UNREAD
+                kept_text = self.kept_with_text(c)
+                part = c.get("keep_mode") in ("partial", "broken")  # 아이콘 문단만 원본 그대로로 정한 칸
                 vals = [str(c["page"]), c["region"],
-                        "번역 안 함 (아이콘)" if c.get("keep_original") else label_text(c["label"]),
+                        ("번역 안 함 · 글자 있음" if kept_text else "번역 안 함 (사용자 선택)") if c.get("keep_original")
+                        else ("일부 문단 원본 그대로" if c.get("keep_mode") == "partial"
+                              else "원본 그대로 · 줄 수 바뀜") if part
+                        else label_text(c["label"]),
                         "(아직 추출하지 않음 — ① 글자 추출)" if unread and not text else text.replace("\n", " / ")]
                 for j, v in enumerate(vals):
                     it = QTableWidgetItem(v)
-                    color = LABEL_COLORS.get(c["label"]) or ("#FFE066" if c["uncertain"] else None)
+                    color = ("#FFE066" if kept_text else "#E0E0E0") if c.get("keep_original") else \
+                        ("#E0E0E0" if c.get("keep_mode") == "partial" else "#FFE066") if part else \
+                        LABEL_COLORS.get(c["label"]) or ("#FFE066" if c["uncertain"] else None)
                     if color and j == 2:
                         it.setBackground(QColor(color))
                     if unread:
@@ -379,6 +410,31 @@ class SourceReviewDialog(QDialog):
         head = _html.escape(f"원문 확인: {label_text(c['label'])}")  # 쪽·영역은 위 제목에
         reason, memo = self.reason_text(c, differ)
         reason = _html.escape(reason)
+        if c.get("keep_original"):  # 사람이 ‘원본 그대로’로 정한 칸: 잘못 읽은 칸이 아니다
+            head = "원문 확인: 번역하지 않기로 함"
+            reason = ("사용자가 ‘원본 그대로’를 골라 번역하지 않기로 한 칸입니다. 글자 지우기·한글 넣기를 하지 않아 "
+                      "카드에는 아이콘 그림이 원본 그대로 나옵니다.")
+            memo = ""
+            differ = False
+            if self.kept_with_text(c):  # 글자도 있는 칸: 글자까지 원본(일본어)으로 남는다
+                kind = "todo"
+                reason += (" <b>이 칸에는 글자도 있어 글자도 원본 그대로 남습니다.</b> 맞는지 확인하세요 "
+                           "(글자를 번역하려면 ‘원본 그대로’를 풀고 아이콘 자리만 ‘아이콘 아님’으로 지우세요).")
+        if c.get("keep_mode") == "partial":  # 카드 보기에서 ‘원본 그대로’ (문단마다 다른 글꼴 영역): 아이콘 문단만
+            n = len(self.kept_paragraphs(c))
+            head = "원문 확인: 일부 문단 원본 그대로"
+            reason = (f"사용자가 ‘원본 그대로’를 골라 아이콘이 있는 문단 {n}개는 번역하지 않고 원본 그림 그대로 둡니다 "
+                      "(글자 지우기·한글 넣기도 안 함). 다른 문단은 번역해 그 문단 자리에 넣습니다.")
+            memo = ""
+            differ = False
+        elif c.get("keep_mode") == "broken":
+            kind = "todo"
+            head = "원문 확인: 원본 그대로 (칸 전체)"
+            reason = ("사용자가 ‘원본 그대로’를 골라 아이콘이 있는 문단만 원본 그대로 두기로 했는데, 그 뒤 원문 줄이 바뀌어 "
+                      "어느 문단인지 맞출 수 없습니다. <b>아이콘을 지우지 않도록 칸 전체를 원본 그대로 둡니다.</b> "
+                      "다른 문단을 번역하려면 ② 아이콘 정의의 카드 보기에서 ‘원본 그대로’를 끄고 다시 켜세요.")
+            memo = ""
+            differ = False
         if differ:
             reason = reason.replace("다릅니다.", f'다릅니다 (다른 곳은 <span style="{DIFF_STYLE}">빨간 굵은 글자</span>).', 1)
         if differ and pi is not None and self.needs_attention(c):
@@ -394,7 +450,9 @@ class SourceReviewDialog(QDialog):
         self.edit.setPlainText(default)
         self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
         self._orig_text = self.edit.toPlainText()
-        keep = bool(c.get("keep_original"))
+        # 아이콘 문단만 원본 그대로인 칸도 ‘되돌리기’로 보인다 (누르면 풀어서 칸 전체를 다시 한글화)
+        # (아이콘 문단만으로 정했는데 글 줄이 모두 남길 줄인 칸(keep_mode whole)도)
+        keep = bool(c.get("keep_original") or c.get("keep_mode"))
         self.keep_btn.setEnabled(c["source"] is not None)  # 아직 읽지 않은 칸은 정할 수 없다
         self.keep_btn.setChecked(keep)
         self.keep_btn.setText(KEEP_UNDO_LABEL if keep else KEEP_LABEL)
@@ -404,11 +462,12 @@ class SourceReviewDialog(QDialog):
         c = self.current()
         if c is None:
             return
-        keep = not c.get("keep_original")
+        keep = not (c.get("keep_original") or c.get("keep_mode"))
         if keep and self._dirty():  # 고친 글은 버린다 (번역하지 않는 칸)
             self.edit.setPlainText(self._orig_text)
         try:
-            service.set_keep_original(self.file.currentData(), c["page"], c["region"], keep)
+            # 끌 때는 원본 그대로 때문에 ‘아이콘 아님’이 된 자리도 되돌린다 (카드 보기에서 끈 것과 같게)
+            service.set_cell_keep_original(self.file.currentData(), c["page"], c["region"], keep)
         except Exception as e:  # noqa: BLE001
             show_error(self, "정하지 못했습니다", e)
             self.keep_btn.setChecked(not keep)

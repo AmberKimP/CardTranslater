@@ -379,17 +379,27 @@ def _detect_level(img, T, box, level: float, p: PictureParams) -> dict | None:
     return {"T": T, "core": core, "guard": guard, "hg": hg, "rows": row_info, "score": score, "level": level}
 
 
+ROW_MISMATCH_PENALTY = 0.5  # 원문 글 줄 수와 찾은 줄 수가 한 줄 다를 때마다 점수를 1 + 이 값 배로 나눈다
+
+
 def picture_text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarray | None = None,
-                      params: PictureParams | None = None) -> PictureText | None:
+                      params: PictureParams | None = None, expected_rows: int | None = None) -> PictureText | None:
     """그림 배경 위 글자: img(상자 둘레에 여유가 있는 자른 그림, H×W×3 uint8) 안 box의 글자 픽셀.
-    글자 줄을 찾지 못하면 None."""
+    글자 줄을 찾지 못하면 None.
+    expected_rows: 읽은 원문의 글 줄 수 (알면). 어두운 글자·밝은 글자 둘 다 줄이 잡히면 줄 수가 원문과 가까운 쪽을
+    더 믿는다: 건물 그림의 밝은 창문 줄이 글자 줄보다 많이 잡혀 밝은 쪽이 골라지면 진짜 글자는 하나도 지우지 못한다."""
     p = params or PictureParams()
     H, W = img.shape[:2]
-    best, pol = None, 0
+    best, pol, best_s = None, 0, 0.0
     for polarity in (-1, 1):
         d = _detect_polarity(img, box, polarity, p)
-        if d is not None and (best is None or d["score"] > best["score"]):
-            best, pol = d, polarity
+        if d is None:
+            continue
+        s_ = d["score"]
+        if expected_rows:
+            s_ /= 1.0 + ROW_MISMATCH_PENALTY * abs(len(d["rows"]) - expected_rows)
+        if best is None or s_ > best_s:
+            best, pol, best_s = d, polarity, s_
     if best is None:
         return None
     core, guard, hg, T = best["core"], best["guard"], best["hg"], best["T"]
@@ -610,9 +620,10 @@ def region_text_mask(sub: np.ndarray, region_box: tuple[int, int, int, int], pro
         tm.core[:] = False
         tm.notes = ["복잡한 그림 배경: 원문에 글자가 없어 지우지 않음"]
         return None, tm
-    pic = picture_text_mask(sub, region_box, protect)
+    n_text = (sum(1 for t in source.split("\n") if t.strip() and not erase_text.is_icon_line(t))
+              if isinstance(source, str) else 0)
+    pic = picture_text_mask(sub, region_box, protect, expected_rows=n_text or None)
     if pic is not None and isinstance(source, str):
-        n_text = sum(1 for t in source.split("\n") if t.strip() and not erase_text.is_icon_line(t))
         if n_text and len(pic.rows) > n_text:
             pic = drop_label_rows(pic, len(pic.rows) - n_text)
     if pic is None:

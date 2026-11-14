@@ -109,6 +109,9 @@ def safe_name(name: str, idx: int) -> str:
 STATUS_NO_TRANSLATION = "번역 없음 (원문만 지워짐)"
 STATUS_ICON_ONLY = "모두 아이콘이라 건너뜀"  # 아이콘만 있는 칸(또는 ‘번역 안 함’ 칸): 지우지도 넣지도 않고 원본 그대로
 STATUS_MISSING_LINE = "읽지 못한 줄 있음 (지운 줄이 원문보다 많음)"
+# 아이콘 문단만 원본 그대로 두기로 한 칸인데 그 문단의 줄을 찾지 못하거나 줄을 골라 지울 수 없어 칸 전체를 원본 그대로 둠
+STATUS_KEEP_FALLBACK = "원본 그대로 둘 문단을 못 찾아 칸 전체를 원본 그대로"
+STATUS_KEEP_NO_SLOT = "원본 그대로 둔 문단 밖에 넣을 줄 자리를 못 찾음"  # 남은 문단을 넣지 못함 (영역 전체에 넣으면 남긴 문단을 덮는다)
 
 
 def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: dict | None,
@@ -224,6 +227,18 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
                 style_d = {**style_d, "tag_fonts": {**(style_d.get("tag_fonts") or {}), **tag_fonts}}
                 rec["sentence_fonts"] = {str(k): v for k, v in sorted(ok.items())}
         layout = reg.get("text_layout") or {}
+        if layout.get("keep_failed"):
+            # 아이콘 문단만 원본 그대로 둘 칸인데 지우기가 그 줄을 찾지 못해 영역을 지우지 않았다: 넣지 않는다 (원본 그대로)
+            rec.update(status=[STATUS_KEEP_FALLBACK], lines=[], line_boxes_pt=[], overflow_text="", errors=[],
+                       drawn=False, draw_rect_pt=[round(v, 3) for v in rect])
+            rec["warnings"].append("원본 그대로 둘 문단의 줄을 찾지 못해 칸 전체를 원본 그대로 둠")
+            out[name] = rec
+            continue
+        partial_keep = bool(layout.get("keep_paragraphs"))
+        if partial_keep:
+            # 아이콘 문단만 원본 그대로: 남긴 줄(keep)은 지우지도 그리지도 않았다. 번역(남은 문단)은 남은 줄 자리에만 넣는다
+            # (번역문·원문에는 남긴 문단이 빠져 있어 줄 수가 남은 줄과 맞는다. 남은 문단이 남긴 문단 자리로 밀려 올라가지 않는다)
+            layout = {**layout, "lines": [ln for ln in layout.get("lines") or [] if not ln.get("keep_para")]}
         if layout.get("lines") and text and int(style_d.get("rotate", 0)) % 360 in (0, 180):
             # 그림 카드: 지우기 때 잰 원문 줄 자리·색·테두리·굵기·정렬·구분선을 따른다
             if layout.get("panel_pt"):  # 지우기가 영역을 글자 상자로 좁혔다: 그 상자 안에 넣는다 (위쪽 그림 위로 나가지 않게)
@@ -233,23 +248,39 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             rec.update(source_ink={"layout_lines": len(layout["lines"])}, draw_rect_pt=[round(v, 3) for v in rect])
             # 먼저 그리지 않고 해 본다: 원문 줄 자리에 다 들어가면 그대로 그리고, 넘치면 영역 전체에 줄여 넣는다
             # (넘친 글자를 버리면 카드에서 내용이 사라진다)
-            dry = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"), draw=False)
+            dry = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"), draw=False,
+                                        src_page=src_page)
             fb = None
-            if dry is not None and dry.get("overflow_text") and int(style_d.get("rotate", 0)) % 360 == 0:
+            # (아이콘 문단만 원본 그대로인 칸은 영역 전체에 줄여 넣지 않는다: 남긴 문단 위에 겹친다)
+            if (dry is not None and dry.get("overflow_text") and int(style_d.get("rotate", 0)) % 360 == 0
+                    and not partial_keep):
                 fb = fit_whole_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
             if fb is not None:
                 rec["warnings"] += fb.pop("warnings")
                 rec.update(fb)
                 out[name] = rec
                 continue
-            r_ = (compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"))
+            r_ = (compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"),
+                                        src_page=src_page)
                   if dry is not None else None)
             if r_ is not None:
                 rec["warnings"] += r_.pop("warnings")
                 rec.update(r_)
                 out[name] = rec
                 continue
+            if partial_keep:
+                rec.update(status=[STATUS_KEEP_NO_SLOT], lines=[], line_boxes_pt=[], overflow_text=text or "",
+                           errors=[], drawn=False, draw_rect_pt=[round(v, 3) for v in rect])
+                rec["warnings"].append("원본 그대로 둔 문단을 덮지 않게 영역 전체에 넣지 않음 (결과 보기에서 고치세요)")
+                out[name] = rec
+                continue
             rec["warnings"].append("줄 모양이 믿을 만하지 않아 영역 전체에 넣음")
+        if partial_keep and text:  # 남은 줄이 없거나 돌린 영역: 영역 전체에 넣으면 남긴 문단을 덮는다
+            rec.update(status=[STATUS_KEEP_NO_SLOT], lines=[], line_boxes_pt=[], overflow_text=text, errors=[],
+                       drawn=False, draw_rect_pt=[round(v, 3) for v in rect])
+            rec["warnings"].append("원본 그대로 둔 문단을 덮지 않게 영역 전체에 넣지 않음 (결과 보기에서 고치세요)")
+            out[name] = rec
+            continue
         if not text and (reg.get("erase") or {}).get("text_mask"):
             # 원문은 지웠는데 번역이 없다: 빈 카드가 되므로 크게 알린다
             rec.update(status=[STATUS_NO_TRANSLATION], lines=[], line_boxes_pt=[], overflow_text="", errors=[],
@@ -271,9 +302,16 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         top = ink.lines[0][0] if ink.lines else None
         if top is not None and top < draw_rect.y0:
             draw_rect.y0 = top
+        ink_h, pitch_ = ink.glyph_height, ink.line_pitch
+        typ = (meta.get(TYPICAL_KEY) or {}).get(name)
+        if typ and ink_h and ink_h > TYPICAL_MAX * typ and not tl.get("size_pt"):
+            # 잰 ‘글자 높이’가 같은 영역 다른 카드들의 글자 높이보다 훨씬 크다: 글자 대신 큰 그림(아이콘·건물 그림)을 쟀다.
+            # 그 크기로 넣으면 글이 그림만큼 커진다 (1쪽): 다른 카드의 원문 글자 높이로 넣는다
+            rec["warnings"].append(f"원문 잉크 높이({ink_h:.1f}pt)가 다른 카드({typ:.1f}pt)보다 너무 커 그림으로 봄 -> 다른 카드의 글자 높이 사용")
+            ink_h, pitch_ = typ, None
         st = TextStyle.from_region_style(
-            style_d, base_dir, size_pt=tl.get("size_pt"), ink_height_pt=ink.glyph_height,
-            line_pitch_pt=ink.line_pitch, fixed_size_pt=entry.get("fixed_size_pt"),
+            style_d, base_dir, size_pt=tl.get("size_pt"), ink_height_pt=ink_h,
+            line_pitch_pt=pitch_, fixed_size_pt=entry.get("fixed_size_pt"),
             pivot=pivot,
         )
         if ink.glyph_height is None:
@@ -290,6 +328,45 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
         out[name] = rec
     _finish_offset(page, pending, out)
     return out
+
+
+TYPICAL_KEY = "typical_glyph_pt"  # 쪽 메타에 한글 넣기가 덧붙이는 값: {영역: 같은 파일 다른 카드들의 원문 글자 높이(pt)}
+TYPICAL_MAX = 1.8  # 영역 전체 배치에서 잰 잉크 높이가 이 배를 넘으면 그림을 잰 것으로 본다
+
+
+def typical_glyph_heights(metas) -> dict:
+    """여러 쪽 메타(지우기 결과)에서 영역마다 원문 줄 글자 높이의 가운데 값 {영역: pt}. 두 쪽 이상에서 잰 영역만."""
+    by: dict[str, list[float]] = {}
+    for m in metas:
+        for reg in (m or {}).get("regions") or []:
+            lines = [ln for ln in ((reg.get("text_layout") or {}).get("lines") or []) if ln.get("glyph_h_pt", 0) >= 2.5]
+            if not lines:
+                continue
+            gmax = max(ln["glyph_h_pt"] for ln in lines)
+            hs = [ln["glyph_h_pt"] for ln in lines if ln["glyph_h_pt"] >= 0.3 * gmax]
+            by.setdefault(reg["name"], []).append(float(np.median(hs)))
+    return {k: round(float(np.median(v)), 3) for k, v in by.items() if len(v) >= 2}
+
+
+_TYPICAL_CACHE: dict = {}
+
+
+def typical_for_dir(meta_dir) -> dict:
+    """지우기 결과 meta/ 폴더의 typical_glyph_heights (파일들이 그대로면 다시 읽지 않는다: 미리 보기용)."""
+    files = sorted(Path(meta_dir).glob("page-*.json"))
+    stamp = tuple((f.name, f.stat().st_mtime_ns) for f in files)
+    hit = _TYPICAL_CACHE.get(str(meta_dir))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    val = typical_glyph_heights([json.loads(f.read_text(encoding="utf-8")) for f in files])
+    _TYPICAL_CACHE[str(meta_dir)] = (stamp, val)
+    return val
+
+
+def with_typical(metas: dict) -> dict:
+    """{쪽: 메타}에 TYPICAL_KEY를 덧붙인 사본 (파일 전체에서 잰 값)."""
+    typ = typical_glyph_heights(list(metas.values()))
+    return {p: {**m, TYPICAL_KEY: typ} if typ else m for p, m in metas.items()}
 
 
 # ---------------------------------------------------------------- 결과 보기에서 옮긴 글 위치
@@ -396,10 +473,27 @@ def _merge_cuts(dividers: list) -> list[float]:
     return cuts
 
 
-def layout_sections(layout: dict, rect) -> list[dict]:
-    """원문 줄을 구분선으로 나눈 묶음: [{"lines": [...], "y0": 위, "y1": 아래}]."""
+GAP_CUT = 1.35  # 원문 줄 사이가 보통 줄 간격의 이 배보다 넓으면 그 사이를 묶음 경계로 볼 수 있다 (gap_cuts)
+
+
+def gap_cuts(lines: list[dict]) -> list[float]:
+    """원문 줄 사이가 유난히 넓은 곳(문단 사이·못 찾은 구분선 자리)의 세로 가운데 목록. 줄이 셋 이상일 때만."""
+    ls = sorted(lines, key=lambda ln: ln["bbox_pt"][1])
+    if len(ls) < 3:
+        return []
+    tops = [ln["bbox_pt"][1] for ln in ls]
+    pitch = float(np.median(np.diff(tops)))
+    if pitch <= 0:
+        return []
+    return [(ls[i]["bbox_pt"][3] + ls[i + 1]["bbox_pt"][1]) / 2
+            for i in range(len(ls) - 1) if tops[i + 1] - tops[i] > GAP_CUT * pitch]
+
+
+def layout_sections(layout: dict, rect, extra_cuts: list[float] | None = None) -> list[dict]:
+    """원문 줄을 구분선으로 나눈 묶음: [{"lines": [...], "y0": 위, "y1": 아래}].
+    extra_cuts: 구분선 말고 더 나눌 세로 자리 (gap_cuts)."""
     rect = pymupdf.Rect(rect)
-    cuts = _merge_cuts(layout.get("dividers_pt") or [])
+    cuts = sorted(_merge_cuts(layout.get("dividers_pt") or []) + list(extra_cuts or []))
     bounds = [rect.y0] + cuts + [rect.y1]
     out = []
     for k in range(len(bounds) - 1):
@@ -585,10 +679,108 @@ def measured_icon_scales(layout: dict) -> dict:
 
 
 _OPENING = re.compile(r"\s*(?:</?(?:b|i|c\d+)>)*\s*(?:[「『（(［【〔〈《“‘｢]|\[(?!\[))")  # 여는 괄호·따옴표로 시작하는 원문 줄 ([[아이콘]] 빼고)
-_SENTENCE_END = re.compile(r"(?:[.!?。．！？」』”’)）\]］]|다)\s*$")
+# 문장 끝: 마침표·닫는 괄호·‘다’, 그리고 쌍점(‘…일 때:’ 같은 머리 줄은 다음 줄과 한 문장으로 정렬하지 않는다)
+_SENTENCE_END = re.compile(r"(?:[.!?。．！？」』”’)）\]］:：]|다)\s*$")
+JUSTIFIED_FULL = 0.85  # 문장의 모든 줄이 문장 폭의 이 비율 이상이면 ‘칸을 꽉 채운’(양쪽 맞춤) 글: 왼쪽 정렬로 본다
+PIN_INDENT = 0.6  # 왼쪽 정렬 문장에서 원문 줄이 문장 시작점보다 글자 높이의 이 배 넘게 들어가 있으면 그 자리에서 시작
+PIN_GAP = 0.15  # 그 자리에서 시작하는 줄은 앞에 남은 그림과 글자 높이의 이 배만큼 띄운다
+LEAD_ICON = re.compile(r"^\s*(?:</?(?:b|i|c\d+)>)*\s*\[\[[^\]]+\]\]\s*")  # 줄 앞 아이콘 (앞에 붙은 서식 태그 포함)
+BLOCK_SHIFT_MIN = 0.25  # 글 덩어리를 옮길 거리가 글자 높이의 이 배보다 작으면 옮기지 않는다
 
 
-def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
+def with_edge_icons(lines: list[dict], icons: list[dict]) -> list[dict]:
+    """지운 글 속 아이콘 중 줄 상자 바로 앞(또는 뒤)에 있는 것은 그 줄의 일부로 보고 줄 상자를 아이콘까지 넓힌 사본.
+    지우기가 잰 줄 상자는 글자 획으로만 잡혀 줄 앞 아이콘을 빼는 일이 많다: 그대로 두면 한글 줄 앞 아이콘이 원래
+    아이콘 자리가 아니라 첫 글자 자리부터 그려져, 원래 아이콘 자리는 비고 글 전체가 오른쪽으로 밀린다."""
+    if not icons:
+        return lines
+    out = [dict(ln) for ln in lines]
+    for ic in icons:
+        bx = ic.get("bbox_pt")
+        if not bx:
+            continue
+        cy = (bx[1] + bx[3]) / 2
+        near = [ln for ln in out if ln["bbox_pt"][1] - 0.5 * ln["glyph_h_pt"] <= cy <= ln["bbox_pt"][3] + 0.5 * ln["glyph_h_pt"]]
+        if not near:
+            continue
+        ln = min(near, key=lambda l_: abs((l_["bbox_pt"][1] + l_["bbox_pt"][3]) / 2 - cy))
+        b = list(ln["bbox_pt"])
+        gh = ln["glyph_h_pt"]
+        if bx[0] < b[0] and bx[2] <= b[0] + 0.5 * gh and b[0] - bx[2] <= 1.5 * gh:
+            b[0] = float(bx[0])
+            ln["_lead_icon"] = True
+        elif bx[2] > b[2] and bx[0] >= b[2] - 0.5 * gh and bx[0] - b[2] <= 1.5 * gh:
+            b[2] = float(bx[2])
+        ln["bbox_pt"] = b
+    return out
+
+
+def text_left_edge(lines: list[dict]) -> float:
+    """글 칸의 왼쪽 시작점: 왼쪽 정렬 줄(여는 괄호로 시작하는 줄 빼고) 시작점들의 가운데 값 둘레(글자 높이 안)에 모인
+    줄 중 가장 왼쪽. 줄 상자에 카드 왼쪽 그림 조각이 붙어 혼자 한참 왼쪽에서 시작하는 줄은 따르지 않는다."""
+    cand = [ln for ln in lines if ln.get("align", "left") == "left" and not _OPENING.match(ln.get("_src") or "")] or lines
+    xs = [ln["bbox_pt"][0] for ln in cand]
+    gh = float(np.median([ln["glyph_h_pt"] for ln in cand]))
+    med = float(np.median(xs))
+    near = [x for x in xs if abs(x - med) <= gh]
+    return float(min(near)) if near else med
+
+
+def block_center_shift(orig_right: float, ends: list[float], room: float, gh: float) -> float:
+    """왼쪽 정렬 글 덩어리를 오른쪽으로 옮길 거리: 한글 줄 중 가장 긴 줄의 끝(max(ends))과 원문 글 칸 오른쪽 끝
+    (orig_right) 사이 빈 곳의 절반 (글 덩어리 가운데가 원문 글 칸 가운데에 오게). room(줄 자리 오른쪽 끝까지 남은 폭)을
+    넘지 않고, 글자 높이의 BLOCK_SHIFT_MIN배보다 작으면 0."""
+    if not ends:
+        return 0.0
+    dx = min((orig_right - max(ends)) / 2, room)
+    return float(dx) if dx > BLOCK_SHIFT_MIN * gh else 0.0
+
+
+def kept_lead_icon(page: pymupdf.Page, src_page: pymupdf.Page, ln: dict, ko: str, icons: list[dict],
+                   margin: float | None = None) -> bool:
+    """원문 줄과 한글 줄이 둘 다 아이콘으로 시작하는데, 그 원문 아이콘을 지우지 못해 원본 그대로 남았나.
+    - 지우기가 그 줄 앞에서 지운 아이콘(with_edge_icons가 붙인 것)이 있으면 아니다
+    - 원문 줄이 글 칸 왼쪽 여백보다 들어가 있을 때만 본다 (줄 앞 자리가 비어 있지 않음): 호출하는 쪽이 원문 첫 글자 자리
+      왼쪽(글자 높이 0.7~2배 떨어진 곳)을 원본·지운 쪽에서 그려 견준다 (margin: 글 칸 왼쪽 시작점). 거의 같고(지우지 않음) 그림이 있으면(밝기 폭이 큼) 남았다."""
+    if ln.get("_lead_icon") or not LEAD_ICON.match(ko or "") or not LEAD_ICON.match(ln.get("_src") or ""):
+        return False
+    b = ln["bbox_pt"]
+    gh = ln["glyph_h_pt"]
+    if margin is not None and b[0] - margin <= 0.5 * gh:
+        return False
+    lead = re.search(r"\[\[([^\]]+)\]\]", LEAD_ICON.match(ko).group(0))
+    for ic in icons:  # 같은 아이콘을 이 줄 안 다른 곳에서 지웠다 (원문 줄 앞이 아닌 자리): 다시 그려야 한다
+        r = ic.get("bbox_pt") or (0, 0, 0, 0)
+        if lead and ic.get("name") == lead.group(1) and b[1] <= (r[1] + r[3]) / 2 <= b[3]:
+            return False
+    # 첫 글자 바로 옆(글자 높이의 0.7배 안)은 지우기가 글자 둘레로 넓혀 지운 곳이라 빼고 본다
+    zone = pymupdf.Rect(b[0] - 2.0 * gh, b[1] - 0.2 * gh, b[0] - 0.7 * gh, b[3] + 0.2 * gh) & src_page.rect
+    if zone.is_empty or zone.width < 0.5 * gh:
+        return False
+    for ic in icons:  # 지운 아이콘이 그 자리에 걸치면(줄 앞 아이콘을 지웠다) 남은 것이 아니다
+        r = pymupdf.Rect(ic.get("bbox_pt") or (0, 0, 0, 0))
+        if not (r & zone).is_empty and (r & zone).get_area() > 0.2 * zone.get_area():
+            return False
+    a = _gray(src_page, zone)
+    e = _gray(page, zone)
+    if a.shape != e.shape or a.size == 0:
+        return False
+    unchanged = float((np.abs(a - e) > 40).mean()) < KEPT_CHANGED
+    content = float(np.percentile(a, 95) - np.percentile(a, 5)) > KEPT_CONTRAST
+    return unchanged and content
+
+
+KEPT_CHANGED = 0.15  # 원본·지운 쪽 밝기가 크게(40/255 넘게) 다른 픽셀이 이 비율보다 적으면 지우지 않은 자리
+KEPT_CONTRAST = 60.0  # 그 자리 밝기 폭(5~95%)이 이보다 크면 그림(아이콘)이 있다
+
+
+def _gray(page: pymupdf.Page, clip) -> np.ndarray:
+    """clip 자리를 300dpi 회색 배열로 (내용만: 한글 넣기가 그린 것은 아직 없다)."""
+    pm = page.get_pixmap(dpi=300, clip=clip, alpha=False, colorspace=pymupdf.csGRAY)
+    return np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width).astype(np.float32)
+
+
+def sentence_blocks(src: list[dict], kos: list[str], all_lines: list[dict] | None = None) -> dict[int, dict]:
     """줄을 문장으로 묶는다 (번역 줄이 ‘다’·마침표·닫는 괄호로 끝나면 문장 끝, 아이콘만 남긴 줄도 끝).
     두 줄 이상인 문장마다 {"x0", "x1", "align"}: 왼쪽 시작점(왼쪽 정렬이면 줄 시작점의 가운데 값, 아니면 가장 왼쪽)·
     가장 오른쪽, 그리고 원문 줄들이 맞춰진 쪽 (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것. 줄에 지우기가 본
@@ -602,7 +794,8 @@ def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
 
     # 글 칸의 왼쪽 여백: 왼쪽 정렬 줄들 시작점의 가운데 값 (여는 괄호로 시작하는 줄은 빼고).
     # 한 문장 안 줄만 보면 두 줄 중 하나가 괄호 줄, 하나가 잉크로 못 잡은 아이콘(☆) 뒤에서 시작하는 줄일 때 맞출 데가 없다
-    lefts = [ln["bbox_pt"][0] for ln in src
+    # (all_lines: 영역의 모든 원문 줄. 구분선·문단 사이로 나눈 묶음 하나만 보면 줄이 둘뿐이라 여백을 못 정한다)
+    lefts = [ln["bbox_pt"][0] for ln in (all_lines or src)
              if ln.get("align", "left") == "left" and not ln.get("keep") and plain_start(ln)]
     margin = float(np.median(lefts)) if len(lefts) >= 2 else None
 
@@ -619,6 +812,15 @@ def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
                 allowed = {"left"} | {ln["align"] for ln in cur}
                 spread = {k: v for k, v in spread.items() if k in allowed}
             align = min(spread, key=spread.get)
+            wmax = max(x1s) - min(x0s)
+            gh0 = float(np.median([ln["glyph_h_pt"] for ln in cur]))
+            if (all(b - a >= JUSTIFIED_FULL * wmax for a, b in zip(x0s, x1s))
+                    and min(max(x0s) - min(x0s), max(x1s) - min(x1s)) <= gh0):
+                # (한쪽 끝은 맞아야 양쪽 맞춤: 길이가 비슷한 가운데 정렬 줄은 양쪽 끝이 모두 어긋나 있다. 왼쪽 끝만 보면
+                # 줄 앞 아이콘을 잉크로 못 잡아 들여 쓴 것처럼 보인 양쪽 맞춤 줄(6쪽)을 놓친다)
+                # 모든 줄이 문장 폭을 꽉 채운다(양쪽 맞춤): 줄 가운데도 끝도 저절로 맞으므로 정렬을 알 수 없다. 왼쪽으로
+                # (한 픽셀 차이로 ‘가운데’가 골라져 한글 줄이 가운데로 가면, 줄 앞에 남은 아이콘과 글이 떨어진다: 6쪽)
+                align = "left"
             x0 = min(x0s)
             if align == "left":
                 # 왼쪽 시작점: 여는 괄호(［「 등)로 시작하는 원문 줄은 괄호 잉크가 글자보다 왼쪽으로 나와 있어 빼고 본
@@ -627,8 +829,14 @@ def sentence_blocks(src: list[dict], kos: list[str]) -> dict[int, dict]:
                 gh = float(np.median([ln["glyph_h_pt"] for ln in cur]))
                 if margin is not None and abs(min(x0s) - margin) <= gh:
                     x0 = margin  # (여백보다 한참 왼쪽에서 시작한 문장을 여백까지 밀지 않는다)
+                elif margin is not None and min(x0s) < margin - gh and any(abs(x - margin) <= gh for x in x0s):
+                    # 한 줄만 여백보다 한참 왼쪽: 그 줄 상자에 카드 왼쪽 그림 조각이 붙었다 (8쪽 마지막 줄). 여백에 맞춘다
+                    x0 = margin
                 else:
-                    x0 = float(np.median([ln["bbox_pt"][0] for ln in cur if plain_start(ln)] or x0s))
+                    # 아니면 가장 왼쪽 줄 둘레(글자 높이 안)에 모인 줄 시작점의 가운데 값: 줄 앞에 지우지 않은 그림이 있어
+                    # 들어가 시작한 줄(6쪽 둘째 줄)까지 섞어 가운데 값을 내면 다른 줄이 원래보다 오른쪽에서 시작한다
+                    xs = [ln["bbox_pt"][0] for ln in cur if plain_start(ln)] or x0s
+                    x0 = float(np.median([x for x in xs if x - min(xs) <= gh]))
             blk = {"x0": x0, "x1": max(x1s), "align": align}
             for ln in cur:
                 out[id(ln)] = blk
@@ -710,12 +918,16 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
 
 
 def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
-                          base_dir: Path = ROOT, source_text: str | None = None, draw: bool = True) -> dict:
+                          base_dir: Path = ROOT, source_text: str | None = None, draw: bool = True,
+                          src_page: pymupdf.Page | None = None) -> dict:
     """원문 줄 모양(지우기 때 잰 text_layout)대로 한글을 넣는다.
 
     - 원문 줄 자리마다 번역 한 줄: 같은 높이·색·테두리·굵기·정렬 (줄 수가 같을 때)
     - 구분선(-◆-) 위아래는 따로: 번역 줄을 묶음별로 나눠 선을 넘지 않는다
     - 묶음 안 줄 수가 원문과 다르면 그 묶음 안에서 줄바꿈해 맞춘다
+    - 왼쪽 정렬 글이 원문보다 짧으면 글 덩어리를 원문 글 칸 가운데 쪽으로 옮긴다 (block_center_shift,
+      영역 서식 "block_center": false면 안 옮김)
+    src_page: 원본 쪽. 주면 줄 앞 아이콘이 지워지지 않고 남았는지 지운 쪽과 견줘 본다 (남았으면 다시 그리지 않음).
     """
     rect = pymupdf.Rect(rect)
     # 잡음 줄(테두리 조각 등 아주 낮은 줄)은 빼고, 남는 줄이 없으면 None (영역 전체 배치로)
@@ -731,6 +943,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     good = swap_line_accents(good, src_of)
     if src_of:  # 줄마다 원문 (문장 묶음의 왼쪽 시작점을 잴 때 괄호로 시작하는 줄을 가린다)
         good = [{**ln, "_src": s} for ln, s in zip(good, src_of)]
+    # 지운 줄 앞·뒤 아이콘은 그 줄의 일부: 줄 상자를 아이콘까지 넓힌다 (한글 줄 앞 아이콘을 원래 아이콘 자리에 그린다)
+    good = with_edge_icons(good, layout.get("icons") or [])
     layout = {**layout, "lines": good}
     pivot = None
     if int(style_d.get("rotate", 0)) % 360 == 180:
@@ -752,6 +966,9 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         flipped.sort(key=lambda ln: ln["bbox_pt"][1])
         layout = {**layout, "lines": flipped, "dividers_pt": [flip(d) for d in layout.get("dividers_pt") or []]}
     lines_all = layout["lines"]
+    # 원본 그대로 남긴 줄(아이콘·숫자만 있는 줄, 원본 그대로 둔 문단)이 있는 칸: 글 덩어리를 옆으로 옮기지 않는다
+    # (남긴 줄은 제자리에 있어 옮긴 줄과 시작점이 어긋난다)
+    has_keep = bool(layout.get("keep_paragraphs")) or any(ln.get("keep") or ln.get("keep_para") for ln in lines_all)
     secs = layout_sections(layout, rect)
     # 서식 태그는 칸 전체로 검사한다 (줄마다 나눠 넣으므로 줄 단위로는 원문과 비교할 수 없다, PRD 5.7)
     tag_errors = check_tags(text or "", source_text)
@@ -804,6 +1021,15 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     layout = {**layout, "lines": lines_all}
     secs = layout_sections(layout, rect)
     parts = assign_lines(ko_lines, [len(s["lines"]) for s in secs])
+    if len(ko_lines) != sum(len(s_["lines"]) for s_ in secs):
+        # 번역 줄 수가 원문과 다르면 묶음 안에서 줄바꿈해 넣는다. 원문 줄 사이가 유난히 넓은 곳(못 찾은 구분선·문단
+        # 사이)도 묶음 경계로 나눠 본다: 나눈 자리 앞 번역 줄이 문장 끝으로 끝나면 그렇게 넣는다 (결과 보기에서 줄 수를
+        # 바꿔 고친 8쪽이 구분선 위아래를 한 문단으로 이어 넣어 아래 줄들이 원래 자리를 벗어났다)
+        secs2 = layout_sections(layout, rect, gap_cuts(lines_all))
+        if len(secs2) > len(secs):
+            parts2 = assign_lines(ko_lines, [len(s_["lines"]) for s_ in secs2])
+            if all(parts2) and all(_SENTENCE_END.search(re.sub(r"<[^>]+>", "", p_[-1])) for p_ in parts2[:-1]):
+                secs, parts = secs2, parts2
     right = max(ln["bbox_pt"][2] for ln in lines_all)
     left = min(ln["bbox_pt"][0] for ln in lines_all)
     results: list[tuple[TypesetResult, str]] = []
@@ -825,7 +1051,9 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             st.align = "center"
             r = pymupdf.Rect(rect.x0, top, rect.x1, max(bottom, top + slot_k * gh))
         else:
-            x0 = min(ln["bbox_pt"][0] for ln in src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
+            # 왼쪽 시작점: 가장 왼쪽 줄이 아니라 줄 시작점들이 모인 자리 (줄 상자에 왼쪽 그림 조각이 붙은 줄 하나가
+            # 글 전체를 왼쪽으로 끌지 않게: 결과 보기에서 줄 수를 바꿔 고친 8쪽이 카드 왼쪽 아이콘 위로 밀렸다)
+            x0 = text_left_edge(src) if st.align == "left" else max(rect.x0, left - 0.5 * gh)
             r = pymupdf.Rect(x0, top, min(rect.x1, right + 0.5 * gh), max(bottom, top + slot_k * gh))
         return r, st, top
 
@@ -860,6 +1088,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         return join_lines_at(kos, ok), r, st, top
 
     joined_note: list[str] = []
+    auto_mode = not (style_d.get("align") or "")
+    text_left = text_left_edge(lines_all)
     for sec, kos in zip(secs, parts):
         if not kos:
             continue
@@ -871,7 +1101,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             joined_note.append(f"{len(kos)}줄 → {len(new_kos)}줄")
             continue
         if len(kos) == len(src):
-            block_of = sentence_blocks(src, kos)
+            block_of = sentence_blocks(src, kos, lines_all)
             for ln, ko in zip(src, kos):
                 if ln.get("keep"):  # 아이콘·숫자만 있는 줄: 원문 그대로 남겼다 (지우지도 그리지도 않음)
                     continue
@@ -879,13 +1109,28 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 gh = ln["glyph_h_pt"]
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
                 blk = block_of.get(id(ln))
-                if blk and not (style_d.get("align") or ""):
+                pinned = False  # 줄 앞에 지우지 않은 그림이 붙어 있어 그 자리에서 시작하는 줄 (옮기지 않는다)
+                kept_lead = (auto_mode and pivot is None and src_page is not None
+                             and kept_lead_icon(page, src_page, ln, ko, layout.get("icons") or [], text_left))
+                if kept_lead:
+                    # 원문 줄 앞 아이콘을 지우지 못해 원본 그대로 남았다: 한글 줄 앞 아이콘은 다시 그리지 않고
+                    # (같은 아이콘이 둘 생긴다) 원문 글자가 시작하던 자리에서 시작한다 (5쪽 백합 문양)
+                    ko = LEAD_ICON.sub("", ko, count=1)
+                    pinned = True
+                    b = (b[0] + PIN_GAP * gh, b[1], b[2], b[3])
+                    st.align = "left"
+                elif blk and auto_mode:
                     # 여러 줄 문장: 문장 전체의 왼쪽 시작점·가장 오른쪽을 기준으로 같은 정렬 (줄마다 시작점이 달라지지 않게).
-                    # 왼쪽 정렬인데 원문에서 글자 높이 넘게 들여 쓴 줄은 그 자리에서 시작한다: 줄 앞에 지우지 않은
-                    # 아이콘(원문에 적히지 않은 ☆ 등)이 남아 있으면 한글이 그 위에 겹친다 (8쪽 마지막 줄)
-                    x0b = b[0] if blk["align"] == "left" and b[0] - blk["x0"] > gh else blk["x0"]
+                    # 왼쪽 정렬인데 원문에서 들여 쓴 줄(글자 높이의 PIN_INDENT배 넘게)은 그 자리에서 시작한다: 줄 앞에
+                    # 지우지 않은 아이콘(원문에 적히지 않은 ☆ 등)이 남아 있으면 한글이 그 위에 겹친다 (8쪽 마지막 줄, 6쪽 둘째 줄)
+                    pinned = blk["align"] == "left" and b[0] - blk["x0"] > PIN_INDENT * gh
+                    # 들여 쓴 줄은 원문 첫 글자 자리에서, 앞 그림에 닿지 않게 조금 띄어 시작한다
+                    x0b = b[0] + PIN_GAP * gh if pinned else blk["x0"]
                     b = (x0b, b[1], blk["x1"], b[3])
                     st.align = blk["align"]
+                elif auto_mode and st.align == "left" and b[0] < text_left - gh:
+                    # 한 줄 문장인데 혼자 글 칸 여백보다 한참 왼쪽에서 시작: 줄 상자에 왼쪽 그림 조각이 붙었다. 여백에서
+                    b = (text_left, b[1], b[2], b[3])
                 pad = 0.5 * gh
                 cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
                 top = cy - gh / 2
@@ -893,8 +1138,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 if mode == "center":  # 영역 가운데
                     st.align = "center"
                     r = pymupdf.Rect(rect.x0, top, rect.x1, top + slot_k * gh)
-                elif mode == "left":  # 글 칸의 왼쪽 끝(가장 왼쪽 원문 줄)
-                    r = pymupdf.Rect(left, top, min(rect.x1, right + pad), top + slot_k * gh)
+                elif mode == "left":  # 글 칸의 왼쪽 끝 (원문 줄 시작점들이 모인 자리)
+                    r = pymupdf.Rect(text_left, top, min(rect.x1, right + pad), top + slot_k * gh)
                 elif mode == "right":  # 글 칸의 오른쪽 끝(가장 오른쪽 원문 줄)
                     r = pymupdf.Rect(max(rect.x0, left - pad), top, right, top + slot_k * gh)
                 elif mode == "original":  # 원래 위치 그대로: 그 줄의 원문 시작점에서
@@ -915,20 +1160,21 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                     extra = (s_ - 1.0) / 2 * gh
                     top -= extra
                     r = pymupdf.Rect(r.x0, r.y0 - extra, r.x1, max(r.y1, r.y0 - extra + s_ * gh * 1.2))
-                slots.append((ln, ko, r, st, top))
+                slots.append({"ln": ln, "ko": ko, "r": r, "st": st, "top": top, "pinned": pinned})
         else:  # 줄 수가 다르면 묶음 안에서 줄바꿈
             r, st, top = paragraph(src, sec)
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top, draw=draw), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
     fit_size: dict[int, float] = {}
     own: dict[int, float] = {}
-    for i, (ln, ko, r, st, top) in enumerate(slots):
-        d = typeset_region(page, r, ko, st, top_anchor=top, draw=False)
+    for i, s in enumerate(slots):
+        d = typeset_region(page, s["r"], s["ko"], s["st"], top_anchor=s["top"], draw=False)
         if d.size:
             own[i] = d.size
-            if _WORDY.search(re.sub(r"\[\[[^\]]*\]\]|</?(?:b|i|c\d+)>", "", ko)):
-                fit_size[ln["_g"]] = min(fit_size.get(ln["_g"], d.size), d.size)
-    for i, (ln, ko, r, st, top) in enumerate(slots):
+            if _WORDY.search(re.sub(r"\[\[[^\]]*\]\]|</?(?:b|i|c\d+)>", "", s["ko"])):
+                fit_size[s["ln"]["_g"]] = min(fit_size.get(s["ln"]["_g"], d.size), d.size)
+    for i, s in enumerate(slots):
+        ln, ko, r, st, top = s["ln"], s["ko"], s["r"], s["st"], s["top"]
         size = fit_size.get(ln["_g"])
         if size and i in own and size > own[i] + 1e-6:
             # 기호·아이콘 줄처럼 원문 높이가 낮게 재진 줄: 묶음 크기로 넣어 보고, 안 들어가면 이 줄만 작게
@@ -939,6 +1185,30 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 size = own[i]
         elif i in own and not size:
             size = own[i]
+        s["size"] = size
+        if size:
+            st.fixed_size_pt = size
+        s["dry"] = typeset_region(page, r, ko, st, top_anchor=top, draw=False)
+        st.fixed_size_pt = None
+    # 2차: 왼쪽 정렬 줄이 원문보다 짧으면 글 덩어리(영역의 왼쪽 정렬 줄 전부)를 원문 글 칸 가운데 쪽으로 같은 만큼 옮긴다.
+    # 원문(일본어 등)은 글자가 넓어 줄이 칸을 꽉 채우는데 한글은 짧아져, 원문 줄 시작점에 맞추면 글이 왼쪽으로 쏠려 보인다.
+    # 옮기지 않는 경우: 줄 앞에 지우지 않은 그림이 붙은 줄이 있을 때(그림과 글 사이가 벌어진다), 줄 수가 달라 묶음 안에서
+    # 줄바꿈한 묶음이 있을 때(그 묶음과 시작점이 어긋난다), 넘친 줄이 있을 때
+    group = [s for s in slots if s["st"].align == "left"]
+    para_left = any(m_ in ("paragraph", "joined") for _r, m_ in results)
+    if (auto_mode and pivot is None and style_d.get("block_center", True) and group and not para_left
+            and not has_keep and not any(s["pinned"] or s["dry"].overflow_text for s in group)):
+        ends = [b[2] for s in group for b in s["dry"].line_boxes]
+        if ends:
+            gh = float(np.median([s["ln"]["glyph_h_pt"] for s in group]))
+            orig_r = max(s["ln"]["bbox_pt"][2] for s in group)
+            # 옮길 수 있는 한도: 줄마다 그 줄 자리의 오른쪽 끝까지 남은 폭 중 가장 작은 것
+            room = min(s["r"].x1 - max([b[2] for b in s["dry"].line_boxes] or [s["r"].x1]) for s in group)
+            dx = block_center_shift(orig_r, ends, room, gh)
+            for s in group if dx else []:
+                s["r"] = pymupdf.Rect(s["r"].x0 + dx, s["r"].y0, s["r"].x1 + dx, s["r"].y1)
+    for s in slots:
+        ln, ko, r, st, top, size = s["ln"], s["ko"], s["r"], s["st"], s["top"], s["size"]
         if size:
             start = st.start_size()
             st.fixed_size_pt = size
@@ -1049,6 +1319,10 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         if not f.exists():
             raise FileNotFoundError(f"지우기 메타가 없습니다: {f}")
         metas[pno] = json.loads(f.read_text(encoding="utf-8"))
+    # 영역 전체 배치(줄 모양을 못 쓴 카드)에서 그림을 글자로 재지 않게, 같은 파일 다른 카드의 글자 높이를 함께 넘긴다
+    metas = with_typical({**{int(f.stem.split("-")[1]): json.loads(f.read_text(encoding="utf-8"))
+                             for f in (erase_run / "meta").glob("page-*.json")}, **metas})
+    metas = {p: metas[p] for p in pages}
 
     from app import parallel
 
@@ -1244,9 +1518,12 @@ def _compose_chunk(project_dir, project, src_doc, er_doc, pages, metas, cards, r
                                font_plan.sentences_for_page(font_data, pno, cards.get(pno)),
                                font_plan.size_scales_for_page(font_data, pno), font_plan.aligns_for_page(font_data, pno),
                                text_offsets_for_page(project_dir, pno))
+        fallback = set(metas[pno].get("keep_fallback_regions") or [])
         for name in metas[pno].get("icon_only_regions") or []:  # 건너뛴 칸도 결과 보기에 보이게 (원본 그대로)
-            rec.setdefault(name, {"name": name, "status": [STATUS_ICON_ONLY], "drawn": False, "lines": [],
-                                  "errors": [], "warnings": [], "overflow_text": ""})
+            rec.setdefault(name, {"name": name, "status": [STATUS_KEEP_FALLBACK if name in fallback else STATUS_ICON_ONLY],
+                                  "drawn": False, "lines": [], "errors": [], "overflow_text": "",
+                                  "warnings": ["이 칸은 줄을 골라 지울 수 없는 방식이라 칸 전체를 원본 그대로 둠"]
+                                  if name in fallback else []})
         for r_ in rec.values():  # 고른 글꼴이 없어 영역 글꼴로 넣은 칸: 결과 보기에서 보이게 상태로도 남긴다
             if r_.get("font_missing") and STATUS_FONT_MISSING not in (r_.get("status") or []):
                 r_["status"] = list(r_.get("status") or []) + [STATUS_FONT_MISSING]

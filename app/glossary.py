@@ -66,7 +66,7 @@ class Source:
 
 def collect_sources(info: ProjectInfo, game: bool = False) -> list[Source]:
     """프로젝트(game=True면 같은 게임의 모든 프로젝트) 모든 그룹·파일의 추출 결과를 모은다 (처리할 쪽만)."""
-    from app.extract import load_extracted, verification_label
+    from app.extract import keep_whole, load_extracted, translate_source, verification_label
     from app.project import load_project
     from app.workspace import game_file_dirs, game_file_key, included_pages
 
@@ -85,8 +85,9 @@ def collect_sources(info: ProjectInfo, game: bool = False) -> list[Source]:
             name_reg = next((n for n in regs if "이름" in n or "name" in n.lower()), None)
             card_name = regs[name_reg]["source"] if name_reg and isinstance(regs[name_reg]["source"], str) else None
             for rname, r in regs.items():
-                src = r.get("source")
-                if not src or r.get("keep_original"):  # ‘전체가 아이콘 — 번역 안 함’ 칸은 번역·용어집에서 뺀다
+                # ‘원본 그대로’ 칸은 번역·용어집에서 뺀다 (아이콘 문단만 원본 그대로인 칸은 남은 문단만)
+                src = translate_source(r)
+                if not src or keep_whole(r):
                     continue
                 v = verification_label(r)
                 verdict = "결론 못 냄" if v == "결론 못 냄" else ("확인 필요" if r.get("uncertain") else "")

@@ -25,7 +25,7 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
     readings = 화면의 읽은 결과 표: 두 번 읽기 결과, 그 뒤에 마지막 ‘이 칸 다시 읽기’ 결과(reread=True) 하나.
     다시 읽기 결과만 있으면 지금 원문을 처음 줄(original=True)로 넣어 비교할 수 있게 한다."""
     from app import workspace
-    from app.extract import MODEL_LABEL, cell_rereads, load_extracted, model_readings, verification_label
+    from app.extract import MODEL_LABEL, cell_rereads, keep_state, load_extracted, model_readings, verification_label
 
     def row(x: dict, **flags) -> dict:
         return {"model": MODEL_LABEL.get(x["model"], x["model"]), "source": x["source"],
@@ -61,7 +61,12 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 "note": (r or {}).get("note", ""),
                 "readings": readings + rereads,
                 "edited": bool(r and (r.get("edited_by") or r.get("checked_by"))),
-                "keep_original": bool(r and r.get("keep_original")),  # 전체가 아이콘 — 번역 안 함
+                # 전체가 아이콘 — 번역 안 함 (아이콘 문단만으로 정했는데 글 줄이 모두 남길 줄인 칸도 칸 전체)
+                "keep_original": keep_state(r)[0] == "whole",
+                # ‘원본 그대로’: "" | whole(칸 전체) | partial(아이콘 문단만) | broken(아이콘 문단만인데 원문 줄 수가
+                # 바뀌어 맞출 수 없음 — 칸 전체를 원본 그대로 둔다)
+                "keep_mode": keep_state(r)[0],
+                "keep_lines": keep_state(r)[1],  # partial일 때 원본 그대로 둘 원문 줄 번호 (빈 줄 포함, 0부터)
                 "icon_changed": list((r or {}).get("icon_changed") or []),  # ② 아이콘 정의에서 자리가 바뀜
                 # ② 아이콘 정의에서 ‘아이콘 아님’으로 뺀 [[?]] 수 (None = 그 기록 전에 정한 칸·정한 적 없음)
                 "icon_removed": None if (r or {}).get("icon_removed") is None else int(r["icon_removed"]),
@@ -73,7 +78,7 @@ def icon_reread_pending(file_dirs) -> list[dict]:
     """② 아이콘 정의에서 아이콘 자리가 바뀌었는데 아직 다시 읽지 않은 칸 [{"file_dir", "page", "region"}].
     ‘나중에 (원문 확인에서)’를 고르면 ③ 원문 확인을 열 때 이 칸들을 먼저 다시 읽는다."""
     from app import workspace
-    from app.extract import load_extracted
+    from app.extract import keep_state, load_extracted
 
     out = []
     for fd in map(Path, file_dirs):
@@ -85,7 +90,7 @@ def icon_reread_pending(file_dirs) -> list[dict]:
             names = {reg.name for reg in tpl.regions_for(pno)}  # 영역을 지운 칸은 다시 읽을 수 없다
             out += [{"file_dir": fd, "page": pno, "region": name} for name, r in regs.items()
                     if r and r.get("icon_reread") and r.get("icon_changed") and name in names
-                    and not r.get("keep_original")]
+                    and not r.get("keep_original") and not keep_state(r)[0]]
     return out
 
 
@@ -447,20 +452,58 @@ def icon_box_problem(project_dir: Path | str, occ_id: str, box) -> str:
 
 
 def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) -> dict:
-    """카드 보기 ‘이 칸 원본 그대로’: 그 자리가 있는 칸을 한글화하지 않는다 (set_keep_original).
-    켜면 그 칸의 [[?]] 자리들은 이름이 필요 없으므로 ‘아이콘 아님’으로 한다 (그 묶음에 by_keep 표시).
+    """카드 보기 ‘이 칸 원본 그대로’: 그 자리가 있는 칸을 한글화하지 않는다.
+    영역이 ‘한 칸 모두 같은 글꼴’이면 칸 전체를 (set_keep_original), ‘문단마다 다른 글꼴’이면 아이콘이 있는 문단만
+    원본 그대로 두고(set_keep_paragraphs, extract.keep_paragraph_lines) 다른 문단은 그대로 한글화한다. 아이콘 문단이
+    칸의 글 줄 전부면 칸 전체와 같다.
+    켜면 그 칸의 [[?]] 자리들은 이름이 필요 없으므로 ‘아이콘 아님’으로 한다 (그 묶음에 by_keep 표시. 확정하면 [[?]]는
+    원문에서 빠지지만 줄바꿈은 남아 남길 줄 번호가 맞는다).
     끄면 그렇게 ‘아이콘 아님’이 된 자리만 다시 아이콘 자리로 되돌린다 (사람이 따로 지운 자리는 그대로).
-    {"file_dir", "page", "region", "keep", "not_icon": [자리 id], "restored": [자리 id],
-     "left": 끈 뒤에도 남은 그 칸의 ‘아이콘 아님’ 자리 (옆 아이콘에 포함은 뺌)}"""
-    from app import icons, workspace
+    {"file_dir", "page", "region", "keep", "mode": "whole" | "partial" | "" (끔), "paragraphs": 남긴 원문 줄 수(partial),
+     "not_icon": [자리 id], "restored": [자리 id], "left": 끈 뒤에도 남은 그 칸의 ‘아이콘 아님’ 자리 (옆 아이콘에 포함은 뺌)}"""
+    from app import font_plan, icons, workspace
+    from app.extract import keep_paragraph_lines, load_extracted
 
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     res = icons.load_scan(work)
     o = next(x for x in res.occurrences if x.id == occ_id)
     fd = icons._occ_dir(info, o.file)
-    from app.service._translate_erase import set_keep_original
-    set_keep_original(fd, o.page, o.region, keep)
+    from app.service._translate_erase import set_keep_original, set_keep_paragraphs
+    mode, kept_lines = ("whole" if keep else ""), []
+    if keep and font_plan.region_font_modes(fd).get(o.region) == "sentence":
+        src = (load_extracted(fd).get(o.page, {}).get(o.region) or {}).get("source")
+        if isinstance(src, str):
+            kept_lines = keep_paragraph_lines(src)
+            rows = src.split("\n")
+            if kept_lines and any(t.strip() and i not in kept_lines for i, t in enumerate(rows)):
+                mode = "partial"  # 아이콘 문단 밖에 글 줄이 남는다: 그 줄만 한글화
+    if mode == "partial":
+        # 카드 보기에서 찾은·잡은 아이콘 자리(원본 쪽 pt): 지우기가 남길 줄을 찾고 아이콘을 지키는 데 쓴다
+        # (확정하면 아이콘 찾기 결과가 지워지므로 지금 칸에 적어 둔다)
+        import pymupdf
+
+        # 남길 줄에 있고 지금 원본 그대로 때문에 ‘아이콘 아님’이 될 자리만 (그 전에 ‘아이콘 아님’·옆 아이콘에 포함으로 정한
+        # 자리는 글 줄의 잘못 찾은 자리일 수 있다: 넣으면 지우기가 그 줄을 남길 줄로 세고 일본어 글자를 지키지 못하게 된다)
+        proj = load_project(fd)
+        reg = next((r for r in proj.template.regions_for(o.page) if r.name == o.region), None)
+        boxes = []
+        # 자리의 원문 줄 번호: 지금 원문의 index번째 [[?]]가 있는 줄 (scan의 line은 찾을 때의 원문 기준)
+        ph_rows = [src[:m.start()].count("\n") for m in icons.TOKEN_RE.finditer(src) if m.group(1) == "?"]
+
+        def row_of(x) -> int:
+            return ph_rows[x.index] if 0 <= x.index < len(ph_rows) else x.line - 1
+
+        if reg is not None:
+            with pymupdf.open(proj.source_pdf) as doc:
+                prect = doc[o.page - 1].rect
+            boxes = [b for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)
+                     and row_of(x) in kept_lines and not res.groups.get(x.group, {}).get("not_icon")
+                     and not res.groups.get(x.group, {}).get("absorbed")
+                     for b in [icons.region_box_to_pt(prect, reg, x.box)] if b]
+        set_keep_paragraphs(fd, o.page, o.region, kept_lines, boxes)
+    else:
+        set_keep_original(fd, o.page, o.region, keep)
     done, restored = [], []
     cell = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of]
     if keep:
@@ -472,39 +515,95 @@ def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) 
                 cur.groups[g]["by_keep"] = True  # 원본 그대로 때문에 아이콘 아님 (끄면 되돌린다)
                 icons._save_scan(work, cur)
                 done.append(x.id)
-    else:
-        cur = icons.load_scan(work)
-        for x in cell:
-            if cur.groups.get(x.group, {}).get("by_keep"):
-                icons.restore_icon(info, work, x.id)
-                restored.append(x.id)
-                cur = icons.load_scan(work)
     left = []
     if not keep:
-        cur = icons.load_scan(work)
-        left = [x.id for x in cur.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)
-                and not x.set_of and cur.groups.get(x.group, {}).get("not_icon")
-                and not cur.groups.get(x.group, {}).get("absorbed")]
-    log.info("원본 그대로 %s: %s %d쪽 %s (아이콘 아님 %s, 되돌림 %s, 남은 아이콘 아님 %s)", "켬" if keep else "끔",
+        restored, left = _restore_keep_slots(info, work, o.file, o.page, o.region)
+    log.info("원본 그대로 %s: %s %d쪽 %s (아이콘 아님 %s, 되돌림 %s, 남은 아이콘 아님 %s)",
+             {"whole": "켬 (칸 전체)", "partial": f"켬 (아이콘 문단만, 원문 줄 {kept_lines})"}.get(mode, "끔"),
              o.file_key, o.page, o.region, done, restored, left)
     if done or restored:
         try:
             icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
         except OSError:
             pass
-    return {"file_dir": fd, "page": o.page, "region": o.region, "keep": keep, "not_icon": done, "restored": restored,
+    return {"file_dir": fd, "page": o.page, "region": o.region, "keep": keep, "mode": mode,
+            "paragraphs": len(kept_lines) if mode == "partial" else 0, "not_icon": done, "restored": restored,
             "left": left}
 
 
+def _restore_keep_slots(info, work: Path, file: str, page: int, region: str) -> tuple[list[str], list[str]]:
+    """원본 그대로 때문에 ‘아이콘 아님’이 된(by_keep) 그 칸의 자리를 다시 아이콘 자리로.
+    (되돌린 자리 id, 되돌린 뒤에도 남은 그 칸의 ‘아이콘 아님’ 자리 id (옆 아이콘에 포함은 뺌))."""
+    from app import icons
+
+    restored = []
+    cur = icons.load_scan(work)
+    for x in [x for x in cur.occurrences if (x.file, x.page, x.region) == (file, page, region) and not x.set_of]:
+        if cur.groups.get(x.group, {}).get("by_keep"):
+            icons.restore_icon(info, work, x.id)
+            restored.append(x.id)
+            cur = icons.load_scan(work)
+    left = [x.id for x in cur.occurrences if (x.file, x.page, x.region) == (file, page, region)
+            and not x.set_of and cur.groups.get(x.group, {}).get("not_icon")
+            and not cur.groups.get(x.group, {}).get("absorbed")]
+    return restored, left
+
+
+def set_cell_keep_original(file_dir: Path | str, page: int, region: str, keep: bool) -> dict:
+    """결과 보기·원문 확인의 ‘원본 그대로’ 단추: 켜면 칸 전체를 원본 그대로 (set_keep_original). 끄면 칸 전체든 아이콘
+    문단만이든 풀고, 원본 그대로 때문에 ‘아이콘 아님’이 된 그 칸의 자리도 다시 아이콘 자리로 되돌린다
+    (카드 보기에서 끈 것과 같게). {"restored": [자리 id], "left": [남은 ‘아이콘 아님’ 자리 id]}."""
+    from app import icons
+    from app.service._translate_erase import set_keep_original
+
+    fd = Path(file_dir)
+    set_keep_original(fd, page, region, keep)
+    restored, left = [], []
+    if keep:
+        return {"restored": restored, "left": left}
+    info = workspace.project_of(fd)
+    work = info.game_dir / "work" / "icons" if info is not None else None
+    if work is None or not (work / "scan.json").exists():
+        return {"restored": restored, "left": left}
+    target = fd.resolve()
+    files = {x.file for x in icons.load_scan(work).occurrences
+             if (x.page, x.region) == (int(page), region) and icons._occ_dir(info, x.file).resolve() == target}
+    for f in sorted(files):
+        r_, l_ = _restore_keep_slots(info, work, f, int(page), region)
+        restored += r_
+        left += l_
+    if restored:
+        log.info("원본 그대로 끔: %s %d쪽 %s (되돌림 %s)", fd.name, int(page), region, restored)
+        try:
+            icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+        except OSError:
+            pass
+    return {"restored": restored, "left": left}
+
+
+def has_text_besides_icons(source: str | None) -> bool:
+    """원문에 아이콘·숫자·기호 말고 글자도 있는가 (‘원본 그대로’ 칸이면 글자도 번역되지 않고 남는다)."""
+    from app.erase_text import is_icon_line
+
+    src = (source or "").strip()
+    return bool(src) and not is_icon_line(src)
+
+
 def cell_kept(project_dir: Path | str, occ_id: str) -> bool:
-    """그 자리가 있는 칸이 ‘원본 그대로’인가."""
+    """그 자리가 있는 칸이 ‘원본 그대로’인가 (칸 전체든 아이콘 문단만이든)."""
+    return bool(cell_keep_mode(project_dir, occ_id))
+
+
+def cell_keep_mode(project_dir: Path | str, occ_id: str) -> str:
+    """그 자리가 있는 칸의 ‘원본 그대로’: "" | "whole" 칸 전체 | "partial" 아이콘 문단만 |
+    "broken" 아이콘 문단만으로 정했는데 원문 줄 수가 바뀌어 칸 전체를 원본 그대로 둠 (extract.keep_state)."""
     from app import icons, workspace
-    from app.extract import load_extracted
+    from app.extract import keep_state, load_extracted
 
     info = workspace.load_project_info(project_dir)
     o = next(x for x in icons.load_scan(info.game_dir / "work" / "icons").occurrences if x.id == occ_id)
     r = load_extracted(icons._occ_dir(info, o.file)).get(o.page, {}).get(o.region) or {}
-    return bool(r.get("keep_original"))
+    return keep_state(r)[0]
 
 
 def restore_icon(project_dir: Path | str, occ_id: str) -> dict:

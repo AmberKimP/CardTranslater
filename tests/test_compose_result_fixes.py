@@ -117,7 +117,8 @@ def test_compose_layout_region_keeps_indented_line_start():
                                 {}, lay, source_text="一行目\n二行目\n［三行目」の\nの数だけ増加する。")
     x0s = [b[0] for b in rec["line_boxes_pt"]]
     assert x0s[0] == pytest.approx(x0s[1]) == pytest.approx(x0s[2])
-    assert x0s[3] == pytest.approx(58.56)
+    # 앞에 남은 그림(☆)에 닿지 않게 글자 높이의 PIN_GAP배 띄운다
+    assert x0s[3] == pytest.approx(58.56 + typeset_compose.PIN_GAP * 4.32, abs=0.01)
 
 
 # ---------------------------------------------------------------- 결과 보기에서 글 위치 옮기기

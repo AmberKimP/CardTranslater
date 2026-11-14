@@ -306,6 +306,7 @@ class IconPlaceDialog(QDialog):
     ACTIONABLE = ("found", "manual", "lost", "not_icon", "absorbed", "named")  # 목록에서 합칠 수 있는 자리
     DELETABLE = ("found", "manual", "lost", "named")
     KEEP_TEXT, KEEP_UNDO_TEXT = "이 칸 원본 그대로 (한글화 안 함)", "원본 그대로 두는 중 · 되돌리기"
+    KEEP_PARTIAL_UNDO_TEXT = "아이콘 문단만 원본 그대로 · 되돌리기"  # 문단마다 다른 글꼴 영역: 다른 문단은 한글화
 
     @staticmethod
     def _key(it: dict) -> str:
@@ -518,10 +519,12 @@ class IconPlaceDialog(QDialog):
         self._cell_info(p)
         self._fill_items(p, w["occ"])
         try:
-            kept = service.cell_kept(self.project_dir, w["occ"])
+            mode = service.cell_keep_mode(self.project_dir, w["occ"])
         except Exception:  # noqa: BLE001 - 표시만
-            kept = False
-        self.keep_btn.setText(self.KEEP_UNDO_TEXT if kept else self.KEEP_TEXT)
+            mode = ""
+        kept = bool(mode)
+        self.keep_btn.setText(self.KEEP_PARTIAL_UNDO_TEXT if mode == "partial" else
+                              self.KEEP_UNDO_TEXT if kept else self.KEEP_TEXT)
         self._kept = kept
         sel = {o for o, _st in self._selected()}
         # (상자, 이름, 예상 위치, 정한 자리, 목록에서 고름, 자리 id)
@@ -682,6 +685,7 @@ class IconPlaceDialog(QDialog):
             if ask_choice(self, "이 칸 원본 그대로", "이 칸을 한글화하지 않고 원본 그대로 둘까요?",
                           [("원본 그대로 두기", "accept"), ("취소", "reject")], default=1,
                           informative=(f"이 칸의 아이콘 자리 {n}개가 ‘아이콘 아님’이 됩니다. " if n else "")
+                          + "영역이 ‘문단마다 다른 글꼴’이면 아이콘이 있는 문단만 원본 그대로 두고 다른 문단은 한글화합니다. "
                           + "다시 누르면 원래대로 되돌립니다.") != 0:
                 return
         try:
@@ -704,7 +708,10 @@ class IconPlaceDialog(QDialog):
                         break
                 r = {**r, "restored": restored, "left": [o for o in r["left"] if o not in restored]}
         self._after_list_action(w["occ"])
-        if r["keep"]:
+        if r["keep"] and r.get("mode") == "partial":
+            self.status.setText("이 칸에서 아이콘이 있는 문단만 원본 그대로 둡니다 (그 문단은 글자 지우기·번역·한글 넣기 안 함). "
+                                "다른 문단은 한글화합니다. 이 칸의 아이콘 자리는 ‘아이콘 아님’이 되었습니다.")
+        elif r["keep"]:
             self.status.setText("이 칸은 원본 그대로 둡니다 (글자 지우기·한글 넣기 안 함). 이 칸의 아이콘 자리는 ‘아이콘 아님’이 되었습니다.")
         else:
             self.status.setText("이 칸을 다시 한글화합니다."

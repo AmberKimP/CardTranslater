@@ -461,3 +461,81 @@ def test_keep_off_legacy_cell_offers_restore(qapp, tmp_path, monkeypatch):
     states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
     assert states == {host: "found", extra: "lost"}
     dlg.reject()
+
+
+# ---------------------------------------------------------------- 1.22.0: 원본 그대로 칸의 원문 확인 문구, 결과 보기 위치
+def test_source_review_kept_cell_says_not_translated(qapp, tmp_path):
+    """원본 그대로 칸: ‘다시 봐야 함’ 같은 문구가 아니라 ‘번역하지 않기로 함’과 사용자 선택·아이콘 그림 그대로를 알린다.
+    글자도 있는 칸은 확인하라고 알린다."""
+    from app.qt.source_review import SourceReviewDialog
+    from tests.test_qt import _project_with_extract
+
+    info, fd = _project_with_extract(tmp_path)
+    files = service.project_overview(info.dir)["groups"][0]["files"]
+    dlg = SourceReviewDialog(files, only_check=False)
+    c0 = dlg.current()
+    dlg.keep_btn.click()
+    dlg.table.setCurrentCell(0, 0)
+    t = dlg.info.text()
+    assert "번역하지 않기로 함" in t and "사용자가" in t and "원본 그대로" in t
+    assert ("글자도 있어" in t) == SourceReviewDialog.kept_with_text(dlg.current())
+    assert SourceReviewDialog.kept_with_text({"keep_original": True, "source": "[[a]] / [[b]] 2"}) is False
+    assert SourceReviewDialog.kept_with_text({"keep_original": True, "source": "いずれかを選択\n[[a]]"}) is True
+    assert (c0["page"], c0["region"]) == (dlg.current()["page"], dlg.current()["region"])
+    dlg.reject()
+
+
+def test_result_viewer_nudge_buttons_show_arrows_and_preview_live(qapp, tmp_path, monkeypatch):
+    """위치 화살표 버튼은 글자가 보일 만큼 넓고(테마 여백 없이), 누르면 저장 전에도 옮긴 자리로 미리 보기를 다시 그린다."""
+    from app.qt.results import ResultViewer
+    from tests.test_qt import _translated_project
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    v.show()
+    v.regions.setCurrentRow(1)
+    qapp.processEvents()
+    for b in v.nudge_btns:  # 버튼 안 글자 칸(테마 여백을 뺀 곳)에 화살표가 들어간다
+        assert b.width() >= 30 and b.sizeHint().width() <= b.width() + 2
+    seen = []
+    real = service.card_preview
+    monkeypatch.setattr(service, "card_preview", lambda *a, **k: (seen.append(k.get("offset")), real(*a, **k))[1])
+    v.nudge_text(1, 0)
+    v._offset_timer.timeout.emit()  # (기다리지 않고 바로)
+    assert seen and seen[-1] == (1.0, 0.0)
+    png = real(fd, v._edit["page"], v._edit["region"], None, None, offset=(5.0, 0.0))
+    assert png  # 옮긴 자리로도 그려진다
+    v.close()
+
+
+def test_result_viewer_live_preview_failure_does_not_pop_dialog(qapp, tmp_path, monkeypatch):
+    """위치를 옮길 때 저절로 하는 미리 보기는 못 만들어도 알림 창을 띄우지 않고 아래 글로만 알린다
+    (미리 보기 단추로 부른 것은 예전처럼 창으로)."""
+    from app.qt import results
+    from app.qt.results import ResultViewer
+    from tests.test_qt import _translated_project
+
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    v.regions.setCurrentRow(1)
+    popped = []
+    monkeypatch.setattr(results, "show_error", lambda *a, **k: popped.append(a[1]))
+    monkeypatch.setattr(results, "show_problem", lambda *a, **k: popped.append(a[1]))
+    monkeypatch.setattr(service, "card_preview", lambda *a, **k: None)
+    v.nudge_text(1, 0)
+    v._offset_timer.timeout.emit()
+    assert not popped and "미리 보기를 만들지 못했습니다" in v.edit_note.text()
+
+    def boom(*a, **k):
+        raise RuntimeError("깨짐")
+
+    monkeypatch.setattr(service, "card_preview", boom)
+    v._offset_timer.timeout.emit()
+    assert not popped and "깨짐" in v.edit_note.text()
+    v.preview_btn.click()  # 사람이 누른 미리 보기는 창으로 알린다
+    assert popped == ["미리 보기를 만들지 못했습니다"]
+    v.close()

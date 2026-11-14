@@ -3710,8 +3710,10 @@ def test_source_review_keep_original_button(qapp, tmp_path):
     dlg.keep_btn.click()
     cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))
     assert cell["keep_original"] and dlg.table.currentRow() == 1
-    assert dlg.table.item(0, 2).text() == "번역 안 함 (아이콘)"
+    # 글자가 있는 칸을 원본 그대로로 정함: 글자도 번역되지 않고 남으니 확인하라고 알린다
+    assert dlg.table.item(0, 2).text() == "번역 안 함 · 글자 있음"
     dlg.table.setCurrentCell(0, 0)
+    assert "번역하지 않기로 함" in dlg.info.text()
     assert dlg.keep_btn.isChecked() and dlg.keep_btn.text() == KEEP_UNDO_LABEL
     dlg.keep_btn.click()
     cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))

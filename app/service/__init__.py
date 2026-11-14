@@ -66,7 +66,7 @@ from app.service._glossary import (  # noqa: F401
 from app.service._translate_erase import (  # noqa: F401
     TRANSLATE_MODELS, translate_project, game_dir, review_xlsx_for, export_project_excel, _retire_legacy,
     cards_from_translation, ProjectStepResult, erase_project, erase_sig, KEEP_ORIGINAL, erase_sources,
-    icon_only_regions, set_keep_original, stale_erased_pages, files_needing_erase, _cleared_pages, set_card_limit,
+    icon_only_regions, set_keep_original, set_keep_paragraphs, erase_keep_lines, stale_erased_pages, files_needing_erase, _cleared_pages, set_card_limit,
     compose_project, image_sheet_layouts, sheet_family, _attach_sheet_images, EDITED_DIR, EDITED_PDF,
     EditedImportResult, can_import_edited, edited_sheet_images, import_edited_pdf, _compose_with_cards,
 )
@@ -90,7 +90,7 @@ from app.service._settings import (  # noqa: F401
 )
 from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
-    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, cell_kept,
+    icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
     suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons,
 )

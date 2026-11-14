@@ -152,7 +152,12 @@ class ResultViewer(QDialog):
             sb.setSuffix(" pt")
             sb.setMaximumWidth(84)
             sb.setToolTip(f"이 카드의 이 영역 한글을 {axis}으로 옮깁니다. 0이면 원래 자리. 저장하면 다시 넣습니다.")
-            sb.valueChanged.connect(lambda _v: self._mark_dirty())
+            sb.valueChanged.connect(lambda _v: self._offset_moved())
+        # 위치를 바꾸면 잠깐 뒤 미리 보기를 다시 그린다 (누를 때마다 바로 보이게. 연달아 누르면 마지막에 한 번)
+        self._offset_timer = QTimer(self)
+        self._offset_timer.setSingleShot(True)
+        self._offset_timer.setInterval(250)
+        self._offset_timer.timeout.connect(self._offset_preview)
         orow = QHBoxLayout()
         orow.setSpacing(4)
         orow.addWidget(self.off_x)
@@ -161,7 +166,8 @@ class ResultViewer(QDialog):
         for txt, dx, dy, tip in (("←", -1, 0, "왼쪽으로 1pt"), ("→", 1, 0, "오른쪽으로 1pt"),
                                  ("↑", 0, -1, "위로 1pt"), ("↓", 0, 1, "아래로 1pt")):
             b = QPushButton(txt)
-            b.setFixedWidth(26)
+            b.setFixedWidth(32)
+            b.setStyleSheet("QPushButton { padding: 2px 0px; }")  # 테마 여백(좌우 16px)이면 화살표가 잘려 안 보인다
             b.setAutoDefault(False)
             b.setToolTip(tip + " (Shift를 누른 채면 5pt)")
             b.clicked.connect(lambda _c=False, a=dx, c=dy: self.nudge_text(a, c))
@@ -199,7 +205,7 @@ class ResultViewer(QDialog):
         form.addRow("지우기", self.erase_mode)
         self.preview_btn = QPushButton("미리 보기")
         self.preview_btn.setToolTip("저장하기 전에 이 칸을 한글 넣기와 똑같이 그려 봅니다 (지우기 방식 바꾼 것은 저장해야 보입니다)")
-        self.preview_btn.clicked.connect(self.preview_edit)
+        self.preview_btn.clicked.connect(lambda: self.preview_edit())
         self.reset_btn = QPushButton("원래대로")
         self.reset_btn.setToolTip("번역은 검수 엑셀(없으면 초벌 번역) 그대로, 글꼴·문단 글꼴·크기·정렬·지우기는 영역 설정대로 돌려 놓습니다 (저장해야 반영)")
         self.reset_btn.clicked.connect(self.reset_edit)
@@ -433,7 +439,10 @@ class ResultViewer(QDialog):
                 self.erase_hint.setText(f"이 칸의 번역을 읽지 못했습니다: {e}")
         ok = info is not None
         kept = bool(ok and info.get("keep_original"))
-        self.keep_btn.setText(KEEP_UNDO_LABEL if kept else KEEP_LABEL)
+        partial = int(info.get("keep_partial") or 0) if ok else 0  # 아이콘 문단만 원본 그대로 (남은 문단은 고칠 수 있다)
+        self.keep_btn.setText(KEEP_UNDO_LABEL if kept or partial else KEEP_LABEL)
+        self.keep_btn.setToolTip("이 칸은 아이콘이 있는 문단만 원본 그대로 둡니다 (카드 보기에서 정함). 번역 칸에는 다른 문단만 "
+                                 "있고, 누르면 풀어서 칸 전체를 다시 한글화합니다." if partial else "")
         self.keep_btn.setEnabled(bool(ok and info.get("can_keep", True)))
         for w in (self.edit_text, self.edit_font, self.edit_size, self.edit_align):
             w.setEnabled(not kept)  # 원본 그대로인 칸은 한글을 넣지 않으므로 고칠 것이 없다
@@ -579,6 +588,16 @@ class ResultViewer(QDialog):
         self.off_x.setValue(self.off_x.value() + dx * step)
         self.off_y.setValue(self.off_y.value() + dy * step)
 
+    def _offset_moved(self) -> None:
+        self._mark_dirty()
+        if self._edit:
+            self._offset_timer.start()
+
+    def _offset_preview(self) -> None:
+        """위치 칸·화살표를 바꾼 뒤: 옮긴 자리로 미리 보기 (저장은 ‘저장하고 다시 넣기’)."""
+        if self._edit and self.off_x.isEnabled():
+            self.preview_edit(silent=True)  # 저절로 하는 미리 보기: 못 만들어도 창을 띄우지 않는다
+
     def _mark_dirty(self):
         e = self._edit
         if not e:
@@ -615,7 +634,8 @@ class ResultViewer(QDialog):
         self.off_x.setValue(0.0)
         self.off_y.setValue(0.0)
 
-    def preview_edit(self):
+    def preview_edit(self, silent: bool = False):
+        """저장 전 미리 보기. silent: 위치를 옮길 때 저절로 하는 미리 보기 — 못 만들면 알림 창 대신 아래 글로만 알린다."""
         e, fd = self._edit, self.file_dir()
         if not (e and fd):
             return
@@ -623,12 +643,20 @@ class ResultViewer(QDialog):
             png = service.card_preview(fd, e["page"], e["region"], self.edit_text.toPlainText(),
                                        self.edit_font.currentData() or None, self._size_value(),
                                        self.edit_align.currentData() or "",
-                                       self._para_fonts() if e["info"]["paragraph_mode"] else None)
+                                       self._para_fonts() if e["info"]["paragraph_mode"] else None,
+                                       offset=self._offset())
         except Exception as ex:  # noqa: BLE001
-            show_error(self, "미리 보기를 만들지 못했습니다", ex)
+            if silent:
+                self.edit_note.setText(f"미리 보기를 만들지 못했습니다: {ex}")
+            else:
+                show_error(self, "미리 보기를 만들지 못했습니다", ex)
             return
         if not png:
-            show_problem(self, "미리 보기를 만들지 못했습니다", "이 칸은 그려 볼 수 없습니다 (번역이 비었거나 지운 결과가 없음).")
+            why = "이 칸은 그려 볼 수 없습니다 (번역이 비었거나 지운 결과가 없음)."
+            if silent:
+                self.edit_note.setText(f"미리 보기를 만들지 못했습니다: {why}")
+            else:
+                show_problem(self, "미리 보기를 만들지 못했습니다", why)
             return
         pm = QPixmap()
         pm.loadFromData(png, "PNG")
@@ -690,9 +718,9 @@ class ResultViewer(QDialog):
         if not self._leave_ok():  # 저장 안 한 고침이 있으면 먼저 묻는다
             return
         page, region = e["page"], e["region"]
-        keep = not e["info"].get("keep_original")
+        keep = not (e["info"].get("keep_original") or e["info"].get("keep_partial"))  # 아이콘 문단만이면 풀기
         try:
-            service.set_keep_original(fd, page, region, keep)
+            service.set_cell_keep_original(fd, page, region, keep)  # 끄면 ‘아이콘 아님’이 된 자리도 되돌린다
         except Exception as ex:  # noqa: BLE001
             show_error(self, "바꾸지 못했습니다", ex)
             return

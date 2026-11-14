@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.extract import MODEL_LABEL, load_extracted, model_readings, verification_label
+from app.extract import MODEL_LABEL, keep_whole, load_extracted, model_readings, verification_label
 from app.translate import check, lookup, terms_in
 from app.project import Project, sha256_file
 
@@ -35,10 +35,13 @@ from app.version import VERSION as APP_VERSION  # noqa: E402
 
 
 def source_of(project: Project, extracted: dict, page: int, region: str):
-    """(원문, 불확실 여부). 자동 추출 결과가 있으면 그것, 없으면 samples.json(손으로 옮긴 것)."""
+    """(원문, 불확실 여부). 자동 추출 결과가 있으면 그것, 없으면 samples.json(손으로 옮긴 것).
+    아이콘 문단만 원본 그대로인 칸은 그 문단을 뺀 원문 (번역·검수·한글 넣기는 남은 문단만 한다)."""
+    from app.extract import translate_source
+
     r = (extracted.get(page) or {}).get(region)
     if r is not None:
-        return r.get("source"), bool(r.get("uncertain"))
+        return translate_source(r), bool(r.get("uncertain"))
     return ((project.samples.get(page) or {}).get(region) or {}).get("source"), False
 
 
@@ -271,7 +274,7 @@ def _write_rows(ws, project: Project, pages: list[int], keep: dict | None, row: 
         card = project.samples.get(pno) or {}
         for reg in project.template.regions_for(pno):
             entry = card.get(reg.name) or {}
-            if ((extracted.get(pno) or {}).get(reg.name) or {}).get("keep_original"):
+            if keep_whole((extracted.get(pno) or {}).get(reg.name)):
                 continue  # ‘전체가 아이콘 — 번역 안 함’ 칸: 번역하지 않으므로 검수 엑셀에도 넣지 않는다
             src, unsure = source_of(project, extracted, pno, reg.name)
             tr = lookup(tr_cache, src) if (tr_cache and src) else None

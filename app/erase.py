@@ -1281,12 +1281,17 @@ def _find_icons(sub: np.ndarray, lb, src, reg) -> list:
 
 def _inline_icons(found: list, lay: dict, tm) -> list:
     """글 줄 안의 아이콘 자리를 tm.mask에 더한다 (그 자리를 지운다).
-    [(이름, sub 안 px 상자, 그 줄 글자 높이 대비 크기 | None)]. 아이콘만 있는 줄의 아이콘은 그대로 둔다."""
+    [(이름, sub 안 px 상자, 그 줄 글자 높이 대비 크기 | None)]. 아이콘만 있는 줄과 원본 그대로 남긴 줄(keep)의
+    아이콘은 그대로 둔다."""
     H, W = tm.mask.shape
+    kept = [ln for ln in lay.get("lines") or [] if ln.get("keep")]
     out = []
     for nm, bx, only in found:
         if only:
             continue
+        cy0 = (bx[1] + bx[3]) / 2
+        if any(ln["bbox"][1] <= cy0 <= ln["bbox"][3] for ln in kept):
+            continue  # 원본 그대로 남긴 줄(아이콘 문단 등) 안의 아이콘: 줄과 함께 남긴다
         tm.mask[max(0, bx[1] - 2):min(H, bx[3] + 2), max(0, bx[0] - 2):min(W, bx[2] + 2)] = True
         cy = (bx[1] + bx[3]) / 2
         ln = min((ln for ln in lay.get("lines") or [] if ln["bbox"][1] - ln["glyph_h"] <= cy <= ln["bbox"][3] + ln["glyph_h"]),
@@ -1302,10 +1307,15 @@ def _inline_icons(found: list, lay: dict, tm) -> list:
 
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
                params: CleanParams | None = None, modes: dict | None = None,
-               sources: dict | None = None) -> PageErase:
+               sources: dict | None = None, icon_templates: dict | None = None,
+               keep_lines: dict | None = None) -> PageErase:
     """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다.
     modes: 이 카드만 다르게 지울 영역 {영역 이름: 방식} (영역 설정 erase.mode보다 우선).
-    sources: 읽은 원문 {영역 이름: 글}. 그림 카드에서 지울 줄을 원문 줄에 맞춘다."""
+    sources: 읽은 원문 {영역 이름: 글}. 그림 카드에서 지울 줄을 원문 줄에 맞춘다.
+    keep_lines: {영역 이름: {"lines": 지우지 않을 원문 줄 번호(빈 줄 뺀 기준), "boxes_pt": 그 칸 아이콘 자리}} —
+    아이콘 문단만 원본 그대로 둘 칸 (글자 모양만 지우는 영역에서만 쓴다. 아이콘 자리는 지키고, 남길 줄을 찾지 못하면 그
+    영역은 하나도 지우지 않는다: erase_text.match_source_lines).
+    icon_templates: 게임 아이콘 사전 그림 {이름: RGBA} (icons.templates_for). 글 속 아이콘 자리를 다시 확인한다."""
     import pymupdf
 
     warnings: list[str] = []
@@ -1504,6 +1514,11 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     for name, bxs in keep_above_px.items():  # 글자 줄 위의 작은 그림(왕관): 테두리까지 넉넉히 지킨다
         for b in bxs:
             fill_box(protect_m, local((b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3)))
+    keep_px: dict[str, list] = {}  # 아이콘 문단만 원본 그대로인 칸의 아이콘 자리 (배경 px): 지운다고 고른 픽셀이 있어도 지킨다
+    for name, kl in (keep_lines or {}).items():
+        keep_px[name] = [px_box_outer(to_px(tuple(map(float, b_))), size) for b_ in kl.get("boxes_pt") or []]
+        for b in keep_px[name]:
+            fill_box(protect_m, local((b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2)))
     # 이미지에 박힌 글자 영역(텍스트 레이어 없음): 작업 범위 밖의 그림·색 번짐은 배경 추정에 쓰지 않는다.
     # 영역 밖이라 바뀌지도 않는다(protect). 쓰면 줄 방향 배경 평균에 그림 색이 끌려와 얼룩이 남는다.
     if any(m_.get("image_text_box_pt") for m_ in region_metas):
@@ -1600,14 +1615,37 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
                 ok_px = ok_px & inside
             # 획으로 찾았으면 줄 안의 빈 곳을 색으로 다시 뒤지지 않는다 (img=None): 그림 조각·아이콘 선이 글자색과 비슷하다
-            lay = erase_text.match_source_lines(tm, lay, src, icon_rows=rows or None,
-                                                img=None if picture_strokes else look, allowed_px=ok_px)
+            kl = (keep_lines or {}).get(name)
+            lay = erase_text.match_source_lines(
+                tm, lay, src, icon_rows=rows or None, img=None if picture_strokes else look, allowed_px=ok_px,
+                keep_idx=kl["lines"] if kl is not None else None,
+                keep_rows=[(b_[1] - oy0, b_[3] - oy0) for b_ in keep_px.get(name) or []])
+        # 줄 배치로 찾은 아이콘 자리를 사전 그림으로 다시 확인한다 (원문 줄에 맞춘 줄 띠 안에서): 그림 조각을 줄로 봐
+        # 엉뚱한 곳을 지우고 진짜 아이콘은 남기던 것 (공주 5쪽 백합 문양, 8쪽 왼쪽 아래 문장)
+        # (돌린 영역은 하지 않는다: 줄 띠는 돌리기 전 좌표인데 원문 줄 순서는 거꾸로라 맞는 자리를 띠 밖으로 버린다)
+        reg_ = regs_by_name.get(name)
+        rot_ = int(((reg_.style if reg_ is not None else None) or {}).get("rotate", 0) or 0) % 360
+        if icon_templates and isinstance(src, str) and "[[" in src and rot_ == 0:
+            bands = [(ln["bbox"][1], ln["bbox"][3], ln["glyph_h"]) for ln in lay.get("lines") or []]
+            from app import icons as _icons
+
+            found, icon_notes = _icons.refine_icon_boxes(look, src, found, bands or None, icon_templates)
+            tm.notes += icon_notes
         # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
         if pic is not None:
             # 글 속 아이콘이라기엔 너무 큰 상자는 아이콘 찾기가 그림에 속은 것: 통째로 지우면 큰 아이콘·그림이 망가진다
             lim = INLINE_ICON_SCALE_RANGE[1] * pic.glyph_px
             found = [f_ for f_ in found if f_[2] or max(f_[1][2] - f_[1][0], f_[1][3] - f_[1][1]) <= 1.5 * lim]
+        if lay.get("keep_failed"):
+            found = []  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
         icons_found = _inline_icons(found, lay, tm)
+        if keep_px.get(name):  # 원본 그대로 둘 아이콘 자리는 글 속 아이콘으로 지우지도, 다시 그리지도 않는다
+            kb = [(b_[0] - ox0, b_[1] - oy0, b_[2] - ox0, b_[3] - oy0) for b_ in keep_px[name]]
+            for b_ in kb:
+                tm.mask[max(0, b_[1] - 2):b_[3] + 2, max(0, b_[0] - 2):b_[2] + 2] = False
+            icons_found = [f_ for f_ in icons_found
+                           if not any(min(f_[1][2], b_[2]) > max(f_[1][0], b_[0]) and min(f_[1][3], b_[3]) > max(f_[1][1], b_[1])
+                                      for b_ in kb)]
         if pic is not None:
             from app import erase_picture
 
@@ -1668,6 +1706,10 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             **({"panel_pt": _pt(lb)} if lb != lb_region else {}),
             # 지운 글 속 아이콘: 이름, 자리, 그 줄 글자 높이 대비 크기 (한글 넣기가 원본 크기로 다시 그린다)
             "icons": [{"name": n_, "bbox_pt": _pt(bx), "scale": sc} for n_, bx, sc in icons_found],
+            # 아이콘 문단만 원본 그대로 둔 칸: 남긴 줄은 keep. 남길 줄을 찾지 못했으면 keep_failed (영역을 지우지 않음,
+            # 한글 넣기도 건너뛴다)
+            **({"keep_paragraphs": True} if (keep_lines or {}).get(name) is not None else {}),
+            **({"keep_failed": True} if lay.get("keep_failed") else {}),
         }
 
     # ---- 4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,

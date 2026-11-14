@@ -882,12 +882,20 @@ def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None,
 
 
 def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | None = None,
-                       img: np.ndarray | None = None, allowed_px: np.ndarray | None = None) -> dict:
+                       img: np.ndarray | None = None, allowed_px: np.ndarray | None = None,
+                       keep_idx: list[int] | None = None, keep_rows: list | None = None,
+                       _info: dict | None = None) -> dict:
     """찾은 줄을 읽은 원문 줄에 맞춘다. tm.mask를 고친다(남길 줄은 지우지 않음).
 
     - 원문보다 줄이 많으면 가장 작은 글자 줄(카드 번호 ‘A-001’ 같은 것)부터 원문에 없는 줄로 보고 남긴다
     - 아이콘·숫자만 있는 원문 줄은 그 자리를 지우지 않고 keep=True로 표시 (한글 넣기도 그리지 않는다)
+    - keep_idx: 원본 그대로 남길 원문 줄 번호 (빈 줄 뺀 기준. 아이콘 문단만 원본 그대로인 칸), keep_rows: 그 칸 아이콘
+      자리의 세로 범위 (sub px). 그 줄도 keep=True로 남긴다. 남길 줄을 확실히 찾지 못하면 영역을 하나도 지우지 않고
+      keep_failed=True (_match_keeping)
+    _info: 주면 원문 줄과 맞췄는지 적는다 ({"matched": bool})
     """
+    if keep_idx is not None:
+        return _match_keeping(tm, lay, source, keep_idx, keep_rows or [], icon_rows, img, allowed_px)
     src = [t for t in source.split("\n") if t.strip()]
     lines = list(lay.get("lines") or [])
     if not src or not lines:
@@ -919,6 +927,8 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
     extra = _extra_lines(lines, src, lay.get("box_y"), tm.glyph_px or None)
     kept = [ln for ln in lines if ln not in extra]
     restore = list(extra)
+    if _info is not None:
+        _info["matched"] = len(kept) == len(src)
     if len(kept) == len(src):
         for ln, t in zip(kept, src):
             if is_icon_line(t):
@@ -956,4 +966,67 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
     out["lines"] = kept
     if extra:
         tm.notes.append(f"원문에 없는 줄 {len(extra)}개는 지우지 않음")
+    return out
+
+
+def _match_keeping(tm: TextMask, lay: dict, source: str, keep_idx: list[int], keep_rows: list,
+                   icon_rows: list | None, img: np.ndarray | None, allowed_px: np.ndarray | None) -> dict:
+    """아이콘 문단만 원본 그대로인 칸: 남길 원문 줄(keep_idx)이 찾은 줄 중 어느 것인지 정해 keep=True로 남기고, 나머지 줄만
+    원문의 나머지 줄에 맞춰 지운다. 남길 줄은 이렇게 찾는다 (확실할 때만):
+    1) 카드 보기의 아이콘 자리(keep_rows) 높이에 잡힌 줄이 남길 줄 수와 같으면 그 줄들
+    2) 남길 줄이 아이콘 줄뿐이고 그 자리에 잡힌 줄이 없으면 (색 그림 아이콘은 글자로 잡히지 않는다) 남길 줄 없음
+       (아이콘 자리는 지우기가 지킨다)
+    3) 찾은 줄 수가 원문 줄 수와 같으면 순서대로 (아이콘 자리에 잡힌 줄이 남길 줄이 아니면 맞지 않음)
+    어느 것도 아니거나 나머지 줄을 맞추지 못하면 영역을 하나도 지우지 않고 keep_failed=True
+    (아이콘 줄을 글 줄로 잘못 맞춰 지우는 것보다 칸 전체를 원본 그대로 두는 것이 안전하다)."""
+    src_all = [t for t in source.split("\n") if t.strip()]
+    lines = list(lay.get("lines") or [])
+    keep_set = {i for i in keep_idx if 0 <= i < len(src_all)}
+
+    def fail(why: str) -> dict:
+        tm.mask[:] = False
+        tm.core[:] = False
+        tm.notes.append(f"원본 그대로 둘 문단의 줄을 찾지 못해 이 영역은 지우지 않음 ({why})")
+        return {**lay, "lines": [], "keep_failed": True}
+
+    rest_src = [t for i, t in enumerate(src_all) if i not in keep_set]
+    if not lines:
+        return fail("글자 줄을 찾지 못함")
+    if not rest_src:
+        return fail("남길 줄 밖에 원문이 없음")
+
+    def on_keep(ln) -> bool:
+        y0, y1 = ln["bbox"][1], ln["bbox"][3]
+        return any(min(y1, b) - max(y0, a) > 0.5 * max(1, y1 - y0) for a, b in keep_rows)
+
+    on = {id(ln) for ln in lines if on_keep(ln)}
+    kept_src = [src_all[i] for i in sorted(keep_set)]
+    if keep_rows and len(on) == len(keep_set):
+        kept_lines = [ln for ln in lines if id(ln) in on]
+    elif keep_rows and not on and all(is_icon_line(t) for t in kept_src):
+        kept_lines = []
+    elif len(lines) == len(src_all) and all(i in keep_set for i, ln in enumerate(lines) if id(ln) in on):
+        kept_lines = [lines[i] for i in sorted(keep_set)]
+    else:
+        return fail(f"찾은 줄 {len(lines)}개, 원문 줄 {len(src_all)}개")
+    ids = {id(ln) for ln in kept_lines}
+    rest_lines = [ln for ln in lines if id(ln) not in ids]
+    if not rest_lines:
+        return fail("번역할 줄을 찾지 못함")
+    info: dict = {}
+    rest_rows = icon_rows if any(is_icon_line(t) for t in rest_src) else None
+    out = match_source_lines(tm, {**lay, "lines": rest_lines}, "\n".join(rest_src), icon_rows=rest_rows, img=img,
+                             allowed_px=allowed_px, _info=info)
+    if not info.get("matched"):
+        return fail(f"번역할 줄 {len(rest_lines)}개, 원문 {len(rest_src)}줄")
+    H, W = tm.mask.shape
+    for ln in kept_lines:
+        ln["keep"] = True
+        ln["keep_para"] = True  # 원본 그대로 둔 문단의 줄 (남은 글의 아이콘·숫자만 있는 줄 keep과 가른다: 합성이 이 줄만 뺀다)
+        x0, y0, x1, y1 = ln["bbox"]
+        pad = int(max(3, 0.35 * ln["glyph_h"]))
+        tm.mask[max(0, y0 - pad):min(H, y1 + pad), max(0, x0 - pad):min(W, x1 + pad)] = False
+    out = dict(out)
+    out["lines"] = sorted(list(out["lines"]) + kept_lines, key=lambda ln: ln["bbox"][1])
+    tm.notes.append(f"원본 그대로 둘 문단 줄 {len(kept_src)}개는 지우지 않음")
     return out

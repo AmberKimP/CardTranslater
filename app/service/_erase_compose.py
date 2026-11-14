@@ -158,6 +158,9 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         extracted = load_extracted(project.root)
     except Exception:  # noqa: BLE001 - 원문이 없어도 지우기는 한다
         extracted = {}
+    from app import icons as _icons
+
+    templates = _icons.templates_for(project.root)  # 글 속 아이콘 자리를 사전 그림으로 다시 확인한다
     page_metas = []
     results = []
     for i, pno in enumerate(pages):
@@ -168,13 +171,31 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         t_page = time.monotonic()
         tpl = project.template.for_page(pno)
         skip = _translate_erase.icon_only_regions(srcs, kept)
+        keep_lines = _translate_erase.erase_keep_lines(extracted.get(pno))
+        sig = _translate_erase.erase_sig(project, pno, srcs, card_modes.get(str(pno)), kept, keep_lines)
+        whole: list[str] = []
+        if keep_lines:
+            # 아이콘 문단만 남길 칸은 글자 모양만 지우는 방식에서만 줄을 골라 남길 수 있다. 영역을 통째로 지우는 방식
+            # (텍스트 레이어가 있는 쪽 등)이면 남길 수 없어 칸 전체를 원본 그대로 둔다 (아이콘을 지우는 것보다 안전)
+            from app.erase import page_spans, uses_text_mask
+
+            has_layer = bool(page_spans(out_doc[i]))
+            modes_here = card_modes.get(str(pno)) or {}
+            whole = [reg.name for reg in tpl.regions if reg.name in keep_lines
+                     and not (modes_here.get(reg.name) or uses_text_mask(reg, has_layer))]
+            skip = sorted(set(skip) | set(whole))
+            keep_lines = {k: v for k, v in keep_lines.items() if k not in whole}
+            srcs = {**srcs, **{k: v["source"] for k, v in keep_lines.items()}}  # 비게 된 남길 줄도 줄 수에 든다
         if skip:  # 아이콘(과 숫자·기호)만 있는 칸: 지우지도 한글을 넣지도 않고 원본 그대로 (메타에 없으면 한글 넣기도 건너뛴다)
             tpl.regions = [reg for reg in tpl.regions if reg.name not in skip]
         with applog.context(프로젝트=project.root.name, 쪽=pno):
             r = erase_page(out_doc[i], tpl, project.samples.get(pno), seed=pno,
-                           modes=card_modes.get(str(pno)), sources=srcs)
+                           modes=card_modes.get(str(pno)), sources=srcs, icon_templates=templates,
+                           keep_lines=keep_lines)
         if skip:
             r.meta["icon_only_regions"] = skip
+        if whole:  # 결과 보기에서 알린다 (아이콘 문단만 남기려 했는데 칸 전체가 원본 그대로)
+            r.meta["keep_fallback_regions"] = whole
         page_metas.append({
             "timing": {"erase_s": round(time.monotonic() - t_page, 3)},
             "schema": _base.SCHEMA,
@@ -182,7 +203,7 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
             "source_page": pno,
             "output_pdf": pdf_name,
             "output_page_index": i,
-            "erase_sig": _translate_erase.erase_sig(project, pno, srcs, card_modes.get(str(pno)), kept),
+            "erase_sig": sig,
             **r.meta,
         })
         results.append(r)

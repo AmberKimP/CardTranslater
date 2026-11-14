@@ -94,6 +94,25 @@ def region_image(page, region) -> np.ndarray:
     return np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3].copy()
 
 
+def region_box_to_pt(page_rect, region, box) -> list[float] | None:
+    """region_image 위 상자 [x0, y0, x1, y1](px)를 원본 쪽 좌표(pt)로. 90·270도 돌린 영역은 None."""
+    from app.regions import ratio_to_pt
+
+    if not box or len(box) != 4:
+        return None
+    pr = tuple(page_rect)
+    x0, y0, x1, y1 = ratio_to_pt(region.rect, pr)
+    x0, y0, x1, y1 = max(x0, pr[0]), max(y0, pr[1]), min(x1, pr[2]), min(y1, pr[3])
+    k = 72.0 / CROP_DPI
+    rot = int((region.style or {}).get("rotate", 0)) % 360
+    bx0, by0, bx1, by1 = (float(v) * k for v in box)
+    if rot == 0:
+        return [round(x0 + bx0, 3), round(y0 + by0, 3), round(x0 + bx1, 3), round(y0 + by1, 3)]
+    if rot == 180:
+        return [round(x1 - bx1, 3), round(y1 - by1, 3), round(x1 - bx0, 3), round(y1 - by0, 3)]
+    return None
+
+
 def _ink(img: np.ndarray, em_px: float) -> np.ndarray:
     """글자·아이콘 잉크: 주변 종이보다 어두운 픽셀, 또는 채도가 높고 조금이라도 어두운 픽셀(색 아이콘)."""
     from app.erase import dark_ink
@@ -625,6 +644,142 @@ def icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, in
                 out.append((t.group(1), box, only))
         idx += len(toks)
     return out
+
+
+BAND_MATCH_MIN = 0.62  # 사전 그림을 원문 줄 띠 안에서 찾을 때 이 이상 닮아야 그 자리 (정규화 상관)
+BAND_MATCH_FAR = 0.75  # 줄 배치로 찾은 자리와 거의 겹치지 않는(IoU 0.3 미만) 자리는 이 이상 닮아야 옮긴다
+BAND_SCALES = (0.9, 2.6)  # 띠에서 찾을 아이콘 높이: 그 줄 글자 높이의 이 배 사이
+
+
+def templates_for(file_dir: Path) -> dict:
+    """게임 아이콘 사전 그림 {이름: RGBA 배열} (지우기에서 글 속 아이콘 자리를 다시 확인할 때). 없으면 {}."""
+    from app.workspace import project_of
+
+    try:
+        info = project_of(Path(file_dir))
+    except Exception:  # noqa: BLE001 - 사전이 없어도 지우기는 한다
+        return {}
+    if info is None:
+        return {}
+    out = {}
+    for name, e in (load_dictionary(info).get("icons") or {}).items():
+        p = icons_dir(info) / e.get("file", f"{name}.png")
+        if p.is_file():
+            try:
+                out[name] = load_png(p)
+            except Exception:  # noqa: BLE001 - 깨진 그림은 건너뛴다
+                continue
+    return out
+
+
+def _box_iou(a, b) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def match_in_band(img: np.ndarray, tpl: np.ndarray, band: tuple[float, float], glyph_h: float,
+                  n: int = 1) -> list[tuple[float, tuple[int, int, int, int]]]:
+    """사전 그림(tpl, RGBA/RGB)을 img(RGB)의 한 줄 띠(band=(y0, y1) px, 위아래로 글자 높이만큼 넓혀 봄) 안에서
+    여러 크기로 찾는다. 닮은 정도가 BAND_MATCH_MIN 이상인 자리를 겹치지 않게 n개까지 [(점수, (x0, y0, x1, y1))],
+    왼쪽부터."""
+    import cv2
+
+    H, W = img.shape[:2]
+    gh = max(2.0, float(glyph_h))
+    wy0, wy1 = max(0, int(band[0] - 1.2 * gh)), min(H, int(band[1] + 1.2 * gh) + 1)
+    if wy1 - wy0 < 6:
+        return []
+    win = np.ascontiguousarray(img[wy0:wy1, :, :3])
+    bgc = np.median(win.reshape(-1, 3), axis=0).astype(np.float32)  # 투명한 곳은 그 띠의 바탕색으로
+    t = tpl.astype(np.float32)
+    if t.ndim == 3 and t.shape[2] == 4:
+        a = t[..., 3:4] / 255.0
+        t = t[..., :3] * a + bgc * (1 - a)
+    g_win = cv2.cvtColor(win, cv2.COLOR_RGB2GRAY)
+    g_tpl = cv2.cvtColor(np.clip(t[..., :3], 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    peaks: list[tuple[float, tuple[int, int, int, int]]] = []
+    for f in np.linspace(BAND_SCALES[0], BAND_SCALES[1], 15):
+        h = int(round(gh * f))
+        w = int(round(g_tpl.shape[1] * h / max(1, g_tpl.shape[0])))
+        if h < 6 or w < 6 or h > g_win.shape[0] or w > g_win.shape[1]:
+            continue
+        tt = cv2.resize(g_tpl, (w, h), interpolation=cv2.INTER_AREA)
+        if float(tt.std()) < 4:
+            continue
+        r = cv2.matchTemplate(g_win, tt, cv2.TM_CCOEFF_NORMED)
+        for _ in range(n + 2):
+            _mn, mx, _l, loc = cv2.minMaxLoc(r)
+            if mx < BAND_MATCH_MIN:
+                break
+            x, y = loc
+            peaks.append((float(mx), (x, y + wy0, x + w, y + wy0 + h)))
+            r[max(0, y - h // 2):y + h // 2 + 1, max(0, x - w // 2):x + w // 2 + 1] = -1.0
+    peaks.sort(key=lambda p: -p[0])
+    keep: list[tuple[float, tuple[int, int, int, int]]] = []
+    for s, b in peaks:
+        if all(_box_iou(b, k) < 0.3 for _s, k in keep):
+            keep.append((s, b))
+        if len(keep) >= n:
+            break
+    return sorted(keep, key=lambda p: p[1][0])
+
+
+def refine_icon_boxes(img: np.ndarray, text: str, found: list, line_bands: list | None,
+                      templates: dict) -> tuple[list, list[str]]:
+    """줄 배치로 찾은 글 속 아이콘 자리(found = icon_boxes 결과)를 사전 그림으로 다시 확인한다.
+    line_bands: 원문 글 줄마다 (y0, y1, 글자 높이) px — 지우기가 원문 줄에 맞춘 줄 (못 맞췄으면 None: 그대로 둔다).
+    - 그 줄 띠에서 사전 그림이 뚜렷이 찾아지면 그 자리를 쓴다 (줄 배치가 그림 조각을 줄로 봐 엉뚱한 곳을 고른 경우).
+      줄 배치로 못 찾은 아이콘은 더하지 않는다 (사전 그림이 큰 장식 그림의 일부를 잘라 낸 것이면 장식 반쪽만 지운다)
+    - 사전 그림으로 못 찾았고 줄 배치 자리가 그 줄 띠 밖이면 버린다 (엉뚱한 그림을 지우지 않게)
+    반환: (고친 목록, 바꾼 것 설명)."""
+    if not line_bands or not templates or "[[" not in (text or ""):
+        return found, []
+    from app.erase_text import is_icon_line
+
+    lines = [t for t in text.split("\n") if t.strip()]
+    if len(lines) != len(line_bands):
+        lines = [t for t in lines if not is_icon_line(t)]
+        if len(lines) != len(line_bands):
+            return found, []
+    # icon_boxes는 원문 순서대로 찾은 것만 넣는다: 이름별로 순서대로 그 줄 몫을 나눈다.
+    # 아이콘만 있는 줄의 것(only)은 넣지 않는다: 그 줄은 아래에서 건너뛰므로 넣으면 다음 글 줄이 그 몫을 가져간다
+    by_name: dict[str, list[int]] = {}
+    for i, (nm, _b, only) in enumerate(found):
+        if not only:
+            by_name.setdefault(nm, []).append(i)
+    out = list(found)
+    notes = []
+    drop: set[int] = set()
+    used: dict[str, int] = {}
+    for li, (ln, (y0, y1, gh)) in enumerate(zip(lines, line_bands)):
+        names = [m.group(1) for m in TOKEN_RE.finditer(ln)]
+        if not names or is_icon_line(ln):
+            continue
+        for nm in dict.fromkeys(names):
+            k = names.count(nm)
+            idxs = by_name.get(nm, [])
+            start = used.get(nm, 0)
+            mine = idxs[start:start + k]  # found 안에서 이 줄 몫 (찾은 것만 있으므로 모자랄 수 있다)
+            used[nm] = start + len(mine)
+            tpl = templates.get(nm)
+            hits = match_in_band(img, tpl, (y0, y1), gh, n=k) if tpl is not None else []
+            in_band = lambda b: y0 - 1.2 * gh <= (b[1] + b[3]) / 2 <= y1 + 1.2 * gh  # noqa: E731
+            for j, i in enumerate(mine):
+                hit = hits[j] if j < len(hits) else None
+                near = hit is not None and _box_iou(out[i][1], hit[1]) >= 0.3
+                # 줄 배치 자리와 멀리 떨어진 자리는 더 닮아야 믿는다 (무늬가 있는 그림이 BAND_MATCH_MIN을 넘을 수 있다)
+                if hit is not None and (near or hit[0] >= BAND_MATCH_FAR):
+                    if not near:
+                        notes.append(f"{nm}: 사전 그림으로 자리를 다시 잡음 ({li + 1}째 줄)")
+                    out[i] = (nm, tuple(int(v) for v in hit[1]), False)
+                elif not in_band(out[i][1]):
+                    drop.add(i)
+                    notes.append(f"{nm}: 찾은 자리가 원문 줄 밖이라 지우지 않음 ({li + 1}째 줄)")
+    out = [f for i, f in enumerate(out) if i not in drop]
+    return out, notes
 
 
 def inline_icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, int, int]]]:
@@ -2536,7 +2691,7 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         why = ("손으로 자리를 다시 잡음" if o.manual else "세트로 합침" if (gi.get("absorbed") and not gi.get("auto"))
                else "" if (o.set_of or gi.get("auto")) else "아이콘 아님" if (not name or name.startswith("="))
                else "위치를 못 찾음" if not (o.box or o.png) else "")
-        if why:
+        if why and not gi.get("by_keep"):  # ‘원본 그대로’로 빠진 자리: 사람이 정한 칸이라 다시 읽어 확인할 것이 없다
             changed.setdefault(key, []).append(why)
         per_region.setdefault(key, {})[o.index] = name
         e = d["icons"].get(name) if name and not name.startswith("=") else None

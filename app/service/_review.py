@@ -146,11 +146,15 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
     card_align = ((data.get("card_aligns") or {}).get(pg) or {}).get(region) or ""
     paras = ((data.get("sentences") or {}).get(pg) or {}).get(region) or {}
     mode = font_plan.region_font_modes(fd).get(region) == "sentence" and (reg is None or reg.kind == "text")
-    from app.extract import load_extracted
+    from app.extract import keep_state, load_extracted
 
     ext = (load_extracted(fd).get(int(page)) or {}).get(region) or {}
+    keep_mode, keep_lines = keep_state(ext)
     return {"ko": card_edits.norm(e["ko"] if e else base), "base": card_edits.norm(base), "edited": bool(e),
-            "keep_original": bool(ext.get("keep_original")),  # 전체가 아이콘 — 원본 그대로 (지우기·한글 넣기 안 함)
+            # 칸 전체 원본 그대로 (지우기·한글 넣기 안 함). 아이콘 문단만 원본 그대로인데 맞출 수 없는 칸도 칸 전체
+            "keep_original": keep_mode in ("whole", "broken"),
+            # 아이콘 문단만 원본 그대로: 남긴 원문 줄 수 (그 문단은 번역·한글 넣기 안 함, 나머지 문단만 고친다)
+            "keep_partial": len(keep_lines) if keep_mode == "partial" else 0,
             "can_keep": ext.get("source") is not None,
             "font": card_font, "region_font": region_font, "kind": reg.kind if reg else "text",
             "size": float(card_size) if card_size else None,
@@ -260,8 +264,9 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
 
 def card_preview(file_dir: Path | str, page: int, region: str, text: str | None, font: str | None,
                  size: float | None = None, align: str | None = None,
-                 paragraph_fonts: dict | None = None) -> bytes | None:
+                 paragraph_fonts: dict | None = None, offset: tuple[float, float] | None = None) -> bytes | None:
     """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None.
+    offset: 화면에서 옮기는 중인 글 위치 (dx, dy) pt (None이면 저장된 위치).
     화면에서 고른 그대로 그린다: font·size가 None이면 영역 글꼴·영역 크기, align ''이면 영역 정렬
     (None이면 저장된 정렬), paragraph_fonts: 이 카드의 문단마다 글꼴 (None이면 저장된 것)."""
     from app import font_plan
@@ -283,7 +288,9 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
     slots = (data.get("sentence_slots") or {}).get(region)
     paras = paragraph_fonts if paragraph_fonts is not None else \
         {int(i): v for i, v in ((((data.get("sentences") or {}).get(str(int(page))) or {}).get(region)) or {}).items()}
-    return font_plan.preview_render(fd, page, region, f, scale, al or None, None, ko, slots=slots, para_fonts=paras)
+    off = tuple(offset) if offset is not None else tuple(card_text_offset(fd, page, region))
+    return font_plan.preview_render(fd, page, region, f, scale, al or None, None, ko, slots=slots, para_fonts=paras,
+                                    offset=off)
 
 
 # ---------------------------------------------------------------- 화면용: 번역 검수
@@ -325,7 +332,7 @@ def _review_file_rows(fd: Path) -> list[dict]:
 
     from app import card_edits, review_marks, workspace
     from app.excel_io import _project_translation, source_of
-    from app.extract import load_extracted, verification_label
+    from app.extract import keep_whole, load_extracted, verification_label
     from app.translate import lookup
 
     proj = load_project(fd)
@@ -349,7 +356,7 @@ def _review_file_rows(fd: Path) -> list[dict]:
             if src is None or not card_edits.norm(src):
                 continue
             ext = (extracted.get(pno) or {}).get(reg.name)
-            if ext and ext.get("keep_original"):  # ‘전체가 아이콘 — 번역 안 함’ 칸: 번역하지 않으므로 검수할 것도 없다
+            if ext and keep_whole(ext):  # 칸 전체 ‘원본 그대로’: 번역하지 않으므로 검수할 것도 없다
                 continue
             hit = lookup(cache, src) if cache else None
             draft = card_edits.norm(hit["ko"]) if hit else ""

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app import workspace
+from app.extract import KEEP_PARAGRAPHS
 from app.project import load_project
 from app.service import _base
 from app.service import _erase_compose
@@ -211,8 +212,9 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     return out
 
 
-def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=()) -> str:
-    """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식·‘번역 안 함’ 칸). 바뀌면 다시 지워야 한다."""
+def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=(), keep_lines: dict | None = None) -> str:
+    """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식·‘번역 안 함’ 칸·아이콘 문단만 남길 칸).
+    바뀌면 다시 지워야 한다."""
     import hashlib
 
     regs = [{"name": r.name, "kind": r.kind, "rect": r.rect.to_dict(), "style": r.style, "erase": r.erase}
@@ -223,6 +225,8 @@ def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=()) ->
     skip = icon_only_regions(sources, kept)
     if skip:  # 아이콘만 있는 칸을 건너뛰게 된 뒤로는 예전에 지운 쪽도 다시 지운다 (없는 쪽은 서명이 그대로)
         d["icon_only"] = skip
+    if keep_lines:  # 아이콘 문단만 원본 그대로 둘 칸 (없으면 서명이 예전 그대로: 이미 지운 쪽을 괜히 다시 지우지 않는다)
+        d["keep_lines"] = keep_lines
     blob = json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -232,10 +236,43 @@ KEEP_ORIGINAL = {"keep_original": True}  # 서명(erase_sig)에서만 쓰는 표
 
 def erase_sources(regions: dict | None) -> tuple[dict, set]:
     """쪽의 추출 결과 -> 지우기에 넘길 ({칸: 원문 글(또는 None)}, ‘번역 안 함’으로 정한 칸 이름들).
-    원문 사전에는 늘 글만 든다. ‘번역 안 함’ 칸은 원본 그대로 두고, 표시를 바꾸면 서명도 바뀌어 다시 지운다."""
+    원문 사전에는 늘 글만 든다. ‘번역 안 함’ 칸은 원본 그대로 두고, 표시를 바꾸면 서명도 바뀌어 다시 지운다.
+    아이콘 문단만 남기기로 했는데 원문 줄 수가 바뀌어 맞출 수 없는 칸도 ‘번역 안 함’ 칸에 넣는다 (칸 전체를 원본 그대로)."""
+    from app.extract import keep_whole
+
     regions = regions or {}
     return ({k: v.get("source") for k, v in regions.items()},
-            {k for k, v in regions.items() if v.get("keep_original")})
+            {k for k, v in regions.items() if keep_whole(v)})
+
+
+KEEP_BLANK_LINE = "·"  # 지우기에 넘기는 원문에서 비게 된 남길 줄 자리 (아이콘·기호만 있는 줄로 보이게)
+
+
+def erase_keep_lines(regions: dict | None) -> dict[str, dict]:
+    """쪽의 추출 결과 -> 아이콘 문단만 원본 그대로인 칸마다 지우기에 넘길 것
+    {칸: {"source": 지우기용 원문, "lines": 남길 줄 번호, "boxes_pt": 카드 보기의 아이콘 자리(원본 쪽 pt)}}.
+    번호는 지우기용 원문의 빈 줄을 뺀 줄 기준 (erase_text.match_source_lines가 원문 줄을 찾은 줄에 맞출 때 쓰는 번호).
+    확정으로 [[?]]가 빠져 비게 된 남길 줄(아이콘 줄)은 KEEP_BLANK_LINE으로 채워 줄 수를 지킨다 (빠지면 지우기가 그 아이콘
+    줄을 글 줄로 잘못 맞춰 지울 수 있다)."""
+    from app.extract import keep_state
+
+    out = {}
+    for k, v in (regions or {}).items():
+        mode, lines = keep_state(v)
+        if mode != "partial":
+            continue
+        rows = v["source"].split("\n")
+        rows = [KEEP_BLANK_LINE if i in lines and not t.strip() else t for i, t in enumerate(rows)]
+        idx, n = [], 0
+        for i, t in enumerate(rows):
+            if not t.strip():
+                continue
+            if i in lines:
+                idx.append(n)
+            n += 1
+        out[k] = {"source": "\n".join(rows), "lines": idx,
+                  "boxes_pt": [list(b) for b in (v.get(KEEP_PARAGRAPHS) or {}).get("boxes_pt") or []]}
+    return out
 
 
 def icon_only_regions(sources: dict | None, kept=()) -> list[str]:
@@ -269,6 +306,7 @@ def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool =
     for f in files:
         rec = json.loads(f.read_text(encoding="utf-8"))
         r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
+        r.pop(KEEP_PARAGRAPHS, None)  # 칸 전체로 정하거나 풀면 아이콘 문단만 남기기도 끝난다
         if keep:
             r["keep_original"] = True
             r.pop("icon_changed", None)  # 원본 그대로 둘 칸: ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다
@@ -279,6 +317,36 @@ def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool =
             r.pop("keep_original", None)
         workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
     _review._clear_review_caches()  # 번역 검수 줄(이 칸이 빠지거나 다시 나옴)·진행 수를 새로 센다
+
+
+def set_keep_paragraphs(file_dir: Path | str, page: int, region: str, lines: list[int],
+                        boxes_pt: list | None = None) -> None:
+    """카드 보기 ‘이 칸 원본 그대로’(문단마다 다른 글꼴 영역): 칸 전체 대신 아이콘이 있는 문단(lines: 원문 줄 번호,
+    extract.keep_paragraph_lines)만 원본 그대로 둔다. 그 줄은 지우지도 번역하지도 한글을 넣지도 않고, 다른 문단은
+    그대로 한글화한다. boxes_pt: 그 칸 아이콘 자리(원본 쪽 pt) — 지우기가 남길 줄을 찾고 아이콘을 지킨다.
+    끄는 것은 set_keep_original(keep=False). 남은 문단은 그대로 번역하므로 ‘확인 필요’·확인한 사람은 바꾸지 않는다.
+    남길 줄의 지문(extract.keep_row_print)도 적어 둔다: 원문 확인에서 줄을 옮기면 맞출 수 없는 칸(broken)이 된다."""
+    from app.extract import keep_row_print, page_file
+
+    fd = Path(file_dir)
+    files = [p for p in (page_file(fd / "extract", page), fd / "extract" / f"page-{page:03d}.json") if p.exists()]
+    if not files:
+        raise FileNotFoundError(f"{page}쪽은 아직 읽지 않았습니다")
+    for f in files:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = (rec.get("regions") or {}).get(region)
+        if r is None or not isinstance(r.get("source"), str):
+            continue
+        r.pop("keep_original", None)
+        rows = r["source"].split("\n")
+        keep = sorted({int(i) for i in lines})
+        r[KEEP_PARAGRAPHS] = {"lines": keep, "n": len(rows),
+                              "rows": [keep_row_print(rows[i]) if 0 <= i < len(rows) else "" for i in keep],
+                              **({"boxes_pt": [list(b) for b in boxes_pt]} if boxes_pt else {})}
+        r.pop("icon_changed", None)  # 원본 그대로 둘 아이콘 자리: ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다
+        r.pop("icon_reread", None)
+        workspace._write(f, rec)
+    _review._clear_review_caches()
 
 
 def stale_erased_pages(file_dir: Path | str) -> list[int]:
@@ -309,7 +377,7 @@ def stale_erased_pages(file_dir: Path | str) -> list[int]:
             continue
         srcs, kept = erase_sources(extracted.get(pno))
         try:
-            now = erase_sig(project, pno, srcs, modes.get(str(pno)), kept)
+            now = erase_sig(project, pno, srcs, modes.get(str(pno)), kept, erase_keep_lines(extracted.get(pno)))
         except Exception:  # noqa: BLE001 - 그 쪽 영역이 없어짐 등
             continue
         if now != sig:

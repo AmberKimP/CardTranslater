@@ -466,7 +466,11 @@ def _paragraph_samples(metas: list[dict], name: str, cards: dict, src, cl, cance
         source = entry.get("source") if isinstance(entry, dict) else None
         if reg is None or not isinstance(source, str):
             continue
-        rects = paragraph_rects(source, ((reg.get("text_layout") or {}).get("lines")) or [])
+        tl = reg.get("text_layout") or {}
+        lines = tl.get("lines") or []
+        if tl.get("keep_paragraphs"):  # 아이콘 문단만 원본 그대로: 번역 원문(source)에는 남긴 줄이 없다
+            lines = [ln for ln in lines if not ln.get("keep_para")]
+        rects = paragraph_rects(source, lines)
         if not rects:
             continue
         if cancel is not None:
@@ -944,10 +948,12 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
 
 def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
                    align: str | None = None, sentence: int | None = None, text=None, slots: dict | None = None,
-                   base_font: str | None = None, para_fonts: dict | None = None) -> bytes | None:
+                   base_font: str | None = None, para_fonts: dict | None = None,
+                   offset: tuple[float, float] | None = None) -> bytes | None:
     """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
     원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
-    text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다)."""
+    text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다).
+    offset: 결과 보기에서 옮긴 글 위치 (dx, dy) pt. 옮긴 자리까지 보이게 잘라 낸다."""
     import pymupdf
 
     from app.project import load_project
@@ -964,6 +970,11 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
     try:
         m = json.loads((fd / "cleared" / "meta" / f"page-{int(page):03d}.json").read_text(encoding="utf-8"))
         reg = next(r for r in m["regions"] if r["name"] == region)
+        from app.typeset_compose import TYPICAL_KEY, typical_for_dir
+
+        typ = typical_for_dir(fd / "cleared" / "meta")  # 한글 넣기와 같게: 같은 파일 다른 카드의 글자 높이
+        if typ:
+            m = {**m, TYPICAL_KEY: typ}
         project = load_project(fd)
         tmpl = next((r for r in project.template.regions if r.name == region), None)
         style = dict((tmpl.style if tmpl is not None else None) or {})
@@ -989,12 +1000,16 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
             doc.insert_pdf(cdoc, from_page=idx, to_page=idx)
             compose_page(doc[0], sdoc[int(page) - 1], {**m, "regions": [reg]}, {region: entry}, T_ROOT,
                          {region: style}, {region: tmpl.erase if tmpl is not None else None}, fonts, sent,
-                         {region: float(scale or 1.0)}, al)
+                         {region: float(scale or 1.0)}, al,
+                         {region: tuple(offset)} if offset and any(abs(v) > 1e-6 for v in offset) else None)
             finalize(doc)
             data = doc.tobytes()
             doc.close()
         with pymupdf.open(stream=data, filetype="pdf") as out:
-            rect = pymupdf.Rect(reg["rect_pt"]) & out[0].rect
+            rect = pymupdf.Rect(reg["rect_pt"])
+            if offset and any(abs(v) > 1e-6 for v in offset):  # 옮긴 자리까지 (원래 칸과 옮긴 칸을 함께)
+                rect = rect | (rect + (offset[0], offset[1], offset[0], offset[1]))
+            rect = rect & out[0].rect
             mat = pymupdf.Matrix(src["zoom"], src["zoom"])
             if int(style.get("rotate", 0) or 0) % 360 == 180:
                 mat = mat.prerotate(180)

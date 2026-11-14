@@ -355,6 +355,101 @@ def verification_label(r: dict | None) -> str:
     return f"{name} 1회" + (" (확인 필요)" if r.get("uncertain") else "")
 
 
+# ---------------------------------------------------------------- ‘원본 그대로’: 칸 전체 / 아이콘이 있는 문단만
+# 칸의 일부 문단만 원본 그대로 둘 때 칸에 적는 값: {"lines": [남길 원문 줄 번호], "n": 정할 때 원문 줄 수}.
+# 줄 번호는 source.split("\n") 기준(빈 줄 포함, 0부터)이다. ② 아이콘 정의에서 확정하면 [[?]]가 [[이름]]으로 바뀌거나
+# 빠지지만 줄바꿈은 그대로라 번호가 맞는다. 원문 확인에서 줄 수가 바뀌면 맞출 수 없어 칸 전체를 원본 그대로 둔다
+# (아이콘을 지워 버리는 것보다 안전하다).
+KEEP_PARAGRAPHS = "keep_paragraphs"
+
+
+def keep_row_print(row: str) -> str:
+    """남길 원문 줄의 지문: 아이콘 토큰·공백·숫자를 뺀 글. ② 아이콘 정의에서 확정해 [[?]]가 이름으로 바뀌거나 빠지고
+    아이콘에 넣은 숫자가 빠져도 같다. 원문 확인에서 줄을 고쳐 다른 문단의 줄이 이 번호로 밀려 오면 달라진다."""
+    import re
+
+    from app.icons import TOKEN_RE
+
+    return re.sub(r"[\s0-9０-９]+", "", TOKEN_RE.sub("", row or ""))
+
+
+def keep_paragraph_lines(source: str | None) -> list[int]:
+    """원문에서 아이콘([[…]])이 든 문단의 줄 번호 (source.split("\n") 기준, 0부터).
+    문단은 ‘문단마다 다른 글꼴’과 같은 규칙(typeset_layout.paragraph_spans)으로 나누되, 아이콘·숫자·기호만 있는 줄은
+    따로 한 문단으로 본다 (‘いずれかを選択し実行’ 아래 아이콘 줄처럼 문장 끝 없이 이어진 아이콘 줄이 앞 글 줄과 한 문단이
+    되어 글 줄까지 번역되지 않는 일이 없게). 지우기·한글 넣기는 줄 단위라 아이콘 문단이 걸친 줄은 통째로 남긴다."""
+    from app.erase_text import is_icon_line
+    from app.icons import TOKEN_RE
+    from app.typeset_layout import paragraph_spans
+
+    src = source or ""
+    rows, pos = [], 0
+    for ln in src.split("\n"):
+        rows.append((pos, pos + len(ln)))
+        pos += len(ln) + 1
+    units: list[list[int]] = []
+    for a, b in paragraph_spans(src):
+        cur: list[int] = []
+        for i, (la, lb) in enumerate(rows):
+            if max(a, la) >= min(b, lb):
+                continue
+            if is_icon_line(src[la:lb]):  # 아이콘 줄은 혼자 한 문단
+                if cur:
+                    units.append(cur)
+                    cur = []
+                units.append([i])
+            else:
+                cur.append(i)
+        if cur:
+            units.append(cur)
+    out: set[int] = set()
+    for u in units:
+        if any(TOKEN_RE.search(src[rows[i][0]:rows[i][1]]) for i in u):
+            out.update(u)
+    return sorted(out)
+
+
+def keep_state(r: dict | None) -> tuple[str, list[int]]:
+    """칸의 ‘원본 그대로’ 상태: ("", []) 한글화함 | ("whole", []) 칸 전체 | ("partial", [남길 원문 줄 번호]) 아이콘 문단만 |
+    ("broken", []) 아이콘 문단만으로 정했는데 그 뒤 원문 줄 수나 남길 줄의 글(keep_row_print)이 바뀌어 맞출 수 없음
+    (칸 전체처럼 원본 그대로).
+    아이콘 문단만으로 정했어도 글 줄이 모두 남길 줄이면 칸 전체와 같다 ("whole")."""
+    r = r or {}
+    if r.get("keep_original"):
+        return "whole", []
+    kp = r.get(KEEP_PARAGRAPHS)
+    if not kp:
+        return "", []
+    src = r.get("source")
+    rows = src.split("\n") if isinstance(src, str) else []
+    lines = sorted({i for i in kp.get("lines") or [] if isinstance(i, int)})
+    if not rows or len(rows) != kp.get("n") or not lines or lines[0] < 0 or lines[-1] >= len(rows):
+        return "broken", []
+    prints = kp.get("rows")
+    if isinstance(prints, list) and prints != [keep_row_print(rows[i]) for i in lines]:
+        # 줄 수는 같지만 남길 줄의 글이 바뀌었다 (한 문단에 줄을 더하고 다른 문단에서 뺐다): 번호가 다른 줄을 가리킨다
+        return "broken", []
+    if all(i in lines or not t.strip() for i, t in enumerate(rows)):
+        return "whole", []
+    return "partial", lines
+
+
+def keep_whole(r: dict | None) -> bool:
+    """칸 전체를 원본 그대로 두는가 (사람이 칸 전체로 정함, 또는 아이콘 문단만으로 정했지만 맞출 수 없거나 전부 남김)."""
+    return keep_state(r)[0] in ("whole", "broken")
+
+
+def translate_source(r: dict | None):
+    """번역·용어집·검수 엑셀·한글 넣기에 쓸 원문. 아이콘 문단만 원본 그대로인 칸은 그 줄을 뺀 글 (번역 캐시도 이 글로 찾는다).
+    칸 전체 원본 그대로인 칸도 원문 그대로 돌려준다 (빼는 것은 부르는 쪽이 keep_whole로)."""
+    src = (r or {}).get("source")
+    mode, lines = keep_state(r)
+    if mode != "partial":
+        return src
+    drop = set(lines)
+    return "\n".join(t for i, t in enumerate(src.split("\n")) if i not in drop).strip("\n")
+
+
 def _write_page(base: Path, page_no: int, regions: dict, msg, batch: bool) -> float:
     usage = getattr(msg, "usage", None)
     c = cost_usd(usage, getattr(msg, "model", MODEL), batch) if usage else 0.0
