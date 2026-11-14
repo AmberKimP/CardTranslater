@@ -59,21 +59,9 @@ def run(step: str, args: list[str]) -> None:
 
 
 def run_tests() -> None:
-    """전체 테스트. 모두 통과했는데 끝날 때만 프로세스가 죽는(Qt 정리 중 힙 손상, 1.18.0부터 있던 문제) 경우는
-    경고하고 계속한다: 요약 줄에 failed·error가 없고 passed가 있어야 한다. 그 밖의 실패는 멈춘다."""
-    print(f"\n== 전체 테스트: {PY} -m pytest -q", flush=True)
-    r = subprocess.run([PY, "-m", "pytest", "-q"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace")
-    sys.stdout.write(r.stdout[-3000:])
-    if r.returncode == 0:
-        return
-    summary = next((ln for ln in reversed(r.stdout.splitlines()) if " passed" in ln or " failed" in ln), "")
-    native_crash = r.returncode not in (1, 2, 3, 4, 5)
-    if native_crash and " passed" in summary and "failed" not in summary and "error" not in summary:
-        print(f"\n경고: 테스트는 모두 통과했지만 끝날 때 프로세스가 죽었습니다 (종료 코드 {r.returncode}). "
-              "영역 지정 창 테스트 뒤 Qt 정리 중 힙 손상 — .omc/notepads/autopilot/issues.md 참고. 계속합니다.")
-        return
-    sys.exit(f"전체 테스트 실패 (종료 코드 {r.returncode}): {summary}")
+    """전체 테스트. 끝날 때 프로세스가 죽어도(종료 코드가 0~5 밖) 실패로 본다: 다 통과해도 Qt 객체를 잘못 다루면
+    끝날 때 힙이 깨져 죽는다 (1.19.0까지 영역 지정 창의 parentItem() 호출이 그랬다 — tests/test_region_scene_exit.py)."""
+    run("전체 테스트", [PY, "-m", "pytest", "-q"])
 
 
 def fill_changelog_date() -> str | None:

@@ -1372,7 +1372,8 @@ def scan(info, work: Path) -> ScanResult:
                 img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
-                run_of = {k: ri for ri, run in enumerate(placeholder_runs(text)) for k in run}
+                # 같은 줄에 붙은 [[?]]만 세트 후보 (위아래로 이어진 것은 사람이 카드 보기에서 묶을 때만)
+                run_of = {k: ri for ri, run in enumerate(placeholder_runs(text, same_line=True)) for k in run}
                 located = [locate(img, text, ti) for ti in ph]
                 clash = shared_boxes([b for b, _w in located], [run_of.get(k) for k in range(len(ph))])
                 set_host: dict[tuple, Occurrence] = {}  # (덩어리, 찾은 자리) -> 그 자리를 처음 찾은 아이콘
@@ -1770,9 +1771,10 @@ def shared_boxes(boxes: list, runs: list) -> set[int]:
     return out
 
 
-def placeholder_runs(text: str) -> list[list[int]]:
+def placeholder_runs(text: str, same_line: bool = False) -> list[list[int]]:
     """[[?]]가 글자 없이 바로 붙어 있는 덩어리들. 각 덩어리는 [[?]] 순번(= 자리의 index) 목록.
-    예: "[[?]][[?]][[?]]の山札" -> [[0, 1, 2]] (문양 셋이 붙은 아이콘을 모델이 셋으로 읽은 경우가 많다)."""
+    예: "[[?]][[?]][[?]]の山札" -> [[0, 1, 2]] (문양 셋이 붙은 아이콘을 모델이 셋으로 읽은 경우가 많다).
+    same_line: 줄이 바뀌면 다른 덩어리 (위아래로 이어진 아이콘은 자동으로 한 세트로 합치지 않는다 — 좌우로 붙은 것만)."""
     runs: list[list[int]] = []
     j, prev_end = -1, None
     for t in TOKEN_RE.finditer(text or ""):
@@ -1780,7 +1782,8 @@ def placeholder_runs(text: str) -> list[list[int]]:
             prev_end = None
             continue
         j += 1
-        if runs and prev_end is not None and not text[prev_end:t.start()].strip():
+        gap = text[prev_end:t.start()] if prev_end is not None else ""
+        if runs and prev_end is not None and not gap.strip() and not (same_line and "\n" in gap):
             runs[-1].append(j)
         else:
             runs.append([j])
@@ -1790,7 +1793,8 @@ def placeholder_runs(text: str) -> list[list[int]]:
 
 def run_partners(info, work: Path, occ_id: str) -> dict:
     """그 자리와 글자 없이 붙어 있는 다른 [[?]] 자리: {"boxed": [그림이 있는 자리 id], "unfound": [위치 못 찾은 자리 id]}.
-    ‘아이콘 아님’으로 이미 뺀 자리는 넣지 않는다."""
+    ‘아이콘 아님’으로 이미 뺀 자리는 넣지 않는다. 다른 줄(위아래)의 자리는 위치를 못 찾았으면 넣지 않는다:
+    위아래로 이어진 아이콘은 사람이 상자로 함께 감쌌을 때(찾은 자리가 그 상자 안)만 합친다."""
     from app.extract import load_extracted
 
     res = load_scan(Path(work))
@@ -1802,6 +1806,8 @@ def run_partners(info, work: Path, occ_id: str) -> dict:
         if (x.file, x.page, x.region) != (o.file, o.page, o.region) or x.id == o.id or x.index not in run:
             continue
         if res.groups.get(x.group, {}).get("not_icon"):
+            continue
+        if not x.png and x.line != o.line:
             continue
         out["boxed" if x.png else "unfound"].append(x.id)
     return out

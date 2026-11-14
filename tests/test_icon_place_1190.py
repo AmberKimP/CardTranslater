@@ -129,3 +129,30 @@ def test_split_shifts_icon_number_positions_and_skips_guesses(tmp_path):
     r = json.loads((fd / "extract" / "pages" / "page-001.json").read_text(encoding="utf-8"))["regions"]["본문"]
     assert r["source"] == "AB[[?]][[?]]CD[[coin]]" and r["icon_numbers"][0]["index"] == 2
     assert icons.overlapping_occ([{"box": [0, 0, 10, 10], "occ": "o9", "guess": True}], [0, 0, 10, 10]) == []
+
+
+def test_placeholder_runs_same_line_splits_vertical_neighbours():
+    text = "[[?]][[?]] A\n[[?]]\n[[?]] B"
+    assert icons.placeholder_runs(text) == [[0, 1], [2, 3]]  # 사람이 묶을 때는 줄을 넘어 이어 본다
+    assert icons.placeholder_runs(text, same_line=True) == [[0, 1], [2], [3]]  # 자동 세트는 좌우로 붙은 것만
+
+
+def test_unfound_partner_on_next_line_is_not_offered_for_merge(tmp_path):
+    """위아래로 이어진 [[?]]: 위치를 못 찾은 아랫줄 자리는 ‘한 세트로 합칠까’에 넣지 않는다 (사람이 감쌀 때만)."""
+    import json
+
+    info, fd = _project(tmp_path, "vert", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    work = info.game_dir / "work" / "icons"
+    assert icons.run_partners(info, work, host)["unfound"] == [extra]  # 같은 줄: 묻는다
+    p = fd / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]]\n[[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    sp = work / "scan.json"
+    scan = json.loads(sp.read_text(encoding="utf-8"))
+    for o in scan["occurrences"]:
+        if o["id"] == extra:
+            o["line"], o["order"] = 2, 1
+    sp.write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
+    assert icons.run_partners(info, work, host)["unfound"] == []  # 아랫줄: 묻지 않는다

@@ -186,10 +186,20 @@ class PageScene(QGraphicsScene):
         self._new: RegionItem | None = None
         self._start = QPointF()
 
+    def region_at(self, pos: QPointF) -> "RegionItem | None":
+        """그 자리의 맨 위 영역 (상자 또는 이름표를 누름). items()는 위(z가 큰 것)부터 준다.
+        쪽 그림(QGraphicsPixmapItem)에 parentItem()을 부르지 않는다: PySide6 6.11~6.12에서 그 호출이 힙을 깨뜨려
+        창을 닫거나 앱을 끝낼 때 죽었다 (0xC0000374·0xC0000005). 우리 영역만 골라 본다."""
+        for it in self.items():
+            if not isinstance(it, RegionItem) or not it.isVisible():
+                continue
+            lab = it.label
+            if it.sceneBoundingRect().contains(pos) or (lab.isVisible() and lab.sceneBoundingRect().contains(pos)):
+                return it
+        return None
+
     def mousePressEvent(self, ev):
-        item = self.itemAt(ev.scenePos(), self.views()[0].transform()) if self.views() else None
-        target = item if isinstance(item, RegionItem) else (
-            item.parentItem() if item is not None and isinstance(item.parentItem(), RegionItem) else None)
+        target = self.region_at(ev.scenePos())
         if target is None and self.add_kind and ev.button() == Qt.MouseButton.LeftButton \
                 and self.page_rect.contains(ev.scenePos()):
             self.clearSelection()
