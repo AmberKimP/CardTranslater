@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import service
+from app.qt.step_common import KEEP_LABEL, KEEP_UNDO_LABEL
 from app.qt import bg_erase, worker
 from app.qt.dialogs import (
     ask_choice, card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
@@ -25,6 +26,8 @@ OK_STATUS = {"글자 축소", "모두 아이콘이라 건너뜀"}  # 알려 주�
 STATUS_TEXT = {"글리프 없음": "글꼴에 없는 글자", "글자 축소": "글자 줄임", "넘침": "넘침(글자 빠짐)",
                "줄 자리 대신 영역 전체": "줄 자리에 안 들어가 영역 전체에 넣음 — 위치 확인",
                "모두 아이콘이라 건너뜀": "모두 아이콘이라 건너뜀 (원본 그대로)"}  # 엔진 상태 낱말을 화면용으로
+
+
 
 
 def status_text(st: list[str]) -> str:
@@ -113,7 +116,7 @@ class ResultViewer(QDialog):
         self.scroll.setWidget(self.image)
         self.scroll.setWidgetResizable(True)
         self.scroll.setObjectName("cardview")
-        self.scroll.setStyleSheet("QScrollArea#cardview { background: white; border: 1px solid #E6E9EE; border-radius: 10px; }"
+        self.scroll.setStyleSheet("QScrollArea#cardview { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }"
                                   " QScrollArea#cardview > QWidget > QWidget { background: white; }")
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -173,9 +176,15 @@ class ResultViewer(QDialog):
         make_primary(self.redo_btn)
         self.redo_btn.setAutoDefault(False)
         self.redo_btn.clicked.connect(self.save_edit)
+        self.keep_btn = QPushButton(KEEP_LABEL)
+        self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
+                                 "다시 누르면 되돌립니다 (③ 원문 확인의 같은 버튼과 같음).")
+        self.keep_btn.setAutoDefault(False)
+        self.keep_btn.clicked.connect(self.toggle_keep_original)
         erow = QHBoxLayout()
         self.edit_note = grey_note("")
         erow.addWidget(self.edit_note, 1)
+        erow.addWidget(self.keep_btn)
         erow.addWidget(self.reset_btn)
         erow.addWidget(self.preview_btn)
         erow.addWidget(self.redo_btn)
@@ -364,7 +373,7 @@ class ResultViewer(QDialog):
                 text += f" — {'; '.join(r['errors'])[:120]}"
             it = QListWidgetItem(text)
             if r.get("overflow"):
-                it.setForeground(QColor("#B42318"))
+                it.setForeground(QColor("#D70015"))
                 it.setToolTip("카드에 들어가지 못한 글자: " + r["overflow"] +
                               "\n영역이 글자 상자에 맞는지(영역 지정의 미리보기), 번역을 줄일 수 있는지 확인하세요")
             if self.problems(r["status"]):
@@ -392,6 +401,11 @@ class ResultViewer(QDialog):
             except Exception as e:  # noqa: BLE001 - 고치기는 못 해도 보기는 된다
                 self.erase_hint.setText(f"이 칸의 번역을 읽지 못했습니다: {e}")
         ok = info is not None
+        kept = bool(ok and info.get("keep_original"))
+        self.keep_btn.setText(KEEP_UNDO_LABEL if kept else KEEP_LABEL)
+        self.keep_btn.setEnabled(bool(ok and info.get("can_keep", True)))
+        for w in (self.edit_text, self.edit_font, self.edit_size, self.edit_align):
+            w.setEnabled(not kept)  # 원본 그대로인 칸은 한글을 넣지 않으므로 고칠 것이 없다
         self.edit_form.setVisible(ok)
         self.erase_hint.setVisible(not ok)
         self._sel = (self.pages.currentRow(), self.regions.currentRow())
@@ -602,6 +616,37 @@ class ResultViewer(QDialog):
                                lambda m: show_failure(self, "다시 넣지 못했습니다", m))
 
     redo_card = save_edit  # 예전 이름
+
+    def toggle_keep_original(self):
+        """‘아이콘만 있음 — 원본 그대로’: 이 칸을 번역·지우기·한글 넣기에서 빼고 원본 그대로 둔다 (다시 누르면 되돌림).
+        바꾸면 이 파일을 다시 지우고 한글을 다시 넣는다."""
+        e, fd = self._edit, self.file_dir()
+        if not (e and fd):
+            return
+        if not self._leave_ok():  # 저장 안 한 고침이 있으면 먼저 묻는다
+            return
+        page, region = e["page"], e["region"]
+        keep = not e["info"].get("keep_original")
+        try:
+            service.set_keep_original(fd, page, region, keep)
+        except Exception as ex:  # noqa: BLE001
+            show_error(self, "바꾸지 못했습니다", ex)
+            return
+        self._edit = None
+
+        def done(res):
+            if res.state != "done":
+                show_problem(self, "다시 넣지 못했습니다", res.error or ("" if res.blocking else res.state),
+                             items=None if res.error else res.blocking)
+            row = next((i for i, it in enumerate(self.items) if it["page"] == page), 0)
+            self.reload()
+            self.pages.setCurrentRow(min(row, max(0, len(self.items) - 1)))
+            names = [x["name"] for x in (self.current() or {}).get("regions", [])]
+            if region in names:
+                self.regions.setCurrentRow(names.index(region) + 1)
+
+        bg_erase.run_exclusive(self, "다시 지우고 한글 넣기", worker.Job(service.redo_file, fd), done,
+                               lambda m: show_failure(self, "다시 넣지 못했습니다", m))
 
     def _show_region(self):
         if not self._leave_ok():
@@ -884,7 +929,7 @@ class OutputActions:
         show_failure(self.page, "글자 지우기를 끝내지 못했습니다", m)
 
     def _erase_done(self, r):
-        from app.qt.steps import state_label
+        from app.qt.step_common import state_label
 
         self.page.refresh()
         lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
@@ -955,7 +1000,7 @@ class OutputActions:
                                lambda m: show_failure(self.page, "한글 넣기를 끝내지 못했습니다", m))
 
     def _compose_done(self, r):
-        from app.qt.steps import _ask_list, state_label
+        from app.qt.step_common import _ask_list, state_label
 
         self.page.refresh()
         if r.state == "needs_confirmation":
@@ -1301,6 +1346,6 @@ class TestCompareDialog(QDialog):
         for st, label in ((r.get("a_status") or [], self.st_a), (r.get("b_status") or [], self.st_b)):
             probs = ResultViewer.problems(st)
             label.setText("문제: " + status_text(st) if st else "문제 없음")
-            label.setStyleSheet("color: #C0392B" if probs else "color: #5F6B7A")
+            label.setStyleSheet("color: #C0392B" if probs else "color: #6E6E73")
         self.prev_btn.setEnabled(self.i > 0)
         self.next_btn.setEnabled(self.i < len(self.rows) - 1)

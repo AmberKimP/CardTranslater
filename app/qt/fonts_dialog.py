@@ -220,7 +220,7 @@ class FontPlanDialog(QDialog):
         self.tree.itemExpanded.connect(self._expand)
         self.tree.currentItemChanged.connect(lambda *_a: self._preview())
 
-        box = "background: white; border: 1px solid #E6E9EE; border-radius: 8px; padding: 4px"
+        box = "background: white; border: 1px solid #E5E5EA; border-radius: 8px; padding: 4px"
         self._orig_pm = QPixmap()
         self._sample_pm = QPixmap()
         self.orig = QLabel()
@@ -232,16 +232,16 @@ class FontPlanDialog(QDialog):
             lb.setStyleSheet(box)
         self.sample.setWordWrap(True)
         self.where = QLabel()
-        self.where.setStyleSheet("font-weight: bold; color: #0b5cad")
+        self.where.setStyleSheet("font-weight: bold; color: #0071E3")
         self.sample_note = QLabel()
-        self.sample_note.setStyleSheet("color: #5F6B7A")
+        self.sample_note.setStyleSheet("color: #6E6E73")
         self.sample_note.setTextFormat(Qt.TextFormat.RichText)
         self.sample_note.setWordWrap(True)
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         cap_o, cap_s = QLabel("원본"), QLabel("미리 보기 (고른 글꼴 · 원본 글자 색 · 지운 카드 위)")
         for c in (cap_o, cap_s):
-            c.setStyleSheet("color: #334E68; font-weight: bold")
+            c.setStyleSheet("color: #3A3A3C; font-weight: bold")
         grid.addWidget(cap_o, 0, 0)
         grid.addWidget(cap_s, 0, 1)
         grid.addWidget(self.orig, 1, 0)
@@ -519,7 +519,7 @@ class FontPlanDialog(QDialog):
                              "가운데 문단은 기준 카드에 같은 순서의 가운데 문단이 있으면 그 글꼴, 없으면 첫 문단 글꼴을 씁니다.\n"
                              "아래 카드를 펼쳐 카드마다 문단 글꼴을 따로 고르면 그것이 먼저입니다.")
             ch.setToolTip(2, sample)
-            ch.setForeground(0, QBrush(QColor("#0b5cad")))
+            ch.setForeground(0, QBrush(QColor("#0071E3")))
             if self._slot_default(pi, reg["name"], idx) != SAME:
                 ch.setText(0, f"{label} · 글씨 다름")
                 ch.setToolTip(0, ch.toolTip(0) + "\n\n원문에서 이 문단의 글씨가 첫 문단과 달라(굵기·글씨체) 이 문단에 맞는 글꼴을 추천했습니다.")

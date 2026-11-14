@@ -12,13 +12,14 @@ model: sonnet
 - `main.py`: `MainWindow`(홈 ↔ 프로젝트), `HomePage`, `ProjectPage`(트리, 단계 버튼 `step_buttons`, `_sync_steps`), `main()`(`--selftest`·`--smoke`·`--no-login`)
 - `dialogs.py`: 새 프로젝트, 파일 넣기, 뺄 쪽, 설정
 - `region_editor.py`: `RegionItem`(장면 좌표 rect, 끌기·크기), `PageScene`(그리기 모드), `PageView`(키·휠·auto_fit), `RegionEditor`(그룹 이동, 카드마다 영역, 글꼴 목록)
-- `steps.py`: 추출·원문 확인·아이콘 확정·용어집·번역 흐름(`StepActions`)
+- 색·글자·여백·모서리는 `DESIGN.md`(토큰은 `app/qt/theme.py`)를 따른다. 색을 코드에 직접 적지 않는다.
+- `steps.py`: 추출·원문 확인·아이콘 확정·용어집·번역 흐름(`StepActions`). 창은 `extract_dialog.py`·`source_review.py`·`icon_review.py`·`icon_place.py`, 공용 도우미는 `step_common.py`
 - `results.py`: 지우기·한글 넣기·결과 보기·시험 실행(`OutputActions`)
 - `login.py`: 시작 로그인, `worker.py`: `Job`(QRunnable) + `run_with_dialog`
 
 ## 구현 규칙
 
-- **엔진 경계:** 화면은 `from app import service`(와 `app.qt.*`)만 import한다. 필요한 데이터는 `app/service.py` 끝의 ‘화면용’ 구역에 작은 함수로 더한다(dict/dataclass 반환, 경로는 Path, 이미지는 PNG bytes나 경로). service·엔진에는 PySide6 import·print를 넣지 않는다. 두 경계 테스트가 늘 통과해야 한다.
+- **엔진 경계:** 화면은 `from app import service`(와 `app.qt.*`)만 import한다. 필요한 데이터는 `app/service/`의 알맞은 하위 모듈(화면용 조회는 `_overview.py`·`_cells_icons.py`·`_review.py` 등)에 넣고 `__init__.py`에서 내보내도록 작은 함수로 더한다(dict/dataclass 반환, 경로는 Path, 이미지는 PNG bytes나 경로). service·엔진에는 PySide6 import·print를 넣지 않는다. 두 경계 테스트가 늘 통과해야 한다.
 - **스레드:** 오래 걸리는 service 호출은 `worker.Job(fn, ..., with_progress=...)` + `worker.run_with_dialog`. 결과·오류는 Signal로 화면 스레드에서 받는다. 작업 스레드에서 위젯을 만지지 않는다. 취소는 `CancelToken`.
 - **수명:** 장면·위젯은 부모를 준다(`PageScene(self)`). 창을 닫을 때 신호가 지워진 C++ 객체를 부르지 않게(`RuntimeError: Internal C++ object already deleted`) 신호 처리기에서 방어한다. 테스트를 여러 번 돌려 이런 오류가 가끔이라도 찍히지 않는지 본다.
 - **레이아웃:** 고정 크기 대신 stretch·splitter(`setSizes`)·`setMinimumWidth`. 긴 콤보는 `AdjustToMinimumContentsLengthWithIcon`. 1366×768에서 창 최소 크기(`minimumSizeHint`)를 확인하고, 숫자 칸(QDoubleSpinBox)이 좁아져 값이 잘리지 않게 한다.

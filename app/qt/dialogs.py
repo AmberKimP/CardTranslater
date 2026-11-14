@@ -45,13 +45,13 @@ def install_korean(app=None) -> bool:
 
 
 # 화면 색 약속: 주 버튼 파랑, 끝난 단계 연두(#D9EAD3), 확인할 것 노랑(#FFE066)·주황(#F4B183)
-PRIMARY_QSS = ("QPushButton { background: #0b5cad; color: white; font-weight: bold; border: 1px solid #0b5cad;"
-               " border-radius: 6px; padding: 5px 16px; min-height: 20px; }"
-               "QPushButton:hover { background: #0a4f95; border-color: #0a4f95; }"
-               "QPushButton:pressed { background: #083f78; }"
-               "QPushButton:disabled { background: #A9C2DC; border-color: #A9C2DC; color: #F4F7FB; }")
-NEXT_QSS = PRIMARY_QSS.replace("padding: 5px 16px;", "padding: 10px 26px; font-size: 12pt; border-radius: 8px;")
-EMPTY_QSS = ("color: #5F6B7A; font-size: 11pt; background: white; border: 1px dashed #C5CCD6;"
+PRIMARY_QSS = ("QPushButton { background: #0071E3; color: white; font-weight: bold; border: 1px solid #0071E3;"
+               " border-radius: 8px; padding: 6px 18px; min-height: 22px; }"
+               "QPushButton:hover { background: #0062C4; border-color: #0062C4; }"
+               "QPushButton:pressed { background: #00529F; }"
+               "QPushButton:disabled { background: #9CC3EF; border-color: #9CC3EF; color: #F5F9FF; }")
+NEXT_QSS = PRIMARY_QSS.replace("padding: 6px 18px;", "padding: 10px 26px; font-size: 12pt; border-radius: 10px;")
+EMPTY_QSS = ("color: #6E6E73; font-size: 11pt; background: white; border: 1px dashed #C7C7CC;"
              " border-radius: 10px;")
 BANNER_QSS = "background: #FFF4C2; border: 1px solid #FFE066; border-radius: 8px;"
 DONE_BG = "#D9EAD3"
@@ -81,7 +81,7 @@ def page_title(text: str, size: int = 15) -> QLabel:
     f.setPointSize(size)
     f.setBold(True)
     lb.setFont(f)
-    lb.setStyleSheet("color: #102A43;")
+    lb.setStyleSheet("color: #1D1D1F;")
     return lb
 
 
@@ -89,7 +89,7 @@ def subtitle(text: str) -> QLabel:
     """제목 바로 아래 한 줄 설명 (회색, 줄바꿈)."""
     lb = QLabel(text)
     lb.setWordWrap(True)
-    lb.setStyleSheet("color: #5F6B7A;")
+    lb.setStyleSheet("color: #6E6E73;")
     return lb
 
 
@@ -100,7 +100,7 @@ def section_title(text: str) -> QLabel:
     f.setPointSize(f.pointSize() + 1 if f.pointSize() > 0 else 11)
     f.setBold(True)
     lb.setFont(f)
-    lb.setStyleSheet("color: #243B53;")
+    lb.setStyleSheet("color: #3A3A3C;")
     return lb
 
 
@@ -108,7 +108,7 @@ def card(*items, margins: tuple[int, int, int, int] = (14, 12, 14, 12), spacing:
     """흰 카드(둥근 테두리) 안에 위젯·배치를 위에서 아래로 담는다."""
     fr = QFrame()
     fr.setObjectName("card")
-    fr.setStyleSheet("QFrame#card { background: white; border: 1px solid #E6E9EE; border-radius: 10px; }")
+    fr.setStyleSheet("QFrame#card { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }")
     lay = QVBoxLayout(fr)
     lay.setContentsMargins(*margins)
     lay.setSpacing(spacing)
@@ -171,7 +171,7 @@ def grey_note(text: str) -> QLabel:
     """회색 보조 설명."""
     lb = QLabel(text)
     lb.setWordWrap(True)
-    lb.setStyleSheet("color: #5F6B7A")
+    lb.setStyleSheet("color: #6E6E73")
     return lb
 
 
@@ -368,7 +368,7 @@ class NewProjectDialog(QDialog):
         for k, t in LANGS:
             self.lang.addItem(t, k)
         self.hint = QLabel()
-        self.hint.setStyleSheet("color: #0b5cad")
+        self.hint.setStyleSheet("color: #0071E3")
         self.game.currentTextChanged.connect(self._hint)
         form = QFormLayout()
         form.setVerticalSpacing(10)
@@ -981,7 +981,7 @@ class SettingsDialog(QDialog):
         st = service.engine_status()["message"]
         info = QLabel(f"지금: {st}\n바꾸려면 메뉴의 ‘파일 > 로그인 방식…’을 누르세요.")
         info.setWordWrap(True)
-        info.setStyleSheet("color: #334E68")
+        info.setStyleSheet("color: #3A3A3C")
         self.log_path = QLineEdit(str(service.log_folder()))  # 경로는 보이지 않게 두고 버튼 말풍선에 보인다
         self.log_path.setReadOnly(True)
         self.log_path.setVisible(False)

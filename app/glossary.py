@@ -122,6 +122,7 @@ def extraction_status(info: ProjectInfo, game: bool = False) -> list[dict]:
             "excluded": file_settings(fd).get("exclude_pages", []),
             "no_verdict": sum(verification_label(r) == "결론 못 냄" for r in cells),
             "uncertain": sum(bool(r.get("uncertain")) for r in cells),
+            "icon_changed": sum(bool(r.get("icon_changed")) for r in cells),  # ② 아이콘 정의 뒤 원문 확인 안 한 칸
         })
     return rows
 

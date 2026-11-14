@@ -302,6 +302,34 @@ def _rotate_rect(r, pivot) -> pymupdf.Rect:
     return pymupdf.Rect(2 * px - r.x1, 2 * py - r.y1, 2 * px - r.x0, 2 * py - r.y0)
 
 
+def _draw_line_halo(page, atoms: list[Atom], x: float, baseline: float, size: float, tracking: float,
+                    style: TextStyle, m: FontMeasurer, rot) -> None:
+    """한 줄의 외곽선(두꺼운 외곽선 색 획)만 그린다. 글자 위치는 _draw_line과 같은 방식으로 정한다.
+
+    외곽선도 글자로 그리므로 그대로 두면 텍스트를 추출할 때 같은 글이 두 번 나온다. 외곽선을 그린 내용은
+    빈 ActualText로 감싸 추출에서 빠지게 한다 (보이는 모양은 그대로)."""
+    sc = hex_to_rgb01(style.stroke_color)
+    before = set(page.get_contents())
+    for i, a in enumerate(atoms):
+        adv = m.advance(a, size)
+        if a.kind == "space" and i > 0 and atoms[i - 1].kind == "char":
+            x += adv + tracking * size
+            continue
+        if a.kind == "char" and a.text.strip():
+            ff, fake_bold = m.file_for_char(a.text, a.fmt)
+            fb_w = style.fake_bold_width if fake_bold else 0
+            base: dict = dict(fontname=_font_name(page, ff), fontsize=size)
+            if rot:
+                base["morph"] = rot
+            page.insert_text(pymupdf.Point(x, baseline), a.text, render_mode=2, color=sc, fill=sc,
+                             border_width=2 * style.stroke_width + fb_w, **base)
+        x += adv + tracking * size
+    doc = page.parent
+    for xref in page.get_contents():
+        if xref not in before:
+            doc.update_stream(xref, b"/Span <</ActualText ()>> BDC\n" + doc.xref_stream(xref) + b"\nEMC\n")
+
+
 def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, tracking: float,
                style: TextStyle, m: FontMeasurer) -> None:
     """한 줄을 그린다. 글자는 글자마다 위치를 정해(자간) TextWriter로 벡터 텍스트로 넣는다.
@@ -310,9 +338,13 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
       (insert_text의 morph는 cm을 BT 안에 넣어 무시되므로 TextWriter를 쓴다.)
     - 가짜 굵게: 같은 색 획 덧그리기(render_mode 2). 획 두께는 PyMuPDF 고정값 0.05 x 글자 크기.
     - 외곽선(stroke_color)은 insert_text(border_width)로 그린다 (이때 기울임은 지원 안 함).
+      줄의 외곽선을 모두 먼저 그리고 그 위에 글자를 채운다: 글자마다 외곽선→채움을 번갈아 그리면 다음 글자의 두꺼운
+      외곽선이 앞 글자를 덮어 글자가 겹쳐 보인다.
     """
     t_shear = math.tan(math.radians(style.italic_angle))
     rot = _rotation(style)
+    if style.stroke_color and style.stroke_width:
+        _draw_line_halo(page, atoms, x, baseline, size, tracking, style, m, rot)
     cur = None  # (key, TextWriter, x0): 같은 서식이 이어지는 동안 한 번에 쓴다 (내용 순서 = 읽는 순서)
 
     def _flush(c) -> None:
@@ -349,14 +381,11 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
             if i + 1 < len(atoms) and atoms[i + 1].kind == "space":
                 s += " "
             if style.stroke_color and style.stroke_width:
-                # 외곽선은 글자 바깥으로: 두꺼운 획(외곽선 색)을 먼저 그리고 그 위에 글자를 채운다
+                # 외곽선(_draw_line_halo에서 줄 전체를 먼저 그렸다) 위에 글자를 채운다
                 fb_w = style.fake_bold_width if fake_bold else 0
                 base: dict = dict(fontname=_font_name(page, ff), fontsize=size)
                 if rot:
                     base["morph"] = rot
-                sc = hex_to_rgb01(style.stroke_color)
-                page.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=sc, fill=sc,
-                                 border_width=2 * style.stroke_width + fb_w, **base)
                 if fake_bold:
                     page.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=hex_to_rgb01(color),
                                      fill=hex_to_rgb01(color), border_width=fb_w, **base)

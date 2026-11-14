@@ -138,7 +138,7 @@ class CardThumb(QFrame):
         tag += " · 따로" if override else ""
         tag += {"manual": " · 손으로 맞춤", "ref": " · 정렬 기준"}.get(align_status, "")
         self.num.setText(f"<b>{self.page}쪽</b>{tag}")
-        self.num.setStyleSheet("color: #1E6FD9;" if current else "color: #1F2933;")
+        self.num.setStyleSheet("color: #1E6FD9;" if current else "color: #1D1D1F;")
         self.ex.blockSignals(True)
         self.ex.setChecked(excluded)
         self.ex.blockSignals(False)

@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import ask_choice, file_label, fit_to_screen, grey_note, hint_bar, make_primary, set_hint, show_failure
-from app.qt.steps import FitImage, source_font
+from app.qt.dialogs import ask_choice, file_label, fit_to_screen, grey_note, hint_bar, make_primary, set_hint, show_error, show_failure
+from app.qt.step_common import KEEP_LABEL, FitImage, source_font
 
 MUST_BG, LOOK_BG, OK_BG, EDIT_BG = "#F4B183", "#FFE066", "#D9EAD3", "#CFE2F3"
 MUST_STATUS = {"번역 없음", "일본어 남음", "아이콘 불일치", "원문 결론 못 냄"}  # 나머지(용어 불일치·원문 불확실)는 ‘확인해 볼 칸’
@@ -103,7 +103,7 @@ class TranslationReviewDialog(QDialog):
         top.addWidget(self.search, 1)
         self.guide = hint_bar(GUIDE, "info")
         self.pill = QLabel()
-        self.pill.setStyleSheet("color: #334E68; background: white; border: 1px solid #E6E9EE;"
+        self.pill.setStyleSheet("color: #3A3A3C; background: white; border: 1px solid #E5E5EA;"
                                 " border-radius: 10px; padding: 3px 10px;")
         guide_row = QHBoxLayout()
         guide_row.addWidget(self.guide, 1)
@@ -133,7 +133,7 @@ class TranslationReviewDialog(QDialog):
             f'<span style="background:{OK_BG}">&nbsp;✓&nbsp;</span> 확인함 &nbsp;'
             f'<span style="background:{EDIT_BG}">&nbsp;&nbsp;&nbsp;</span> 사람이 고친 번역')
         legend.setWordWrap(True)
-        legend.setStyleSheet("color: #5F6B7A")
+        legend.setStyleSheet("color: #6E6E73")
         left = QWidget()
         left.setMinimumWidth(420)
         ll = QVBoxLayout(left)
@@ -146,7 +146,7 @@ class TranslationReviewDialog(QDialog):
         self.head = QLabel()
         self.head.setStyleSheet("font-weight: bold; font-size: 11pt")
         self.pos = QLabel()
-        self.pos.setStyleSheet("color: #5F6B7A")
+        self.pos.setStyleSheet("color: #6E6E73")
         head = QHBoxLayout()
         head.addWidget(self.head, 1)
         head.addWidget(self.pos)
@@ -159,7 +159,7 @@ class TranslationReviewDialog(QDialog):
             col = QVBoxLayout()
             col.setSpacing(2)
             cap = QLabel(title)
-            cap.setStyleSheet("color: #334E68; font-weight: bold")
+            cap.setStyleSheet("color: #3A3A3C; font-weight: bold")
             col.addWidget(cap)
             col.addWidget(img, 1)
             if note is not None:
@@ -219,10 +219,15 @@ class TranslationReviewDialog(QDialog):
         self.next_btn.clicked.connect(self.confirm_next)
         self.save_btn.clicked.connect(self.save_here)
         self.preview_btn.clicked.connect(self.request_preview)
+        self.keep_btn = QPushButton(KEEP_LABEL)
+        self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
+                                 "이 목록에서 빠지며, 되돌리려면 ③ 원문 확인이나 결과 보기의 같은 버튼을 누르세요.")
+        self.keep_btn.clicked.connect(self.keep_original)
         btns = QHBoxLayout()
         btns.addWidget(self.next_btn)
         btns.addWidget(self.save_btn)
         btns.addWidget(self.preview_btn)
+        btns.addWidget(self.keep_btn)
         self.help = grey_note(HELP)
         self.help.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         btns.addWidget(self.help, 1)
@@ -314,7 +319,7 @@ class TranslationReviewDialog(QDialog):
     @staticmethod
     def _line_title(text: str) -> QLabel:
         lb = QLabel(text)
-        lb.setStyleSheet("color: #334E68; font-weight: bold")
+        lb.setStyleSheet("color: #3A3A3C; font-weight: bold")
         lb.setFixedWidth(40)
         lb.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         return lb
@@ -632,7 +637,7 @@ class TranslationReviewDialog(QDialog):
         self.conflict.setVisible(False)
         self.check_label.setText("")
         self.same_box.setVisible(False)
-        for b in (self.next_btn, self.save_btn, self.preview_btn):
+        for b in (self.next_btn, self.save_btn, self.preview_btn, self.keep_btn):
             b.setEnabled(False)
         self.edit.setEnabled(False)
         self._sync_pill()
@@ -642,7 +647,7 @@ class TranslationReviewDialog(QDialog):
         same = r["id"] == self._shown_id
         self._shown_id = r["id"]
         self.edit.setEnabled(True)
-        for b in (self.next_btn, self.save_btn, self.preview_btn):
+        for b in (self.next_btn, self.save_btn, self.preview_btn, self.keep_btn):
             b.setEnabled(True)
         self.head.setText(f"{file_label(r['file_key'])} {r['page']}쪽 · {r['region']}")
         self.source.setPlainText(r["source"])
@@ -787,6 +792,23 @@ class TranslationReviewDialog(QDialog):
 
     def save_here(self):
         self._commit(advance=False)
+
+    def keep_original(self):
+        """‘아이콘만 있음 · 원본 그대로’: 이 칸을 번역·글자 지우기·한글 넣기에서 빼고 원본 그대로 둔다.
+        목록에서 빠지고 다음 칸을 보여 준다 (이미 지운·한글 넣은 결과는 다음 지우기·한글 넣기 때 바뀐다)."""
+        r = self.current_row()
+        if r is None:
+            return
+        try:
+            service.set_keep_original(r["file_dir"], r["page"], r["region"], True)
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "바꾸지 못했습니다", e)
+            return
+        ids = self.view_ids
+        i = ids.index(r["id"]) if r["id"] in ids else -1
+        nxt = next((x for x in ids[i + 1:] + ids[:max(i, 0)] if x != r["id"]), None)
+        self._orig_text = self.edit.toPlainText()  # 저장 안 한 글을 묻지 않는다 (번역하지 않는 칸이 됨)
+        self.load(keep_id=nxt)
 
     def use_base(self):
         """편집 칸만 초벌(또는 엑셀) 번역으로 되돌린다. 저장해야 반영된다."""

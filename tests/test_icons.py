@@ -607,3 +607,56 @@ def test_rebox_host_releases_manual_absorbed_spot(tmp_path):
     assert extra in r["run_unfound"]
     g = next(g for g in service.icon_review(info.dir)["groups"] if g["where"][0]["occ"] == extra)
     assert not g["not_icon"] and not g["absorbed_group"]
+
+
+def test_shared_boxes_flags_spots_found_at_one_place_across_text():
+    """글자를 사이에 둔 [[?]]들이 같은(거의 겹치는) 자리로 잡히면 모두 표시한다. 붙은 덩어리 안은 세트일 수 있어 보지 않는다."""
+    a, b = (10, 10, 50, 50), (12, 11, 51, 50)
+    assert icons.shared_boxes([a, b, (100, 10, 140, 50)], [0, 1, 2]) == {0, 1}
+    assert icons.shared_boxes([a, a], [0, 0]) == set()  # 같은 덩어리 (세트 후보)
+    assert icons.shared_boxes([a, None, (60, 10, 100, 50)], [0, 1, 2]) == set()
+    assert icons.shared_boxes([a, (30, 10, 70, 50)], [0, 1]) == set()  # 조금 겹치는 이웃 아이콘은 다른 자리
+
+
+def test_scan_does_not_auto_match_spots_found_at_the_same_place(tmp_path, monkeypatch):
+    """글자를 사이에 둔 [[?]] 여럿이 그림의 같은 아이콘 자리로 잡히면(찾기 실수), 사전과 모양이 같아도 자동으로 바꾸지
+    않고 모두 ‘위치 못 찾음’으로 묻는다 (카드 6쪽: 사교·큐브·왕관 5개가 모두 사교 아이콘 자리로 잡혀 crown_social로 바뀜)."""
+    info, fd = _project(tmp_path, "1차", pages=1)
+    r = service.find_icons(info.dir, suggest=False)
+    g = service.icon_review(info.dir)["groups"][0]["group"]
+    assert service.confirm_icons(info.dir, [{"group": g, "name": "coin", "ko": "금화"}]).state == "confirmed"
+
+    info2, fd2 = _project(tmp_path, "2차", pages=1)
+    p = fd2 / "extract" / "pages" / "page-001.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]]CD[[?]]を得る"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    real = icons.locate
+    monkeypatch.setattr(icons, "locate", lambda img, text, index: real(img, "AB[[?]]CD", 0))
+    r2 = service.find_icons(info2.dir, suggest=False)
+    assert r2.state == "icons_review" and not r2.auto
+    assert _source(fd2, 1) == "AB[[?]]CD[[?]]を得る"
+    scan = icons.load_scan(info.game_dir / "work" / "icons")
+    assert len(scan.occurrences) == 2
+    assert all(not o.png and o.reason == icons.SHARED_BOX_REASON for o in scan.occurrences)
+    # 하나만 그 자리에 있으면 예전처럼 사전으로 바로 바꾼다
+    d["regions"]["본문"]["source"] = "AB[[?]]CD"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    assert service.find_icons(info2.dir, suggest=False).auto == {"coin": 1}
+    assert _source(fd2, 1) == "AB[[coin]]CD"
+
+
+def test_find_icons_renames_suggestion_that_clashes_with_dictionary(tmp_path):
+    """한꺼번에 받은 이름 제안이 사전 이름과 같은데 그림이 다르면 crown_2처럼 바꾼다 (그대로 두면 확정할 때 사전의
+    다른 아이콘 그림으로 바뀐다: 사교 아이콘을 crown으로 확정해 [[crown]]이 들어간 경우)."""
+    info, _fd = _project(tmp_path, "1차", pages=1)
+    service.find_icons(info.dir, suggest=False)
+    g = service.icon_review(info.dir)["groups"][0]["group"]
+    assert service.confirm_icons(info.dir, [{"group": g, "name": "crown", "ko": "왕관"}]).state == "confirmed"
+
+    info2, _fd2 = _project(tmp_path, "2차", pages=1, icon_color=(0.1, 0.1, 0.85))  # 다른 그림
+    run = FakeRunner([_suggest([{"group": "g01", "name": "crown", "meaning": "crown", "ko": "왕관"}])])
+    r = service.find_icons(info2.dir, client=ClaudeCodeClient(exe="claude", runner=run))
+    assert r.state == "icons_review"
+    g2 = service.icon_review(info2.dir)["groups"][0]
+    assert g2["suggest"] == "crown_2" and not g2["dict"]

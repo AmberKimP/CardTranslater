@@ -1,4 +1,4 @@
-"""앱 전체 화면 스타일 (한 곳에서). main()이 QApplication에 apply()로 입힌다.
+"""앱 전체 화면 스타일 (한 곳에서). main()이 QApplication에 apply()로 입힌다. 값과 이유는 DESIGN.md.
 
 색 약속 (docs·README와 같음):
 - 주 버튼·강조: 파랑 ACCENT
@@ -11,17 +11,22 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-ACCENT = "#0b5cad"
-ACCENT_HOVER = "#0a4f95"
-ACCENT_SOFT = "#E3EEFA"   # 고른 줄·눌린 도구 버튼
-BG = "#F4F6F9"            # 창 바탕
+ACCENT = "#0071E3"
+ACCENT_HOVER = "#0062C4"
+ACCENT_SOFT = "#E5F0FD"   # 고른 줄·눌린 도구 버튼
+BG = "#F2F2F7"            # 창 바탕
 CARD = "#FFFFFF"          # 내용 칸
-LINE = "#D9DEE5"          # 입력 칸 테두리
-LINE_SOFT = "#E6E9EE"     # 표·카드 테두리
-TEXT = "#1F2933"
-TEXT_SUB = "#5F6B7A"
-DISABLED = "#A3ACB8"
-DANGER = "#B42318"
+LINE = "#D1D1D6"          # 입력 칸 테두리
+LINE_SOFT = "#E5E5EA"     # 표·카드 테두리
+TEXT = "#1D1D1F"
+TEXT_SUB = "#6E6E73"
+DISABLED = "#AEAEB2"
+DANGER = "#D70015"
+# 글자 (DESIGN.md 3장, 데스크톱에 맞춘 크기)
+FONT_FAMILIES = ("Segoe UI", "Malgun Gothic")
+BODY_PT = 10.0
+RADIUS_CONTROL = 8   # 버튼·입력 칸
+RADIUS_CARD = 12     # 카드·묶음 상자
 
 _ARROWS = {
     "down": '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
@@ -70,39 +75,39 @@ QLabel {{ background: transparent; }}
 
 /* ---- 버튼: 보조 = 흰 바탕·회색 테두리, 주 버튼은 dialogs.PRIMARY_QSS(파랑) */
 QPushButton {{
-    background: {CARD}; border: 1px solid {LINE}; border-radius: 6px;
-    padding: 5px 14px; min-height: 20px;
+    background: {CARD}; border: 1px solid {LINE}; border-radius: 8px;
+    padding: 6px 16px; min-height: 22px;
 }}
-QPushButton:hover {{ border-color: {ACCENT}; background: #F3F8FE; }}
+QPushButton:hover {{ border-color: {ACCENT}; background: #F0F6FE; }}
 QPushButton:pressed {{ background: {ACCENT_SOFT}; }}
-QPushButton:disabled {{ color: {DISABLED}; background: #F1F3F6; border-color: {LINE_SOFT}; }}
+QPushButton:disabled {{ color: {DISABLED}; background: #F2F2F7; border-color: {LINE_SOFT}; }}
 QPushButton:flat {{ border: none; background: transparent; color: {ACCENT}; }}
 QPushButton:flat:hover {{ background: {ACCENT_SOFT}; }}
 QPushButton[danger="true"] {{ color: {DANGER}; }}
 QPushButton[danger="true"]:hover {{ border-color: {DANGER}; background: #FEF3F2; }}
 QPushButton[danger="true"]:disabled {{ color: {DISABLED}; }}
 QToolButton {{
-    background: {CARD}; border: 1px solid {LINE}; border-radius: 6px; padding: 4px 10px;
+    background: {CARD}; border: 1px solid {LINE}; border-radius: 8px; padding: 4px 10px;
 }}
-QToolButton:hover {{ border-color: {ACCENT}; background: #F3F8FE; }}
+QToolButton:hover {{ border-color: {ACCENT}; background: #F0F6FE; }}
 QToolButton:checked {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; color: {ACCENT}; font-weight: bold; }}
-QToolButton:disabled {{ color: {DISABLED}; background: #F1F3F6; border-color: {LINE_SOFT}; }}
+QToolButton:disabled {{ color: {DISABLED}; background: #F2F2F7; border-color: {LINE_SOFT}; }}
 QToolButton[autoRaise="true"] {{ border: none; background: transparent; color: {ACCENT}; }}
 QToolButton[autoRaise="true"]:hover {{ background: {ACCENT_SOFT}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
 
 /* ---- 입력 칸 */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit {{
-    background: {CARD}; border: 1px solid {LINE}; border-radius: 6px; padding: 4px 8px;
+    background: {CARD}; border: 1px solid {LINE}; border-radius: 8px; padding: 4px 8px;
     selection-background-color: #CFE2F3; selection-color: {TEXT};
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
     border: 1px solid {ACCENT};
 }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled, QPlainTextEdit:disabled {{
-    background: #F1F3F6; color: {DISABLED}; border-color: {LINE_SOFT};
+    background: #F2F2F7; color: {DISABLED}; border-color: {LINE_SOFT};
 }}
-QLineEdit:read-only {{ background: #F7F8FA; }}
+QLineEdit:read-only {{ background: #F7F7FA; }}
 QAbstractSpinBox QLineEdit {{ border: none; padding: 0; background: transparent; }}
 QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; }}
 QComboBox {{ padding-right: 26px; }}
@@ -117,11 +122,11 @@ QComboBox QAbstractItemView {{
 QSpinBox, QDoubleSpinBox {{ padding: 4px 22px 4px 4px; }}
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
     subcontrol-origin: border; subcontrol-position: top right; width: 20px; border: none;
-    border-top-right-radius: 6px; background: transparent;
+    border-top-right-radius: 8px; background: transparent;
 }}
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
     subcontrol-origin: border; subcontrol-position: bottom right; width: 20px; border: none;
-    border-bottom-right-radius: 6px; background: transparent;
+    border-bottom-right-radius: 8px; background: transparent;
 }}
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {ACCENT_SOFT}; }}
@@ -132,7 +137,7 @@ QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {{ {arrow("do
 
 QCheckBox, QRadioButton {{ spacing: 8px; background: transparent; }}
 QCheckBox::indicator, QRadioButton::indicator, QAbstractItemView::indicator {{
-    width: 15px; height: 15px; border: 1px solid #8D99A8; background: {CARD}; border-radius: 4px;
+    width: 15px; height: 15px; border: 1px solid #AEAEB2; background: {CARD}; border-radius: 4px;
 }}
 QRadioButton::indicator {{ border-radius: 8px; }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover, QAbstractItemView::indicator:hover {{ border-color: {ACCENT}; }}
@@ -140,49 +145,49 @@ QCheckBox::indicator:checked, QAbstractItemView::indicator:checked {{
     background: {ACCENT}; border-color: {ACCENT}; {arrow("check")}
 }}
 QRadioButton::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; {arrow("dot")} }}
-QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{ background: #F1F3F6; border-color: {LINE}; }}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{ background: #F2F2F7; border-color: {LINE}; }}
 QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled {{
-    background: #A9C2DC; border-color: #A9C2DC;
+    background: #9CC3EF; border-color: #9CC3EF;
 }}
 
 /* ---- 표·목록·트리: 흰 칸, 넉넉한 줄 높이, 옅은 선 */
 QTreeView, QTableView, QListView {{
     background: {CARD}; border: 1px solid {LINE_SOFT}; border-radius: 8px;
     selection-background-color: {ACCENT_SOFT}; selection-color: {TEXT}; outline: 0;
-    gridline-color: #EEF0F3;
+    gridline-color: #EFEFF4;
 }}
 QTreeView::item, QListView::item {{ padding: 5px 4px; }}
 QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {{
     background: {ACCENT_SOFT}; color: {TEXT};
 }}
-QTreeView::item:hover, QListView::item:hover {{ background: #F3F7FC; }}
+QTreeView::item:hover, QListView::item:hover {{ background: #F2F7FE; }}
 QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{
-    background: #F7F8FA; color: {TEXT_SUB}; font-weight: bold; border: none;
+    background: #F7F7FA; color: {TEXT_SUB}; font-weight: bold; border: none;
     border-bottom: 1px solid {LINE_SOFT}; padding: 6px 8px;
 }}
-QTableCornerButton::section {{ background: #F7F8FA; border: none; }}
+QTableCornerButton::section {{ background: #F7F7FA; border: none; }}
 
 /* ---- 묶음 상자: 흰 카드 + 제목 */
 QGroupBox {{
-    background: {CARD}; border: 1px solid {LINE_SOFT}; border-radius: 10px;
+    background: {CARD}; border: 1px solid {LINE_SOFT}; border-radius: 12px;
     margin-top: 0; padding: 34px 12px 12px 12px; font-weight: bold; font-size: 10.5pt;
 }}
 QGroupBox::title {{
     subcontrol-origin: padding; subcontrol-position: top left; left: 14px; top: 9px; padding: 0;
-    color: #243B53; background: transparent;
+    color: #3A3A3C; background: transparent;
 }}
 QGroupBox QLabel, QGroupBox QCheckBox, QGroupBox QRadioButton, QGroupBox QLineEdit,
 QGroupBox QComboBox, QGroupBox QPushButton, QGroupBox QSpinBox, QGroupBox QDoubleSpinBox,
 QGroupBox QPlainTextEdit {{ font-weight: normal; }}
-QFrame#card {{ background: {CARD}; border: 1px solid {LINE_SOFT}; border-radius: 10px; }}
+QFrame#card {{ background: {CARD}; border: 1px solid {LINE_SOFT}; border-radius: 12px; }}
 
 /* ---- 스크롤 막대: 가늘고 둥글게 */
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #C5CCD6; border-radius: 3px; min-height: 30px; }}
-QScrollBar::handle:horizontal {{ background: #C5CCD6; border-radius: 3px; min-width: 30px; }}
-QScrollBar::handle:hover {{ background: #9AA5B4; }}
+QScrollBar::handle:vertical {{ background: #C7C7CC; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:horizontal {{ background: #C7C7CC; border-radius: 3px; min-width: 30px; }}
+QScrollBar::handle:hover {{ background: #AEAEB2; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; background: none; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 
@@ -200,12 +205,12 @@ QMenu::item:disabled {{ color: {DISABLED}; }}
 QMenu::separator {{ height: 1px; background: {LINE_SOFT}; margin: 4px 8px; }}
 QStatusBar {{ background: {CARD}; border-top: 1px solid {LINE_SOFT}; color: {TEXT_SUB}; }}
 QStatusBar QLabel {{ color: {TEXT_SUB}; }}
-QToolTip {{ background: #26313D; color: white; border: none; padding: 6px 8px; border-radius: 6px; }}
+QToolTip {{ background: #2C2C2E; color: white; border: none; padding: 6px 8px; border-radius: 8px; }}
 
 QProgressBar {{
-    background: #E6EAF0; border: none; border-radius: 6px; height: 12px; text-align: center; color: {TEXT};
+    background: #E5E5EA; border: none; border-radius: 8px; height: 12px; text-align: center; color: {TEXT};
 }}
-QProgressBar::chunk {{ background: {ACCENT}; border-radius: 6px; }}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 8px; }}
 QMessageBox {{ background: {BG}; }}
 """
 
@@ -231,12 +236,18 @@ def apply(app) -> None:
     from PySide6.QtGui import QColor, QPalette
 
     app.setStyle("Fusion")
+    from PySide6.QtGui import QFont
+
+    font = QFont()  # 본문 글꼴 (DESIGN.md 3장: Body 10pt ≈ 13px, 한글은 맑은 고딕)
+    font.setFamilies(list(FONT_FAMILIES))
+    font.setPointSizeF(BODY_PT)
+    app.setFont(font)
     pal = app.palette()
     for role, color in ((QPalette.ColorRole.Window, BG), (QPalette.ColorRole.Base, CARD),
-                        (QPalette.ColorRole.AlternateBase, "#F7F8FA"), (QPalette.ColorRole.Button, CARD),
+                        (QPalette.ColorRole.AlternateBase, "#F7F7FA"), (QPalette.ColorRole.Button, CARD),
                         (QPalette.ColorRole.WindowText, TEXT), (QPalette.ColorRole.Text, TEXT),
                         (QPalette.ColorRole.ButtonText, TEXT), (QPalette.ColorRole.Highlight, ACCENT_SOFT),
-                        (QPalette.ColorRole.HighlightedText, TEXT), (QPalette.ColorRole.ToolTipBase, "#26313D"),
+                        (QPalette.ColorRole.HighlightedText, TEXT), (QPalette.ColorRole.ToolTipBase, "#2C2C2E"),
                         (QPalette.ColorRole.ToolTipText, "#FFFFFF"), (QPalette.ColorRole.PlaceholderText, DISABLED),
                         (QPalette.ColorRole.Link, ACCENT)):
         pal.setColor(role, QColor(color))

@@ -1373,6 +1373,8 @@ def scan(info, work: Path) -> ScanResult:
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
                 run_of = {k: ri for ri, run in enumerate(placeholder_runs(text)) for k in run}
+                located = [locate(img, text, ti) for ti in ph]
+                clash = shared_boxes([b for b, _w in located], [run_of.get(k) for k in range(len(ph))])
                 set_host: dict[tuple, Occurrence] = {}  # (덩어리, 찾은 자리) -> 그 자리를 처음 찾은 아이콘
                 set_n: dict[tuple, int] = {}  # 그 자리에 들어간 아이콘 수
                 auto_map, auto_strip, left = {}, {}, []
@@ -1381,7 +1383,11 @@ def scan(info, work: Path) -> ScanResult:
                     oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
                                     text.replace("\n", " / "))
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
-                    box, why = locate(img, text, ti)
+                    box, why = located[k]
+                    if k in clash:
+                        # 글자를 사이에 둔 다른 [[?]]와 같은 자리로 잡힘: 어느 쪽이 맞는지 모른다. 그대로 두면 서로 다른 아이콘이
+                        # 한 그림으로 사전에 자동으로 맞춰지거나(사교·큐브·왕관 5개가 모두 crown_social) 한 묶음이 된다
+                        box, why = None, SHARED_BOX_REASON
                     key = (run_of.get(k), tuple(box)) if box is not None else None
                     host = set_host.get(key) if key else None
                     if host is not None and set_n[key] > 0 and set_box_fits(box, set_n[key] + 1):
@@ -1733,6 +1739,34 @@ def set_box_fits(box, n: int) -> bool:
     return h > 0 and w / h >= SET_ASPECT_PER_ICON * n
 
 
+SHARED_BOX_REASON = "다른 아이콘과 같은 자리로 잡혀 위치를 못 찾음"
+SHARED_BOX_IOU = 0.5  # 두 자리가 이만큼 겹치면 같은 자리로 본다
+
+
+def _iou(a, b) -> float:
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def shared_boxes(boxes: list, runs: list) -> set[int]:
+    """같은 칸의 [[?]]들(순번 k) 중 글자를 사이에 둔 다른 [[?]]와 같은(거의 겹치는) 자리로 잡힌 것들의 순번.
+    인쇄된 아이콘은 서로 다른 자리에 있으므로 이런 자리는 적어도 하나가 잘못 찾은 것인데 어느 쪽인지 모른다:
+    모두 ‘위치 못 찾음’으로 돌려 사람이 ② 카드 보기에서 잡게 한다 (자동으로 사전 이름을 넣지 않는다).
+    붙어 있는 [[?]](같은 덩어리 runs[k])끼리 같은 자리는 세트일 수 있어 여기서 보지 않는다 (scan이 따로 가린다)."""
+    out: set[int] = set()
+    for i, a in enumerate(boxes):
+        if a is None:
+            continue
+        for j in range(i + 1, len(boxes)):
+            b = boxes[j]
+            if b is not None and runs[i] != runs[j] and _iou(a, b) >= SHARED_BOX_IOU:
+                out.update((i, j))
+    return out
+
+
 def placeholder_runs(text: str) -> list[list[int]]:
     """[[?]]가 글자 없이 바로 붙어 있는 덩어리들. 각 덩어리는 [[?]] 순번(= 자리의 index) 목록.
     예: "[[?]][[?]][[?]]の山札" -> [[0, 1, 2]] (문양 셋이 붙은 아이콘을 모델이 셋으로 읽은 경우가 많다)."""
@@ -1783,6 +1817,41 @@ def absorb_into(info, work: Path, host_id: str, occ_ids: list[str]) -> list[str]
         res.groups[g]["absorbed"] = host_id
     _save_scan(work, res)
     return groups
+
+
+def resolve_suggested_name(info, res: "ScanResult", group: str) -> str:
+    """제안 받은 이름이 이미 있는 이름과 겹칠 때: 그림이 같으면 같은 아이콘으로(사전 아이콘이면 group["dict"]),
+    다르면 뒤에 _2, _3 …을 붙여 다른 이름으로 바꾼다. 결과: "same_dict" | "same_row" | "renamed" | ""."""
+    gi = res.groups.get(group) or {}
+    name = (gi.get("suggest") or "").strip()
+    by_id = {o.id: o for o in res.occurrences}
+    rep = by_id.get(gi.get("rep") or "")
+    if not name or rep is None or not rep.png:
+        return ""
+    sh = shape_pair(load_png(Path(rep.png)))
+    known = _known_shapes(info)
+    taken = set(load_dictionary(info)["icons"])
+    if name in known and number_allows(known[name][1], rep.num) and same_icon(sh, known[name][0]) >= SAME_SHAPE:
+        gi["dict"] = name  # 사전의 그 아이콘과 같음: 같은 아이콘으로 등록
+        return "same_dict"
+    for g, o_gi in res.groups.items():
+        if g == group or o_gi.get("not_icon"):
+            continue
+        o_name = o_gi.get("suggest") or ""
+        taken.add(o_name)
+        if o_name == name and name not in known:
+            o_rep = by_id.get(o_gi.get("rep") or "")
+            if (o_rep is not None and o_rep.png and o_rep.num == rep.num
+                    and same_icon(sh, shape_pair(load_png(Path(o_rep.png)))) >= SAME_SHAPE):
+                return "same_row"  # 다른 줄과 같은 그림: 같은 이름 그대로 (확정할 때 한 아이콘이 된다)
+    if name not in taken:
+        return ""
+    base = re.sub(r"_\d+$", "", name) or name
+    k = 2
+    while f"{base}_{k}" in taken:
+        k += 1
+    gi["suggest"] = f"{base}_{k}"  # 그림이 다른 아이콘: 다른 이름
+    return "renamed"
 
 
 # ---------------------------------------------------------------- 이름 제안 (모델)
@@ -2103,6 +2172,7 @@ def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -
             continue
         r["uncertain"] = True
         r["icon_changed"] = whys
+        r["icon_reread"] = True  # 아직 다시 읽지 않음: ③ 원문 확인을 열 때 먼저 다시 읽는다 (다시 읽으면 풀림)
         note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
         r["note"] = note if not r.get("note") or ICON_CHANGED_NOTE in r["note"] else f"{r['note']} / {note}"
         r.pop("checked_by", None)

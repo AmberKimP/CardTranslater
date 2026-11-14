@@ -17,7 +17,7 @@ CardTranslater/
 │   ├── erase.py               # 레드랙션 + 배경 정리 패치 + 태그 라벨
 │   ├── typeset*.py            # 한글 줄바꿈·크기 맞추기·글꼴 보정·그리기
 │   ├── typeset_compose.py     # 지운 PDF 위에 합성
-│   ├── service.py             # 작업 흐름 (모든 화면이 이것만 부름)
+│   ├── service/               # 작업 흐름 (모든 화면이 이것만 부름, 주제별 하위 모듈)
 │   ├── cli.py                 # 명령줄 진입점
 │   └── qt/                    # PySide6 화면 (python -m app.qt)
 ├── tests/              # pytest

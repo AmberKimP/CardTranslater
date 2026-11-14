@@ -340,6 +340,44 @@ def assign_lines(ko_lines: list[str], counts: list[int]) -> list[list[str]]:
     return out
 
 
+STROKE_MAX_OF_GLYPH = 0.12  # 원문에서 잰 외곽선(한쪽 두께)의 상한: 원문 글자 높이 대비
+
+
+def stroke_width_ratio(stroke_pt: float, glyph_h_pt: float | None, size_pt: float) -> float:
+    """원문 외곽선 두께(pt, 글자 바깥쪽 한쪽)를 글자 크기 대비 값으로. 원문 글자 높이의 12%를 넘지 않게 한다.
+
+    지우기 때 외곽선 두께는 글자 둘레에서 외곽선 색에 가까운 픽셀까지의 거리로 잰다. 외곽선 색이 배경과 비슷한
+    옅은 테두리(그림 배경 위 밝은 빛 테두리)면 배경까지 외곽선으로 재어 글자 높이의 40%쯤으로 크게 나온다.
+    그 두께로 그리면 작은 본문(4~5pt)에서 외곽선이 이웃 글자를 덮는다."""
+    w = float(stroke_pt)
+    if glyph_h_pt:
+        w = min(w, STROKE_MAX_OF_GLYPH * float(glyph_h_pt))
+    return w / max(size_pt, 1e-3)
+
+
+def text_accents(ln: dict, icons: list[dict]) -> list[dict]:
+    """줄의 ‘다른 색 낱말’ 중 글 속 아이콘 자리에서 잰 색(파란 구슬 아이콘의 파랑 등)을 뺀다.
+    아이콘 색이 <c1>로 잡히면 빨간 강조 글자가 아이콘 색으로 그려진다. 색 구간 폭의 절반 넘게 같은 줄 아이콘
+    상자 안에 있으면 아이콘 색으로 본다."""
+    acc = ln.get("accents") or []
+    if not acc or not icons:
+        return list(acc)
+    b = ln["bbox_pt"]
+    boxes = [ic["bbox_pt"] for ic in icons
+             if ic.get("bbox_pt") and min(b[3], ic["bbox_pt"][3]) - max(b[1], ic["bbox_pt"][1]) > 0]
+    if not boxes:
+        return list(acc)
+    out = []
+    for a in acc:
+        xs = a.get("x_pt") or []
+        total = sum(max(0.0, v - u) for u, v in xs)
+        inside = sum(max(0.0, min(v, ib[2]) - max(u, ib[0])) for u, v in xs for ib in boxes)
+        if total > 0 and inside >= 0.5 * total:
+            continue
+        out.append(a)
+    return out
+
+
 def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pivot=None,
                 icon_fit: dict | None = None, **kw) -> TextStyle:
     """원문 줄 모양(색·테두리·굵기·정렬·다른 색 낱말)을 따른 서식. 영역 서식에 직접 적은 값이 먼저다."""
@@ -354,7 +392,7 @@ def _line_style(style_d: dict, base_dir, ln: dict, region_accents: list[str], pi
     st.bold = bool(style_d.get("bold", ln.get("bold", False)))
     if ln.get("stroke_color") and not style_d.get("stroke_color") and ln.get("stroke_pt"):
         st.stroke_color = ln["stroke_color"]
-        st.stroke_width = ln["stroke_pt"] / max(st.start_size(), 1e-3)
+        st.stroke_width = stroke_width_ratio(ln["stroke_pt"], ln.get("glyph_h_pt"), st.start_size())
     accents = [a["color"] for a in ln.get("accents") or []]
     accents += [c for c in region_accents if c not in accents]
     tags = {f"c{i + 1}": c for i, c in enumerate(accents)}
@@ -425,6 +463,7 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
     lines = [ln for ln in layout.get("lines") or [] if ln["glyph_h_pt"] >= 2.5] or list(layout.get("lines") or [])
     if not lines or not (text or "").strip() or layout.get("dividers_pt"):
         return None  # 구분선 위아래가 다른 칸: 한 덩어리로 넣으면 선을 넘고 서식이 섞인다 (넘친 글자는 결과 보기에 알린다)
+    lines = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in lines]
     gh = float(np.median([ln["glyph_h_pt"] for ln in lines]))
     # 가장 많은 줄의 서식(색·굵기·테두리)으로: 맨 위 이름 줄(빨간 굵은 글자 등) 서식으로 본문까지 그리지 않게
     style_of = lambda ln: (ln.get("color"), bool(ln.get("bold")), ln.get("stroke_color"))  # noqa: E731
@@ -487,6 +526,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         good = [ln for ln in good if ln["glyph_h_pt"] >= 0.3 * gmax]
     if not good:
         return None
+    # 아이콘 자리에서 잰 색은 <cN> 색이 아니다 (돌리기 전 페이지 좌표에서 아이콘 상자와 견준다)
+    good = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in good]
     layout = {**layout, "lines": good}
     pivot = None
     if int(style_d.get("rotate", 0)) % 360 == 180:
@@ -597,11 +638,19 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         r, st, top = paragraph(src, sec)
         start = st.start_size()
         ok: list[int] = []
-        for i in firsts:  # 하나씩: 이은 줄이 원래 크기로 칸 폭에 들어가는 것만
+        def n_lines(kos_now: list[str]):
             st.fixed_size_pt = start
-            trial = typeset_region(page, r, "\n".join(join_lines_at(kos, ok + [i])), st, top_anchor=top, draw=False)
+            t = typeset_region(page, r, "\n".join(kos_now), st, top_anchor=top, draw=False)
             st.fixed_size_pt = None
-            if not trial.overflow_text and STATUS_OVERFLOW not in trial.status:
+            return t
+
+        for i in firsts:  # 하나씩: 이은 줄이 원래 크기로 칸 폭에 ‘한 줄로’ 들어가는 것만
+            trial = n_lines(join_lines_at(kos, ok + [i]))
+            # 넘치지 않아도 이은 줄이 다시 두 줄로 갈리면 번역의 줄바꿈을 버리고 멋대로 끊은 셈이다: 잇지 않는다
+            # (다른 줄이 원래 두 줄로 갈리는 것은 상관없다: 이은 그 줄만 따로 놓아 한 줄인지 본다)
+            alone = n_lines(join_lines_at(kos[i:i + 2], [0]))
+            if (not trial.overflow_text and STATUS_OVERFLOW not in trial.status
+                    and not alone.overflow_text and len(alone.lines) == 1):
                 ok.append(i)
         if not ok:
             return None

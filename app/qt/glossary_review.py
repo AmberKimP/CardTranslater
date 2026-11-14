@@ -253,7 +253,7 @@ class GlossaryReviewDialog(QDialog):
     def done_with(self, run, fix_where: str = "표"):
         """확정을 해 보고 (문제가 있으면 알리거나 묻고) 확정되면 창을 닫는다. fix_where: 고칠 곳 (표·엑셀)."""
         from app.qt.dialogs import show_problem
-        from app.qt.steps import _ask_list
+        from app.qt.step_common import _ask_list
 
         r = run(False)
         if r.state == "blocked":

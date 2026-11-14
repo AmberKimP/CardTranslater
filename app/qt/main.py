@@ -27,13 +27,13 @@ APP_NAME = "CardTranslater"
 STEP_QSS = (
     'QPushButton[step="todo"], QPushButton[step="done"], QPushButton[step="now"] {'
     " padding: 6px 8px; border: 1px solid #D0D6DE; border-radius: 8px; background: white; min-height: 20px; }"
-    'QPushButton[step="todo"]:hover, QPushButton[step="done"]:hover { border-color: #0b5cad; background: #F3F8FE; }'
+    'QPushButton[step="todo"]:hover, QPushButton[step="done"]:hover { border-color: #0071E3; background: #F0F6FE; }'
     'QPushButton[step="done"] { background: #E7F2E2; border-color: #B5D3A7; color: #2F5E23; }'
     'QPushButton[step="done"]:hover { background: #DCEDD5; }'
-    'QPushButton[step="now"] { background: #0b5cad; color: white; border-color: #0b5cad; font-weight: bold; }'
-    'QPushButton[step="now"]:hover { background: #0a4f95; }'
+    'QPushButton[step="now"] { background: #0071E3; color: white; border-color: #0071E3; font-weight: bold; }'
+    'QPushButton[step="now"]:hover { background: #0062C4; }'
     'QPushButton[step="todo"]:disabled, QPushButton[step="done"]:disabled {'
-    " color: #A3ACB8; background: #F4F6F9; border: 1px dashed #D9DEE5; }")
+    " color: #AEAEB2; background: #F2F2F7; border: 1px dashed #D1D1D6; }")
 
 # 단계 버튼: (키, 글자, 하는 일, 아직 못 쓸 때 이유)
 STEP_INFO = {
@@ -162,7 +162,7 @@ class HomePage(QWidget):
             gi = QTreeWidgetItem([g["name"], f"프로젝트 {len(ps)}개", "", " · ".join(extra)])
             gi.setFont(0, bold)
             for c in (1, 3):
-                gi.setForeground(c, QColor("#5F6B7A"))
+                gi.setForeground(c, QColor("#6E6E73"))
             gi.setData(0, Qt.ItemDataRole.UserRole, ("game", g))
             for p in ps:
                 try:
@@ -171,8 +171,8 @@ class HomePage(QWidget):
                     nxt = ""
                 pi = QTreeWidgetItem([p["name"], service.STATUS_LABEL.get(p["status"], p["status"]), nxt, ""])
                 pi.setData(0, Qt.ItemDataRole.UserRole, ("project", p))
-                pi.setForeground(1, QColor("#2F6B1F" if p["status"] == "translated" else "#0b5cad"))
-                pi.setForeground(2, QColor("#5F6B7A"))
+                pi.setForeground(1, QColor("#2F6B1F" if p["status"] == "translated" else "#0071E3"))
+                pi.setForeground(2, QColor("#6E6E73"))
                 pi.setToolTip(0, "두 번 누르면 열립니다")
                 gi.addChild(pi)
             self.tree.addTopLevelItem(gi)
@@ -314,7 +314,7 @@ class ProjectPage(QWidget):
         self.next_btn.clicked.connect(self.do_next)
         self.next = QLabel()
         self.next.setWordWrap(True)
-        self.next.setStyleSheet("color: #102A43; font-weight: bold; font-size: 12pt; border: none; background: transparent;")
+        self.next.setStyleSheet("color: #1D1D1F; font-weight: bold; font-size: 12pt; border: none; background: transparent;")
         self.next_why = QLabel()
         self.next_why.setWordWrap(True)
         self.next_why.setStyleSheet("color: #52606D; border: none; background: transparent;")
@@ -325,7 +325,7 @@ class ProjectPage(QWidget):
         next_box.setContentsMargins(18, 12, 14, 12)
         next_box.setSpacing(16)
         cap = QLabel("다음 할 일")
-        cap.setStyleSheet("color: #0b5cad; font-weight: bold; border: none; background: transparent;")
+        cap.setStyleSheet("color: #0071E3; font-weight: bold; border: none; background: transparent;")
         why_col = QVBoxLayout()
         why_col.setSpacing(3)
         why_col.addWidget(cap)
@@ -428,7 +428,7 @@ class ProjectPage(QWidget):
         outs.addWidget(self.b_test_history)
         # 작업 대상: 목록 바로 위. 목록에서 고른 것이 위 단계 버튼의 범위가 된다
         self.scope_label = QLabel("작업 대상: 전체")
-        self.scope_label.setStyleSheet("color: #0b5cad; font-weight: bold")
+        self.scope_label.setStyleSheet("color: #0071E3; font-weight: bold")
         self.scope_label.setToolTip("아래 목록에서 고른 항목.\n"
                                     "① 글자 추출 · ⑥ 전체 번역 · ⑦ 글자 지우기: 보통 전체에 합니다 "
                                     "(그룹·파일을 고른 채 누르면 전체/고른 항목만을 묻습니다).\n"
@@ -436,7 +436,7 @@ class ProjectPage(QWidget):
                                     "⑧ 한글 넣기 · 결과 보기 · 시험 실행: 그룹마다 합니다 (전체를 고른 채 누르면 그룹을 고릅니다).\n"
                                     "② 아이콘 정의 · ④ 용어집 만들기 · ⑤ 용어집 확정: 늘 프로젝트(게임) 전체에 합니다.")
         self.scope_hint = QLabel()
-        self.scope_hint.setStyleSheet("color: #5F6B7A")
+        self.scope_hint.setStyleSheet("color: #6E6E73")
         scope_row = QHBoxLayout()
         scope_row.addWidget(self.scope_label)
         scope_row.addWidget(self.scope_hint, 1)
@@ -451,7 +451,7 @@ class ProjectPage(QWidget):
         el.addStretch(1)
         msg = QLabel("아직 카드 파일이 없습니다.\n카드 PDF나 그림(JPG·PNG)을 넣으면 여기에 파일과 진행 상황이 보입니다.")
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        msg.setStyleSheet("color: #5F6B7A; font-size: 11pt; border: none; background: transparent;")
+        msg.setStyleSheet("color: #6E6E73; font-size: 11pt; border: none; background: transparent;")
         el.addWidget(msg)
         add2 = QPushButton("＋  파일 넣기")
         add2.setStyleSheet(PRIMARY_QSS)
@@ -487,13 +487,13 @@ class ProjectPage(QWidget):
     def _row_caption(text: str) -> QLabel:
         lb = QLabel(text)
         lb.setFixedWidth(70)
-        lb.setStyleSheet("color: #334E68; font-weight: bold")
+        lb.setStyleSheet("color: #3A3A3C; font-weight: bold")
         return lb
 
     @staticmethod
     def _arrow() -> QLabel:
         lb = QLabel("›")
-        lb.setStyleSheet("color: #9AA5B4; font-size: 12pt;")
+        lb.setStyleSheet("color: #AEAEB2; font-size: 12pt;")
         return lb
 
     # ---- 목록 오른쪽 클릭 메뉴
@@ -597,7 +597,7 @@ class ProjectPage(QWidget):
                 for col in range(1, 6):
                     fi.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
                     if fi.text(col) == "—":
-                        fi.setForeground(col, QColor("#A3ACB8"))
+                        fi.setForeground(col, QColor("#AEAEB2"))
                 for col, done in ((3, full), (4, f["erased"]), (5, f["composed"])):
                     if done:
                         fi.setBackground(col, QColor(DONE_BG))
@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         self.home = HomePage(self)
         self.project = ProjectPage(self)
         self.bg_label = QLabel()  # 상태 줄 오른쪽: 뒤에서 글자 지우기 진행
-        self.bg_label.setStyleSheet("color: #5F6B7A; padding-right: 8px")
+        self.bg_label.setStyleSheet("color: #6E6E73; padding-right: 8px")
         self.statusBar().addPermanentWidget(self.bg_label)
         self.project.bg.changed.connect(self.bg_label.setText)
         self.stack.addWidget(self.home)

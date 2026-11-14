@@ -88,7 +88,7 @@ class LoginDialog(QDialog):
         krow.addWidget(self.b_clear)
 
         note = QLabel("키는 이 컴퓨터의 이 사용자만 풀 수 있게 암호화해 저장합니다 (소스 코드·프로젝트 폴더에는 남지 않음).")
-        note.setStyleSheet("color: #5F6B7A")
+        note.setStyleSheet("color: #6E6E73")
         note.setWordWrap(True)
 
         def box(*widgets_or_layouts):
@@ -135,7 +135,7 @@ class LoginDialog(QDialog):
     # ---- 표시
     def _refresh_claude(self, st: dict):
         mark = {True: "● ", False: "✕ ", None: "○ "}[st["logged_in"]]
-        color = {True: "#2F6B1F", False: "#B42318", None: "#5F6B7A"}[st["logged_in"]]
+        color = {True: "#2F6B1F", False: "#D70015", None: "#6E6E73"}[st["logged_in"]]
         self.claude_status.setText(mark + st["message"])
         self.claude_status.setStyleSheet(f"color: {color}")
         self.b_check.setEnabled(st["installed"])
@@ -150,7 +150,7 @@ class LoginDialog(QDialog):
             self.api_status.setStyleSheet("color: #2F6B1F")
         else:
             self.api_status.setText("○ 저장한 키가 없습니다")
-            self.api_status.setStyleSheet("color: #5F6B7A")
+            self.api_status.setStyleSheet("color: #6E6E73")
         self.b_clear.setEnabled(info["source"] == "저장한 키")
         self._api = info
 

@@ -280,7 +280,7 @@ def test_glossary_review_dialog_edit_sort_add_and_confirm(tmp_path, monkeypatch)
     dlg.search.setText("독")
     assert sum(not dlg.table.isRowHidden(i) for i in range(dlg.table.rowCount())) == 1
     dlg.search.clear()
-    monkeypatch.setattr(steps, "_ask_list", lambda *a, **k: True)
+    monkeypatch.setattr("app.qt.step_common._ask_list", lambda *a, **k: True)
     dlg.confirm()
     assert dlg.result is not None and dlg.result.state == "confirmed"
     saved = json.loads((tmp_path / "games" / "G" / "glossary.json").read_text(encoding="utf-8"))

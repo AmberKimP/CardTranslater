@@ -370,7 +370,7 @@ def test_extracted_cells_and_save_source(tmp_path):
 
 
 def test_source_review_dialog_edits_unresolved_cell(qapp, tmp_path):
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)
     files = service.project_overview(info.dir)["groups"][0]["files"]
@@ -393,7 +393,7 @@ def test_source_review_dialog_edits_unresolved_cell(qapp, tmp_path):
 
 
 def test_icon_review_dialog_confirms_names(qapp, tmp_path):
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project, _source
 
     info, fd = icon_project(tmp_path, "1차", pages=2)
@@ -889,7 +889,7 @@ def test_login_dialog_sets_engine(qapp, tmp_path, monkeypatch):
 
 def test_icon_review_merge_rows_and_card_view(qapp, tmp_path, monkeypatch):
     from app import icons
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project, _source
 
     monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)  # 같은 모양도 따로 묶이게 (잘못 나뉜 묶음 흉내)
@@ -916,7 +916,7 @@ def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypat
     """다른 줄의 새 아이콘에 같은 이름(gold, gold)을 적으면 주황으로 표시하고, 확정할 때 합칠지 묻는다."""
     from app import icons
     from app.qt import steps as steps_mod
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
     monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)
@@ -928,7 +928,7 @@ def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypat
         w[3].setText("골드")
     assert dlg._dup_names() == {"gold": [0, 1]} and "F4B183" in dlg.widgets[1][1].styleSheet()
     asked = []
-    monkeypatch.setattr(steps_mod, "ask_choice", lambda *a, **k: asked.append(a[2]) or 1)  # 돌아가서 고치기
+    monkeypatch.setattr("app.qt.icon_review.ask_choice", lambda *a, **k: asked.append(a[2]) or 1)  # 돌아가서 고치기
     dlg.accept()
     assert dlg.result is None and "gold: 1번, 2번" in asked[0]
     dlg.widgets[1][1].setText("gold_2")  # 숫자가 붙은 금화: 다른 이름
@@ -939,7 +939,7 @@ def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypat
 
 def test_icon_review_merge_cycle_is_blocked(qapp, tmp_path, monkeypatch):
     from app import icons
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
     monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)
@@ -1135,7 +1135,7 @@ def test_screens_do_not_show_developer_words(qapp, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
     from app.qt.main import MainWindow
-    from app.qt.steps import state_label
+    from app.qt.step_common import state_label
 
     shown = []
     for name in ("information", "warning", "critical"):
@@ -1165,7 +1165,7 @@ def test_screens_do_not_show_developer_words(qapp, tmp_path, monkeypatch):
 
 def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
     from app.qt import steps
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)
     files = service.project_overview(info.dir)["groups"][0]["files"]
@@ -1193,13 +1193,13 @@ def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
     # 글을 고치고 다른 줄을 누르면 묻는다: 취소 -> 원래 줄·고친 글 그대로, 저장 안 됨
     assert dlg.edit.toPlainText() == "盗掘フェレット"  # 다시 봐야 하는 칸은 정밀 읽기 결과로 시작
     dlg.edit.setPlainText("盗掘フェレット改")
-    monkeypatch.setattr(steps, "ask_choice", answer(2))
+    monkeypatch.setattr("app.qt.source_review.ask_choice", answer(2))
     dlg.table.setCurrentCell(1, 0)
     assert dlg.table.currentRow() == 0 and dlg.edit.toPlainText() == "盗掘フェレット改"
     assert asked[0] == ("고친 원문", "1쪽 이름의 고친 원문을 저장할까요?", ["저장", "저장 안 함", "취소"])
     assert saved()["source"] == "盗賊フェレット"
     # 저장 안 함 -> 옮겨 가고 저장되지 않음
-    monkeypatch.setattr(steps, "ask_choice", answer(1))
+    monkeypatch.setattr("app.qt.source_review.ask_choice", answer(1))
     dlg.table.setCurrentCell(1, 0)
     assert dlg.current()["page"] == 3 and saved()["source"] == "盗賊フェレット"
     # 같은 줄의 다른 열을 눌러도 고친 글이 사라지거나 묻지 않는다
@@ -1208,16 +1208,16 @@ def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
     dlg.table.setCurrentCell(1, 3)
     assert dlg.edit.toPlainText() == "手で直した" and len(asked) == n
     # 저장 -> 저장하고 옮겨 감
-    monkeypatch.setattr(steps, "ask_choice", answer(0))
+    monkeypatch.setattr("app.qt.source_review.ask_choice", answer(0))
     dlg.table.setCurrentCell(0, 0)
     assert dlg.saved == 1 and dlg.current() is not None
     assert any(c["edited"] and c["source"] == "手で直した" for c in service.extracted_cells(fd))
     # 닫기도 고친 글이 있으면 묻는다 (취소하면 그대로)
     dlg.edit.setPlainText(dlg.edit.toPlainText() + "!")
-    monkeypatch.setattr(steps, "ask_choice", answer(2))
+    monkeypatch.setattr("app.qt.source_review.ask_choice", answer(2))
     dlg.accept()
     assert dlg.isVisible()
-    monkeypatch.setattr(steps, "ask_choice", answer(1))
+    monkeypatch.setattr("app.qt.source_review.ask_choice", answer(1))
     dlg.accept()
     assert not dlg.isVisible()
 
@@ -1225,7 +1225,7 @@ def test_source_review_protects_unsaved_edit(qapp, tmp_path, monkeypatch):
 def test_source_review_save_and_next_and_keys(qapp, tmp_path):
     from PySide6.QtTest import QTest
 
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)
     files = service.project_overview(info.dir)["groups"][0]["files"]
@@ -1520,7 +1520,7 @@ def test_step_failures_use_plain_error_boxes(qapp, tmp_path, monkeypatch):
     act._translate_done(SimpleNamespace(state="paused", reason="사용 한도에 걸림", retry_after="2026-11-05 14:30:00"))
     title, why, todo, _d = got[-1]
     assert title.startswith("번역을 끝내지 못했습니다") and "사용 한도" in why and "14:30:00 이후" in todo
-    from app.qt.steps import _fail
+    from app.qt.step_common import _fail
 
     _fail(win.project, "PermissionError: [WinError 32] 다른 프로세스가 파일을 사용 중\nTraceback ...")
     title, why, todo, detail = got[-1]
@@ -1742,7 +1742,7 @@ def test_scoped_service_steps(tmp_path):
 
 
 def test_save_source_unchanged_marks_checked_and_reading_pick_buttons(qapp, tmp_path):
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)
     c1 = {(c["page"], c["region"]): c for c in service.extracted_cells(fd)}[(1, "이름")]
@@ -1890,7 +1890,7 @@ def test_add_files_dialog_empty_state(qapp, tmp_path):
     dlg = AddFilesDialog(info.dir)
     ok = dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
     assert dlg.files_stack.currentWidget() is dlg.empty_hint and not ok.isEnabled()
-    assert "#0b5cad" in dlg.pick.styleSheet()
+    assert "#0071E3" in dlg.pick.styleSheet()
     dlg.files.addItem(str(tmp_path / "in" / "cards.pdf"))
     assert dlg.files_stack.currentWidget() is dlg.files and ok.isEnabled() and dlg.pick.styleSheet() == ""
 
@@ -2001,7 +2001,8 @@ def test_region_editor_guide_form_hint_and_save_button(qapp, tmp_path):
 
 
 def test_source_review_hides_model_name_and_guides(qapp, tmp_path):
-    from app.qt.steps import SourceReviewDialog, label_text
+    from app.qt.source_review import SourceReviewDialog
+    from app.qt.step_common import label_text
 
     assert label_text("Sonnet 1회") == "보통 읽기 1회" and label_text("결론 못 냄") == "다시 봐야 함"
     assert label_text("두 번 확인") == "두 번 확인"
@@ -2016,7 +2017,7 @@ def test_source_review_image_fits_tall_crop(qapp):
     """세로로 긴 그림도 잘리지 않게 칸 안에 비율 그대로 들어가고, 칸 크기가 바뀌면 다시 맞춘다."""
     from PySide6.QtGui import QColor, QPixmap
 
-    from app.qt.steps import FitImage
+    from app.qt.step_common import FitImage
 
     pm = QPixmap(200, 1600)
     pm.fill(QColor("red"))
@@ -2041,7 +2042,7 @@ def test_source_review_image_fits_tall_crop(qapp):
 
 
 def test_reading_diff_html_highlights_only_differences():
-    from app.qt.steps import DIFF_STYLE, diff_html
+    from app.qt.step_common import DIFF_STYLE, diff_html
 
     a, b = diff_html(["盗賊フェレット", "盗掘フェレット"], 1)
     assert f'<span style="{DIFF_STYLE}">賊</span>' in a and f'<span style="{DIFF_STYLE}">掘</span>' in b
@@ -2056,7 +2057,7 @@ def test_reading_diff_html_highlights_only_differences():
 
 
 def test_fill_icon_names_uses_confirmed_names():
-    from app.qt.steps import fill_icon_names
+    from app.qt.step_common import fill_icon_names
 
     src = "A-007\nプレイ時効果\n[[sword]] [[sword]]\n文明[[book]]が４以下なら[[number_1]]を得る"
     sonnet = "プレイ時効果\n文明[[?]]が4以下なら[[?]]を得る"
@@ -2090,7 +2091,8 @@ def _project_with_icon_cell(tmp_path):
 
 
 def test_source_review_shows_icon_names_and_reason_grid(qapp, tmp_path):
-    from app.qt.steps import DIFF_STYLE, SourceReviewDialog
+    from app.qt.step_common import DIFF_STYLE
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_icon_cell(tmp_path)
     assert service.known_icon_names(fd) == ["book", "sword"]
@@ -2112,7 +2114,7 @@ def test_source_review_shows_icon_names_and_reason_grid(qapp, tmp_path):
 
 
 def test_source_review_default_follows_precise_reading(qapp, tmp_path):
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)  # 1쪽 이름: 원문은 보통 읽기(盗賊), 정밀 읽기는 盗掘
     dlg = SourceReviewDialog(service.project_overview(info.dir)["groups"][0]["files"])
@@ -2264,7 +2266,7 @@ def test_add_files_list_shows_names_but_keeps_paths(qapp, tmp_path):
 
 def test_settings_hides_log_path_and_source_review_shows_short_file_name(qapp, tmp_path):
     from app.qt.dialogs import SettingsDialog
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     s = SettingsDialog()
     assert s.log_path.isHidden() and str(service.log_folder()) in s.b_log.toolTip()
@@ -2408,7 +2410,8 @@ def test_icon_place_dialog_not_icon_closes_and_checks_row(qapp, tmp_path, monkey
     (그 줄에 적어 둔 값이 있어도). 묶음에 자리가 하나뿐이면 옮기지 않고 그 줄을 표시한다."""
     from PySide6.QtWidgets import QDialog
 
-    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from app.qt.icon_place import IconPlaceDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
     info, _fd = icon_project(tmp_path, "1차")
@@ -2439,7 +2442,8 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     from PySide6.QtWidgets import QDialog
 
     from app import icons
-    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from app.qt.icon_place import IconPlaceDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
     info, _fd = icon_project(tmp_path, "1차")
@@ -3454,7 +3458,7 @@ def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path,
     from types import SimpleNamespace as NS
 
     from app.qt import steps
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
     from tests.test_extract import _msg
 
     info, fd = _project_with_extract(tmp_path)
@@ -3484,10 +3488,10 @@ def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path,
     assert dlg.current()["page"] == 1 and dlg.reread_model.currentData() == "opus"
     # 고친 글이 있으면 먼저 묻는다: 취소 -> 다시 읽지 않음
     dlg.edit.setPlainText("고치는 중")
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 2)
+    monkeypatch.setattr("app.qt.source_review.ask_choice", lambda *a, **k: 2)
     dlg.reread_btn.click()
     assert not calls and dlg.edit.toPlainText() == "고치는 중"
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)  # 저장 안 함 -> 다시 읽기
+    monkeypatch.setattr("app.qt.source_review.ask_choice", lambda *a, **k: 1)  # 저장 안 함 -> 다시 읽기
     dlg.reread_btn.click()
     assert calls == [(1, "이름", {"model": "opus", "engine": "api"})] and ran
     rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
@@ -3501,20 +3505,20 @@ def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path,
     assert dlg.edit.toPlainText() == "盗掘[[?]]フェレット"
     # 보통 읽기로 다시, 멈춤 상태면 이유를 보여 주고 편집 칸은 그대로
     shown = []
-    monkeypatch.setattr(steps, "show_problem", lambda _p, title, reason, **k: shown.append((title, reason)))
+    monkeypatch.setattr("app.qt.source_review.show_problem", lambda _p, title, reason, **k: shown.append((title, reason)))
     monkeypatch.setattr(service, "reread_region",
                         lambda *a, **k: service.RereadResult("paused", reason="Claude Code 사용 한도", retry_after="2026-11-12 18:00:00"))
     dlg.reread_model.setCurrentIndex(1)
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)
+    monkeypatch.setattr("app.qt.source_review.ask_choice", lambda *a, **k: 1)
     dlg.edit.setPlainText("그대로")
     dlg.reread_btn.click()
     assert shown and "사용 한도" in shown[0][1] and dlg.edit.toPlainText() == "그대로"
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 1)
+    monkeypatch.setattr("app.qt.source_review.ask_choice", lambda *a, **k: 1)
     dlg.close()
 
 
 def test_precise_index_prefers_newest_precise_reread():
-    from app.qt.steps import precise_index
+    from app.qt.step_common import precise_index
 
     rds = [{"model": "Sonnet"}, {"model": "Opus"}, {"model": "Opus", "reread": True}, {"model": "Sonnet", "reread": True},
            {"model": "Opus", "reread": True}]
@@ -3523,7 +3527,7 @@ def test_precise_index_prefers_newest_precise_reread():
 
 
 def test_icon_dictionary_unused_rows_sink_and_fade(qapp):
-    from app.qt.steps import IconDictionaryDialog
+    from app.qt.icon_review import IconDictionaryDialog
 
     rows = [{"name": "a", "ko": "가", "meaning": "", "scale": 1.1, "uses": 0},
             {"name": "b", "ko": "나", "meaning": "", "scale": 1.2, "uses": 3},
@@ -3571,7 +3575,8 @@ def test_icon_place_dialog_absorbs_adjacent_unfound_icon(qapp, tmp_path, monkeyp
     from PySide6.QtWidgets import QDialog
 
     from app.qt import steps
-    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from app.qt.icon_place import IconPlaceDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _add_run_partner, _project as icon_project
 
     info, fd = icon_project(tmp_path, "run", pages=1)
@@ -3579,13 +3584,16 @@ def test_icon_place_dialog_absorbs_adjacent_unfound_icon(qapp, tmp_path, monkeyp
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
     # 이름을 안 적으면 막힘: 줄 번호로 알린다
     seen = {}
-    monkeypatch.setattr(steps, "show_problem", lambda *a, **k: seen.update(items=k.get("items")))
+    monkeypatch.setattr("app.qt.icon_review.show_problem", lambda *a, **k: seen.update(items=k.get("items")))
     dlg.accept()
     assert seen["items"] and all("번 줄" in m and "위치 못 찾음" not in m for m in seen["items"])
     lost = next(g for g in dlg.review["groups"] if g["where"][0]["occ"] == extra)
     place = IconPlaceDialog(info.dir, lost, dlg._row_label, dlg._after_place, dlg)
     assert not place.absorb_btn.isHidden() and "번에 포함됨" in place.absorb_btn.text()
+    suggested = []
+    monkeypatch.setattr(place, "_suggest", lambda g: suggested.append(g) or place.accept())  # Claude는 부르지 않는다
     place._absorb()
+    assert len(suggested) == 1  # 합친 세트(앞 아이콘)의 이름을 새로 제안 받는다
     assert place.result() == QDialog.DialogCode.Accepted
     i = next(k for k, g in enumerate(dlg.review["groups"]) if g["where"][0]["occ"] == extra)
     h = next(k for k, g in enumerate(dlg.review["groups"]) if g["where"][0]["occ"] == host)
@@ -3601,7 +3609,8 @@ def test_icon_place_dialog_absorbs_adjacent_unfound_icon(qapp, tmp_path, monkeyp
 def test_icon_place_dialog_save_offers_to_absorb_adjacent(qapp, tmp_path, monkeypatch):
     """상자를 저장했는데 바로 옆 [[?]]를 못 찾았으면 하나로 합칠지 묻고, 합치면 그 자리는 ‘아이콘 아님’이 된다."""
     from app.qt import steps
-    from app.qt.steps import IconPlaceDialog, IconReviewDialog
+    from app.qt.icon_place import IconPlaceDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _add_run_partner, _project as icon_project
 
     info, fd = icon_project(tmp_path, "run", pages=1)
@@ -3610,7 +3619,7 @@ def test_icon_place_dialog_save_offers_to_absorb_adjacent(qapp, tmp_path, monkey
     g = next(g for g in dlg.review["groups"] if g["where"][0]["occ"] == host)
     place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg)
     asked = []
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: asked.append(a[1]) or 0)
+    monkeypatch.setattr("app.qt.icon_place.ask_choice", lambda *a, **k: asked.append(a[1]) or 0)
     monkeypatch.setattr(place, "_suggest", lambda _g: place.accept())  # 실제 Claude 이름 제안은 부르지 않는다
     place.view.new = list(service.icon_place(info.dir, host)["box"])
     place._save()
@@ -3624,7 +3633,7 @@ def test_icon_review_sort_card_column_labels_and_select_after_place(qapp, tmp_pa
     from PySide6.QtWidgets import QDialog
 
     from app.qt import steps
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
     from app import icons
@@ -3668,7 +3677,7 @@ def test_icon_review_sort_card_column_labels_and_select_after_place(qapp, tmp_pa
         def exec(self):
             return QDialog.DialogCode.Accepted
 
-    monkeypatch.setattr(steps, "IconPlaceDialog", Fake)
+    monkeypatch.setattr("app.qt.icon_review.IconPlaceDialog", Fake)
     Fake.next = ("saved", g0)
     dlg.show_cards(g0)
     assert dlg.table.currentRow() == 0
@@ -3679,8 +3688,9 @@ def test_icon_review_sort_card_column_labels_and_select_after_place(qapp, tmp_pa
 
 
 def test_source_review_keep_original_button(qapp, tmp_path):
-    """‘전체가 아이콘 — 번역 안 함’: 그 칸을 정하고 다음 칸으로, 다시 누르면 풀린다."""
-    from app.qt.steps import SourceReviewDialog
+    """‘아이콘만 있음 · 원본 그대로’: 그 칸을 정하고 다음 칸으로, 다시 누르면 풀린다."""
+    from app.qt.source_review import SourceReviewDialog
+    from app.qt.step_common import KEEP_UNDO_LABEL
 
     info, fd = _project_with_extract(tmp_path)
     files = service.project_overview(info.dir)["groups"][0]["files"]
@@ -3692,7 +3702,7 @@ def test_source_review_keep_original_button(qapp, tmp_path):
     assert cell["keep_original"] and dlg.table.currentRow() == 1
     assert dlg.table.item(0, 2).text() == "번역 안 함 (아이콘)"
     dlg.table.setCurrentCell(0, 0)
-    assert dlg.keep_btn.isChecked() and dlg.keep_btn.text() == "번역 안 함 풀기"
+    assert dlg.keep_btn.isChecked() and dlg.keep_btn.text() == KEEP_UNDO_LABEL
     dlg.keep_btn.click()
     cell = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (c0["page"], c0["region"]))
     assert not cell["keep_original"] and not dlg.keep_btn.isChecked()
@@ -3700,7 +3710,7 @@ def test_source_review_keep_original_button(qapp, tmp_path):
 
 def test_icon_review_sort_by_card_groups_and_problem_cards_first(qapp):
     """카드 번호 정렬: 줄마다 첫 카드 아래, 문제 줄(위치 못 찾음·이름 빈 칸)이 있는 카드가 맨 위, 내림차순은 카드 순서만 뒤집음."""
-    from app.qt.steps import IconReviewDialog
+    from app.qt.icon_review import IconReviewDialog
 
     class S:
         _cards = staticmethod(IconReviewDialog._cards)
@@ -3733,7 +3743,7 @@ def test_icon_review_sort_by_card_groups_and_problem_cards_first(qapp):
 
 def test_source_review_next_goes_to_next_cell_to_check_and_splitter_widens(qapp, tmp_path):
     """‘저장하고 다음 칸’: 확인할 칸이 남아 있으면 바로 다음 칸이 아니라 다음 확인할 칸으로. 왼쪽 표는 끌어 넓힐 수 있다."""
-    from app.qt.steps import SourceReviewDialog
+    from app.qt.source_review import SourceReviewDialog
 
     info, fd = _project_with_extract(tmp_path)
     p = fd / "extract" / "pages" / "page-002.json"

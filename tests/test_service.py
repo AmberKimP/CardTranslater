@@ -100,7 +100,7 @@ def test_engine_does_not_depend_on_any_ui():
     """app/의 엔진 모듈은 화면 라이브러리를 import하지 않고 print하지 않는다 (cli.py만 예외).
     그래야 같은 엔진을 웹 화면과 PySide6 화면이 그대로 쓸 수 있다 (PRD 6장)."""
     ui_libs = {"PySide6", "PyQt5", "PyQt6", "fastapi", "uvicorn", "starlette", "tkinter", "flask"}
-    for f in sorted((ROOT / "app").glob("*.py")):
+    for f in sorted([*(ROOT / "app").glob("*.py"), *(ROOT / "app" / "service").glob("*.py")]):  # service/ 하위 모듈도
         tree = ast.parse(f.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):

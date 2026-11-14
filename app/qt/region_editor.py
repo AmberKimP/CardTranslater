@@ -505,7 +505,7 @@ class RegionEditor(QDialog):
         tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
         tools.setSpacing(3)
         cap = QLabel("영역 그리기")
-        cap.setStyleSheet("color: #334E68; font-weight: bold;")
+        cap.setStyleSheet("color: #3A3A3C; font-weight: bold;")
         tools.addWidget(cap)
         self.add_buttons = {}
         for kind, text, key in (("text", "+ 글자 영역", "T"), ("tag_pills", "+ 태그 라벨 영역", "L"),
@@ -712,7 +712,7 @@ class RegionEditor(QDialog):
                      "F: 화면에 맞춤 · ＋/－ 또는 Ctrl+휠: 확대·축소 · 휠 누른 채 끌기 또는 Space+끌기: 옮기기 · Ctrl+Shift+V: 이전 카드 영역 · "
                      "Ctrl+S 저장 · F1 이 도움말")
         help_ = QLabel(help_text)
-        help_.setStyleSheet("color: #5F6B7A; background: white; border: 1px solid #E6E9EE; border-radius: 8px; padding: 8px;")
+        help_.setStyleSheet("color: #6E6E73; background: white; border: 1px solid #E5E5EA; border-radius: 8px; padding: 8px;")
         self.help_label = help_
         self.help_btn = QToolButton()
         self.help_btn.setText("단축키 도움말 (F1)")
@@ -790,7 +790,7 @@ class RegionEditor(QDialog):
         lay.addWidget(split, 1)
         self.status = QLabel()
         self.card_info = QLabel()
-        self.card_info.setStyleSheet("color: #0b5cad; font-weight: bold")
+        self.card_info.setStyleSheet("color: #0071E3; font-weight: bold")
         self.card_info.setMinimumWidth(60)  # 정렬 상태까지 붙어 길어져도 창 최소 폭을 늘리지 않게 (좁으면 잘림)
         self.guide = hint_bar("", "info")  # 다음 할 일 안내 띠
         srow = QHBoxLayout()  # 아래 줄: 미리보기·따로 영역 (위 두 줄은 파일 이름·도구로 이미 넓다)

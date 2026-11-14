@@ -78,7 +78,7 @@ class CardBoxesDialog(QDialog):
         self.view.key_action.connect(lambda a: self.view.fit_again() if a == "fit" else None)
 
         self.info = QLabel()
-        self.info.setStyleSheet("color: #334E68")
+        self.info.setStyleSheet("color: #3A3A3C")
         b_del = QPushButton("고른 자리 지우기")
         b_del.clicked.connect(self.delete_selected)
         b_clear = QPushButton("이 이미지 자리 모두 지우기")

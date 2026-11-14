@@ -11,8 +11,9 @@ model: opus
 
 ## 구조 규칙 (어기면 안 됨)
 
-- 화면 코드는 `app/qt/`에만 둔다: `main.py`(홈·프로젝트 화면), `dialogs.py`(새 프로젝트·파일 넣기·뺄 쪽·설정), `region_editor.py`(영역 지정), `steps.py`(추출~검수 엑셀), `results.py`(지우기·한글 넣기·결과 보기·시험 실행), `login.py`(시작 로그인), `worker.py`(작업 스레드).
-- 화면은 **`app.service`만** import한다(`tests/test_qt.py::test_qt_screens_only_use_service`). 화면에 필요한 데이터·동작이 없으면 `app/service.py` 끝의 ‘화면용’ 구역에 작은 함수(dict/dataclass를 돌려주는)를 더한다. 엔진 모듈(`erase.py`, `typeset*.py`, `extract*.py`, `icons.py` 등)의 동작은 바꾸지 않는다 — 필요하면 메인 세션이나 `pdf-engine`·`korean-typesetter`에 넘긴다.
+- 화면 코드는 `app/qt/`에만 둔다: `main.py`(홈·프로젝트 화면), `dialogs.py`(새 프로젝트·파일 넣기·뺄 쪽·설정), `region_editor.py`(영역 지정), `steps.py`(추출~검수 엑셀 흐름; 창은 `source_review.py`·`icon_review.py`·`icon_place.py`·`extract_dialog.py`, 공용 `step_common.py`), `results.py`(지우기·한글 넣기·결과 보기·시험 실행), `login.py`(시작 로그인), `worker.py`(작업 스레드).
+- 색·글자·여백·모서리는 `DESIGN.md`(토큰은 `app/qt/theme.py`)를 따른다. 색을 코드에 직접 적지 않는다.
+- 화면은 **`app.service`만** import한다(`tests/test_qt.py::test_qt_screens_only_use_service`). 화면에 필요한 데이터·동작이 없으면 `app/service/`의 알맞은 하위 모듈(화면용 조회는 `_overview.py`·`_cells_icons.py`·`_review.py` 등)에 넣고 `__init__.py`에서 내보내도록 작은 함수(dict/dataclass를 돌려주는)를 더한다. 엔진 모듈(`erase.py`, `typeset*.py`, `extract*.py`, `icons.py` 등)의 동작은 바꾸지 않는다 — 필요하면 메인 세션이나 `pdf-engine`·`korean-typesetter`에 넘긴다.
 - service와 엔진은 PySide6를 import하지 않고 print하지 않는다(`tests/test_service.py::test_engine_does_not_depend_on_any_ui`).
 - 긴 작업(추출·번역·지우기·한글 넣기·아이콘 찾기)은 `worker.Job` + `worker.run_with_dialog`로 돌린다. 화면 스레드에서 오래 걸리는 일을 하지 않는다. 진행률이 없는 작업은 `cancellable=False`.
 - 사람에게 물을 일(엔진이 `needs_confirmation`·`icons_review` 등 상태로 돌려줌)은 확인 창을 띄우고 ‘계속’이면 `accept_issues=True` 등으로 다시 부른다.

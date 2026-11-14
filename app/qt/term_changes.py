@@ -69,7 +69,7 @@ class TermChangesDialog(QDialog):
             self.table.setItem(i, 2, QTableWidgetItem(r["region"]))
             self.table.setCellWidget(i, 3, self._label(_marked(r["current"], olds, "#B45309")))
             if r["auto"]:
-                self.table.setCellWidget(i, 4, self._label(_marked(r["proposed"] or "", news, "#0b5cad")))
+                self.table.setCellWidget(i, 4, self._label(_marked(r["proposed"] or "", news, "#0071E3")))
             else:
                 self.table.setCellWidget(i, 4, self._label(f'<span style="color:#9A3412">{MANUAL_NOTE}</span>'))
         hh = self.table.horizontalHeader()

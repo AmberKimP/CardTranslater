@@ -481,7 +481,7 @@ pm`, winget, 이 앱의 `tools\claude`)에서도 찾으므로 설치 직후 PATH
 ```text
 CardTranslater/
 ├─ app/
-│  ├─ service.py       작업 흐름 (진행률·취소·확인 상태). 모든 화면이 이것만 부른다
+│  ├─ service/         작업 흐름 (진행률·취소·확인 상태). 모든 화면이 이것만 부른다 (주제별 하위 모듈 _extract·_glossary …)
 │  ├─ workspace.py     게임·프로젝트·그룹
 │  ├─ glossary.py      용어 후보·검증 엑셀·확정
 │  ├─ extract*.py      비전 글자 추출 (Claude Code / API)
