@@ -784,3 +784,59 @@ def test_cut_sheet_keeps_clean_gutter_sheets_as_is(tmp_path):
     cut = images.cut_sheet(tmp_path / "g.png", 3, 3)
     assert not any("같다고 보고" in w for w in cut.warnings)
     assert len(cut.boxes) == 9
+
+
+def _butted_sheet_with_panels(card=(375, 521)):
+    """틈 없이 붙은 3×3 (공주와 기사 시트 같은): 카드 끝 선(그림자·밝은 단면)이 없고, 카드 안쪽 6% 자리에
+    긴 글상자 테두리(흰 바탕 + 어두운 선)가 있다. 반환: (그림, 참 상자).
+    _fit_equal_size만 보는 그림이다 (cut_sheet에 넣으면 단색 바탕을 틈으로 보아 다른 길로 간다)."""
+    cw, ch = card
+    W, H = 3 * cw, 3 * ch
+    img = np.full((H, W, 3), (200, 170, 120), np.uint8)
+    rng = np.random.default_rng(5)
+    truth = []
+    for r in range(3):
+        for c in range(3):
+            x0, y0 = c * cw, r * ch
+            img[y0:y0 + ch, x0:x0 + cw] = (190 + 10 * c, 160, 110 + 10 * r)
+            px0, px1 = x0 + int(0.062 * cw), x0 + cw - int(0.062 * cw)  # 글상자: 카드 안쪽 6%
+            py0, py1 = y0 + int(0.4 * ch), y0 + ch - int(0.055 * ch)
+            img[py0:py1, px0:px1] = (250, 250, 250)
+            img[py0:py1, px0:px0 + 4] = (90, 70, 50)
+            img[py0:py1, px1 - 4:px1] = (90, 70, 50)
+            img[py0:py0 + 4, px0:px1] = (90, 70, 50)
+            img[py1 - 4:py1, px0:px1] = (90, 70, 50)
+            for _ in range(8):  # 카드마다 다른 그림 덩어리
+                cx, cy = int(rng.integers(x0 + 40, x0 + cw - 40)), int(rng.integers(y0 + 30, y0 + int(0.35 * ch)))
+                img[cy - 6:cy + 6, cx - 20:cx + 20] = rng.integers(30, 230, 3)
+            truth.append((x0, y0, x0 + cw, y0 + ch))
+    return img, truth
+
+
+def test_fit_equal_size_touching_cards_keep_junction_cuts():
+    """틈 없이 붙은 배열은 만나는 점으로 자른 경계가 맞다: 같은 크기 맞추기가 카드 안 글상자 테두리를 끝 선으로 잡아
+    경계를 옮기거나(공주와 기사 시트: 20~60px) 카드를 반복 간격보다 크게 만들면(옆 카드와 겹침) 안 된다."""
+    img, truth = _butted_sheet_with_panels()
+    # 만나는 점으로 자른 처음 경계: 거의 맞고 크기만 조금 들쭉날쭉 (틈을 못 찾음)
+    first = [(x0 + (3 if i % 2 else 0), y0 + (2 if i % 3 == 1 else 0), x1 - (5 if i % 4 == 0 else 0), y1)
+             for i, (x0, y0, x1, y1) in enumerate(truth)]
+    boxes, size = images._fit_equal_size(img, first, touching=True)
+    assert size is not None
+    assert max(abs(a - b) for bx, tb in zip(boxes, truth) for a, b in zip(bx, tb)) <= 8
+    assert size[0] <= 375 + 1 and size[1] <= 521 + 1  # 붙은 카드는 반복 간격보다 클 수 없다
+    xs = sorted({b[0] for b in boxes})
+    assert all(b[2] <= nxt + 1 for b in boxes for nxt in xs if nxt > b[0])  # 옆 카드와 겹치지 않음
+
+
+def test_cut_sheet_touching_marks_equal_size_as_touching(monkeypatch):
+    """만나는 점으로 자른 시트만 붙은 배열로 맞춘다 (틈을 못 찾았어도 한 줄 배열처럼 같은 간격으로 나눈 것은 아님)."""
+    seen = []
+    real = images._fit_equal_size
+    monkeypatch.setattr(images, "_fit_equal_size",
+                        lambda rgb, boxes, touching=False: (seen.append(touching), real(rgb, boxes, touching))[1])
+    rgb = np.zeros((10, 10, 3), np.uint8)
+    for gutters, junctions in ((False, True), (True, False), (False, False)):
+        cut = images.SheetCut("x.png", (10, 10), [(0, 0, 5, 5), (5, 0, 10, 6)], gutters_found=gutters,
+                              junctions=junctions)
+        images._apply_equal_size(rgb, cut)
+    assert seen == [True, False, False]  # 틈을 찾았거나 같은 간격으로 나눈 시트는 예전처럼 넓게 찾는다

@@ -37,6 +37,7 @@ class SheetCut:
     gutters_found: bool = True  # False면 틈을 못 찾아 같은 간격으로 나눔
     warnings: list[str] = field(default_factory=list)
     frame: int = 0  # 여러 쪽 TIFF의 몇 번째 쪽
+    junctions: bool = False  # 틈이 안 보여 네 카드가 만나는 점으로 잘랐다 (붙은 배열)
 
     def layout(self) -> dict:
         """file.json에 남길 배치 (결과를 원래 시트로 다시 합칠 때 쓴다)."""
@@ -455,7 +456,9 @@ def _apply_equal_size(rgb: np.ndarray, cut: SheetCut) -> None:
     spread = max((max(ws) - min(ws)) / max(1.0, float(np.median(ws))), (max(hs) - min(hs)) / max(1.0, float(np.median(hs))))
     if cut.gutters_found and spread <= EQUAL_SIZE_SPREAD:  # 틈이 보이고 크기도 고르다: 그대로
         return
-    boxes, size = _fit_equal_size(rgb, cut.boxes)
+    # 틈이 안 보여 네 카드가 만나는 점으로 자른 경계는 실제 카드 경계다: 경계 자리는 조금만 옮긴다.
+    # (붙은 카드는 끝 선이 거의 없어, 넓게 찾으면 카드 안 글상자 테두리처럼 긴 밝은·어두운 선을 끝 선으로 잡는다 — 공주와 기사 시트)
+    boxes, size = _fit_equal_size(rgb, cut.boxes, touching=cut.junctions)
     if size is None:
         return
     cut.boxes = boxes
@@ -514,6 +517,7 @@ EQUAL_PITCH_RANGE = (0.9, 1.1)  # 카드 크기(반복 간격) 찾기: 처음 �
 EQUAL_PITCH_TRUST = 0.04  # 반복 간격이 처음 자른 칸 크기(중앙값)와 이만큼 넘게 다르면 믿지 않고 중앙값을 카드 크기로
 EQUAL_PHASE_SHIFT = 0.06  # 카드 경계 자리 찾기: 처음 자른 경계 둘레 카드 크기의 ±6%
 #   (카드 안에도 끝 선처럼 보이는 가로줄이 있다: 제목 아래 띠 등, 카드 위에서 약 26%. 범위를 넓히면 그쪽을 잡는다)
+EQUAL_JUNCTION_SHIFT = 0.02  # 틈 없이 붙은 배열(만나는 점으로 자름)에서 경계 자리를 찾는 범위 (카드 크기의 ±2%)
 EQUAL_CARD_SHIFT = 0.02  # 카드마다 제 끝 선이 뚜렷하면 이만큼(카드 크기 대비)까지 따로 옮긴다 (손으로 놓아 조금씩 어긋남)
 EQUAL_EDGE_MIN = 0.3  # 카드 하나의 끝 선이 그 변 길이의 이만큼 이상 이어져야 그 카드만 따로 옮긴다
 EQUAL_SIZE_SPREAD = 0.02  # 처음 자른 카드 크기가 이만큼 넘게 들쭉날쭉하면 (틈을 잘못 찾음) 같은 크기로 다시 맞춘다
@@ -559,7 +563,7 @@ def _phase(prof: np.ndarray, pitch: int, phase0: float, r: int) -> float:
     return best if best_v >= 0.3 else phase0
 
 
-def _fit_equal_size(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
+def _fit_equal_size(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]], touching: bool = False
                     ) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
     """카드가 있는 곳(+찾는 범위 여유)만 잘라 맞춘다 (큰 스캔에서 메모리·시간을 줄인다). _fit_equal_size_in 참고."""
     if len(boxes) < 2:
@@ -572,19 +576,22 @@ def _fit_equal_size(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
     cx1, cy1 = min(W, max(b[2] for b in boxes) + mx), min(H, max(b[3] for b in boxes) + my)
     sub = rgb[cy0:cy1, cx0:cx1]
     local = [(x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0) for x0, y0, x1, y1 in boxes]
-    out, size = _fit_equal_size_in(sub, local)
+    out, size = _fit_equal_size_in(sub, local, touching)
     if size is None:
         return boxes, None
     return [(x0 + cx0, y0 + cy0, x1 + cx0, y1 + cy0) for x0, y0, x1, y1 in out], size
 
 
-def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
+def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]], touching: bool = False
                        ) -> tuple[list[tuple[int, int, int, int]], tuple[int, int] | None]:
     """한 시트의 카드는 크기가 같다 (붙어 있는 배열): 카드 크기와 경계 자리를 시트 전체에서 정해 모든 카드를 같은 크기로.
 
     1. 카드 크기 = 카드 틀이 반복되는 간격 (_pitch). 처음 자른 칸 크기 ±10% 안에서.
     2. 경계 자리 = 처음 자른 안쪽 경계 둘레 ±EQUAL_PHASE_SHIFT에서 시트 전체 끝 선이 가장 잘 맞는 곳 (_phase).
     3. 카드마다 제 끝 선이 뚜렷하면 ±EQUAL_CARD_SHIFT 안에서 따로 맞춘다.
+    touching: 틈 없이 붙은 배열 (처음 경계 = 네 카드가 만나는 점). 붙은 카드는 끝 선이 거의 없어 넓게 찾으면 카드 안
+    글상자 테두리처럼 긴 밝은·어두운 선을 끝 선으로 잡는다 (공주와 기사 시트): 경계 자리는 ±EQUAL_JUNCTION_SHIFT만
+    옮기고, 카드 크기는 반복 간격(믿을 만할 때)을 넘지 않는다 (넘으면 옆 카드와 겹친다).
     반환: (상자, (가로, 세로) 또는 None = 맞추지 않음)."""
     import cv2
 
@@ -599,9 +606,11 @@ def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
     ux1, uy1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
     pw, ph = _pitch(lum[uy0:uy1, ux0:ux1], 0, w0), _pitch(lum[uy0:uy1, ux0:ux1], 1, h0)
     # 카드마다 그림이 많이 달라 반복 간격이 흐리면 엉뚱한 간격이 나온다: 처음 자른 크기(중앙값)와 많이 다르면 그 중앙값을 쓴다
-    if pw is None or abs(pw / w0 - 1) > EQUAL_PITCH_TRUST:
+    trust_w = pw is not None and abs(pw / w0 - 1) <= EQUAL_PITCH_TRUST
+    trust_h = ph is not None and abs(ph / h0 - 1) <= EQUAL_PITCH_TRUST
+    if not trust_w:
         pw = int(round(w0))
-    if ph is None or abs(ph / h0 - 1) > EQUAL_PITCH_TRUST:
+    if not trust_h:
         ph = int(round(h0))
     ev, eh = _edge_maps(rgb)
     ex = np.zeros(W, np.float32)
@@ -616,8 +625,9 @@ def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
         m = np.arctan2(np.sin(ang).mean(), np.cos(ang).mean())
         return float((m % (2 * np.pi)) * pitch / (2 * np.pi))
 
-    fx = _phase(ex, pw, phase0([b[0] for b in boxes], pw), int(pw * EQUAL_PHASE_SHIFT) + 2)
-    fy = _phase(ey, ph, phase0([b[1] for b in boxes], ph), int(ph * EQUAL_PHASE_SHIFT) + 2)
+    phase_shift = EQUAL_JUNCTION_SHIFT if touching else EQUAL_PHASE_SHIFT
+    fx = _phase(ex, pw, phase0([b[0] for b in boxes], pw), int(pw * phase_shift) + 2)
+    fy = _phase(ey, ph, phase0([b[1] for b in boxes], ph), int(ph * phase_shift) + 2)
     cvx = np.cumsum(ev, axis=0, dtype=np.int32)
     chy = np.cumsum(eh, axis=1, dtype=np.int32)
 
@@ -645,11 +655,11 @@ def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
         both, one, _neg, d = max(cand)
         return d, both, one
 
-    def size_for(pitch, cum, r, vertical):
+    def size_for(pitch, cum, r, vertical, cap):
         """카드 크기: 줄끼리 조금씩 어긋나면 반복 간격(pitch)이 카드 크기와 다르다. pitch ±EQUAL_CARD_SHIFT에서
         카드마다 두 끝 선이 다 맞는 크기 (약한 쪽 끝 선 세기 합이 가장 큰 것, 같으면 pitch에 가까운 것)."""
         best_n, best_v = pitch, -1.0
-        for n in sorted(range(pitch - r, pitch + r + 1), key=lambda v: abs(v - pitch)):
+        for n in sorted(range(pitch - r, (pitch if cap else pitch + r) + 1), key=lambda v: abs(v - pitch)):
             v = 0.0
             for (nx, ny), ((ya, yb), (xa, xb)) in zip(starts, bands):
                 at, (lo, hi) = (nx, (ya, yb)) if vertical else (ny, (xa, xb))
@@ -658,8 +668,8 @@ def _fit_equal_size_in(rgb: np.ndarray, boxes: list[tuple[int, int, int, int]]
                 best_n, best_v = n, v
         return best_n
 
-    cw = size_for(pw, cvx, sx, True)
-    chh = size_for(ph, chy, sy, False)
+    cw = size_for(pw, cvx, sx, True, touching and trust_w)
+    chh = size_for(ph, chy, sy, False, touching and trust_h)
     out = []
     for (nx, ny), ((ya, yb), (xa, xb)) in zip(starts, bands):
         # 이 카드의 끝 선이 뚜렷하면 조금 옮긴다
@@ -766,6 +776,7 @@ def _cut_grid(rgb: np.ndarray, cols: int, rows: int, cut: SheetCut) -> None:
         # 틈이 안 보이는 배열(카드가 붙었거나 틈이 아주 좁음): 카드가 반듯하게 놓이지 않아 줄·열마다 경계가
         # 조금씩 다르다. 네 카드가 만나는 점을 찾아 이웃 카드 사이마다 따로 자른다
         vx, hy, moved, missing = _refine_cuts(rgb, xs_, ys_, cols, rows)
+        cut.junctions = True
         if missing:
             cut.warnings.append(f"카드 사이 경계를 찾지 못한 {missing}곳은 같은 간격으로 나눴습니다 (미리 보기로 확인하세요)")
         if moved:
