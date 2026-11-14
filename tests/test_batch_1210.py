@@ -326,3 +326,138 @@ def test_swap_line_accents_only_when_clear():
     assert swap_line_accents([full], [src])[0]["color"] == "#888888"  # 회색이 태그 밖 글을 다 덮음: 바꾼다
     two = "<c1>A</c1>加える<c2>B</c2>"
     assert swap_line_accents([full], [two])[0]["color"] == "#E03030"  # 태그가 여러 가지면 그대로
+
+
+# ---------------------------------------------------------------- 1.21.2: 조작 중 잠금, 원본 그대로 확인·되돌리기
+def test_keep_cell_original_off_restores_only_keep_slots(tmp_path):
+    """원본 그대로를 끄면 그것 때문에 ‘아이콘 아님’이 된 자리만 되돌린다 (사람이 따로 지운 자리는 그대로)."""
+    info, fd = _project(tmp_path, "keepoff", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    service.set_icon_not_icon(info.dir, extra)  # 사람이 먼저 지운 자리
+    r = service.keep_cell_original(info.dir, host, True)
+    assert r["not_icon"] == [host]
+    r = service.keep_cell_original(info.dir, host, False)
+    assert r["restored"] == [host]
+    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
+    assert states == {host: "found", extra: "not_icon"}
+    gi = icons.load_scan(info.game_dir / "work" / "icons").groups
+    assert not any(g.get("by_keep") for g in gi.values())
+
+
+def test_place_dialog_locks_while_action_runs(qapp, tmp_path, monkeypatch):
+    """2B 조작(삭제·합치기·되돌리기·원본 그대로 등)이 도는 동안 창 전체가 잠기고, 끝나면 풀린다."""
+    from app.qt import icon_place as ip
+
+    info, fd = _project(tmp_path, "busy", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
+    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
+    seen = []
+    real = service.set_icon_not_icon
+
+    def slow(project_dir, occ):
+        seen.append((dlg.isEnabled(), dlg.keep_btn.isEnabled(), dlg.items.isEnabled()))
+        return real(project_dir, occ)
+
+    monkeypatch.setattr(service, "set_icon_not_icon", slow)
+    from PySide6.QtCore import Qt
+    for k in range(dlg.items.count()):
+        it = dlg.items.item(k)
+        it.setSelected(it.data(Qt.ItemDataRole.UserRole) == extra)
+    dlg.del_btn.click()
+    assert seen == [(False, False, False)]  # 도는 동안: 창·버튼·목록 모두 잠김
+    assert dlg.isEnabled() and dlg.keep_btn.isEnabled() and dlg.items.isEnabled()  # 끝나면 풀림
+    dlg.reject()
+
+
+def test_keep_button_asks_before_turning_on(qapp, tmp_path, monkeypatch):
+    from app.qt import icon_place as ip
+
+    info, fd = _project(tmp_path, "keepask", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
+    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
+    asked = []
+    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 1)[1])  # 취소
+    dlg.keep_btn.click()
+    assert asked and not service.cell_kept(info.dir, host)
+    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 0)  # 원본 그대로 두기
+    dlg.keep_btn.click()
+    assert service.cell_kept(info.dir, host) and dlg.keep_btn.text() == dlg.KEEP_UNDO_TEXT
+    asked.clear()
+    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 1)[1])
+    dlg.keep_btn.click()  # 끌 때는 묻지 않고 되돌린다
+    assert not asked and not service.cell_kept(info.dir, host)
+    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
+    assert states[host] == "found"
+    dlg.reject()
+
+
+def test_click_queued_during_action_is_dropped(qapp, tmp_path, monkeypatch):
+    """조작이 도는 동안 쌓인 클릭(여기서는 ‘원본 그대로’)은 끝난 뒤 실행되지 않는다 (6쪽 칸이 통째로 아이콘 아님이 된 일)."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt import icon_place as ip
+
+    info, fd = _project(tmp_path, "queued", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
+    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
+    dlg.show()
+    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 0)  # 묻기가 나와도 ‘원본 그대로 두기’
+    real = service.set_icon_not_icon
+
+    def slow(project_dir, occ):
+        c = QPointF(dlg.keep_btn.rect().center())
+        for t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            QApplication.postEvent(dlg.keep_btn, QMouseEvent(t, c, c, Qt.MouseButton.LeftButton,
+                                                             Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+        return real(project_dir, occ)
+
+    monkeypatch.setattr(service, "set_icon_not_icon", slow)
+    for k in range(dlg.items.count()):
+        it = dlg.items.item(k)
+        it.setSelected(it.data(Qt.ItemDataRole.UserRole) == extra)
+    dlg.del_btn.click()
+    QApplication.processEvents()
+    assert not service.cell_kept(info.dir, host)
+    dlg.reject()
+
+
+def test_keep_off_does_not_undo_deliberate_merge(tmp_path):
+    """원본 그대로로 아이콘 아님이 된 자리를 사람이 다른 아이콘에 합쳤으면, 원본 그대로를 꺼도 합친 것을 풀지 않는다."""
+    info, fd = _project(tmp_path, "keepmerge", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    service.keep_cell_original(info.dir, host, True)
+    service.restore_icon(info.dir, host)
+    service.absorb_icon_run(info.dir, host, [extra])
+    r = service.keep_cell_original(info.dir, host, False)
+    assert r["restored"] == [] and r["left"] == []
+    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
+    assert states == {host: "found", extra: "absorbed"}
+
+
+def test_keep_off_legacy_cell_offers_restore(qapp, tmp_path, monkeypatch):
+    """예전 버전에서 원본 그대로를 켠 칸(표시 없음): 끌 때 남은 아이콘 아님 자리를 되돌릴지 묻고, 고르면 되돌린다."""
+    from app.qt import icon_place as ip
+
+    info, fd = _project(tmp_path, "keeplegacy", pages=1)
+    host, extra = _add_run_partner(info, fd)
+    service.keep_cell_original(info.dir, host, True)
+    sp = info.game_dir / "work" / "icons" / "scan.json"
+    scan = json.loads(sp.read_text(encoding="utf-8"))
+    for g in scan["groups"].values():
+        g.pop("by_keep", None)  # 예전 데이터
+    sp.write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
+    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
+    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
+    asked = []
+    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 0)[1])
+    assert dlg.keep_btn.text() == dlg.KEEP_UNDO_TEXT
+    dlg.keep_btn.click()
+    assert len(asked) == 1 and "2개" in asked[0]
+    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
+    assert states == {host: "found", extra: "lost"}
+    dlg.reject()

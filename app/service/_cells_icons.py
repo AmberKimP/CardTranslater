@@ -14,8 +14,11 @@ from app.service import _base
 from app.service import _extract
 from app.service import _settings
 
+log = logging.getLogger("cardtranslater.icons")  # 카드 보기 조작 기록 (나중에 로그로 무엇을 눌렀는지 본다)
+
 
 # ---------------------------------------------------------------- 화면용: 원문 확인 (2차)
+
 def extracted_cells(file_dir: Path | str) -> list[dict]:
     """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
     "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None.
@@ -346,6 +349,7 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.set_manual_box(info, work, occ_id, tuple(box))
+    log.info("자리 저장: %s %s → %s", occ_id, list(box), r.get("group"))
     # 바로 옆에 붙은 [[?]] 중 합칠 후보: 못 찾은 자리, 그리고 찾은 자리 중 이 상자와 겹친 것 (세트를 한 상자로 잡음).
     # 겹친 넓이가 작은 쪽 상자의 OVERLAP_MIN 이상이면 후보 (‘겹친 아이콘 흡수’와 같은 기준. 가운데 점으로 보면
     # 상자를 몇 px 작게 그렸을 때 옆 아이콘이 빠졌다)
@@ -369,6 +373,7 @@ def absorb_icon_run(project_dir: Path | str, host_occ: str, occ_ids: list[str]) 
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     groups = icons.absorb_into(info, work, host_occ, list(occ_ids))
+    log.info("합치기: %s ← %s", host_occ, list(occ_ids))
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:
@@ -391,6 +396,7 @@ def split_icon_box(project_dir: Path | str, occ_id: str, part_box) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.split_icon(info, work, occ_id, part_box)
+    log.info("둘로 나누기: %s → %s", occ_id, r.get("second"))
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:
@@ -406,6 +412,7 @@ def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.set_not_icon(info, work, occ_id)
+    log.info("아이콘 아님: %s", occ_id)
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:
@@ -420,6 +427,7 @@ def reopen_icon(project_dir: Path | str, anchor_occ: str, ti: int) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.reopen_icon(info, work, anchor_occ, int(ti))
+    log.info("확정 아이콘 다시 열기: %s 칸 %d번째 → %s", anchor_occ, int(ti), r.get("occ"))
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:
@@ -440,8 +448,10 @@ def icon_box_problem(project_dir: Path | str, occ_id: str, box) -> str:
 
 def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) -> dict:
     """카드 보기 ‘이 칸 원본 그대로’: 그 자리가 있는 칸을 한글화하지 않는다 (set_keep_original).
-    켜면 그 칸의 [[?]] 자리들은 이름이 필요 없으므로 ‘아이콘 아님’으로 한다 (되돌리기로 풀 수 있다).
-    {"file_dir", "page", "region", "keep", "not_icon": [자리 id]}"""
+    켜면 그 칸의 [[?]] 자리들은 이름이 필요 없으므로 ‘아이콘 아님’으로 한다 (그 묶음에 by_keep 표시).
+    끄면 그렇게 ‘아이콘 아님’이 된 자리만 다시 아이콘 자리로 되돌린다 (사람이 따로 지운 자리는 그대로).
+    {"file_dir", "page", "region", "keep", "not_icon": [자리 id], "restored": [자리 id],
+     "left": 끈 뒤에도 남은 그 칸의 ‘아이콘 아님’ 자리 (옆 아이콘에 포함은 뺌)}"""
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
@@ -451,19 +461,39 @@ def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) 
     fd = icons._occ_dir(info, o.file)
     from app.service._translate_erase import set_keep_original
     set_keep_original(fd, o.page, o.region, keep)
-    done = []
+    done, restored = [], []
+    cell = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of]
     if keep:
-        for x in res.occurrences:
+        for x in cell:
             gi = res.groups.get(x.group, {})
-            if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of \
-                    and not gi.get("not_icon") and not gi.get("absorbed"):
-                icons.set_not_icon(info, work, x.id)
+            if not gi.get("not_icon") and not gi.get("absorbed"):
+                g = icons.set_not_icon(info, work, x.id)["group"]
+                cur = icons.load_scan(work)
+                cur.groups[g]["by_keep"] = True  # 원본 그대로 때문에 아이콘 아님 (끄면 되돌린다)
+                icons._save_scan(work, cur)
                 done.append(x.id)
+    else:
+        cur = icons.load_scan(work)
+        for x in cell:
+            if cur.groups.get(x.group, {}).get("by_keep"):
+                icons.restore_icon(info, work, x.id)
+                restored.append(x.id)
+                cur = icons.load_scan(work)
+    left = []
+    if not keep:
+        cur = icons.load_scan(work)
+        left = [x.id for x in cur.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)
+                and not x.set_of and cur.groups.get(x.group, {}).get("not_icon")
+                and not cur.groups.get(x.group, {}).get("absorbed")]
+    log.info("원본 그대로 %s: %s %d쪽 %s (아이콘 아님 %s, 되돌림 %s, 남은 아이콘 아님 %s)", "켬" if keep else "끔",
+             o.file_key, o.page, o.region, done, restored, left)
+    if done or restored:
         try:
             icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
         except OSError:
             pass
-    return {"file_dir": fd, "page": o.page, "region": o.region, "keep": keep, "not_icon": done}
+    return {"file_dir": fd, "page": o.page, "region": o.region, "keep": keep, "not_icon": done, "restored": restored,
+            "left": left}
 
 
 def cell_kept(project_dir: Path | str, occ_id: str) -> bool:
@@ -485,6 +515,7 @@ def restore_icon(project_dir: Path | str, occ_id: str) -> dict:
     info = workspace.load_project_info(project_dir)
     work = info.game_dir / "work" / "icons"
     r = icons.restore_icon(info, work, occ_id)
+    log.info("되돌리기: %s → %s", occ_id, r.get("group"))
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:

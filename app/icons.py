@@ -1869,6 +1869,7 @@ def set_not_icon(info, work: Path, occ_id: str) -> dict:
     gi = res.groups.get(old, {})
     if gi.get("count", 1) <= 1:  # 혼자인 묶음: 옮길 것 없이 표시만
         gi["not_icon"] = True
+        gi.pop("by_keep", None)  # 사람이 다시 정함: 원본 그대로를 꺼도 되돌리지 않는다 (원본 그대로가 부르면 다시 붙인다)
         res.groups[old] = gi
         _save_scan(work, res)
         return {"group": old, "old": old, "old_gone": False, "new_group": False}
@@ -2071,6 +2072,7 @@ def restore_icon(info, work: Path, occ_id: str) -> dict:
     else:
         gi.pop("not_icon", None)
         gi.pop("absorbed", None)
+        gi.pop("by_keep", None)
         if not o.png and not o.group.startswith("위치 못 찾음"):  # 그림이 없으면 ‘위치 못 찾음’ 줄로
             del res.groups[o.group]
             o.group = f"위치 못 찾음 {o.id}"

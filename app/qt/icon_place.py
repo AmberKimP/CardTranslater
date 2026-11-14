@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, Signal
@@ -11,6 +13,43 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
 from app import service
 from app.qt import worker
 from app.qt.dialogs import ask_choice, fit_to_screen, hint_bar, show_error, show_problem
+
+
+def busy(fn):
+    """카드 보기 조작: 끝날 때까지 창 전체를 잠근다 (다른 버튼·목록·그림을 누르지 못하게).
+    조작이 화면을 멈춘 채 도는 동안 누른 클릭은 쌓였다가 끝난 뒤 그대로 실행되므로(예: ‘되돌리기’ 바로 아래
+    ‘원본 그대로’가 눌림), 잠근 채로 쌓인 입력을 먼저 처리해 꺼진 버튼에서 버려지게 한 뒤 푼다.
+    안에서 다시 부르면(조작 안의 조작) 그대로 실행한다. 신호가 넘기는 여분 인자(clicked의 checked)는 버린다."""
+    params = list(inspect.signature(fn).parameters.values())
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        n_args = None
+    else:
+        n_args = len([p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) - 1
+
+    @functools.wraps(fn)
+    def run(self, *args, **kw):
+        if n_args is not None:
+            args = args[:n_args]
+        if self._busy_depth:
+            return fn(self, *args, **kw)
+        self._busy_depth += 1
+        focus = QApplication.focusWidget()  # 잠그면 포커스가 빠진다: 끝나면 돌려준다 (목록 화살표 키 등)
+        self.setEnabled(False)
+        self.setCursor(Qt.CursorShape.WaitCursor)  # 이 창에만 (묻는 창은 보통 화살표)
+        try:
+            return fn(self, *args, **kw)
+        finally:
+            try:
+                QApplication.processEvents()  # 잠근 채로: 그동안 쌓인 클릭은 꺼진 위젯에 가서 버려진다
+            finally:
+                self._busy_depth -= 1
+                self.unsetCursor()
+                self.setEnabled(True)
+                if focus is not None and self.isVisible() and self.isAncestorOf(focus) and focus.isEnabled() \
+                        and focus.isVisible():
+                    focus.setFocus()
+
+    return run
 
 
 # ================================================================ 아이콘 이름
@@ -178,6 +217,7 @@ class IconPlaceDialog(QDialog):
         self._named: dict | None = None  # 목록에서 누른 확정 아이콘 줄 (그 아이콘을 다시 잡거나 합칠 때 연다)
         self._items_by_key: dict[str, dict] = {}
         self._kept = False
+        self._busy_depth = 0  # 조작 중 (busy): 창 전체를 잠근다
         # ---- 이 칸의 아이콘 목록: 고르고 수정(끌어 감싸 저장)·삭제(아이콘 아님)·합치기·되돌리기
         self.items = QListWidget()
         self.items.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -321,11 +361,11 @@ class IconPlaceDialog(QDialog):
                 mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
             return  # Ctrl·Shift로 여러 개를 고르는 중에는 지금 자리를 바꾸지 않는다
         if key.startswith("#ti"):
-            self.focus_named(key)
+            self._busy_call(self.focus_named, key)
             return
         if key == (self._cur() or {}).get("occ") and self._named is None:
             return
-        self.select_item(key)
+        self._busy_call(self.select_item, key)
 
     def focus_named(self, key: str) -> None:
         """확정 아이콘 줄을 눌렀음: 그 아이콘(사전 그림)을 보여 준다. 원문은 바꾸지 않는다 — 끌어 감싸 저장하거나
@@ -405,6 +445,7 @@ class IconPlaceDialog(QDialog):
         self.on_saved({})  # 이름 정하기 표를 새로 채운다 (줄 번호가 바뀔 수 있음)
         self.outcome = ("saved", self._refresh(cur))
 
+    @busy
     def _delete_selected(self) -> None:
         keys = [o for o, st in self._selected() if st in self.DELETABLE]
         if not keys:
@@ -431,6 +472,7 @@ class IconPlaceDialog(QDialog):
         host = cur if cur in boxed else (boxed[0] if boxed else None)
         return host, [o for o, _st in sel if o != host] if host else []
 
+    @busy
     def _merge_selected(self) -> None:
         host, others = self._merge_plan()
         if not host or not others:
@@ -444,6 +486,7 @@ class IconPlaceDialog(QDialog):
         self._named = None
         self._after_list_action(host if not host.startswith("#ti") else (self._cur() or {}).get("occ"))
 
+    @busy
     def _restore_selected(self) -> None:
         occs = [o for o, st in self._selected() if st in ("not_icon", "absorbed")]
         if not occs:
@@ -540,6 +583,7 @@ class IconPlaceDialog(QDialog):
             ui.relabel(self.overlap_btn)  # Ctrl+D 디버깅 중이면 버튼 코드를 그대로
         self.split_btn.setEnabled(bool(p.get("box")) and self.view.new is not None)
 
+    @busy
     def _save(self):
         box = self.view.new
         w = self._cur()
@@ -626,22 +670,48 @@ class IconPlaceDialog(QDialog):
             return
         self.accept()
 
+    @busy
     def _toggle_keep(self) -> None:
-        """이 칸 원본 그대로 (한글화 안 함) 켜기·끄기."""
+        """이 칸 원본 그대로 (한글화 안 함) 켜기·끄기. 켤 때는 한 번 묻는다 (이 칸의 아이콘 자리가 모두 ‘아이콘 아님’이 됨)."""
         w = self._cur()
         if w is None:
             return
+        keep = not getattr(self, "_kept", False)
+        if keep:
+            n = sum(1 for it in self._place.get("items", []) if it.get("state") in ("found", "manual", "lost"))
+            if ask_choice(self, "이 칸 원본 그대로", "이 칸을 한글화하지 않고 원본 그대로 둘까요?",
+                          [("원본 그대로 두기", "accept"), ("취소", "reject")], default=1,
+                          informative=(f"이 칸의 아이콘 자리 {n}개가 ‘아이콘 아님’이 됩니다. " if n else "")
+                          + "다시 누르면 원래대로 되돌립니다.") != 0:
+                return
         try:
-            r = service.keep_cell_original(self.project_dir, w["occ"], not getattr(self, "_kept", False))
+            r = service.keep_cell_original(self.project_dir, w["occ"], keep)
         except Exception as e:  # noqa: BLE001
             show_error(self, "원본 그대로 두기를 바꾸지 못했습니다", e)
             return
+        if not keep and not r.get("restored") and r.get("left"):  # 예전 버전에서 켠 칸: 어느 자리를 원본 그대로로 지웠는지 모름
+            if ask_choice(self, "원본 그대로 끄기", f"이 칸에 ‘아이콘 아님’ 자리가 {len(r['left'])}개 남아 있습니다. 모두 아이콘 자리로 되돌릴까요?",
+                          [("모두 되돌리기", "accept"), ("그대로 두기", "reject")], default=0,
+                          informative="원본 그대로를 켜서 아이콘 아님이 된 자리라면 되돌리세요. 일부러 지운 자리가 섞여 있으면 "
+                                      "‘그대로 두기’를 고르고 목록에서 골라 ‘되돌리기’를 누르세요.") == 0:
+                restored = []
+                for o in r["left"]:
+                    try:
+                        service.restore_icon(self.project_dir, o)
+                        restored.append(o)
+                    except Exception as e:  # noqa: BLE001
+                        show_error(self, "되돌리지 못했습니다", e)
+                        break
+                r = {**r, "restored": restored, "left": [o for o in r["left"] if o not in restored]}
         self._after_list_action(w["occ"])
         if r["keep"]:
             self.status.setText("이 칸은 원본 그대로 둡니다 (글자 지우기·한글 넣기 안 함). 이 칸의 아이콘 자리는 ‘아이콘 아님’이 되었습니다.")
         else:
-            self.status.setText("이 칸을 다시 한글화합니다. ‘아이콘 아님’이 된 자리는 목록에서 ‘되돌리기’로 풀 수 있습니다.")
+            self.status.setText("이 칸을 다시 한글화합니다."
+                                + (f" ‘아이콘 아님’ 자리 {len(r['restored'])}개를 되돌렸습니다." if r.get("restored") else "")
+                                + (" 남은 ‘아이콘 아님’ 자리는 목록에서 골라 ‘되돌리기’로 풀 수 있습니다." if r.get("left") else ""))
 
+    @busy
     def _absorb(self):
         """지금 자리를 바로 옆 아이콘(상자가 이 자리까지 감쌈)에 포함: 이 자리는 원문에서 뺀다."""
         w = self._cur()
@@ -666,7 +736,7 @@ class IconPlaceDialog(QDialog):
         """직접 잡아 새로 생긴 줄의 이름·뜻·한국어 이름을 Claude에게 제안 받는다 (못 받아도 직접 적으면 된다).
         close=False: 제안을 받은 뒤 창을 닫지 않고 바뀐 그림을 다시 보여 준다 (세트로 합침·나눔·흡수)."""
         occ = (self._cur() or {}).get("occ")
-        after = (lambda: self._finish(occ)) if close else (lambda: self._refresh(occ))
+        after = (lambda: self._busy_call(self._finish, occ)) if close else (lambda: self._busy_call(self._refresh, occ))
         eng = service.get_settings().engine
         if not service.engine_status().get(eng):  # 연결할 수 없으면 제안 없이 (이름은 표에서 직접 적는다)
             after()
@@ -679,6 +749,10 @@ class IconPlaceDialog(QDialog):
         job = worker.Job(service.suggest_icon_name, self.project_dir, group, engine=eng, with_progress=False)
         worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done, lambda _m: after(),
                                cancellable=False)
+
+    @busy
+    def _busy_call(self, fn, *args):
+        return fn(*args)
 
     def _refresh(self, select_occ: str | None = None, extra: list[str] | None = None) -> str | None:
         """자리 목록·그림을 다시 읽어 이 창에서 바로 보여 준다 (닫지 않음). extra: 새로 생긴 자리 id.
@@ -708,6 +782,7 @@ class IconPlaceDialog(QDialog):
         self._load()
         return group
 
+    @busy
     def _absorb_overlaps(self):
         """겹친 [[?]] 자리들을 지금 아이콘에 포함한다 (같은 그림을 두 번 읽음: 그 자리들은 원문에서 빠진다)."""
         w = self._cur()
@@ -730,6 +805,7 @@ class IconPlaceDialog(QDialog):
         self.on_saved({})
         self.outcome = ("saved", self._refresh(w["occ"]))
 
+    @busy
     def _split(self):
         """지금 자리 상자 안의 아이콘 둘을 나눈다: 새로 감싼 것 하나 + 나머지."""
         w = self._cur()
