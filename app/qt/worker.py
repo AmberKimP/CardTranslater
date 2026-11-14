@@ -117,7 +117,7 @@ def _done_sound(elapsed: float) -> None:
 
 def run_with_dialog(parent: QWidget | None, title: str, job: Job,
                     on_done: Callable[[object], None], on_failed: Callable[[str], None] | None = None,
-                    cancellable: bool = True) -> Job:
+                    cancellable: bool = True, on_cancelled: Callable[[], None] | None = None) -> Job:
     """진행률 창(취소 버튼 포함)을 띄우고 job을 돌린다. 진행률이 없는 작업은 막대가 계속 움직인다."""
     dlg = QProgressDialog(title, "취소", 0, 0, parent)
     dlg.setMinimumWidth(440)
@@ -141,7 +141,7 @@ def run_with_dialog(parent: QWidget | None, title: str, job: Job,
     job.signals.progress.connect(on_progress)
     job.signals.done.connect(lambda r: (finish(), on_done(r)))
     job.signals.failed.connect(lambda m: (finish(), (on_failed or (lambda _m: None))(m)))
-    job.signals.cancelled.connect(finish)
+    job.signals.cancelled.connect(lambda: (finish(), on_cancelled and on_cancelled()))
     dlg.canceled.connect(job.cancel)
     dlg.show()
     return start(job)

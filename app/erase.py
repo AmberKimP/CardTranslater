@@ -1560,8 +1560,9 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
 
             picture_bg = True
             src0 = (sources or {}).get(name)
-            pic, tm = erase_picture.region_text_mask(sub, lb_region, prot, tm, src0, name in (sources or {}))
-            no_text = pic is None and any("원문에 글자가 없어" in n_ for n_ in tm.notes)
+            has_src = name in (sources or {})
+            pic, tm = erase_picture.region_text_mask(sub, lb_region, prot, tm, src0, has_src)
+            no_text = pic is None and erase_picture.source_has_no_text(src0, has_src)
             if pic is not None:
                 lb, core, look = lb_region, lb_region, sub
         if picture_bg and pic is None and mode == "auto" and not no_text:

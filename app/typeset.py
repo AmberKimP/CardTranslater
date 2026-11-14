@@ -307,9 +307,11 @@ def _draw_line_halo(page, atoms: list[Atom], x: float, baseline: float, size: fl
     """한 줄의 외곽선(두꺼운 외곽선 색 획)만 그린다. 글자 위치는 _draw_line과 같은 방식으로 정한다.
 
     외곽선도 글자로 그리므로 그대로 두면 텍스트를 추출할 때 같은 글이 두 번 나온다. 외곽선을 그린 내용은
-    빈 ActualText로 감싸 추출에서 빠지게 한다 (보이는 모양은 그대로)."""
+    빈 ActualText로 감싸 추출에서 빠지게 한다 (보이는 모양은 그대로).
+    줄 전체를 Shape 하나에 모아 내용 스트림 하나로 넣는다 (글자마다 스트림을 만들지 않음). 감싸는 것은 이 Shape의
+    글자뿐이다 — 페이지를 처음 감쌀 때 PyMuPDF가 붙이는 q/Q 스트림은 건드리지 않는다."""
     sc = hex_to_rgb01(style.stroke_color)
-    before = set(page.get_contents())
+    shape = page.new_shape()
     for i, a in enumerate(atoms):
         adv = m.advance(a, size)
         if a.kind == "space" and i > 0 and atoms[i - 1].kind == "char":
@@ -321,13 +323,12 @@ def _draw_line_halo(page, atoms: list[Atom], x: float, baseline: float, size: fl
             base: dict = dict(fontname=_font_name(page, ff), fontsize=size)
             if rot:
                 base["morph"] = rot
-            page.insert_text(pymupdf.Point(x, baseline), a.text, render_mode=2, color=sc, fill=sc,
-                             border_width=2 * style.stroke_width + fb_w, **base)
+            shape.insert_text(pymupdf.Point(x, baseline), a.text, render_mode=2, color=sc, fill=sc,
+                              border_width=2 * style.stroke_width + fb_w, **base)
         x += adv + tracking * size
-    doc = page.parent
-    for xref in page.get_contents():
-        if xref not in before:
-            doc.update_stream(xref, b"/Span <</ActualText ()>> BDC\n" + doc.xref_stream(xref) + b"\nEMC\n")
+    if shape.text_cont:
+        shape.text_cont = "/Span <</ActualText ()>> BDC\n" + shape.text_cont + "\nEMC\n"
+        shape.commit()
 
 
 def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, tracking: float,
@@ -346,6 +347,7 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
     if style.stroke_color and style.stroke_width:
         _draw_line_halo(page, atoms, x, baseline, size, tracking, style, m, rot)
     cur = None  # (key, TextWriter, x0): 같은 서식이 이어지는 동안 한 번에 쓴다 (내용 순서 = 읽는 순서)
+    fill_shape = None  # 외곽선이 있는 줄의 채움 (insert_text 대신 Shape 하나)
 
     def _flush(c) -> None:
         if c is None:
@@ -386,11 +388,14 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
                 base: dict = dict(fontname=_font_name(page, ff), fontsize=size)
                 if rot:
                     base["morph"] = rot
+                if fill_shape is None:  # 줄의 채움도 Shape 하나에 모아 스트림 하나로 (글자마다 스트림을 만들지 않음)
+                    fill_shape = page.new_shape()
                 if fake_bold:
-                    page.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=hex_to_rgb01(color),
-                                     fill=hex_to_rgb01(color), border_width=fb_w, **base)
+                    fill_shape.insert_text(pymupdf.Point(x, baseline), s, render_mode=2, color=hex_to_rgb01(color),
+                                           fill=hex_to_rgb01(color), border_width=fb_w, **base)
                 else:
-                    page.insert_text(pymupdf.Point(x, baseline), s, render_mode=0, color=hex_to_rgb01(color), **base)
+                    fill_shape.insert_text(pymupdf.Point(x, baseline), s, render_mode=0,
+                                           color=hex_to_rgb01(color), **base)
             else:
                 key = (color, fake_bold, italic)
                 if cur is None or cur[0] != key:
@@ -399,6 +404,8 @@ def _draw_line(page, atoms: list[Atom], x: float, baseline: float, size: float, 
                 cur[1].append(pymupdf.Point(x, baseline), s, font=_font(ff), fontsize=size)
         x += adv + tracking * size
     _flush(cur)
+    if fill_shape is not None and fill_shape.text_cont:
+        fill_shape.commit()
 
 
 def _prepare(text, style: TextStyle, source_text, m: FontMeasurer):

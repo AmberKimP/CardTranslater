@@ -1372,11 +1372,14 @@ def scan(info, work: Path) -> ScanResult:
                 img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
+                # 글자 없이 붙은 [[?]] 덩어리 (줄이 바뀌어도 하나): 같은 자리로 잡혀도 서로 겹친다고 보지 않는다
+                adj_of = {k: ri for ri, run in enumerate(placeholder_runs(text)) for k in run}
                 # 같은 줄에 붙은 [[?]]만 세트 후보 (위아래로 이어진 것은 사람이 카드 보기에서 묶을 때만)
                 run_of = {k: ri for ri, run in enumerate(placeholder_runs(text, same_line=True)) for k in run}
                 located = [locate(img, text, ti) for ti in ph]
-                clash = shared_boxes([b for b, _w in located], [run_of.get(k) for k in range(len(ph))])
+                clash = shared_boxes([b for b, _w in located], [adj_of.get(k) for k in range(len(ph))])
                 set_host: dict[tuple, Occurrence] = {}  # (덩어리, 찾은 자리) -> 그 자리를 처음 찾은 아이콘
+                host_k: dict[tuple, int] = {}  # 그 아이콘의 [[?]] 순번 (같은 줄인지 볼 때)
                 set_n: dict[tuple, int] = {}  # 그 자리에 들어간 아이콘 수
                 auto_map, auto_strip, left = {}, {}, []
                 for k, ti in enumerate(ph):
@@ -1389,9 +1392,10 @@ def scan(info, work: Path) -> ScanResult:
                         # 글자를 사이에 둔 다른 [[?]]와 같은 자리로 잡힘: 어느 쪽이 맞는지 모른다. 그대로 두면 서로 다른 아이콘이
                         # 한 그림으로 사전에 자동으로 맞춰지거나(사교·큐브·왕관 5개가 모두 crown_social) 한 묶음이 된다
                         box, why = None, SHARED_BOX_REASON
-                    key = (run_of.get(k), tuple(box)) if box is not None else None
+                    key = (adj_of.get(k), tuple(box)) if box is not None else None
                     host = set_host.get(key) if key else None
-                    if host is not None and set_n[key] > 0 and set_box_fits(box, set_n[key] + 1):
+                    if (host is not None and set_n[key] > 0 and run_of.get(k) == run_of.get(host_k[key])
+                            and set_box_fits(box, set_n[key] + 1)):
                         set_n[key] += 1
                         # 붙어 있는 [[?]]가 앞 아이콘과 같은 덩어리: 아이콘 여러 개가 붙은 한 세트 (그 그림 하나로 보여 주고
                         # 이 자리는 원문에서 뺀다. 둘 다 남기면 세트 그림이 두 번 들어간다)
@@ -1408,7 +1412,7 @@ def scan(info, work: Path) -> ScanResult:
                         oc.reason = why
                     else:
                         if key not in set_host:
-                            set_host[key], set_n[key] = oc, 1
+                            set_host[key], set_n[key], host_k[key] = oc, 1, k
                         # 아이콘 바로 앞·뒤(또는 위)에 인쇄된 숫자는 아이콘의 일부로 그림에 넣는다. 원문에서 빼는 것은
                         # 사람이 확정할 때 (손으로 다시 잡거나 ‘아이콘 아님’이면 숫자를 남겨야 하므로)
                         num = number_near(text, tokens[ti].start(), tokens[ti].end())
@@ -1547,12 +1551,13 @@ def place_info(info, work: Path, occ_id: str) -> dict:
                 out["marks"].append({"box": box, "group": x.group, "occ": x.id,
                                      **({"not_icon": True} if res.groups.get(x.group, {}).get("not_icon") else {})})
             else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
+                gi = res.groups.get(x.group, {}) if x is not None else {}
+                if gi.get("not_icon") or gi.get("absorbed"):  # 아이콘 아님·옆 아이콘에 합친 자리: 더 찾을 것이 없다
+                    continue
                 g = estimate(img, text, ti)
                 if g is not None:
                     out["marks"].append({"box": list(g), "group": x.group if x is not None else "",
-                                         "occ": x.id if x is not None else "", "guess": True,
-                                         **({"not_icon": True} if x is not None
-                                            and res.groups.get(x.group, {}).get("not_icon") else {})})
+                                         "occ": x.id if x is not None else "", "guess": True})
         else:
             box = locate(img, text, ti)[0]
             if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
@@ -1954,7 +1959,9 @@ def resolve_suggested_name(info, res: "ScanResult", group: str) -> str:
                 return "same_row"  # 다른 줄과 같은 그림: 같은 이름 그대로 (확정할 때 한 아이콘이 된다)
     if name not in taken:
         return ""
-    base = re.sub(r"_\d+$", "", name) or name
+    # coin_2 -> coin_3 처럼 이미 있는 이름의 번호만 이어 간다. dice_6처럼 숫자에 뜻이 있는 이름은 떼지 않는다 (dice_6_2)
+    stem = re.sub(r"_\d+$", "", name)
+    base = stem if stem and stem != name and stem in taken else name
     k = 2
     while f"{base}_{k}" in taken:
         k += 1
@@ -2282,6 +2289,8 @@ def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -
         r["icon_changed"] = whys
         r["icon_reread"] = True  # 아직 다시 읽지 않음: ③ 원문 확인을 열 때 먼저 다시 읽는다 (다시 읽으면 풀림)
         note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
-        r["note"] = note if not r.get("note") or ICON_CHANGED_NOTE in r["note"] else f"{r['note']} / {note}"
+        # 예전 ‘아이콘 자리가 바뀜’ 메모만 새것으로 바꾸고, 그 앞의 메모(사람이 고친 기록 등)는 남긴다
+        kept = [s for s in (r.get("note") or "").split(" / ") if s and not s.startswith(ICON_CHANGED_NOTE)]
+        r["note"] = " / ".join(kept + [note])
         r.pop("checked_by", None)
         workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)

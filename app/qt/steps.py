@@ -133,7 +133,8 @@ class StepActions:
                 job = worker.Job(service.reread_cells, pending, engine=eng)
                 worker.run_with_dialog(self.page, f"아이콘이 바뀐 칸 {len(pending)}개 다시 읽는 중", job,
                                        lambda r: self._pending_reread_done(r, files, args),
-                                       _fail_as(self.page, "다시 읽지 못했습니다"), cancellable=True)
+                                       _fail_as(self.page, "다시 읽지 못했습니다"), cancellable=True,
+                                       on_cancelled=lambda: self._pending_reread_cancelled(pending, files, args))
                 return
         self._open_source_review(files, only_check, focus_key, focus_label)
 
@@ -142,6 +143,11 @@ class StepActions:
             show_problem(self.page, "아이콘이 바뀐 칸을 다 읽지 못했습니다", r["reason"] or "",
                          f"{r['done']}칸을 다시 읽었습니다. 남은 칸은 원문 확인에서 ‘이 칸 다시 읽기’로 읽을 수 있습니다.",
                          items=[f"{k}: {why}" for k, why in r["failed"]], retry_after=r.get("retry_after"))
+        self._open_source_review(files, *args)
+
+    def _pending_reread_cancelled(self, pending: list[dict], files: list[dict], args: tuple):
+        # 취소: 남은 칸은 다음에 또 자동으로 읽지 않는다 (‘확인 필요’로 남아 ‘이 칸 다시 읽기’로 읽을 수 있다)
+        service.skip_icon_reread(pending)
         self._open_source_review(files, *args)
 
     def _open_source_review(self, files, only_check, focus_key, focus_label):

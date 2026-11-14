@@ -3821,7 +3821,7 @@ def test_icon_confirm_offers_reread_of_changed_cells(qapp, tmp_path, monkeypatch
     monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 0)
     monkeypatch.setattr(acts, "_engine", lambda: "api")
 
-    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True):
+    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True, **_kw):
         ran["fn"], ran["args"] = job.fn, job.args
         on_done({"done": 1, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0})
 

@@ -589,6 +589,13 @@ def fill_picture(img: np.ndarray, mask: np.ndarray, guard: np.ndarray | None = N
 PICTURE_MODE = "picture"  # 영역·카드 지우기 방식 키 (service.ERASE_MODES)
 
 
+def source_has_no_text(source, has_source: bool) -> bool:
+    """읽은 원문에 지울 글자가 없음 (비었거나 아이콘·숫자뿐): 이 칸은 일부러 지우지 않는다."""
+    from app import erase_text
+
+    return has_source and isinstance(source, str) and all(erase_text.is_icon_line(t) for t in source.split("\n"))
+
+
 def region_text_mask(sub: np.ndarray, region_box: tuple[int, int, int, int], protect: np.ndarray | None, tm,
                      source, has_source: bool):
     """erase_page가 영역 하나에 부른다: (PictureText 또는 None, 쓸 TextMask).
@@ -598,7 +605,7 @@ def region_text_mask(sub: np.ndarray, region_box: tuple[int, int, int, int], pro
     그림 배경에서는 ‘밝은 글자 상자로 좁히기’를 쓰지 않고 원래 영역에서 찾는다."""
     from app import erase_text
 
-    if has_source and isinstance(source, str) and all(erase_text.is_icon_line(t) for t in source.split("\n")):
+    if source_has_no_text(source, has_source):
         tm.mask[:] = False
         tm.core[:] = False
         tm.notes = ["복잡한 그림 배경: 원문에 글자가 없어 지우지 않음"]

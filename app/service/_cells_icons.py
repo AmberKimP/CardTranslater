@@ -19,7 +19,7 @@ from app.service import _settings
 def extracted_cells(file_dir: Path | str) -> list[dict]:
     """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
     "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None.
-    readings = 화면의 읽은 결과 표: 두 번 읽기 결과, 그 뒤에 ‘이 칸 다시 읽기’ 결과(reread=True).
+    readings = 화면의 읽은 결과 표: 두 번 읽기 결과, 그 뒤에 마지막 ‘이 칸 다시 읽기’ 결과(reread=True) 하나.
     다시 읽기 결과만 있으면 지금 원문을 처음 줄(original=True)로 넣어 비교할 수 있게 한다."""
     from app import workspace
     from app.extract import MODEL_LABEL, cell_rereads, load_extracted, model_readings, verification_label
@@ -36,7 +36,8 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
         for reg in proj.template.regions_for(pno):
             r = (ext.get(pno) or {}).get(reg.name)
             readings = [row(x) for x in model_readings(r or {})]
-            rereads = [row(x, reread=True) for x in cell_rereads(r or {})]
+            # 다시 읽은 결과는 마지막 것만 보여 준다 (읽을 때마다 표에 줄이 쌓이지 않게. 기록은 파일에 모두 남는다)
+            rereads = [row(x, reread=True) for x in cell_rereads(r or {})][-1:]
             if rereads and not readings and r is not None and r.get("source") is not None:
                 first = "지금 원문" if r.get("edited_by") else (r.get("read_by") or "처음 읽은 결과")
                 readings = [row({"model": first, "source": r["source"]}, original=True)]
@@ -72,6 +73,24 @@ def icon_reread_pending(file_dirs) -> list[dict]:
                     if r and r.get("icon_reread") and r.get("icon_changed") and name in names
                     and not r.get("keep_original")]
     return out
+
+
+def skip_icon_reread(cells: list[dict]) -> None:
+    """원문 확인을 열 때 먼저 다시 읽기를 이 칸들은 하지 않는다 (취소했거나 그 칸만 읽지 못함).
+    ‘확인 필요’·icon_changed는 그대로라 원문 확인에서 보이고 ‘이 칸 다시 읽기’로 읽을 수 있다."""
+    from app.extract import page_file
+
+    for c in cells:
+        fd, page, region = Path(c["file_dir"]), c["page"], c["region"]
+        for f in (page_file(fd / "extract", page), fd / "extract" / f"page-{page:03d}.json"):
+            if not f.exists():
+                continue
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            cell = (rec.get("regions") or {}).get(region)
+            if cell is None or "icon_reread" not in cell:
+                continue
+            cell.pop("icon_reread")
+            workspace._write(f, rec)
 
 
 def known_icon_names(file_dir: Path | str) -> list[str]:
@@ -163,11 +182,13 @@ def reread_cells(cells: list[dict], *, model: str = "opus", engine: str | None =
             out["done"] += 1
         elif r.state == "blocked" and r.reason.startswith(CELL_BLOCKED):  # 이 칸만의 문제: 기록하고 다음 칸
             out["failed"].append((f"{c['page']}쪽 {c['region']}", r.reason))
+            skip_icon_reread([c])  # 다음에 원문 확인을 열 때 또 읽지(돈을 쓰지) 않는다 — ‘이 칸 다시 읽기’로 읽는다
         elif r.state in ("paused", "blocked"):
             out.update(state=r.state, reason=r.reason, retry_after=r.retry_after)
             break
         else:
             out["failed"].append((f"{c['page']}쪽 {c['region']}", r.reason))
+            skip_icon_reread([c])
     progress(_base.ProgressEvent("reread", len(cells), len(cells), "다시 읽기 끝"))
     return out
 

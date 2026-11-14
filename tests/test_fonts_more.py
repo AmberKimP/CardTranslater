@@ -167,7 +167,7 @@ def _hook(monkeypatch, plans, dialog_result):
 
     log = {"jobs": [], "saved": [], "dialog": 0, "compose": []}
 
-    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True):
+    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True, **_kw):
         log["jobs"].append((title, job.fn))
         if job.fn is service.font_plans:
             on_done(plans)

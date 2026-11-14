@@ -49,6 +49,7 @@ class RegionItem(QGraphicsRectItem):
         self.label = QGraphicsSimpleTextItem(self)
         self.label.setFont(QFont("Malgun Gothic", 9))
         self._drag = None  # (모드, 시작점, 시작 rect)
+        self._grabbed = False  # 장면이 grabMouse로 넘겨준 끌기 (놓을 때 풀어 준다)
         self.refresh()
 
     # ---- 표시
@@ -89,8 +90,7 @@ class RegionItem(QGraphicsRectItem):
 
     # ---- 끌기 (옮기기·크기 조절)
     def _edges(self, p: QPointF) -> str:
-        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
-        tol = EDGE / (view.transform().m11() if view else 1.0)
+        tol = self.edge_tolerance()
         r = self.rect()
         e = ""
         if abs(p.y() - r.top()) <= tol:
@@ -113,11 +113,20 @@ class RegionItem(QGraphicsRectItem):
         self.setCursor(cur)
         super().hoverMoveEvent(ev)
 
+    def edge_tolerance(self) -> float:
+        """가장자리로 보는 거리 (장면 단위 = 화면 EDGE px)."""
+        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+        return EDGE / (view.transform().m11() if view else 1.0)
+
+    def start_drag(self, p: QPointF) -> None:
+        """p(이 영역 좌표)에서 끌기 시작: 가장자리면 크기 조절, 아니면 옮기기."""
+        self.scene().clearSelection()
+        self.setSelected(True)
+        self._drag = (self._edges(p) or "move", p, QRectF(self.rect()))
+
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton:
-            self.scene().clearSelection()
-            self.setSelected(True)
-            self._drag = (self._edges(ev.pos()) or "move", ev.pos(), QRectF(self.rect()))
+            self.start_drag(ev.pos())
             ev.accept()
             return
         super().mousePressEvent(ev)
@@ -149,6 +158,9 @@ class RegionItem(QGraphicsRectItem):
         if self._drag:
             self.mouseMoveEvent(ev)  # 놓은 자리까지 반영
             self._drag = None
+            if self._grabbed:  # 영역 바로 밖 가장자리를 눌러 장면이 넘겨준 끌기
+                self._grabbed = False
+                self.ungrabMouse()
             sc = self.scene()
             if hasattr(sc, "changed_item"):
                 sc.changed_item.emit(self)
@@ -190,16 +202,30 @@ class PageScene(QGraphicsScene):
         """그 자리의 맨 위 영역 (상자 또는 이름표를 누름). items()는 위(z가 큰 것)부터 준다.
         쪽 그림(QGraphicsPixmapItem)에 parentItem()을 부르지 않는다: PySide6 6.11~6.12에서 그 호출이 힙을 깨뜨려
         창을 닫거나 앱을 끝낼 때 죽었다 (0xC0000374·0xC0000005). 우리 영역만 골라 본다."""
-        for it in self.items():
-            if not isinstance(it, RegionItem) or not it.isVisible():
-                continue
+        regs = [it for it in self.items() if isinstance(it, RegionItem) and it.isVisible()]
+        for it in regs:
             lab = it.label
             if it.sceneBoundingRect().contains(pos) or (lab.isVisible() and lab.sceneBoundingRect().contains(pos)):
+                return it
+        for it in regs:  # 어느 영역 안도 아니면: 가장자리를 잡을 수 있는 거리(화면 EDGE px)만큼 상자 밖도 그 영역으로 본다
+            tol = it.edge_tolerance()
+            if it.rect().adjusted(-tol, -tol, tol, tol).contains(it.mapFromScene(pos)):
                 return it
         return None
 
     def mousePressEvent(self, ev):
         target = self.region_at(ev.scenePos())
+        if target is not None and ev.button() == Qt.MouseButton.LeftButton:
+            p = target.mapFromScene(ev.scenePos())
+            lab = target.label
+            on_label = lab.isVisible() and lab.sceneBoundingRect().contains(ev.scenePos())
+            if not on_label and not target.contains(p):
+                # 상자 바로 밖 가장자리: Qt는 이 영역에 누름을 보내지 않으므로 직접 끌기를 시작하고 마우스를 넘긴다
+                target.start_drag(p)
+                target._grabbed = True
+                target.grabMouse()
+                ev.accept()
+                return
         if target is None and self.add_kind and ev.button() == Qt.MouseButton.LeftButton \
                 and self.page_rect.contains(ev.scenePos()):
             self.clearSelection()
