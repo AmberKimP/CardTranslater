@@ -11,7 +11,7 @@ model: sonnet
 
 - `main.py`: `MainWindow`(홈 ↔ 프로젝트), `HomePage`, `ProjectPage`(트리, 단계 버튼 `step_buttons`, `_sync_steps`), `main()`(`--selftest`·`--smoke`·`--no-login`)
 - `dialogs.py`: 새 프로젝트, 파일 넣기, 뺄 쪽, 설정
-- `region_editor.py`: `RegionItem`(장면 좌표 rect, 끌기·크기), `PageScene`(그리기 모드), `PageView`(키·휠·auto_fit), `RegionEditor`(그룹 이동, 카드마다 영역, 글꼴 목록)
+- `region_scene.py`: `RegionItem`(장면 좌표 rect, 끌기·크기), `PageScene`(그리기 모드), `PageView`(키·휠·auto_fit). `region_editor.py`: `RegionEditor`(그룹 이동, 카드마다 영역), 입력란·글꼴 목록은 `region_form.py`, 자동 정렬·미리 보기는 `region_align.py`의 믹스인
 - 색·글자·여백·모서리는 `DESIGN.md`(토큰은 `app/qt/theme.py`)를 따른다. 색을 코드에 직접 적지 않는다.
 - `steps.py`: 추출·원문 확인·아이콘 확정·용어집·번역 흐름(`StepActions`). 창은 `extract_dialog.py`·`source_review.py`·`icon_review.py`·`icon_place.py`, 공용 도우미는 `step_common.py`
 - `results.py`: 지우기·한글 넣기·결과 보기·시험 실행(`OutputActions`)

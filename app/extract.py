@@ -339,10 +339,17 @@ def cell_rereads(r: dict) -> list[dict]:
     return [x for x in r.get("readings") or [] if x.get("reread")] + list(r.get("rereads") or [])
 
 
+# ② 아이콘 정의에서 아이콘 자리가 바뀐 칸: 보통·정밀 읽기로 다시 읽어 결론을 못 냈거나 아직 다시 읽지 못함.
+# 사람은 아이콘을 고치기 전의 원문을 본 적이 없어, 보통의 ‘결론 못 냄’(다시 봐야 함)과 나눠 보인다.
+ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"
+
+
 def verification_label(r: dict | None) -> str:
     """엑셀 '원문 확인' 열 값. r = load_extracted의 칸 하나 (없으면 손 입력)."""
     if r is None:
         return "손 입력"
+    if r.get("icon_changed"):  # 사람이 원문 확인에서 저장하거나, 두 번 읽어 같으면 풀린다
+        return ICON_REVIEW_LABEL
     if r.get("edited_by"):  # 화면에서 사람이 고친 칸
         return "사람이 고침"
     if r.get("checked_by"):  # 사람이 보고 읽은 그대로 맞다고 저장한 칸

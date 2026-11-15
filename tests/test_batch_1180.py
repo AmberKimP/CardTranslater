@@ -45,7 +45,8 @@ def test_changed_cells_wait_for_reread_until_read(tmp_path, monkeypatch):
     assert r["done"] == 1
     assert service.icon_reread_pending([fd]) == []  # 다시 읽었으니 원문 확인을 열 때 또 읽지 않는다
     c = next(c for c in service.extracted_cells(fd) if c["page"] == 1)
-    assert c["icon_changed"]  # 사람이 보고 저장하기 전까지는 ‘확인 필요’
+    # 보통·정밀 읽기가 같고 지금 원문과도 (아이콘 말고) 같으면 확인이 끝난다 (예전: 사람이 저장할 때까지 ‘확인 필요’)
+    assert not c["icon_changed"] and r["settled"] == 1
 
 
 def test_review_sources_rereads_pending_before_opening(qapp, tmp_path, monkeypatch):
@@ -217,7 +218,7 @@ def test_not_icon_does_not_send_suggested_meaning_as_text(qapp, tmp_path):
     res.groups[g]["meaning"] = "social crown-shaped icon"
     icons._save_scan(work, res)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    _g, name, meaning, ko, not_icon, scale, same = dlg.widgets[0]
+    _g, name, meaning, ko, not_icon, scale = dlg.widgets[0]
     assert meaning.text() == "social crown-shaped icon"
     not_icon.setChecked(True)
     assert meaning.text() == "" and dlg.rows()[0]["text"] == ""
@@ -235,19 +236,23 @@ def test_keep_original_clears_icon_changed_flags(tmp_path):
     assert not c["icon_changed"]
 
 
-def test_chained_same_row_to_dictionary_keeps_dictionary_values(qapp, tmp_path):
-    """‘3번과 같음’ → 3번이 ‘사전: X’이면 그 줄도 사전 값을 덮어쓰지 않는다."""
+def test_rows_named_like_dictionary_keep_dictionary_values(qapp, tmp_path):
+    """사전에 있는 이름을 적은 줄은 사전 값(한국어 이름·뜻·크기)을 보이고 잠그며, 확정 때 덮어쓰지 않는다 (keep_dict).
+    같은 이름을 적은 여러 줄도 모두 그렇다 (같은 이름 = 같은 아이콘)."""
     from app.qt.icon_review import IconReviewDialog
 
     info, fd = _project(tmp_path, "ch", pages=1)
     host, extra = _add_run_partner(info, fd)
-    dlg = IconReviewDialog(info.dir, {**service.icon_review(info.dir), "known": ["lily"]})
+    d = icons.load_dictionary(info)
+    d["icons"]["lily"] = {"file": "lily.png", "ko": "백합", "meaning": "lily", "scale": 1.4, "number": ""}
+    icons.save_dictionary(info, d)
+    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
     w0, w1 = dlg.widgets[0], dlg.widgets[1]
-    def pick(combo, data):  # findData는 튜플 값을 찾지 못한다 (PySide6)
-        combo.setCurrentIndex(next(k for k in range(combo.count()) if combo.itemData(k) == data))
-
-    pick(w0[6], ("known", "lily"))
-    pick(w1[6], ("row", 0))
+    w0[1].setText("lily")
+    w1[1].setText("lily")
+    assert w0[3].text() == "백합" and not w0[3].isEnabled() and abs(w0[5].value() - 1.4) < 1e-6
     rows = dlg.rows()
     assert rows[0]["keep_dict"] and rows[1].get("keep_dict") and rows[1]["name"] == "lily"
+    w1[1].setText("lily_2")  # 사전에 없는 이름이면 다시 고칠 수 있다
+    assert w1[3].isEnabled() and not dlg.rows()[1].get("keep_dict")
     dlg.close()

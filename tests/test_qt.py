@@ -399,15 +399,20 @@ def test_icon_review_dialog_confirms_names(qapp, tmp_path):
     info, fd = icon_project(tmp_path, "1차", pages=2)
     assert service.find_icons(info.dir, suggest=False).state == "icons_review"
     review = service.icon_review(info.dir)
-    assert review["groups"][0]["count"] == 2 and review["groups"][0]["image"]
+    # 카드의 아이콘 하나 = 한 줄: 같은 모양 두 자리가 두 줄 (같은 shape)
+    assert len(review["groups"]) == 2 and all(g["count"] == 1 and g["image"] for g in review["groups"])
+    assert review["groups"][0]["shape"] == review["groups"][1]["shape"]
     dlg = IconReviewDialog(info.dir, review)
-    _g, name, meaning, ko, _ni, _sc, _same = dlg.widgets[0]
+    _g, name, meaning, ko, _ni, _sc = dlg.widgets[0]
     name.setText("Bad Name")
+    name.editingFinished.emit()
+    assert dlg.widgets[1][1].text() == "Bad Name"  # 모양이 같고 같은 값이던 줄도 함께 고친다
     dlg.accept()
     assert dlg.result is None  # 규칙을 어기면 확정하지 않는다
-    name.setText("coin")
-    meaning.setText("Gold")
-    ko.setText("금화")
+    for edit, v in ((name, "coin"), (meaning, "Gold"), (ko, "금화")):
+        edit.setText(v)
+        edit.editingFinished.emit()
+    assert [dlg.widgets[1][k].text() for k in (1, 2, 3)] == ["coin", "Gold", "금화"]
     dlg.accept()
     assert dlg.result.state == "confirmed" and dlg.result.added == ["coin"] and _source(fd, 2) == "AB[[coin]]CD"
 
@@ -887,35 +892,37 @@ def test_login_dialog_sets_engine(qapp, tmp_path, monkeypatch):
     assert dlg2.r_api.isChecked()  # 다음에 열면 고른 방식
 
 
-def test_icon_review_merge_rows_and_card_view(qapp, tmp_path, monkeypatch):
+def test_icon_review_same_name_rows_are_one_icon(qapp, tmp_path, monkeypatch):
+    """다른 줄(모양이 다르게 잡힌 줄)에 같은 이름을 적으면 경고 없이 한 아이콘이 된다 (첫 줄 그림, 적힌 한국어 이름)."""
     from app import icons
     from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project, _source
 
-    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)  # 같은 모양도 따로 묶이게 (잘못 나뉜 묶음 흉내)
+    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)  # 같은 모양도 다른 모양으로 (잘못 나뉜 모양 흉내)
     info, fd = icon_project(tmp_path, "1차", pages=2)
     service.find_icons(info.dir, suggest=False)
     review = service.icon_review(info.dir)
     assert len(review["groups"]) == 2 and review["groups"][1]["where"][0]["page"] == 2
+    assert review["groups"][0]["shape"] != review["groups"][1]["shape"]
     dlg = IconReviewDialog(info.dir, review)
-    _g, name, meaning, ko, _ni, _sc, _same = dlg.widgets[0]
-    name.setText("coin")
-    ko.setText("금화")
-    same2 = dlg.widgets[1][6]
-    same2.setCurrentIndex(same2.findText("1번과 같음"))
-    assert not dlg.widgets[1][1].isEnabled()  # 합치면 이름 칸은 꺼진다
+    asked = []
+    monkeypatch.setattr("app.qt.icon_review.ask_choice", lambda *a, **k: asked.append(a[2]) or 1)
+    dlg.widgets[0][1].setText("coin")
+    dlg.widgets[0][3].setText("금화")
+    dlg.widgets[1][1].setText("coin")  # 한국어 이름은 비워 둠: 같은 이름 줄의 값을 쓴다
+    assert dlg._name_conflicts() == {}
     rows = dlg.rows()
-    assert [r["name"] for r in rows] == ["coin", "coin"] and rows[1]["ko"] == "금화"
+    assert [r["name"] for r in rows] == ["coin", "coin"]
     dlg.accept()
-    assert dlg.result.added == ["coin"] and dlg.result.replaced == 2
+    assert asked == [] and dlg.result.added == ["coin"] and dlg.result.replaced == 2
     assert _source(fd, 1) == _source(fd, 2) == "AB[[coin]]CD"
     assert list(icons.load_dictionary(info)["icons"]) == ["coin"]
+    assert icons.load_dictionary(info)["icons"]["coin"]["ko"] == "금화"
 
 
-def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypatch):
-    """다른 줄의 새 아이콘에 같은 이름(gold, gold)을 적으면 주황으로 표시하고, 확정할 때 합칠지 묻는다."""
+def test_icon_review_flags_same_name_with_different_korean(qapp, tmp_path, monkeypatch):
+    """같은 이름(gold, gold)인데 한국어 이름이 다르면 그 칸을 주황으로 표시하고 확정할 때 묻는다 (첫 줄 값을 씀)."""
     from app import icons
-    from app.qt import steps as steps_mod
     from app.qt.icon_review import IconReviewDialog
     from tests.test_icons import _project as icon_project
 
@@ -923,35 +930,56 @@ def test_icon_review_warns_when_new_icons_share_a_name(qapp, tmp_path, monkeypat
     info, _fd = icon_project(tmp_path, "1차", pages=2)
     service.find_icons(info.dir, suggest=False)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    for w in dlg.widgets:
+    for w, ko in zip(dlg.widgets, ("골드", "금화")):
         w[1].setText("gold")
-        w[3].setText("골드")
-    assert dlg._dup_names() == {"gold": [0, 1]} and "F4B183" in dlg.widgets[1][1].styleSheet()
+        w[3].setText(ko)
+    assert dlg._name_conflicts() == {"gold": [0, 1]} and "F4B183" in dlg.widgets[1][3].styleSheet()
     asked = []
     monkeypatch.setattr("app.qt.icon_review.ask_choice", lambda *a, **k: asked.append(a[2]) or 1)  # 돌아가서 고치기
     dlg.accept()
     assert dlg.result is None and "gold: 1번, 2번" in asked[0]
-    dlg.widgets[1][1].setText("gold_2")  # 숫자가 붙은 금화: 다른 이름
-    assert dlg._dup_names() == {} and dlg.widgets[1][1].styleSheet() == ""
+    monkeypatch.setattr("app.qt.icon_review.ask_choice", lambda *a, **k: asked.append(a[2]) or 0)  # 첫 줄 값으로
     dlg.accept()
-    assert dlg.result is not None and len(asked) == 1
+    assert dlg.result is not None and len(asked) == 2
+    assert icons.load_dictionary(info)["icons"]["gold"]["ko"] == "골드"
+    assert any("골드" in n and "금화" in n for n in dlg.result.notes)
 
 
-def test_icon_review_merge_cycle_is_blocked(qapp, tmp_path, monkeypatch):
+def test_icon_review_shows_confirmed_icons_and_renames_them(qapp, tmp_path, monkeypatch):
+    """이미 확정된 아이콘([[coin]])도 표에 ‘확정됨’으로 보이고, 이름을 그대로 두면 원문은 그대로, 바꾸면 그 토큰만
+    바뀌고, ‘아이콘 아님’이면 원문에서 빠진다. 사전과 모양이 같은 [[?]]는 이름이 미리 채워져 있다."""
+    import json as _json
+
     from app import icons
     from app.qt.icon_review import IconReviewDialog
-    from tests.test_icons import _project as icon_project
+    from tests.test_icons import _project as icon_project, _source
 
-    monkeypatch.setattr(icons, "SAME_SHAPE", 1.01)
-    info, _fd = icon_project(tmp_path, "1차", pages=2)
+    info, fd = icon_project(tmp_path, "1차", pages=3)
     service.find_icons(info.dir, suggest=False)
+    rows = [{"group": g["group"], "name": "coin", "ko": "금화"} for g in service.icon_review(info.dir)["groups"]]
+    assert service.confirm_icons(info.dir, rows).state == "confirmed"
+    p3 = fd / "extract" / "pages" / "page-003.json"
+    d = _json.loads(p3.read_text(encoding="utf-8"))
+    d["regions"]["본문"]["source"] = "AB[[?]]CD"
+    p3.write_text(_json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    assert service.find_icons(info.dir, suggest=False).state == "icons_review"
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    dlg.widgets[0][6].setCurrentIndex(dlg.widgets[0][6].findText("2번과 같음"))
-    dlg.widgets[1][6].setCurrentIndex(dlg.widgets[1][6].findText("1번과 같음"))
-    with pytest.raises(ValueError):
-        dlg.rows()
+    by_page = {g["where"][0]["page"]: i for i, g in enumerate(dlg.review["groups"])}
+    states = {pg: dlg.table.item(i, dlg.C_STATE).text() for pg, i in by_page.items()}
+    assert states[1].startswith("확정됨") and states[2].startswith("확정됨") and states[3].startswith("사전과 모양 같음")
+    assert all(dlg.widgets[i][1].text() == "coin" and dlg.widgets[i][3].text() == "금화" for i in by_page.values())
+    assert not dlg.widgets[by_page[1]][3].isEnabled()  # 사전 이름: 한국어 이름은 사전 값 (사전 탭에서 고침)
+    dlg.same_shape.setChecked(False)  # 이 줄만
+    dlg.widgets[by_page[1]][1].setText("gold")
+    assert "이름 바꿈" in dlg.table.item(by_page[1], dlg.C_STATE).text()
+    dlg.widgets[by_page[1]][3].setText("금")
+    dlg.widgets[by_page[2]][4].setChecked(True)
+    assert dlg.table.item(by_page[2], dlg.C_STATE).text() == "확정됨 → 아이콘 아님"
     dlg.accept()
-    assert dlg.result is None
+    assert dlg.result is not None and dlg.result.state == "confirmed"
+    assert [_source(fd, pg) for pg in (1, 2, 3)] == ["AB[[gold]]CD", "ABCD", "AB[[coin]]CD"]
+    d = icons.load_dictionary(info)["icons"]
+    assert d["gold"]["ko"] == "금" and d["coin"]["ko"] == "금화"
 
 
 @pytest.mark.parametrize("size", [(1366, 768), (1400, 850), (1600, 900), (1920, 1080)])
@@ -2472,6 +2500,7 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     assert views == ["카드 보기 · 자리 잡기"] * 2  # 찾은 줄도 자리를 다시 잡을 수 있다
     found_i = next(i for i, g in enumerate(dlg.review["groups"]) if g["image"])
     lost = next(g for g in dlg.review["groups"] if not g["image"])
+    found_g = dlg.review["groups"][found_i]["group"]
     dlg.widgets[found_i][1].setText("coin")
     dlg.widgets[found_i][3].setText("금화")
     good = service.icon_place(info.dir, dlg.review["groups"][found_i]["where"][0]["occ"])["box"]
@@ -2479,13 +2508,17 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     assert place.view.guess is not None and place.view.box is None and not place.save_btn.isEnabled()
     place.view.new = list(good)
     place._drawn()
-    assert place.save_btn.isEnabled()
+    assert place.save_btn.isEnabled() and place.add_btn.isEnabled()
     place._save()
     assert place.result() == QDialog.DialogCode.Accepted  # 저장하면 닫고 이름 정하기 표로 돌아간다
-    assert len(dlg.widgets) == 1 and dlg.widgets[0][1].text() == "coin" and dlg.widgets[0][3].text() == "금화"
-    # 다시 열면 직접 잡은 자리부터 보여 준다
-    again = IconPlaceDialog(info.dir, dlg.review["groups"][0], dlg._row_label, dlg._after_place, dlg)
+    rows = {w[0]: w for w in dlg.widgets}
+    assert len(dlg.widgets) == 2 and rows[found_g][1].text() == "coin" and rows[found_g][3].text() == "금화"
+    lost_g = dlg.review["groups"][next(k for k, w in enumerate(dlg.widgets) if w[0] == lost["group"])]
+    assert lost_g["image"]  # 그 줄에 그림이 생겼다 (줄은 그대로)
+    # 다시 열면 직접 잡은 자리를 보여 준다
+    again = IconPlaceDialog(info.dir, lost_g, dlg._row_label, dlg._after_place, dlg)
     assert again.where[again.combo.currentIndex()]["manual"] and again.view.box == list(good)
+    assert rows[lost["group"]][1].text() == "coin"  # 같은 모양 줄에 적어 둔 이름을 이어받았다
     dlg.accept()
     assert dlg.result.replaced == 2
 
@@ -3505,7 +3538,7 @@ def test_source_review_reread_cell_fills_edit_box_without_saving(qapp, tmp_path,
     assert calls == [(1, "이름", {"model": "opus", "engine": "api"})] and ran
     rows = [(h.text(), v.text()) for h, v in dlg.reading_rows]
     # 정밀 읽기로 다시 읽었으면 처음의 정밀 읽기 줄은 숨긴다 (1.20.0)
-    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기 (다시 읽기)"]
+    assert [h for h, _v in rows] == ["보통 읽기", "정밀 읽기"]  # ‘(다시 읽기)’ 표시는 하지 않는다
     assert dlg.edit.toPlainText() == "盗掘[[?]]フェレット"
     assert "다시 읽은 결과를 편집 칸에 넣었습니다" in dlg.info.text() and "② 아이콘 정의" in dlg.info.text()
     c = next(x for x in service.extracted_cells(fd) if (x["page"], x["region"]) == (1, "이름"))
@@ -3669,13 +3702,14 @@ def test_icon_review_sort_card_column_labels_and_select_after_place(qapp, tmp_pa
     dlg.widgets[0][1].setText("zeta")
     assert dlg._row_label(dlg.widgets[0][0]) == "1번 zeta"
     # 이름 열로 정렬: 적어 둔 값은 그대로, 다시 누르면 반대
+    dlg.same_shape.setChecked(False)
     if n > 1:
         dlg.widgets[1][1].setText("alpha")
-    dlg._sort_by(2)
+    dlg._sort_by(1)
     names = [w[1].text() for w in dlg.widgets]
     assert names == sorted(names, key=lambda v: (v == "", v))
-    dlg._sort_by(2)
-    assert dlg._sort == (2, True)
+    dlg._sort_by(1)
+    assert dlg._sort == (1, True)
     assert "zeta" in [w[1].text() for w in dlg.widgets]
     # 카드 보기를 닫은 뒤: 저장 -> 그 줄, 아이콘 아님 -> 다음 줄
     g0 = dlg.widgets[0][0]
@@ -3737,11 +3771,12 @@ def test_icon_review_sort_by_card_groups_and_problem_cards_first(qapp):
               g("f", [9], image=False, not_icon=True)]
     s = S()
     out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {}, False)]
-    # 문제 카드: 3(e 이름 빈 칸), 7(b 위치 못 찾음). d의 첫 카드는 2라 2 아래. f는 ‘아이콘 아님’이라 문제 아님
-    assert out == ["e", "c", "b", "a", "d", "f"]
+    # 문제 카드: 3(e 이름 빈 칸), 7(b 위치 못 찾음). d의 첫 카드는 2라 2 아래. f는 ‘아이콘 아님’이라 문제 아님.
+    # 한 카드 안에서는 원문 순서 (c가 e보다 먼저)
+    assert out == ["c", "e", "b", "a", "d", "f"]
     assert s._card_of["e"] == (("f", 3), True) and s._card_of["d"] == (("f", 2), False)
     out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {}, True)]
-    assert out == ["b", "e", "c", "f", "d", "a"]
+    assert out == ["b", "c", "e", "f", "d", "a"]
     # 화면에 적은 이름이 있으면 문제가 아니다
     out = [x["group"] for x in IconReviewDialog._sorted_by_card(s, groups, {"e": {"name": "lily"}}, False)]
     assert out[0] == "b"

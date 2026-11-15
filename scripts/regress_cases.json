@@ -1,0 +1,6 @@
+{
+  "_note": "scripts/regress.py가 자동으로 찾는 프로젝트 파일 외에 시트 자르기를 비교할 이미지. 이미지는 git에 넣지 않는다 (없으면 건너뜀).",
+  "sheets": [
+    {"label": "이벤트A 카드 스캔", "glob": "Samples/이벤트A 카드 스캔/*.jpg", "cols": 3, "rows": 3}
+  ]
+}

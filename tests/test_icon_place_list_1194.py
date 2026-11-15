@@ -138,23 +138,31 @@ def test_dialog_clicking_list_item_makes_it_current(qapp, tmp_path):
     dlg.close()
 
 
-def test_restore_one_slot_of_multi_slot_not_icon_group(tmp_path):
+def test_restore_one_slot_of_old_multi_slot_not_icon_group(tmp_path):
+    """예전 scan.json(같은 모양 자리 여럿 = 한 묶음, 묶음째 아이콘 아님)도 읽으면 자리마다 한 줄로 나뉘고,
+    한 자리를 되돌려도 다른 자리는 아이콘 아님 그대로다."""
     info, fd = _project(tmp_path, "multi", pages=2)
     service.find_icons(info.dir, suggest=False)
     work = info.game_dir / "work" / "icons"
-    scan = icons.load_scan(work)
-    g = next(g for g, gi in scan.groups.items() if gi.get("count", 1) > 1)
-    members = [o.id for o in scan.occurrences if o.group == g]
     sp = work / "scan.json"
     d = json.loads(sp.read_text(encoding="utf-8"))
-    d["groups"][g]["not_icon"] = True  # 2A에서 묶음째 아이콘 아님
+    g = d["occurrences"][0]["group"]
+    for o in d["occurrences"]:  # 1.22 이전 형식으로: 두 자리가 한 묶음
+        d["groups"].pop(o["group"], None) if o["group"] != g else None
+        o["group"] = g
+    d["groups"][g].update(count=2, not_icon=True, suggest="coin")  # 2A에서 묶음째 아이콘 아님
     sp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    members = [o["id"] for o in d["occurrences"]]
+    scan = icons.load_scan(work)
+    by = {o.id: o for o in scan.occurrences}
+    assert len({o.group for o in scan.occurrences}) == 2 and all(scan.groups[o.group]["count"] == 1 for o in scan.occurrences)
+    assert all(scan.groups[o.group]["not_icon"] and scan.groups[o.group]["suggest"] == "coin" for o in scan.occurrences)
+    assert len({scan.groups[o.group]["shape"] for o in scan.occurrences}) == 1  # 예전 묶음 = 같은 모양
     service.restore_icon(info.dir, members[0])
     scan = icons.load_scan(work)
     by = {o.id: o for o in scan.occurrences}
-    assert scan.groups[g]["not_icon"] and scan.groups[g]["count"] == len(members) - 1  # 다른 자리는 그대로
-    assert by[members[0]].group != g and not scan.groups[by[members[0]].group].get("not_icon")
-    assert scan.groups[g]["rep"] in members[1:]
+    assert not scan.groups[by[members[0]].group].get("not_icon")
+    assert scan.groups[by[members[1]].group]["not_icon"]  # 다른 자리는 그대로
 
 
 def test_delete_does_not_include_current_unless_selected(qapp, tmp_path):

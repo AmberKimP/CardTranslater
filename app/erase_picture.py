@@ -161,16 +161,56 @@ def _text_rows(items: list[dict], p: PictureParams, hg_ref: float | None = None)
                 break
         else:
             merged.append(r)
-    out = []
-    for r in merged:
+    def ok(r: dict) -> bool:
         x0, y0, x1, y1 = r["box"]
         hg = r["hg"]
         if r["n_big"] < p.min_glyphs or x1 - x0 < p.min_row_aspect * hg or y1 - y0 > p.max_row_height * hg:
-            continue
-        if hg_ref and not (p.size_range[0] * hg_ref <= hg <= p.size_range[1] * hg_ref):
-            continue
+            return False
+        return not hg_ref or p.size_range[0] * hg_ref <= hg <= p.size_range[1] * hg_ref
+
+    out = []
+    for r in merged:
+        if not ok(r):
+            # 너무 높아 빠진 줄: 글자 밑을 받친 넓은 그림자(아이콘 이름표 '工房' 밑의 어두운 그림자)가 같은 줄로 묶여
+            # 줄 높이를 키웠을 수 있다. 그림자를 빼고 다시 본다 (뺀 그림자는 attach_shadows가 그 줄에 다시 붙인다)
+            x0, y0, x1, y1 = r["box"]
+            if y1 - y0 <= p.max_row_height * r["hg"]:
+                continue
+            rest = _drop_under_shadows(r["members"])
+            if rest is None:
+                continue
+            r = _row_stats(rest)
+            if not ok(r):
+                continue
         out.append(r)
     return out
+
+
+def _drop_under_shadows(members: list[dict]) -> list[dict] | None:
+    """줄 묶음에서 글자 밑을 받친 그림자 덩어리를 뺀 나머지 (그림자가 없으면 None).
+    그림자 = 납작하고(폭 ≥ 높이의 2배), 글자다운 덩어리 둘 이상을 가로로 받치며, 그 글자들보다 위에서 시작하지 않고
+    그 글자들보다 아래로 내려온 덩어리."""
+    drop = []
+    for m in members:
+        if m["w"] < 2 * m["h"]:
+            continue
+        under = [o for o in members if o is not m and not o["bar"] and o["s"] >= 0.5 * m["h"]
+                 and min(m["x1"], o["x1"]) - max(m["x0"], o["x0"]) >= 0.5 * o["w"]
+                 and o["y0"] < m["y0"] and o["y1"] < m["y1"]]
+        if len(under) >= 2:
+            drop.append(m)
+    if not drop:
+        return None
+    rest = [m for m in members if all(m is not d for d in drop)]
+    if not rest:
+        return None
+    # 그림자로 이어져 함께 묶였던, 줄 높이에서 벗어난 조각(옆 그림의 끝)도 뺀다: 세로 중심이 줄 가운데에서 글자 크기의
+    # 0.6배 넘게 떨어진 것 (작은 조각은 뒤에서 줄 높이 안에 있으면 다시 붙는다)
+    st = _row_stats(rest)
+    big = [m for m in rest if not m["bar"] and m["s"] >= 0.5 * st["hg"]] or rest
+    mid = float(np.median([m["cy"] for m in big]))
+    rest = [m for m in rest if abs(m["cy"] - mid) <= 0.6 * st["hg"]]
+    return rest or None
 
 
 def _picture_candidates(T: np.ndarray, box: tuple[int, int, int, int],
@@ -454,6 +494,11 @@ def drop_label_rows(pic: PictureText, n_drop: int) -> PictureText:
     cands = sorted((r for r in pic.rows if r["under_icon"]), key=lambda r: int(r["core"].sum()))[:max(0, n_drop)]
     if not cands or len(cands) == len(pic.rows):
         return pic
+    return _drop_rows(pic, cands)
+
+
+def _drop_rows(pic: PictureText, cands: list[dict]) -> PictureText:
+    """cands 줄을 지울 줄에서 뺀다 (그 줄 덩어리는 지킬 덩어리로, 그 줄에 더 가까운 지울 픽셀은 남긴다)."""
     mask, core, guard = pic.mask.copy(), pic.core.copy(), pic.guard.copy()
     for r in cands:
         rest = core & ~r["core"]
@@ -464,6 +509,81 @@ def drop_label_rows(pic: PictureText, n_drop: int) -> PictureText:
         guard |= r["core"]
     rows = [r for r in pic.rows if all(r is not c for c in cands)]
     return PictureText(mask, core, guard, pic.avoid | (pic.mask & ~mask), pic.glyph_px, pic.polarity, rows)
+
+
+LIST_GAP = 2.0  # 낱말 묶음 사이: 글자 크기의 이 배보다 넓은 빈 곳이면 다른 묶음 (그림 사이에 놓인 이름표 '工房   馬車')
+
+
+def _list_segments(text: str) -> int:
+    """원문 줄을 '/'로 나눈 글자 있는 조각 수 ('工房 / 馬車 / 商館' → 3). 나눌 것이 없으면 1."""
+    import re
+
+    from app import erase_text
+
+    body = erase_text._TOKEN.sub("", text)
+    return max(1, sum(1 for s in re.split(r"[/／]", body) if erase_text._WORD.search(s)))
+
+
+def _row_clusters(row: dict, glyph_px: float) -> int:
+    """줄 덩어리를 넓은 빈 곳(LIST_GAP 글자 넘게)으로 나눈 가로 묶음 수 (글자 반 개보다 좁은 티끌 묶음은 세지 않는다)."""
+    from app import erase_text
+
+    segs = erase_text._ink_segments(row["core"].any(axis=0))
+    groups: list[list[int]] = []
+    for a, b in segs:
+        if groups and a - groups[-1][1] <= LIST_GAP * glyph_px:
+            groups[-1][1] = b
+        else:
+            groups.append([a, b])
+    return sum(1 for a, b in groups if b - a >= 0.5 * glyph_px)
+
+
+def _fold_inner_rows(pic: PictureText) -> PictureText:
+    """다른 줄 높이 안에 거의 다 들어간 작은 줄(큰 글자 속 획 조각이 따로 잡힌 것)은 그 줄에 합친다.
+    따로 세면 원문보다 줄이 많아 보여, 남길 줄을 고를 때 진짜 글자 조각을 빼게 된다."""
+    rows = [dict(r) for r in pic.rows]
+    out: list[dict] = []
+    for r in sorted(rows, key=lambda r: -(r["box"][3] - r["box"][1])):
+        h = max(1, r["box"][3] - r["box"][1])
+        host = next((o for o in out if min(o["box"][3], r["box"][3]) - max(o["box"][1], r["box"][1]) >= 0.8 * h), None)
+        if host is None:
+            out.append(r)
+            continue
+        host["core"] = host["core"] | r["core"]
+        b, c = host["box"], r["box"]
+        host["box"] = (min(b[0], c[0]), min(b[1], c[1]), max(b[2], c[2]), max(b[3], c[3]))
+    if len(out) == len(rows):
+        return pic
+    out.sort(key=lambda r: r["box"][1])
+    return PictureText(pic.mask, pic.core, pic.guard, pic.avoid, pic.glyph_px, pic.polarity, out)
+
+
+def keep_list_rows(pic: PictureText, texts: list[str]) -> PictureText:
+    """원문 글 줄(texts)보다 글자 줄이 많고, 원문에 '/'로 나눈 목록 줄('工房 / 馬車 / 商館': 그림마다 붙은 이름표)이
+    있을 때: 목록 줄에는 가로 묶음 수가 조각 수와 같은 줄을 맞추고, 나머지(그림 속 바퀴·문처럼 줄지어 선 그림 조각)는
+    지울 줄에서 뺀다. 목록 줄에 맞는 줄이 없거나 원문에 목록 줄이 없으면 그대로 (원문 줄 수로만 고르면 그림 조각 줄과
+    폭이 넓게 벌어진 이름표 줄을 구별하지 못한다)."""
+    from itertools import combinations
+
+    segs = [_list_segments(t) for t in texts]
+    if not texts or max(segs) < 2 or len(pic.rows) <= len(texts):
+        return pic
+    orig, pic = pic, _fold_inner_rows(pic)
+    rows = sorted(pic.rows, key=lambda r: r["box"][1])
+    if len(rows) <= len(texts) or len(rows) > 12:
+        return orig
+    clusters = [_row_clusters(r, pic.glyph_px) for r in rows]
+    best, best_key = None, None
+    for keep in combinations(range(len(rows)), len(texts)):  # 위에서부터 원문 줄 순서대로 맞춘다
+        miss = sum(abs(clusters[i] - s) for i, s in zip(keep, segs) if s >= 2)
+        # 목록이 아닌 줄은 한 묶음이 자연스럽다. 그다음은 덩어리가 많은(글자가 뚜렷한) 줄을 남긴다
+        loose = sum(max(0, clusters[i] - 1) for i, s in zip(keep, segs) if s < 2)
+        key = (miss, loose, -sum(int(rows[i]["core"].sum()) for i in keep))
+        if best_key is None or key < best_key:
+            best, best_key = keep, key
+    if best is None or best_key[0] > 0:
+        return orig
+    return _drop_rows(pic, [r for i, r in enumerate(rows) if i not in best])
 
 
 def _column_fill(I: np.ndarray, hole: np.ndarray, src: np.ndarray,
@@ -626,6 +746,8 @@ def region_text_mask(sub: np.ndarray, region_box: tuple[int, int, int, int], pro
     if pic is not None and isinstance(source, str):
         if n_text and len(pic.rows) > n_text:
             pic = drop_label_rows(pic, len(pic.rows) - n_text)
+        if n_text and len(pic.rows) > n_text:  # 그래도 많으면: 원문의 '/' 목록 줄(그림마다 붙은 이름표)로 고른다
+            pic = keep_list_rows(pic, [t for t in source.split("\n") if t.strip() and not erase_text.is_icon_line(t)])
     if pic is None:
         return None, tm
     return pic, erase_text.TextMask(pic.mask.copy(), pic.core.copy(), True, tm.texture, pic.glyph_px,

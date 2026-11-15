@@ -2,11 +2,13 @@
 
 추출 모델은 문장 속 그림(아이콘)을 ``[[?]]``로 적는다. 여기서는
 
-1. ``scan``: 모든 파일의 원문에서 ``[[?]]``를 찾아, 그 줄의 잉크에서 아이콘 위치를 찾고 배경을 투명하게 잘라 낸다.
-   게임 아이콘 사전에 같은 모양이 있으면 바로 ``[[이름]]``으로 바꾼다(다음 프로젝트에서 재사용).
-   나머지는 같은 모양끼리 묶어 ``아이콘_검증.xlsx``로 보여 준다(모델이 이름·뜻을 제안).
+1. ``scan``: 모든 파일의 원문에서 아이콘 토큰(``[[?]]``와 이미 이름이 있는 ``[[이름]]``)을 찾아, 그 줄의 잉크에서
+   아이콘 위치를 찾고 배경을 투명하게 잘라 낸다. 카드의 아이콘 하나가 한 줄이다. 게임 아이콘 사전에 같은 모양이 있으면
+   그 이름을 줄에 미리 채워 두기만 한다(원문은 사람이 확정할 때 바꾼다). 같은 모양 줄끼리는 "shape"이 같아
+   모델 이름 제안을 모양마다 한 번만 받는다. ``아이콘_검증.xlsx``도 줄마다 한 행.
 2. ``import_review``: 사용자가 이름을 확정하면 사전(``games/<게임>/icons/``)에 그림·뜻·한국어 이름을 저장하고
-   원문의 ``[[?]]``를 ``[[이름]]``으로 바꾼다. ‘아이콘 아님’은 원문에서 뺀다. 같은 이름을 쓴 묶음은 하나로 합친다.
+   원문의 ``[[?]]``를 ``[[이름]]``으로 바꾼다. ‘아이콘 아님’은 원문에서 뺀다. 같은 이름을 쓴 줄은 한 아이콘(사전 한 항목)이다.
+   이미 이름이 있던 줄은 이름을 바꾸거나 ‘아이콘 아님’일 때만 원문을 바꾼다.
 
 아이콘 옆에 인쇄된 숫자(``2[[?]]``)는 그림에 함께 자르고, 원문에서는 확정할 때(또는 사전과 모양·숫자가 같아
 자동으로 바꿀 때)만 뺀다. 뺀 숫자는 칸의 ``icon_numbers``에 적어 두어 ‘다시 정하기’가 되살린다.
@@ -385,40 +387,40 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         band_h = y1 - y0
         em = sorted(b[1] - b[0] for b in bands)[len(bands) // 2]  # 보통 글자 줄 높이
         comps = [(x, y, w, h, a) for x, y, w, h, a in all_comps if y0 - band_h * 0.2 <= y + h / 2 <= y1 + band_h * 0.2]
-        comps = [c for c in comps if not _light_drawing(img, lum, ink, c)] or comps
+        comps = [c for c in comps if not _cells._light_drawing(img, lum, ink, c)] or comps
         if not comps:
             return None, "그 줄에 잉크가 없음"
-        seq = _line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
-        cells = _glyph_cells(comps, em, (y0, y1))
+        seq = _cells._line_cells(lines[line_no])  # 원문 줄을 글자·아이콘 칸으로 (공백 제외)
+        cells = _cells._glyph_cells(comps, em, (y0, y1))
         if len(cells) > len(seq):  # 줄 양 끝에 붙은 배경 그림 조각(집 그림 선 등)을 빼면 맞는가
             _hs = sorted(c[3] for c in comps if c[4] >= 30)
-            cells = _trim_edge_scraps(cells, len(seq), float(_hs[len(_hs) // 2]) * 1.15 if _hs else em)
+            cells = _cells._trim_edge_scraps(cells, len(seq), float(_hs[len(_hs) // 2]) * 1.15 if _hs else em)
         if len(cells) != len(seq):
             # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
             # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
-            alt = _glyph_cells(_line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
+            alt = _cells._glyph_cells(_cells._line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
             if len(alt) == len(seq):
                 cells = [(c[0], max(0, c[1] - 2), c[2], c[3] + 2) for c in alt]
         if not cells:
             return None, "그 줄에서 글자 칸을 찾지 못함"
-        k = sum(1 for t in seq[: _token_cell_index(lines[line_no], before)] if t == "\u25a0")
+        k = sum(1 for t in seq[: _cells._token_cell_index(lines[line_no], before)] if t == "\u25a0")
         tok_pos = [i for i, t in enumerate(seq) if t == "\u25a0"][k]
         n_tok = sum(1 for t in seq if t == "\u25a0")
-        text_line = any(_WORDY_CH.match(t) for t in seq)
+        text_line = any(_cells._WORDY_CH.match(t) for t in seq)
         # 글이 있는 줄의 숫자는 검정 글자라 색 덩어리가 아니다: 아이콘만 세면 된다
         # 그 줄의 글자 높이 (줄 띠 높이는 큰 아이콘 줄·붙은 줄 때문에 커질 수 있다)
         hs_l = sorted(c[3] for c in comps if c[4] >= 30)
         em_line = min(em, float(hs_l[len(hs_l) // 2]) * 1.15) if hs_l else em
-        colored = _colored_icon_boxes(img, lum, ink, comps, em_line,
-                                      [t for t in seq if not _DIGIT_CH.match(t)] if text_line else seq,
+        colored = _cells._colored_icon_boxes(img, lum, ink, comps, em_line,
+                                      [t for t in seq if not _cells._DIGIT_CH.match(t)] if text_line else seq,
                                       min_gray_fill=0.45 if text_line else 0.3)
         if colored is not None:  # 글자(검정)와 색이 다른 덩어리 = 아이콘. 수가 맞으면 순서대로 (가장 믿을 만함)
             box = colored[k]
         elif len(cells) == len(seq):  # 칸 수가 같으면 순서대로 짝짓는다 (가장 믿을 만함)
             box = cells[tok_pos]
-        elif _ordinal_icon_cell(cells, seq, tok_pos, band_h, em) is not None:
+        elif _cells._ordinal_icon_cell(cells, seq, tok_pos, band_h, em) is not None:
             # 칸 수는 달라도 아이콘 크기 칸의 수가 원문 아이콘 수와 같으면 순서대로 (같은 칸을 두 번 고르지 않는다)
-            box = _ordinal_icon_cell(cells, seq, tok_pos, band_h, em)
+            box = _cells._ordinal_icon_cell(cells, seq, tok_pos, band_h, em)
         else:  # 다르면 위치 비율로 가장 가까운 칸 (아이콘 크기만)
             lx0, lx1 = cells[0][0], cells[-1][2]
             units = [1.1 if t == "\u25a0" else _units(t) for t in seq]
@@ -430,14 +432,14 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
                 return None, "예상 자리 근처에 아이콘 크기의 덩어리가 없음"
             # 가깝고 큰 칸(아이콘은 보통 글자보다 크다)을 고른다
             box = max(cand, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]) * float(np.exp(-abs((c[0] + c[2]) / 2 - expect) / reach)))
-        if colored is None and text_line and _line_color_design(img, ink, y0, y1) and _looks_like_text(img, lum, ink, box):
+        if colored is None and text_line and _cells._line_color_design(img, ink, y0, y1) and _cells._looks_like_text(img, lum, ink, box):
             # 색 아이콘을 못 찾아 칸으로 짐작한 자리가 검정 글자처럼 보이면 틀린 자리다 (못 찾음으로 둔다)
             return None, "아이콘 자리로 짐작한 곳이 글자임"
         # 원문이 한 칸으로 읽은 세트 아이콘(예: 큰 숫자 3 + 검, 검 + 1 타일)은 붙은 칸까지 하나로.
         # 칸 수가 원문과 꼭 맞아 순서로 짝지은 경우만 빼고 늘 본다 (배경 그림 조각 때문에 칸 수가 어긋나기도 한다)
         if len(cells) != len(seq) or colored is not None:
-            box = _set_partner(box, cells, seq, tok_pos, em_line, em, img, lum, ink)
-        bx0, by0, bx1, by1 = _grow_box(box, comps)
+            box = _cells._set_partner(box, cells, seq, tok_pos, em_line, em, img, lum, ink)
+        bx0, by0, bx1, by1 = _cells._grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
         by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
         box = (bx0, by0, bx1, by1)
@@ -545,8 +547,8 @@ def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int
         bh = max(8, y1 - y0)
         cs = [c for c in comps if y0 - bh * 0.2 <= c[1] + c[3] / 2 <= y1 + bh * 0.2]
         lx0, lx1 = (min(c[0] for c in cs), max(c[0] + c[2] for c in cs)) if cs else (0, W)
-        seq = _line_cells(lines[line_no])
-        pos = min(_token_cell_index(lines[line_no], before), max(0, len(seq) - 1))
+        seq = _cells._line_cells(lines[line_no])
+        pos = min(_cells._token_cell_index(lines[line_no], before), max(0, len(seq) - 1))
         units = [1.1 if t == "■" else _units(t) for t in seq] or [1.0]
         unit = (lx1 - lx0) / max(sum(units), 1e-6)
         cx = lx0 + (sum(units[:pos]) + units[pos] / 2) * unit
@@ -666,7 +668,7 @@ def templates_for(file_dir: Path) -> dict:
         p = icons_dir(info) / e.get("file", f"{name}.png")
         if p.is_file():
             try:
-                out[name] = load_png(p)
+                out[name] = _cells.load_png(p)
             except Exception:  # noqa: BLE001 - 깨진 그림은 건너뛴다
                 continue
     return out
@@ -785,362 +787,6 @@ def refine_icon_boxes(img: np.ndarray, text: str, found: list, line_bands: list 
 def inline_icon_boxes(img: np.ndarray, text: str) -> list[tuple[str, tuple[int, int, int, int]]]:
     """글 줄 안의 아이콘 자리 [(이름, 상자)]. 아이콘만 있는 줄의 아이콘은 뺀다 (그 줄은 지우지도 다시 그리지도 않는다)."""
     return [(n, b) for n, b, only in icon_boxes(img, text) if not only]
-
-
-LIGHT_DRAWING = 135.0  # 덩어리의 가장 진한 쪽(10%) 밝기가 이보다 밝으면 연한 배경 그림 (0~255)
-
-
-def _light_drawing(img: np.ndarray, lum: np.ndarray, ink: np.ndarray, c) -> bool:
-    """연하고 색이 거의 없고 드문드문한 덩어리 = 배경 그림 선.
-    (금색 동전처럼 밝아도 색이 있거나, 회색 타일처럼 속이 꽉 찬 것은 아이콘)"""
-    x, y, w, h, _a = c
-    m = ink[y:y + h, x:x + w]
-    if not m.any():
-        return True
-    if float(m.mean()) >= 0.4:  # 속이 찬 덩어리는 그림 선이 아니다
-        return False
-    if float(np.percentile(lum[y:y + h, x:x + w][m], 10)) < LIGHT_DRAWING:
-        return False
-    px = img[y:y + h, x:x + w][m].astype(np.float32)
-    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
-    return float(np.median(sat)) < 0.25
-
-
-_WORDY_CH = re.compile(r"[ぁ-んァ-ヶ一-龯々A-Za-zＡ-Ｚａ-ｚ가-힣]")
-_DIGIT_CH = re.compile(r"[0-9０-９＋+×xX]")
-
-
-def _line_color_design(img, ink, y0: int, y1: int) -> bool:
-    """그 줄에 글자색과 다른 ‘색 있는’ 잉크가 5% 이상: 아이콘이 색으로 그려진 카드 (검정 선 아이콘·빨간 글자 카드는 아님)."""
-    m = ink[y0:y1]
-    if m.sum() < 50:
-        return False
-    px = img[y0:y1][m].astype(np.float32)
-    text_col = np.median(px, axis=0)
-    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
-    other = (sat >= 0.3) & (np.abs(px - text_col).max(axis=1) > 80)
-    return float(other.mean()) >= 0.05
-
-
-def _looks_like_text(img, lum, ink, box) -> bool:
-    """상자 안 잉크가 진하고 색이 없다 = 검정 글자."""
-    x0, y0, x1, y1 = (int(v) for v in box)
-    m = ink[y0:y1, x0:x1]
-    if m.sum() < 20:
-        return True
-    px = img[y0:y1, x0:x1][m].astype(np.float32)
-    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
-    # 진한 쪽(30%) 밝기로 본다: 옆의 연한 그림 선이 섞여도 글자 획은 진하다
-    if not (float(np.median(sat)) < 0.2 and float(np.percentile(lum[y0:y1, x0:x1][m], 30)) < 100):
-        return False
-    # 테두리가 넓은 속을 감싸면(동전·타일처럼) 아이콘이다. 글자 속 빈칸은 작다
-    import cv2
-
-    inv = (~m).astype(np.uint8)
-    h, w = inv.shape
-    if h < 3 or w < 3:
-        return True
-    ff = inv.copy()
-    mask = np.zeros((h + 2, w + 2), np.uint8)
-    for sx, sy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
-        if ff[sy, sx]:
-            cv2.floodFill(ff, mask, (sx, sy), 0)
-    holes = float(ff.sum()) / max(1, h * w)
-    return holes < 0.2
-
-
-def _colored_icon_boxes(img, lum, ink, comps, em: float, seq: list[str], min_gray_fill: float = 0.45):
-    """줄 안에서 글자색(진한 무채색)이 아닌 덩어리(금색 동전·빨간 병·초록 책·회색 타일 등)를 겹치는 것끼리 묶은
-    아이콘 상자들(왼쪽부터, 원문 아이콘 순서). 수가 맞을 때만 돌려준다.
-    색 숫자(갈색 ‘4’ 등)가 섞이면 원문 줄의 숫자·아이콘 순서에 맞춰 숫자 자리를 뺀다."""
-    n_tok = sum(1 for t in seq if t == "\u25a0")
-    if not n_tok:
-        return None
-    picked = []
-    for c in comps:
-        x, y, w, h, _a = c
-        m = ink[y:y + h, x:x + w]
-        if m.sum() < 20 or _light_drawing(img, lum, ink, c):
-            continue
-        px = img[y:y + h, x:x + w][m].astype(np.float32)
-        sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
-        med_l = float(np.median(lum[y:y + h, x:x + w][m]))
-        fill = float(m.sum()) / max(1, w * h)
-        colored = float(np.median(sat)) >= 0.25 and fill >= 0.25
-        gray_solid = med_l >= 95 and fill >= min_gray_fill  # 회색 타일처럼 속이 찬 것 (드문드문한 그림 선은 빼다)
-        if colored or gray_solid:
-            picked.append([x, y, x + w, y + h])
-    boxes: list[list[int]] = []
-    for b in sorted(picked):  # 겹치거나 아주 가까운 것끼리 하나로
-        g = 0  # 겹치는 것만 (옆에 붙은 숫자는 따로)
-        for bb in boxes:
-            if b[0] <= bb[2] + g and b[2] >= bb[0] - g and b[1] <= bb[3] + g and b[3] >= bb[1] - g:
-                bb[:] = [min(bb[0], b[0]), min(bb[1], b[1]), max(bb[2], b[2]), max(bb[3], b[3])]
-                break
-        else:
-            boxes.append(list(b))
-    boxes = [b for b in boxes if (b[3] - b[1]) >= 0.5 * em and (b[2] - b[0]) >= 0.35 * em
-             and (b[2] - b[0]) >= 0.55 * (b[3] - b[1])]  # 괄호처럼 좁은 것은 빼다
-    boxes.sort()
-    sub = [t for t in seq if t == "\u25a0" or _DIGIT_CH.match(t)]
-    if len(sub) > n_tok:  # 줄에 숫자가 있다 (색 숫자 ‘4’ 등이 상자로 잡혔을 수 있음)
-        # 원문 줄의 숫자·아이콘 순서와 상자 수가 같으면 아이콘 자리만
-        if len(boxes) == len(sub):
-            return [tuple(b) for b, t in zip(boxes, sub) if t == "\u25a0"]
-        wide = [b for b in boxes if (b[2] - b[0]) >= 0.68 * (b[3] - b[1])]  # 숫자는 좁다
-        if len(wide) == n_tok:
-            return [tuple(b) for b in wide]
-        return None
-    if len(boxes) == n_tok:
-        return [tuple(b) for b in boxes]
-    if len(boxes) > n_tok:  # 글 속의 색 숫자(갈색 ‘2’ 등)가 더 잡혔으면 숫자처럼 좁은 것을 뺀다
-        wide = [b for b in boxes if (b[2] - b[0]) >= 0.75 * (b[3] - b[1])]
-        if len(wide) == n_tok:
-            return [tuple(b) for b in wide]
-    return None
-
-
-def _not_black_text(img, lum, ink, box) -> bool:
-    """칸의 잉크가 검정 글자가 아니다: 회색·밝은 아이콘(검·숫자 장식)이거나 색이 있다."""
-    if img is None:
-        return False
-    x0, y0, x1, y1 = (int(v) for v in box)
-    m = ink[y0:y1, x0:x1]
-    if m.sum() < 20:
-        return False
-    px = img[y0:y1, x0:x1][m].astype(np.float32)
-    sat = (px.max(axis=1) - px.min(axis=1)) / np.maximum(px.max(axis=1), 1.0)
-    return float(np.median(lum[y0:y1, x0:x1][m])) >= 85 or float(np.median(sat)) >= 0.25
-
-
-def _trim_edge_scraps(cells: list, n_want: int, em_t: float) -> list:
-    """칸이 원문보다 많을 때, 줄 양 끝에서 글자와 떨어진 작은·가는 칸들(배경 그림 조각)을 뺀다.
-    빼서 원문 칸 수와 꼭 맞을 때만 쓴다 (아이콘끼리 붙은 줄도 순서대로 짝지을 수 있게)."""
-    def small(c):
-        return (c[2] - c[0]) < 0.5 * em_t or (c[3] - c[1]) < 0.3 * em_t
-
-    out = list(cells)
-    # 왼쪽 끝: 작은 칸이 이어진 묶음이 첫 글자와 떨어져 있으면 묶음째 뺀다
-    i = 0
-    while i < len(out) and small(out[i]):
-        i += 1
-    if 0 < i < len(out) and out[i][0] - out[i - 1][2] > 0.6 * em_t:
-        out = out[i:]
-    j = len(out)
-    while j > 0 and small(out[j - 1]):
-        j -= 1
-    if 0 < j < len(out) and out[j][0] - out[j - 1][2] > 0.6 * em_t:
-        out = out[:j]
-    return out if len(out) == n_want else cells
-
-
-def _set_partner(box, cells, seq, tok_pos: int, em_line: float, em: float, img=None, lum=None, ink=None):
-    """이미지 칸이 원문보다 많을 때, 고른 아이콘 칸에 바짝 붙은 아이콘 칸이 있으면 합친다 (예: 큰 숫자 5 + 검).
-    이웃 칸이 아이콘인지는 크기(보통 글자보다 확실히 큼)나 잉크(검정 글자가 아닌 회색·색)로 본다.
-    원문에서 그쪽 이웃이 다른 아이콘이면 합치지 않는다 (따로 읽은 아이콘)."""
-    bx0, _by0, bx1, _by1 = box
-    i = next((j for j, c in enumerate(cells) if c[0] < bx1 and c[2] > bx0), None)
-    if i is None:
-        return box
-    out = list(box)
-    for side, j in (("right", i + 1), ("left", i - 1)):
-        if not 0 <= j < len(cells):
-            continue
-        nb = seq[tok_pos + 1] if side == "right" and tok_pos + 1 < len(seq) else (
-            seq[tok_pos - 1] if side == "left" and tok_pos > 0 else "")
-        if nb == "■" or _DIGIT_CH.match(nb or " "):
-            continue  # 원문에서 그쪽이 다른 아이콘이거나 숫자·기호(+2 등)면 그 칸은 그 글자다
-        c = cells[j]
-        # 세로는 고른 칸 근처까지만 (이웃 칸에 윗줄 글자가 붙어 있을 수 있다)
-        h = out[3] - out[1]
-        c = (c[0], max(c[1], int(out[1] - 0.35 * h)), c[2], min(c[3], int(out[3] + 0.35 * h)))
-        gap = (c[0] - out[2]) if side == "right" else (out[0] - c[2])
-        if img is None:  # 그림이 없으면(시험) 크기로만
-            icon_like = c[3] - c[1] >= 1.2 * em_line
-        else:  # 검정 글자는 크게 잡혀도(아래 그림 선이 붙음) 아이콘이 아니다: 회색·색 잉크여야 한다
-            icon_like = c[3] - c[1] >= 0.8 * em_line and _not_black_text(img, lum, ink, c)
-        if (0 <= gap + 2 and gap <= 0.35 * em_line and icon_like
-                and max(out[2], c[2]) - min(out[0], c[0]) <= 3.0 * max(em, em_line)):
-            out = [min(out[0], c[0]), min(out[1], c[1]), max(out[2], c[2]), max(out[3], c[3])]
-            break
-    return tuple(out)
-
-
-def _ordinal_icon_cell(cells, seq, tok_pos: int, band_h: float, em: float):
-    """아이콘 크기 칸(줄 높이의 70% 이상이거나 보통 글자보다 넓은 것)이 원문의 아이콘 수와 같으면 k번째 아이콘 칸."""
-    n_tok = sum(1 for t in seq if t == "\u25a0")
-    k = sum(1 for t in seq[:tok_pos] if t == "\u25a0")
-    big = [c for c in cells if (c[3] - c[1]) >= 0.7 * band_h and (c[2] - c[0]) >= 0.8 * em]  # 숫자 폭은 빼다
-    if len(big) == n_tok and n_tok:
-        return big[k]
-    return None
-
-
-def _grow_box(box, comps, gap: int = 3):
-    """box에 닿거나 겹치는 덩어리를 붙여 넓힌다 (조각난 아이콘을 한 그림으로). 너무 커지면 그대로."""
-    bx0, by0, bx1, by1 = box
-    h0, w0 = by1 - by0, bx1 - bx0
-    changed = True
-    while changed:
-        changed = False
-        for x, y, w, h, _a in comps:
-            ix = min(bx1, x + w) - max(bx0, x)
-            iy = min(by1, y + h) - max(by0, y)
-            # 많이 겹치는 조각만 (상자 테두리가 안의 동전을 감싸는 것 등). 옆 글자처럼 닿기만 한 것은 붙이지 않는다
-            if ix > 0 and iy > 0 and ix * iy >= 0.5 * min(w * h, (bx1 - bx0) * (by1 - by0)):
-                nb = (min(bx0, x), min(by0, y), max(bx1, x + w), max(by1, y + h))
-                if nb != (bx0, by0, bx1, by1) and (nb[3] - nb[1]) <= 1.6 * h0 + 4 and (nb[2] - nb[0]) <= 1.6 * w0 + 4:
-                    bx0, by0, bx1, by1 = nb
-                    changed = True
-    return bx0, by0, bx1, by1
-
-
-def _glyph_cells(comps, em: float, band: tuple[int, int] | None = None) -> list[tuple[int, int, int, int]]:
-    """한 줄의 덩어리를 글자 칸으로 묶는다.
-    - 가로로 겹치면 늘 하나로 (겹친 카드 아이콘, 아이콘 안 무늬)
-    - 틈이 좁으면 합친 폭이 글자 하나(줄의 글자 높이 정도) 이하일 때만 하나로 (以·ハ처럼 갈라진 글자)
-      -> 글자 사이가 좁은 글꼴에서도 서로 다른 글자는 붙지 않는다."""
-    # 글자·아이콘보다 훨씬 큰 덩어리(띠 테두리·그림 가장자리)는 칸이 아니다
-    boxes = sorted([x, y, x + w, y + h] for x, y, w, h, a in comps if a >= 4 and w <= em * 3.2 and h <= em * 2.6)
-    if band is not None and boxes:  # 줄 위·아래 가장자리에 걸친 가는 조각(띠 테두리)은 뺀다. 가운데의 ‘ー’는 남김
-        b0, b1 = band
-        hb = max(1, b1 - b0)
-        boxes = [b for b in boxes if not ((b[3] - b[1]) < hb * 0.25
-                                          and not (b0 + hb * 0.25 <= (b[1] + b[3]) / 2 <= b0 + hb * 0.75))]
-    if not boxes:
-        return []
-    hs = sorted(b[3] - b[1] for b in boxes)
-    tall = [h for h in hs if h >= hs[-1] * 0.5]
-    gh = tall[len(tall) // 2]  # 이 줄 글자의 높이
-    # 아주 작은 점·잡티는 묶기 전에 뺀다 (이웃 글자와 아이콘 사이에서 다리처럼 둘을 이어 붙이지 않게)
-    boxes = [b for b in boxes if (b[2] - b[0]) >= gh * 0.2 or (b[3] - b[1]) >= gh * 0.2]
-    cells: list[list[int]] = []
-    for b in boxes:
-        if cells:
-            c = cells[-1]
-            overlap = b[0] < c[2] - 1
-            close = b[0] <= c[2] + gh * 0.15 and max(c[2], b[2]) - min(c[0], b[0]) <= gh * 1.12
-            if overlap or close:
-                c[0], c[1], c[2], c[3] = min(c[0], b[0]), min(c[1], b[1]), max(c[2], b[2]), max(c[3], b[3])
-                continue
-        cells.append(list(b))
-    # 점·잡티와 작은 문장부호(、。…)는 칸으로 세지 않는다 (원문 쪽도 SMALL_MARKS를 뺀다)
-    cells = [c for c in cells if (c[3] - c[1]) >= gh * 0.4 or (c[2] - c[0]) >= gh * 0.4]
-    return [tuple(c) for c in _tidy_cells(cells, gh)]
-
-
-def _tidy_cells(cells: list[list[int]], gh: float) -> list[list[int]]:
-    """줄 양 끝에서 멀리 떨어진 작은 조각(카드 테두리 조각)은 빼고, 바로 옆에 붙은 아주 작은 점은 이웃 칸에 합친다."""
-    def small(c):
-        return (c[2] - c[0]) < gh * 0.3  # 가는 조각 (높이와 관계없이: 카드 테두리 조각은 글자만큼 높기도 하다)
-
-    while len(cells) > 1 and small(cells[0]) and cells[1][0] - cells[0][2] > gh * 1.2:
-        cells = cells[1:]
-    while len(cells) > 1 and small(cells[-1]) and cells[-1][0] - cells[-2][2] > gh * 1.2:
-        cells = cells[:-1]
-    out: list[list[int]] = []
-    for c in cells:
-        tiny = (c[2] - c[0]) < gh * 0.25 and (c[3] - c[1]) < gh * 0.7
-        if tiny and out and c[0] - out[-1][2] < gh * 0.25:
-            o = out[-1]
-            o[0], o[1], o[2], o[3] = min(o[0], c[0]), min(o[1], c[1]), max(o[2], c[2]), max(o[3], c[3])
-            continue
-        out.append(list(c))
-    return out
-
-
-def _line_components(ink: np.ndarray, em: float, band: tuple[int, int], band_h: int):
-    """한 줄 높이(위아래 20% 여유) 안의 덩어리 [(x, y, w, h, 넓이)]. 긴 가로선은 지우고 센다."""
-    import cv2
-
-    y0, y1 = band
-    top, bot = max(0, int(y0 - band_h * 0.2)), min(ink.shape[0], int(y1 + band_h * 0.2) + 1)
-    strip = ink[top:bot] & ~_long_lines(ink[top:bot], em)
-    n, _lab, st, _c = cv2.connectedComponentsWithStats(strip.astype(np.uint8), connectivity=8)
-    out = []
-    for c in range(1, n):
-        x, y, w, h, a = (int(v) for v in st[c])
-        cy = top + y + h / 2
-        if a >= 6 and y0 - band_h * 0.2 <= cy <= y1 + band_h * 0.2:
-            out.append((x, top + y, w, h, a))
-    return out
-
-
-def _long_lines(ink: np.ndarray, em: float) -> np.ndarray:
-    """글자보다 훨씬 긴 가로·세로 선(띠 테두리·구분선)만 골라낸 마스크 (조금 두껍게)."""
-    import cv2
-
-    k = max(15, int(em * 1.6))
-    m = ink.astype(np.uint8)
-    horiz = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1)))
-    lines = cv2.dilate(horiz, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
-    return lines.astype(bool)
-
-
-SMALL_MARKS = set("、。，．・,.'`:;…‥")  # 이미지에서 칸으로 세지 않을 만큼 작은 글자
-
-
-def _line_cells(line: str) -> list[str]:
-    """원문 한 줄 -> 글자 칸 목록. 아이콘 토큰은 \u25a0 하나, 공백·작은 문장부호는 칸이 아니다."""
-    return [ch for ch in TOKEN_RE.sub("\u25a0", line) if not ch.isspace() and ch not in SMALL_MARKS]
-
-
-def _token_cell_index(line: str, before: str) -> int:
-    """before(토큰 앞 문자열)까지의 칸 수."""
-    return len(_line_cells(before))
-
-
-def cut_out(img: np.ndarray, box: tuple[int, int, int, int], pad: int = 4) -> np.ndarray:
-    """box를 잘라 아이콘 바깥 배경만 투명하게 한 RGBA (아이콘 안쪽의 흰 부분·무늬는 살린다)."""
-    import cv2
-
-    h, w = img.shape[:2]
-    x0, y0, x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad), min(w, box[2] + pad), min(h, box[3] + pad)
-    crop = img[y0:y1, x0:x1]
-    em = max(box[2] - box[0], box[3] - box[1])
-    from app.erase import dark_ink
-
-    # 잘라 낼 때는 배경색과 뚜렷이 다른 것만 잉크로 본다 (분홍·노랑 카드 바탕이 남지 않게)
-    border = np.concatenate([crop[0], crop[-1], crop[:, 0], crop[:, -1]]).astype(np.float32)
-    bgc = np.median(border, axis=0)
-    dist = np.abs(crop.astype(np.float32) - bgc).max(axis=2)
-    bg_px = int(max(31, em * 2.2)) | 1
-    ink = ((dist > 120) | dark_ink(img, 50.0, bg_px)[y0:y1, x0:x1]).astype(np.uint8)
-    inside = np.zeros_like(ink)
-    inside[box[1] - y0:box[3] - y0, box[0] - x0:box[2] - x0] = 1
-    ink &= inside
-    k = max(1, em // 25)
-    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
-    # 바깥에서 채워 들어가 닿지 않는 곳 = 모양 안쪽 (구멍 채우기)
-    flood = np.pad((1 - ink).astype(np.uint8) * 255, 1, constant_values=255)  # 바깥을 한 겹 둘러 네 모서리가 이어지게
-    mask = np.zeros((flood.shape[0] + 2, flood.shape[1] + 2), np.uint8)
-    cv2.floodFill(flood, mask, (0, 0), 0)
-    flood = flood[1:-1, 1:-1]
-    shape = ((ink > 0) | (flood > 0)).astype(np.float32)
-    alpha = cv2.GaussianBlur(shape, (0, 0), max(0.6, k * 0.6))  # 가장자리를 부드럽게
-    alpha = np.clip(alpha * 1.6, 0, 1)
-    return np.dstack([crop, (alpha * 255).astype(np.uint8)])
-
-
-def save_png(rgba: np.ndarray, path: Path) -> None:
-    import cv2
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ok, buf = cv2.imencode(".png", cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
-    if not ok:
-        raise OSError(f"PNG 저장 실패: {path}")
-    path.write_bytes(buf.tobytes())
-
-
-def load_png(path: Path) -> np.ndarray:
-    import cv2
-
-    a = cv2.imdecode(np.frombuffer(Path(path).read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED)
-    if a.ndim == 2:
-        a = np.dstack([a, a, a, np.full(a.shape, 255, np.uint8)])
-    elif a.shape[2] == 3:
-        a = np.dstack([a, np.full(a.shape[:2], 255, np.uint8)])
-    return cv2.cvtColor(a, cv2.COLOR_BGRA2RGBA)
 
 
 # ---------------------------------------------------------------- 모양 비교
@@ -1488,7 +1134,7 @@ class Occurrence:
     file_key: str
     page: int
     region: str
-    index: int  # 그 칸의 몇 번째 [[?]] (0부터, 자동으로 바꾼 것을 뺀 뒤)
+    index: int  # 그 칸의 몇 번째 [[?]] (0부터). 이름이 있는 토큰의 자리(named)는 -1
     context: str
     png: str = ""
     reason: str = ""
@@ -1508,6 +1154,12 @@ class Occurrence:
     # 글자 지우기 배경이 그림인 칸의 아이콘: 비슷한 아이콘과 같은 것으로 보지 않고 늘 따로 (묶지 않음·사전 자동 맞춤 없음).
     # 그림 배경 위 아이콘은 잘라 낸 그림에 그 자리 배경이 함께 들어가 자리마다 다른 그림으로 쓴다
     unique: bool = False
+    # 원문에 이미 이름이 있는 아이콘([[crown]])의 자리: 그 이름. 이런 자리는 index가 -1이고 ti(그 칸 모든 [[…]] 중 몇째)로
+    # 원문 토큰을 가리킨다. 자리를 다시 잡거나 나누면 그 토큰을 [[?]]로 열어(open_named) 보통 자리가 된다
+    named: str = ""
+    ti: int = -1  # 그 칸의 모든 [[…]] 토큰 중 몇째 (0부터)
+    prev: str = ""  # 확정된 이름이 있던 자리를 [[?]]로 연 경우 그 이름 (2A가 이름 칸에 미리 채운다)
+    added: bool = False  # 사람이 카드 보기에서 새로 그려 넣은 자리 (원문에 없던 아이콘)
 
     @property
     def num(self) -> str:
@@ -1518,8 +1170,11 @@ class Occurrence:
 @dataclass
 class ScanResult:
     occurrences: list[Occurrence] = field(default_factory=list)
-    groups: dict = field(default_factory=dict)  # 묶음 -> {"rep", "count", "suggest", "meaning", "ko"}
-    auto: dict = field(default_factory=dict)  # 사전으로 바로 바꾼 이름 -> 횟수
+    # 줄(카드의 아이콘 하나) -> {"rep", "count"(늘 1), "suggest", "meaning", "ko", "shape"(모양이 같은 줄끼리 같은 값),
+    # "dict"(이름 칸에 미리 채울 사전 이름), "dict_how"(named=이미 확정됨 | same=사전과 모양 같음 | legacy=예전 사전 그림과
+    # 비슷 | prev=확정된 이름을 다시 연 자리), "named", "not_icon", "absorbed", …}
+    groups: dict = field(default_factory=dict)
+    auto: dict = field(default_factory=dict)  # (예전) 사전으로 바로 바꾼 이름 -> 횟수. 이제는 늘 비어 있다
 
     @property
     def pending(self) -> int:
@@ -1545,6 +1200,22 @@ def pending_count(info) -> int:
         for pno, regs in load_extracted(fd).items():
             if pno in inc:
                 n += sum(len(PLACEHOLDER_RE.findall(r["source"])) for r in regs.values()
+                         if isinstance(r.get("source"), str))
+    return n
+
+
+def token_count(info) -> int:
+    """게임의 모든 프로젝트(뺀 쪽 제외) 원문에 있는 아이콘 토큰 수 ([[?]]와 이름이 있는 [[이름]] 모두).
+    ② 아이콘 정의는 확정된 아이콘도 표에 보여 고칠 수 있게 하므로, 하나라도 있으면 찾는다."""
+    from app.extract import load_extracted
+    from app.workspace import game_file_dirs, included_pages
+
+    n = 0
+    for fd in game_file_dirs(info):
+        inc = set(included_pages(fd))
+        for pno, regs in load_extracted(fd).items():
+            if pno in inc:
+                n += sum(len(TOKEN_RE.findall(r["source"])) for r in regs.values()
                          if isinstance(r.get("source"), str))
     return n
 
@@ -1583,7 +1254,9 @@ class PictureCells:
 
 
 def scan(info, work: Path) -> ScanResult:
-    """[[?]]를 모두 찾아 위치·그림을 만들고, 사전과 같은 것은 바로 바꾸고, 나머지는 묶는다."""
+    """원문의 아이콘 토큰을 모두 찾아 자리마다 위치·그림을 만든다 (카드의 아이콘 하나 = 한 줄).
+    [[?]]는 사전과 모양이 같으면 그 이름을 줄에 미리 채워 두기만 하고 원문은 바꾸지 않는다 (사람이 확정할 때 바꾼다).
+    이미 이름이 있는 [[이름]]도 줄로 만든다 (named): 이름을 그대로 두면 확정해도 원문은 그대로다."""
     import pymupdf
 
     from app.extract import load_extracted
@@ -1601,8 +1274,8 @@ def scan(info, work: Path) -> ScanResult:
     for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
         ext = load_extracted(fd)
-        todo = [(p, r, v["source"]) for p, regs in sorted(ext.items()) if p in inc
-                for r, v in regs.items() if isinstance(v.get("source"), str) and PLACEHOLDER in v["source"]]
+        todo = [(p, r, v["source"], v.get("icon_numbers")) for p, regs in sorted(ext.items()) if p in inc
+                for r, v in regs.items() if isinstance(v.get("source"), str) and TOKEN_RE.search(v["source"])]
         if not todo:
             continue
         proj = load_project(fd)
@@ -1610,48 +1283,50 @@ def scan(info, work: Path) -> ScanResult:
         src = next((fd / "source").glob("*.pdf"))
         doc = pymupdf.open(src)
         try:
-            for pno, rname, text in todo:
-                img = region_image(doc[pno - 1], {r.name: r for r in proj.template.regions_for(pno)}[rname])
+            for pno, rname, text, icon_nums in todo:
+                reg = {r.name: r for r in proj.template.regions_for(pno)}.get(rname)
+                if reg is None:  # 영역을 지운 칸은 그림을 자를 수 없다
+                    continue
+                img = region_image(doc[pno - 1], reg)
                 tokens = list(TOKEN_RE.finditer(text))
                 ph = [i for i, t in enumerate(tokens) if t.group(1) == "?"]
                 # 글자 없이 붙은 [[?]] 덩어리 (줄이 바뀌어도 하나): 같은 자리로 잡혀도 서로 겹친다고 보지 않는다
-                adj_of = {k: ri for ri, run in enumerate(placeholder_runs(text)) for k in run}
+                adj_of = {k: ri for ri, run in enumerate(_place.placeholder_runs(text)) for k in run}
                 # 같은 줄에 붙은 [[?]]만 세트 후보 (위아래로 이어진 것은 사람이 카드 보기에서 묶을 때만)
-                run_of = {k: ri for ri, run in enumerate(placeholder_runs(text, same_line=True)) for k in run}
+                run_of = {k: ri for ri, run in enumerate(_place.placeholder_runs(text, same_line=True)) for k in run}
                 located = [locate(img, text, ti) for ti in ph]
-                clash = shared_boxes([b for b, _w in located], [adj_of.get(k) for k in range(len(ph))])
+                clash = _place.shared_boxes([b for b, _w in located], [adj_of.get(k) for k in range(len(ph))])
                 set_host: dict[tuple, Occurrence] = {}  # (덩어리, 찾은 자리) -> 그 자리를 처음 찾은 아이콘
                 host_k: dict[tuple, int] = {}  # 그 아이콘의 [[?]] 순번 (같은 줄인지 볼 때)
                 set_n: dict[tuple, int] = {}  # 그 자리에 들어간 아이콘 수
-                auto_map, auto_strip, left = {}, {}, []
+                left: list[Occurrence] = []
                 occ_of: dict[int, Occurrence] = {}
                 contested: set[int] = set()  # 다른 줄의 [[?]]도 같은 자리로 잡힌 첫 자리 (그 자리가 누구 것인지 모른다)
                 for k, ti in enumerate(ph):
                     n += 1
                     oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, k,
-                                    text.replace("\n", " / "))
+                                    text.replace("\n", " / "), ti=ti)
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
                     oc.unique = picture(pno, rname)
                     occ_of[k] = oc
                     box, why = located[k]
                     if k in clash:
                         # 글자를 사이에 둔 다른 [[?]]와 같은 자리로 잡힘: 어느 쪽이 맞는지 모른다. 그대로 두면 서로 다른 아이콘이
-                        # 한 그림으로 사전에 자동으로 맞춰지거나(사교·큐브·왕관 5개가 모두 crown_social) 한 묶음이 된다
-                        box, why = None, SHARED_BOX_REASON
+                        # 한 그림으로 사전 이름이 채워지거나(사교·큐브·왕관 5개가 모두 crown_social) 한 모양으로 묶인다
+                        box, why = None, _place.SHARED_BOX_REASON
                     key = (adj_of.get(k), tuple(box)) if box is not None else None
                     host = set_host.get(key) if key else None
                     if (host is not None and set_n[key] > 0 and run_of.get(k) == run_of.get(host_k[key])
-                            and set_box_fits(box, set_n[key] + 1)):
+                            and _place.set_box_fits(box, set_n[key] + 1)):
                         set_n[key] += 1
                         # 붙어 있는 [[?]]가 앞 아이콘과 같은 덩어리: 아이콘 여러 개가 붙은 한 세트 (그 그림 하나로 보여 주고
                         # 이 자리는 원문에서 뺀다. 둘 다 남기면 세트 그림이 두 번 들어간다)
                         oc.set_of, oc.box = host.id, list(host.box)
-                        oc.set_name = host.match  # 첫 자리가 사전으로 바뀌었으면 이 자리는 표에서 확인받는다
                         left.append(oc)
                         continue
                     if host is not None:
                         # 앞 아이콘과 같은 자리로 잡혔는데 세트 모양이 아님(또는 세트가 끝남): 찾기 실수로 보고 직접 잡게 한다
-                        # (같은 그림을 잘라 두면 앞 아이콘과 한 묶음이 되어 같은 이름이 두 번 들어간다)
+                        # (같은 그림을 잘라 두면 앞 아이콘과 같은 모양이 되어 같은 이름이 두 번 들어간다)
                         set_n[key] = 0
                         contested.add(host_k[key])
                         box, why = None, "앞 아이콘과 같은 자리로 잡혀 위치를 못 찾음"
@@ -1669,46 +1344,54 @@ def scan(info, work: Path) -> ScanResult:
                                 box = nb
                                 oc.number = {"text": text[num[1]:num[2]], "side": num[0]}
                         oc.box = [int(v) for v in box]
-                        rgba = cut_out(img, box)
+                        rgba = _cells.cut_out(img, box)
                         png = work / "crops" / f"{oc.id}.png"
-                        save_png(rgba, png)
+                        _cells.save_png(rgba, png)
                         oc.png = str(png)
                         sh = shape_pair(rgba)
                         if not oc.unique:  # 그림 배경 칸: 사전 아이콘과 같다고 보지 않는다 (늘 새 아이콘)
+                            # 사전과 모양·숫자가 같으면 이름 칸에 미리 채운다 (원문은 사람이 확정할 때 바꾼다)
                             oc.match, oc.score = best_known(sh, known, oc.num)
                             if not oc.match:
-                                oc.hint = legacy_hint(sh, known, oc.num)
-                    if oc.match:
-                        auto_map[k] = oc.match
-                        if oc.number:
-                            auto_strip[k] = oc.number
-                        res.auto[oc.match] = res.auto.get(oc.match, 0) + 1
-                    else:
-                        left.append(oc)
-                for hk in sorted(contested & auto_map.keys()):
-                    # 첫 자리는 찾은 그대로 보여 주되 사전 이름을 확인 없이 넣지 않는다 (그 상자가 아랫자리 아이콘일 수 있다):
-                    # 이름은 ② 검토에 제안만 한다
-                    name = auto_map.pop(hk)
-                    auto_strip.pop(hk, None)
-                    res.auto[name] -= 1
-                    if not res.auto[name]:
-                        del res.auto[name]
-                    oc = occ_of[hk]
-                    oc.match, oc.hint = "", name
-                    for o in left:
-                        if o.set_of == oc.id:
-                            o.set_name = ""
+                                oc.hint = _place.legacy_hint(sh, known, oc.num)
                     left.append(oc)
-                left.sort(key=lambda o: o.index)  # 아직 그 칸의 [[?]] 순번 k (아래에서 자동으로 바꾼 것을 뺀 순서로 바뀜)
-                if auto_map:  # 사전과 모양·숫자가 같은 것: 바로 바꾸고 그 숫자는 원문에서 뺀다
-                    now = apply_region(fd, pno, rname, auto_map, auto_strip,
-                                       note="아이콘 사전과 모양이 같아 자동으로 바꿈")
-                    if now is not None:
-                        for oc in left:
-                            oc.context = now.replace("\n", " / ")
-                for j, oc in enumerate(left):  # 자동으로 바꾼 것을 뺀 순서
-                    oc.index = j
-                    res.occurrences.append(oc)
+                for hk in sorted(contested):
+                    # 첫 자리는 찾은 그대로 보여 주되 사전 이름을 ‘모양 같음’으로 채우지 않는다 (그 상자가 아랫자리 아이콘일
+                    # 수 있다): 비슷한 사전 이름으로만 채운다
+                    oc = occ_of[hk]
+                    if oc.match:
+                        oc.match, oc.hint = "", oc.match
+                # 이미 이름이 있는 아이콘 [[이름]]: 그 자리도 한 줄로 보여 고칠 수 있게 (그대로 두면 원문은 바뀌지 않는다)
+                for ti, t in enumerate(tokens):
+                    if t.group(1) == "?":
+                        continue
+                    n += 1
+                    oc = Occurrence(f"o{n:03d}", str(fd.relative_to(root)), game_file_key(fd), pno, rname, -1,
+                                    text.replace("\n", " / "), named=t.group(1), ti=ti)
+                    oc.line, oc.order, _nm = tokens_in(text)[ti]
+                    oc.unique = picture(pno, rname)
+                    box = locate(img, text, ti)[0]
+                    if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
+                        box = _place.match_known(info, img, t.group(1), text)
+                    if box is None:
+                        oc.reason = "확정된 아이콘의 자리를 찾지 못함"
+                        left.append(oc)
+                        continue
+                    # 확정할 때 원문에서 뺀 옆 숫자(icon_numbers)는 그림에 다시 넣는다 (사전 그림과 같게)
+                    e = next((e for e in (icon_nums or []) if isinstance(e, dict) and e.get("index") == ti
+                              and e.get("name") == t.group(1) and e.get("text")), None)
+                    if e is not None:
+                        nb = absorb_number(img, box, e.get("side", "before"), len(str(e["text"])))
+                        if nb is not None:
+                            box = nb
+                        oc.number = {"text": str(e["text"]), "side": e.get("side", "before")}
+                    oc.box = [int(v) for v in box]
+                    png = work / "crops" / f"{oc.id}.png"
+                    _cells.save_png(_cells.cut_out(img, box), png)
+                    oc.png = str(png)
+                    left.append(oc)
+                left.sort(key=lambda o: o.ti)  # 원문 순서 (읽는 순서)
+                res.occurrences.extend(left)
         finally:
             doc.close()
     _group(res)
@@ -1717,42 +1400,73 @@ def scan(info, work: Path) -> ScanResult:
 
 
 def _group(res: ScanResult) -> None:
-    shapes = {o.id: shape_pair(load_png(Path(o.png))) for o in res.occurrences if o.png}
+    """자리마다 한 줄(묶음)을 만든다 (카드의 아이콘 하나 = 한 줄). 모양이 같은 줄끼리는 "shape"이 같다
+    (이름 제안을 모양마다 한 번만 받고, 화면이 같은 모양 줄에 이름을 함께 적게 한다). 사전과 모양이 같거나 이미 이름이
+    있는 자리는 그 이름을 "dict"로 미리 채운다."""
+    shapes = {o.id: shape_pair(_cells.load_png(Path(o.png))) for o in res.occurrences if o.png}
     by_id = {o.id: o for o in res.occurrences}
-    reps: list[tuple[str, str]] = []  # (묶음, 대표 occurrence id)
-    n_g = 0  # 만든 묶음 수 (따로 만든 그림 배경 아이콘 포함)
+    reps: list[tuple[str, str]] = []  # (모양, 대표 occurrence id)
+    n_g = 0  # 만든 줄 수
     for o in res.occurrences:
         if o.set_of:  # 세트의 나머지 자리: 표에 따로 보이지 않고 확정할 때 원문에서 뺀다
             o.group = f"세트 {o.id}"
             res.groups[o.group] = {"rep": "", "count": 1, "not_icon": True, "absorbed": o.set_of, "auto": True}
-            if o.set_name:  # 첫 자리가 사전으로 바로 바뀜: 이 자리는 표에 보여 확인받는다 (되돌릴 수 있게)
+            if o.set_name:  # (예전) 첫 자리가 사전으로 바로 바뀜: 이 자리는 표에 보여 확인받는다
                 res.groups[o.group].update(auto=False, absorbed_name=o.set_name)
             continue
-        if not o.png:
-            o.group = f"위치 못 찾음 {o.id}"
-            res.groups[o.group] = {"rep": "", "count": 1}
-            continue
-        # 옆 숫자가 다르면 모양이 같아도 다른 묶음 (상자+2·상자+5). 그림 배경 칸의 아이콘은 늘 혼자인 묶음
-        g = None if o.unique else next((g for g, rid in reps if by_id[rid].num == o.num
-                                        and same_icon(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
-        if g is None:
+        if o.png:
             n_g += 1
-            g = f"g{n_g:02d}"
-            if not o.unique:  # 따로 만든 아이콘에는 다른 자리를 넣지 않는다
-                reps.append((g, o.id))
-            res.groups[g] = {"rep": o.id, "count": 0}
-        o.group = g
-        res.groups[g]["count"] += 1
-        if o.hint and not res.groups[g].get("dict"):  # 예전 사전 항목: 화면이 그 이름을 골라 둔다 (사람이 확인)
-            res.groups[g]["dict"] = o.hint
-        # 대표는 가장 큰(선명한) 조각
-        rep = res.groups[g]["rep"]
-        if _area(o.png) > _area(next(x.png for x in res.occurrences if x.id == rep)):
-            res.groups[g]["rep"] = o.id
+            o.group = f"g{n_g:02d}"
+            gi = {"rep": o.id, "count": 1}
+            # 옆 숫자가 다르면 모양이 같아도 다른 모양 (상자+2·상자+5). 그림 배경 칸의 아이콘은 늘 혼자인 모양
+            sg = None if o.unique else next((sg for sg, rid in reps if by_id[rid].num == o.num
+                                             and same_icon(shapes[o.id], shapes[rid]) >= SAME_SHAPE), None)
+            if sg is None:
+                sg = f"s{len(reps) + 1:02d}" if not o.unique else f"s-{o.id}"
+                if not o.unique:
+                    reps.append((sg, o.id))
+            gi["shape"] = sg
+        else:
+            o.group = f"위치 못 찾음 {o.id}"
+            gi = {"rep": "", "count": 1}
+        res.groups[o.group] = gi
+        _prefill(gi, o)
+
+
+def _prefill(gi: dict, o: Occurrence) -> None:
+    """줄의 이름 칸에 미리 채울 사전 이름 (dict)과 그 까닭 (dict_how)."""
+    for how, name in (("named", o.named), ("same", o.match), ("legacy", o.hint), ("prev", o.prev)):
+        if name:
+            gi["dict"], gi["dict_how"] = name, how
+            if how == "named":
+                gi["named"] = name
+            return
+
+
+def shape_of_row(res: ScanResult, o: Occurrence, sh) -> str:
+    """사람이 다시 잡은 자리의 모양 (모양이 같은 다른 줄의 shape, 없으면 새 값)."""
+    if o.unique:
+        return f"s-{o.id}"
+    by_id = {x.id: x for x in res.occurrences}
+    seen: set[str] = set()
+    for g, gi in res.groups.items():
+        sg = gi.get("shape")
+        rep = by_id.get(gi.get("rep") or "")
+        if not sg or sg in seen or rep is None or rep.id == o.id or not rep.png or rep.unique or rep.num != o.num:
+            continue
+        seen.add(sg)
+        if same_icon(sh, shape_pair(_cells.load_png(Path(rep.png)))) >= SAME_SHAPE:
+            return sg
+    return f"s-{o.id}"
+
+
+def prefill_name(gi: dict) -> str:
+    """줄의 이름 칸에 처음 보일 이름: 이미 확정된 이름 → 사전 이름(모양 같음·비슷함) → 모델 제안."""
+    return gi.get("named") or gi.get("dict") or gi.get("suggest") or ""
 
 
 def _area(png: str) -> int:
-    a = load_png(Path(png))
+    a = _cells.load_png(Path(png))
     return int(a.shape[0] * a.shape[1])
 
 
@@ -1772,141 +1486,39 @@ def load_scan(work: Path) -> ScanResult:
         else:
             oc.number = {}
         occ.append(oc)
-    return ScanResult(occ, data["groups"], data.get("auto", {}))
+    res = ScanResult(occ, data["groups"], data.get("auto", {}))
+    _split_old_groups(res)
+    return res
 
 
-# ---------------------------------------------------------------- 사람이 아이콘 자리 잡기 (카드 보기)
-def _occ_region(info, o: Occurrence) -> tuple[Path, np.ndarray, str]:
-    """그 자리의 (파일 폴더, 영역 이미지, 지금 원문)."""
-    import pymupdf
-
-    from app.extract import load_extracted
-    from app.project import load_project
-
-    fd = _occ_dir(info, o.file)
-    proj = load_project(fd)
-    reg = next(r for r in proj.template.regions_for(o.page) if r.name == o.region)
-    with pymupdf.open(next((fd / "source").glob("*.pdf"))) as doc:
-        img = region_image(doc[o.page - 1], reg)
-    src = (load_extracted(fd).get(o.page, {}).get(o.region) or {}).get("source")
-    return fd, img, src if isinstance(src, str) else ""
-
-
-def place_info(info, work: Path, occ_id: str) -> dict:
-    """카드 보기에서 자리를 잡는 데 필요한 것: {"image": RGB, "box": 지금 자리 | None, "guess": 예상 자리 | None,
-    "marks": [{"box", "name" | "group", "occ"}]} (같은 칸의 다른 아이콘 = 이미 찾은 것). 좌표는 image px."""
-    res = load_scan(work)
-    o = next(x for x in res.occurrences if x.id == occ_id)
-    _fd, img, text = _occ_region(info, o)
-    toks = list(TOKEN_RE.finditer(text))
-    ph = [ti for ti, t in enumerate(toks) if t.group(1) == "?"]  # 지금 원문의 j번째 [[?]] = index j인 자리
-    by_index = {x.index: x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)}
-    out = {"image": img, "box": None, "guess": None, "marks": [], "items": []}
-    for ti, t in enumerate(toks):
-        if t.group(1) == "?":
-            j = ph.index(ti)
-            x = by_index.get(j)
-            box = (x.box or (list(locate(img, text, ti)[0] or []) if x.png else [])) if x is not None else []
-            if x is not None:
-                out["items"].append(_place_item(res, x, box))
-            if x is not None and x.id == o.id:
-                out["box"] = box or None
-                if not box:
-                    out["guess"] = estimate(img, text, ti)
-            elif x is not None and x.set_of:  # 세트의 나머지 자리는 첫 자리 상자와 같다
-                continue
-            elif box:
-                gi = res.groups.get(x.group, {})
-                settled = "absorbed" if gi.get("absorbed") else "not_icon" if gi.get("not_icon") else ""
-                # 아이콘 아님·옆 아이콘에 포함으로 정한 자리는 상자가 있어도 회색 (일반 아이콘과 헷갈리지 않게)
-                out["marks"].append({"box": box, "group": x.group, "occ": x.id,
-                                     **({"not_icon": True} if gi.get("not_icon") else {}),
-                                     **({"settled": settled} if settled else {})})
-            else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게)
-                gi = res.groups.get(x.group, {}) if x is not None else {}
-                # 아이콘 아님·옆 아이콘에 합친 자리: 더 찾을 것은 없지만 어디였는지는 보여 준다 (확인·되돌리기).
-                # 화면은 ‘위치 못 찾음’(주황)과 다르게 회색으로 그린다
-                settled = "absorbed" if gi.get("absorbed") else "not_icon" if gi.get("not_icon") else ""
-                g = estimate(img, text, ti)
-                if g is not None:
-                    out["marks"].append({"box": list(g), "group": x.group if x is not None else "",
-                                         "occ": x.id if x is not None else "", "guess": True,
-                                         **({"settled": settled} if settled else {})})
-        else:
-            box = locate(img, text, ti)[0]
-            if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
-                box = match_known(info, img, t.group(1), text)
-            guess = False
-            if box is None:
-                box, guess = estimate(img, text, ti), True
-            if box is not None:
-                out["marks"].append({"box": list(box), "name": t.group(1), "ti": ti,
-                                     **({"guess": True} if guess else {})})
-            e = load_dictionary(info)["icons"].get(t.group(1)) or {}
-            pth = icons_dir(info) / e.get("file", f"{t.group(1)}.png")
-            out["items"].append({"occ": "", "group": "", "name": t.group(1), "state": "named", "ti": ti,
-                                 "box": list(box) if box is not None else None, "guess": guess,
-                                 "png": str(pth) if pth.exists() else ""})
-    return out
-
-
-def _place_item(res: "ScanResult", x: "Occurrence", box) -> dict:
-    """카드 보기 목록의 한 줄: {"occ", "group", "name": "", "state", "box", "host"}.
-    state: found(찾음) | manual(직접 잡음) | lost(위치 못 찾음) | not_icon | absorbed(host 자리에 포함) | set(찾기가 합친 세트)."""
-    gi = res.groups.get(x.group, {})
-    host = gi.get("absorbed") or x.set_of or ""
-    if x.set_of or (gi.get("absorbed") and gi.get("auto")):
-        state = "set"
-    elif gi.get("absorbed"):
-        state = "absorbed"
-    elif gi.get("not_icon"):
-        state = "not_icon"
-    elif not x.png:
-        state = "lost"
-    else:
-        state = "manual" if x.manual else "found"
-    return {"occ": x.id, "group": x.group, "name": "", "state": state, "box": list(box) if box else None,
-            "host": host}
+def _split_old_groups(res: ScanResult) -> None:
+    """예전 scan.json(1.22 이전: 같은 모양 자리 여럿 = 한 묶음)을 자리마다 한 줄로 나눈다 (적어 둔 제안·뜻은 줄마다
+    복사, 예전 묶음 이름은 모양 "shape"으로 남긴다). 새 scan.json은 이미 한 줄에 자리 하나라 바뀌지 않는다."""
+    first: dict[str, Occurrence] = {}
+    nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
+    nxt = max(nums, default=0)
+    for o in res.occurrences:
+        gi = res.groups.get(o.group)
+        if o.set_of or gi is None:
+            continue
+        if o.group not in first:
+            first[o.group] = o
+            continue
+        nxt += 1
+        ng = f"g{nxt:02d}" if o.png else f"위치 못 찾음 {o.id}"
+        new = {k: v for k, v in gi.items() if k not in ("rep", "count")}
+        new.update(rep=o.id if o.png else "", count=1)
+        new.setdefault("shape", o.group)
+        res.groups[ng] = new
+        o.group = ng
+    for g, o in first.items():
+        gi = res.groups[g]
+        if gi.get("count", 1) > 1:
+            gi.update(count=1, rep=o.id if o.png else "")
+            gi.setdefault("shape", g)
 
 
 MATCH_KNOWN_MIN = 0.6  # 사전 그림으로 찾을 때 이 이상 닮아야 그 자리로 본다 (정규화 상관)
-
-
-def match_known(info, img: np.ndarray, name: str, text: str) -> tuple[int, int, int, int] | None:
-    """사전 아이콘 그림(name)을 칸 그림 안에서 찾는다 (여러 크기로 맞춰 봄). (x0, y0, x1, y1) 또는 None.
-    크기는 글 줄 높이의 0.6~2.4배 사이에서 본다 (글 속 아이콘·아이콘만 있는 줄)."""
-    import cv2
-
-    e = load_dictionary(info)["icons"].get(name)
-    if not e:
-        return None
-    pth = icons_dir(info) / e.get("file", f"{name}.png")
-    if not pth.exists():
-        return None
-    tpl = load_png(pth)
-    if tpl.ndim == 3 and tpl.shape[2] == 4:  # 투명한 곳은 칸 바탕(중간 회색)으로
-        a = tpl[..., 3:4].astype(np.float32) / 255.0
-        tpl = (tpl[..., :3].astype(np.float32) * a + 200.0 * (1 - a)).astype(np.uint8)
-    g_img = cv2.cvtColor(np.ascontiguousarray(img[..., :3]), cv2.COLOR_RGB2GRAY)
-    g_tpl = cv2.cvtColor(np.ascontiguousarray(tpl[..., :3]), cv2.COLOR_RGB2GRAY)
-    n_lines = max(1, len([ln for ln in text.split("\n") if ln.strip()]))
-    line_h = img.shape[0] / n_lines
-    best, best_box = MATCH_KNOWN_MIN, None
-    for f in np.linspace(0.6, 2.4, 13):
-        h = int(round(line_h * f))
-        w = int(round(g_tpl.shape[1] * h / max(1, g_tpl.shape[0])))
-        if h < 8 or w < 8 or h > g_img.shape[0] or w > g_img.shape[1]:
-            continue
-        t = cv2.resize(g_tpl, (w, h), interpolation=cv2.INTER_AREA)
-        if float(t.std()) < 4:
-            continue
-        r = cv2.matchTemplate(g_img, t, cv2.TM_CCOEFF_NORMED)
-        _mn, mx, _l, loc = cv2.minMaxLoc(r)
-        if mx > best:
-            best, best_box = mx, (loc[0], loc[1], loc[0] + w, loc[1] + h)
-    return best_box
-
-
 def _known_shapes(info) -> dict:
     """사전 이름 -> (모양, 그림에 넣은 숫자 | None=예전 항목)."""
     d = load_dictionary(info)
@@ -1914,10 +1526,8 @@ def _known_shapes(info) -> dict:
     for name, e in d["icons"].items():
         p = icons_dir(info) / e.get("file", f"{name}.png")
         if p.exists():
-            out[name] = (shape_pair(load_png(p)), entry_number(e))
+            out[name] = (shape_pair(_cells.load_png(p)), entry_number(e))
     return out
-
-
 def best_known(sh, known: dict, occ_num: str) -> tuple[str, float]:
     """사전에서 모양이 같은 아이콘 (이름, 점수). 옆 숫자가 다르면 후보가 아니다 (상자+2를 상자+5로 바꾸지 않게:
     모양 비교는 숫자를 거의 보지 못한다). 없으면 ("", 0)."""
@@ -1925,807 +1535,22 @@ def best_known(sh, known: dict, occ_num: str) -> tuple[str, float]:
     nm, s = max(cand, key=lambda t: t[1], default=("", 0.0))
     return (nm, s) if s >= SAME_SHAPE else ("", 0.0)
 
+# ---------------------------------------------------------------- 나눈 모듈
+# 아래 모듈의 이름도 예전처럼 app.icons.이름으로 쓴다 (from app.icons import X, icons.X 모두).
+# 나눈 모듈은 이 모듈을 _ic로 불러 이름을 부를 때마다 찾는다: 테스트가 icons.locate 등을 바꿔 끼우면 그것을 쓴다.
+from app import icons_cells as _cells  # noqa: E402
+from app import icons_place as _place  # noqa: E402
+from app import icons_review as _review  # noqa: E402
 
-def legacy_hint(sh, known: dict, occ_num: str) -> str:
-    """모양이 같은 예전 사전 항목(number 키 없음) 이름: 자동으로 바꾸지 않고 ② 검토에 제안만 한다.
-    옆 숫자가 있는 자리에는 제안하지 않는다 (예전 그림에 숫자가 들어 있는지 몰라 확정을 막으므로, _number_conflicts)."""
-    if occ_num:
-        return ""
-    cand = [(nm, same_icon(sh, ks)) for nm, (ks, en) in known.items() if en is None]
-    nm, s = max(cand, key=lambda t: t[1], default=("", 0.0))
-    return nm if s >= SAME_SHAPE else ""
+_PARTS = (_cells, _place, _review)
 
 
-def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]) -> dict:
-    """사람이 잡은 자리로 그림을 다시 잘라 묶음을 다시 정한다.
-    {"group": 새 묶음, "old": 예전 묶음, "old_gone": 예전 묶음이 없어짐, "new_group": 새로 만든 묶음, "dict": 사전 이름}"""
-    work = Path(work)
-    res = load_scan(work)
-    o = next(x for x in res.occurrences if x.id == occ_id)
-    _fd, img, _text = _occ_region(info, o)
-    H, W = img.shape[:2]
-    x0, y0, x1, y1 = (int(round(v)) for v in box)
-    x0, x1 = sorted((max(0, min(W, x0)), max(0, min(W, x1))))
-    y0, y1 = sorted((max(0, min(H, y0)), max(0, min(H, y1))))
-    if x1 - x0 < 4 or y1 - y0 < 4:
-        raise ValueError("잡은 자리가 너무 작습니다")
-    rgba = cut_out(img, (x0, y0, x1, y1))
-    n = 1
-    while (work / "crops" / f"{o.id}_m{n}.png").exists():  # 화면이 예전 그림을 들고 있지 않게 새 이름
-        n += 1
-    png = work / "crops" / f"{o.id}_m{n}.png"
-    save_png(rgba, png)
-    o.png, o.box, o.manual, o.reason = str(png), [x0, y0, x1, y1], True, ""
-    o.set_of, o.set_name = "", ""  # 사람이 따로 잡았으면 이 자리는 더는 다른 아이콘의 세트 조각이 아니다
-    for x in res.occurrences:  # 이 자리를 다시 잡으면 합친 세트를 푼다 (합칠지는 저장할 때 다시 묻는다)
-        if x.set_of == o.id:
-            res.groups.pop(x.group, None)
-            x.set_of, x.set_name, x.box, x.group = "", "", [], f"위치 못 찾음 {x.id}"
-            x.reason = "세트로 합쳤던 자리 (앞 아이콘을 다시 잡아 풀었음)"
-            res.groups[x.group] = {"rep": "", "count": 1}
-        elif x.id != o.id and res.groups.get(x.group, {}).get("absorbed") == o.id:  # 손으로 합친 자리
-            for k in ("absorbed", "not_icon", "auto"):
-                res.groups[x.group].pop(k, None)
-    # 예전 묶음에서 빼기
-    old = o.group
-    gi = res.groups.get(old, {})
-    gi["count"] = gi.get("count", 1) - 1
-    old_gone = gi["count"] <= 0
-    if old_gone:
-        res.groups.pop(old, None)
-    elif gi.get("rep") == o.id:
-        rest = [x for x in res.occurrences if x.group == old and x.id != o.id and x.png]
-        gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
-    # 모양이 같은 묶음에 넣거나 새 묶음
-    by_id = {x.id: x for x in res.occurrences}
-    sh = shape_pair(rgba)
-    best, best_s = None, SAME_SHAPE
-    for g, info_g in res.groups.items():
-        rep = by_id.get(info_g.get("rep") or "")
-        if rep is None or not rep.png or rep.num != o.num:  # 옆 숫자가 다르면 다른 아이콘
-            continue
-        if o.unique or rep.unique:  # 그림 배경 칸의 아이콘은 다른 자리와 묶지 않는다
-            continue
-        s = same_icon(sh, shape_pair(load_png(Path(rep.png))))
-        if s >= best_s:
-            best, best_s = g, s
-    known = _known_shapes(info)
-    match = "" if o.unique else (best_known(sh, known, o.num)[0] or legacy_hint(sh, known, o.num))  # 제안만
-    if best is not None:
-        g = best
-        res.groups[g]["count"] += 1
-        if _area(str(png)) > _area(by_id[res.groups[g]["rep"]].png):
-            res.groups[g]["rep"] = o.id
-        new_group = False
-    else:
-        nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
-        g = f"g{max(nums, default=0) + 1:02d}"
-        res.groups[g] = {"rep": o.id, "count": 1}
-        if old_gone:  # 혼자 있던 줄을 옮긴 것: 적어 둔 제안·뜻은 그대로
-            for k in ("suggest", "meaning", "ko"):
-                if gi.get(k):
-                    res.groups[g][k] = gi[k]
-        if match:
-            res.groups[g]["dict"] = match
-        new_group = True
-    o.group = g
-    _save_scan(work, res)
-    return {"group": g, "old": old, "old_gone": old_gone, "new_group": new_group, "dict": match, "box": [x0, y0, x1, y1]}
+def __getattr__(name: str):
+    for part in _PARTS:
+        if name in part.__dict__:
+            return part.__dict__[name]
+    raise AttributeError(f"module 'app.icons' has no attribute {name!r}")
 
 
-def set_not_icon(info, work: Path, occ_id: str) -> dict:
-    """한 자리만 ‘아이콘 아님’: 그 자리를 묶음에서 빼 ‘아이콘 아님’으로 표시한 새 묶음(혼자)으로 옮긴다.
-    (같은 묶음의 다른 자리는 아이콘인데 이 자리만 글자·장식을 잘못 잡은 경우. 묶음 줄의 ‘아이콘 아님’은 묶음 전체.)
-    이미 혼자인 묶음이면 그 묶음을 ‘아이콘 아님’으로 표시만 한다. {"group", "old", "old_gone", "new_group"}"""
-    work = Path(work)
-    res = load_scan(work)
-    o = next(x for x in res.occurrences if x.id == occ_id)
-    old = o.group
-    gi = res.groups.get(old, {})
-    if gi.get("count", 1) <= 1:  # 혼자인 묶음: 옮길 것 없이 표시만
-        gi["not_icon"] = True
-        gi.pop("by_keep", None)  # 사람이 다시 정함: 원본 그대로를 꺼도 되돌리지 않는다 (원본 그대로가 부르면 다시 붙인다)
-        res.groups[old] = gi
-        _save_scan(work, res)
-        return {"group": old, "old": old, "old_gone": False, "new_group": False}
-    gi["count"] -= 1
-    if gi.get("rep") == o.id:
-        rest = [x for x in res.occurrences if x.group == old and x.id != o.id and x.png]
-        gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
-    nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
-    g = f"g{max(nums, default=0) + 1:02d}"
-    res.groups[g] = {"rep": o.id if o.png else "", "count": 1, "not_icon": True}
-    o.group = g
-    _save_scan(work, res)
-    return {"group": g, "old": old, "old_gone": False, "new_group": True}
-
-
-SET_ASPECT_PER_ICON = 0.8  # 세트로 볼 덩어리: 가로/세로가 아이콘 수 × 이 값 이상 (아이콘이 옆으로 늘어선 모양)
-
-
-def set_box_fits(box, n: int) -> bool:
-    """붙어 있는 [[?]] n개를 한 덩어리로 찾았을 때, 그 덩어리가 아이콘 n개가 옆으로 늘어선 모양인가.
-    (아이콘 하나 크기인 덩어리에 이웃 [[?]]가 잘못 붙은 것은 세트가 아니다: 건물·상자 아이콘이 같은 자리로 잡힌 경우)"""
-    w, h = box[2] - box[0], box[3] - box[1]
-    return h > 0 and w / h >= SET_ASPECT_PER_ICON * n
-
-
-SHARED_BOX_REASON = "다른 아이콘과 같은 자리로 잡혀 위치를 못 찾음"
-SHARED_BOX_IOU = 0.5  # 두 자리가 이만큼 겹치면 같은 자리로 본다
-
-
-def _iou(a, b) -> float:
-    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
-    inter = ix * iy
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
-    return inter / union if union > 0 else 0.0
-
-
-def shared_boxes(boxes: list, runs: list) -> set[int]:
-    """같은 칸의 [[?]]들(순번 k) 중 글자를 사이에 둔 다른 [[?]]와 같은(거의 겹치는) 자리로 잡힌 것들의 순번.
-    인쇄된 아이콘은 서로 다른 자리에 있으므로 이런 자리는 적어도 하나가 잘못 찾은 것인데 어느 쪽인지 모른다:
-    모두 ‘위치 못 찾음’으로 돌려 사람이 ② 카드 보기에서 잡게 한다 (자동으로 사전 이름을 넣지 않는다).
-    붙어 있는 [[?]](같은 덩어리 runs[k])끼리 같은 자리는 세트일 수 있어 여기서 보지 않는다 (scan이 따로 가린다)."""
-    out: set[int] = set()
-    for i, a in enumerate(boxes):
-        if a is None:
-            continue
-        for j in range(i + 1, len(boxes)):
-            b = boxes[j]
-            if b is not None and runs[i] != runs[j] and _iou(a, b) >= SHARED_BOX_IOU:
-                out.update((i, j))
-    return out
-
-
-def placeholder_runs(text: str, same_line: bool = False) -> list[list[int]]:
-    """[[?]]가 글자 없이 바로 붙어 있는 덩어리들. 각 덩어리는 [[?]] 순번(= 자리의 index) 목록.
-    예: "[[?]][[?]][[?]]の山札" -> [[0, 1, 2]] (문양 셋이 붙은 아이콘을 모델이 셋으로 읽은 경우가 많다).
-    same_line: 줄이 바뀌면 다른 덩어리 (위아래로 이어진 아이콘은 자동으로 한 세트로 합치지 않는다 — 좌우로 붙은 것만)."""
-    runs: list[list[int]] = []
-    j, prev_end = -1, None
-    for t in TOKEN_RE.finditer(text or ""):
-        if t.group(1) != "?":
-            prev_end = None
-            continue
-        j += 1
-        gap = text[prev_end:t.start()] if prev_end is not None else ""
-        if runs and prev_end is not None and not gap.strip() and not (same_line and "\n" in gap):
-            runs[-1].append(j)
-        else:
-            runs.append([j])
-        prev_end = t.end()
-    return runs
-
-
-def run_partners(info, work: Path, occ_id: str) -> dict:
-    """그 자리와 글자 없이 붙어 있는 다른 [[?]] 자리: {"boxed": [그림이 있는 자리 id], "unfound": [위치 못 찾은 자리 id]}.
-    ‘아이콘 아님’으로 이미 뺀 자리는 넣지 않는다. 다른 줄(위아래)의 자리는 위치를 못 찾았으면 넣지 않는다:
-    위아래로 이어진 아이콘은 사람이 상자로 함께 감쌌을 때(찾은 자리가 그 상자 안)만 합친다."""
-    from app.extract import load_extracted
-
-    res = load_scan(Path(work))
-    o = next(x for x in res.occurrences if x.id == occ_id)
-    src = (load_extracted(_occ_dir(info, o.file)).get(o.page, {}).get(o.region) or {}).get("source")
-    run = next((r for r in placeholder_runs(src if isinstance(src, str) else "") if o.index in r), [])
-    out = {"boxed": [], "unfound": []}
-    for x in res.occurrences:
-        if (x.file, x.page, x.region) != (o.file, o.page, o.region) or x.id == o.id or x.index not in run:
-            continue
-        if res.groups.get(x.group, {}).get("not_icon"):
-            continue
-        if not x.png and x.line != o.line:
-            continue
-        out["boxed" if x.png else "unfound"].append(x.id)
-    return out
-
-
-def reopen_icon(info, work: Path, anchor_occ: str, ti: int) -> dict:
-    """카드 보기: 이미 이름을 정한 아이콘([[이름]], 그 칸 모든 토큰 중 ti번째)을 다시 고칠 수 있게 [[?]] 자리로 연다.
-    anchor_occ = 같은 칸의 아무 자리 (파일·쪽·영역을 알려고). 그 토큰만 [[?]]로 (아이콘에 넣었던 숫자는 되살린다),
-    새 자리를 만들어 사전 그림 자리(찾을 수 있으면)를 잘라 두고, 2A에는 그 사전 이름을 ‘같은 아이콘’으로 미리 고른다.
-    {"occ": 새 자리 id, "group": 묶음}. 그 토큰이 이름 있는 아이콘이 아니면 ValueError."""
-    work = Path(work)
-    res = load_scan(work)
-    a = next(x for x in res.occurrences if x.id == anchor_occ)
-    fd, img, src = _occ_region(info, a)
-    toks = list(TOKEN_RE.finditer(src))
-    if not (0 <= ti < len(toks)) or toks[ti].group(1) == "?":
-        raise ValueError("다시 열 아이콘을 원문에서 찾지 못했습니다 (원문이 바뀌었으면 ② 아이콘 정의를 다시 누르세요)")
-    t = toks[ti]
-    name = t.group(1)
-    rep = PLACEHOLDER
-    for f in _extract_files(fd, a.page):
-        rec = json.loads(f.read_text(encoding="utf-8"))
-        r = (rec.get("regions") or {}).get(a.region)
-        if r is None or r.get("source") != src:
-            continue
-        nums = [e for e in (r.get("icon_numbers") or []) if isinstance(e, dict)]
-        e = next((e for e in nums if e.get("index") == ti and e.get("name") == name), None)
-        if e and e.get("text"):  # 아이콘에 넣었던 숫자를 제자리에 (그림을 다시 자르면 다시 정한다)
-            sep = e.get("sep", "")
-            rep = f"{e['text']}{sep}{PLACEHOLDER}" if e.get("side") == "before" else f"{PLACEHOLDER}{sep}{e['text']}"
-        if e is not None:
-            nums = [x for x in nums if x is not e]
-        r["source"] = src[:t.start()] + rep + src[t.end():]
-        if nums:
-            r["icon_numbers"] = nums
-        else:
-            r.pop("icon_numbers", None)
-        r["icon_note"] = f"카드 보기에서 [[{name}]]을 다시 고치려고 열었음"
-        workspace._write(f, rec)
-    new_src = src[:t.start()] + rep + src[t.end():]
-    ph = [m for m in TOKEN_RE.finditer(new_src) if m.group(1) == "?"]
-    new_ti = next(i for i, m in enumerate(TOKEN_RE.finditer(new_src)) if m.start() == t.start() + rep.index(PLACEHOLDER))
-    idx = next(i for i, m in enumerate(ph) if m.start() == t.start() + rep.index(PLACEHOLDER))
-    same = [x for x in res.occurrences if (x.file, x.page, x.region) == (a.file, a.page, a.region)]
-    for x in same:  # 같은 칸의 뒤 [[?]] 자리들은 순번이 하나씩 밀린다
-        if x.index >= idx:
-            x.index += 1
-        x.context = new_src.replace("\n", " / ")
-    nums_ = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
-    oid = f"o{max(nums_, default=0) + 1:03d}"
-    line, order, _nm = tokens_in(new_src)[new_ti]
-    o = Occurrence(oid, a.file, a.file_key, a.page, a.region, idx, new_src.replace("\n", " / "), line=line, order=order,
-                   unique=a.unique)
-    box = locate(img, new_src, new_ti)[0] or match_known(info, img, name, new_src)
-    e = load_dictionary(info)["icons"].get(name) or {}
-    restored_num = rep != PLACEHOLDER
-    if box is not None:
-        tk = [m for m in TOKEN_RE.finditer(new_src)][new_ti]
-        num = number_near(new_src, tk.start(), tk.end())
-        if num is not None:  # 되살린 숫자는 scan처럼 그림에 다시 넣는다 (사전 항목의 숫자와 맞아야 확정이 막히지 않는다)
-            nb = absorb_number(img, box, num[0], num[2] - num[1])
-            if nb is not None:
-                box = nb
-                o.number = {"text": new_src[num[1]:num[2]], "side": num[0]}
-        o.box = [int(v) for v in box]
-        png = work / "crops" / f"{oid}.png"
-        png.parent.mkdir(parents=True, exist_ok=True)
-        save_png(cut_out(img, tuple(o.box)), png)
-        o.png = str(png)
-        nums_g = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
-        o.group = f"g{max(nums_g, default=0) + 1:02d}"
-        res.groups[o.group] = {"rep": oid, "count": 1}
-    else:
-        o.group, o.reason = f"위치 못 찾음 {oid}", "다시 연 확정 아이콘 (자리를 찾지 못함)"
-        res.groups[o.group] = {"rep": "", "count": 1}
-    en = entry_number(e)
-    # 사전 항목과 숫자가 맞을 때만 그 이름을 쓴다 (예전 항목은 자리에 숫자가 없을 때만): 맞지 않으면 확정이 막힌다
-    fits = not (restored_num and not o.number) and (en == o.num if en is not None else o.num == "")
-    res.groups[o.group].update(suggest=name if fits else "", meaning=e.get("meaning", ""), ko=e.get("ko", ""))
-    if fits:
-        # 사전의 그 아이콘으로 미리 고른다. 숫자를 되살렸는데 그림에 넣지 못했으면 고르지 않는다 (숫자가 달라 확정이 막힘)
-        res.groups[o.group]["dict"] = name
-    pos = max((res.occurrences.index(x) for x in same), default=len(res.occurrences) - 1)
-    res.occurrences.insert(pos + 1, o)
-    _save_scan(work, res)
-    return {"occ": oid, "group": o.group}
-
-
-def restore_icon(info, work: Path, occ_id: str) -> dict:
-    """카드 보기에서 ‘아이콘 아님’·옆 아이콘에 포함으로 정한 자리를 다시 아이콘 자리로 (그 자리만).
-    찾기가 스스로 합친 세트의 나머지 자리(auto)는 되돌리지 않는다. {"group"}. 되돌릴 것이 없으면 ValueError."""
-    work = Path(work)
-    res = load_scan(work)
-    o = next(x for x in res.occurrences if x.id == occ_id)
-    gi = res.groups.get(o.group, {})
-    if o.set_of or gi.get("auto") or not (gi.get("not_icon") or gi.get("absorbed")):
-        raise ValueError("되돌릴 것이 없는 자리입니다 (아이콘 아님·포함으로 정한 자리만 되돌립니다)")
-    if gi.get("count", 1) > 1:  # 묶음 전체를 아이콘 아님으로 한 경우: 이 자리만 빼서 새 묶음으로 (다른 카드는 그대로)
-        gi["count"] -= 1
-        if gi.get("rep") == o.id:
-            rest = [x for x in res.occurrences if x.group == o.group and x.id != o.id and x.png]
-            gi["rep"] = max(rest, key=lambda x: _area(x.png)).id if rest else ""
-        if o.png:
-            nums = [int(k[1:]) for k in res.groups if re.fullmatch(r"g\d+", k)]
-            o.group = f"g{max(nums, default=0) + 1:02d}"
-            res.groups[o.group] = {"rep": o.id, "count": 1}
-        else:
-            o.group = f"위치 못 찾음 {o.id}"
-            res.groups[o.group] = {"rep": "", "count": 1}
-    else:
-        gi.pop("not_icon", None)
-        gi.pop("absorbed", None)
-        gi.pop("by_keep", None)
-        if not o.png and not o.group.startswith("위치 못 찾음"):  # 그림이 없으면 ‘위치 못 찾음’ 줄로
-            del res.groups[o.group]
-            o.group = f"위치 못 찾음 {o.id}"
-            gi = res.groups.setdefault(o.group, {"rep": "", "count": 1})
-            gi.pop("not_icon", None)
-    _save_scan(work, res)
-    return {"group": o.group}
-
-
-def absorb_into(info, work: Path, host_id: str, occ_ids: list[str]) -> list[str]:
-    """붙어 있는 자리들을 host 아이콘 하나에 포함: 그 자리들은 ‘아이콘 아님’(뜻 비움 = 원문에서 뺌)으로 옮기고
-    어느 아이콘에 들어갔는지 적어 둔다. 사람이 상자 하나로 문양 여러 개를 감싼 경우. 옮긴 묶음 목록."""
-    work = Path(work)
-    groups = []
-    for oid in occ_ids:
-        r = set_not_icon(info, work, oid)
-        groups.append(r["group"])
-    res = load_scan(work)
-    for g in groups:
-        res.groups[g]["absorbed"] = host_id
-    _save_scan(work, res)
-    return groups
-
-
-OVERLAP_MIN = 0.4  # 겹친 넓이가 작은 쪽 상자의 이만큼이면 ‘겹친 아이콘’ (흡수 후보)
-
-
-def _overlap_ratio(a, b) -> float:
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
-    return ix * iy / small if small > 0 else 0.0
-
-
-def overlapping_occ(marks: list[dict], box, exclude: str = "") -> list[str]:
-    """카드 보기 표시(place_info의 marks) 중 box와 겹친 다른 [[?]] 자리 id (이미 이름이 있는 [[이름]]은 빼고).
-    한 아이콘을 두 [[?]]로 읽어 두 자리가 같은 그림을 가리키면, 한쪽에 흡수시켜 다른 쪽을 원문에서 뺀다."""
-    if not box:
-        return []
-    return [m["occ"] for m in marks
-            if m.get("occ") and m["occ"] != exclude and m.get("box") and not m.get("not_icon") and not m.get("guess")
-            and _overlap_ratio(box, m["box"]) >= OVERLAP_MIN]
-
-
-def split_icon(info, work: Path, occ_id: str, part_box) -> dict:
-    """한 자리로 잡힌 상자 안에 아이콘이 둘이면 둘로 나눈다. part_box: 사람이 감싼 그중 하나.
-    지금 상자에서 part_box를 뺀 나머지가 다른 하나다 (나란히: 가로로, 위아래: 세로로 가른다).
-    원문에는 그 [[?]] 바로 뒤에 [[?]]를 하나 더 넣고 (읽는 순서: 왼쪽·위가 먼저), 새 자리를 만든다.
-    돌려줌 {"first": 앞 자리 id, "second": 새 자리 id, "groups": [앞 묶음, 뒤 묶음]}. 나눌 수 없으면 ValueError."""
-    from app.extract import load_extracted
-
-    work = Path(work)
-    res = load_scan(work)
-    o = next((x for x in res.occurrences if x.id == occ_id), None)
-    if o is None:
-        raise ValueError("그 아이콘 자리를 찾지 못했습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
-    if not o.box:
-        raise ValueError("이 아이콘은 아직 자리가 없습니다: 먼저 아이콘 둘을 함께 감싸 ‘이 자리로 저장’을 하세요")
-    bx0, by0, bx1, by1 = o.box
-    px0, py0, px1, py1 = (float(v) for v in part_box)
-    # 지금 상자 밖으로 끈 부분은 잘라 낸다 (나중에 그림 끝에서 잘려 한쪽이 없어지지 않게: 원문을 바꾸기 전에 확인)
-    px0, px1 = sorted((min(max(px0, bx0), bx1), min(max(px1, bx0), bx1)))
-    py0, py1 = sorted((min(max(py0, by0), by1), min(max(py1, by0), by1)))
-    pcx, pcy = (px0 + px1) / 2, (py0 + py1) / 2
-    bcx, bcy = (bx0 + bx1) / 2, (by0 + by1) / 2
-    # 감싼 상자가 지금 상자의 폭을 덜 차지하면 좌우로, 높이를 덜 차지하면 위아래로 가른다
-    horizontal = (px1 - px0) / max(1, bx1 - bx0) <= (py1 - py0) / max(1, by1 - by0)
-    if horizontal:
-        part_first = pcx < bcx
-        cut = px1 if part_first else px0
-        a, b = ([bx0, by0, cut, by1], [cut, by0, bx1, by1])
-    else:
-        part_first = pcy < bcy
-        cut = py1 if part_first else py0
-        a, b = ([bx0, by0, bx1, cut], [bx0, cut, bx1, by1])
-    if part_first:
-        a = [px0, py0, px1, py1]
-    else:
-        b = [px0, py0, px1, py1]
-    if min(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]) < 4:
-        raise ValueError("나눈 한쪽이 너무 작습니다: 아이콘 하나만 감싸 주세요 (지금 상자 안에서)")
-    # 원문: 그 [[?]] 뒤에 [[?]] 하나 더
-    fd = _occ_dir(info, o.file)
-    src = (load_extracted(fd).get(o.page, {}).get(o.region) or {}).get("source")
-    if not isinstance(src, str):
-        raise ValueError("이 칸의 원문을 찾지 못했습니다")
-    ph = [t for t in TOKEN_RE.finditer(src) if t.group(1) == "?"]
-    if o.index >= len(ph):
-        raise ValueError("원문의 [[?]] 자리가 바뀌었습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
-    t = ph[o.index]
-    tpos = [m.start() for m in TOKEN_RE.finditer(src)].index(t.start())  # 모든 [[…]] 중 몇째 (icon_numbers 순번)
-    new_src = src[:t.end()] + "[[?]]" + src[t.end():]
-    for f in _extract_files(fd, o.page):
-        rec = json.loads(f.read_text(encoding="utf-8"))
-        r = (rec.get("regions") or {}).get(o.region)
-        if r is not None and r.get("source") == src:
-            r["source"] = new_src
-            r["icon_note"] = "카드 보기에서 아이콘 하나를 둘로 나눔"
-            for e in r.get("icon_numbers") or []:  # 아이콘에 넣은 숫자의 자리: 뒤 아이콘들은 하나씩 밀린다
-                if isinstance(e, dict) and isinstance(e.get("index"), int) and e["index"] > tpos:
-                    e["index"] += 1
-            workspace._write(f, rec)
-    # 같은 칸의 뒤 자리들은 순번이 하나씩 밀린다
-    same = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)]
-    for x in same:
-        if x.index > o.index:
-            x.index += 1
-        if x.line == o.line and x.order > o.order:
-            x.order += 1
-        x.context = new_src.replace("\n", " / ")
-    nums = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
-    new_id = f"o{max(nums, default=0) + 1:03d}"
-    g = f"위치 못 찾음 {new_id}"
-    res.occurrences.insert(res.occurrences.index(o) + 1, Occurrence(
-        new_id, o.file, o.file_key, o.page, o.region, o.index + 1, new_src.replace("\n", " / "),
-        group=g, line=o.line, order=o.order + 1, reason="카드 보기에서 나눈 자리", unique=o.unique))
-    res.groups[g] = {"rep": "", "count": 1}
-    _save_scan(work, res)
-    r1 = set_manual_box(info, work, o.id, a)  # 두 자리 모두 그 상자로 다시 잘라 같은 모양끼리 다시 묶는다
-    r2 = set_manual_box(info, work, new_id, b)
-    return {"first": o.id, "second": new_id, "groups": [r1["group"], r2["group"]]}
-
-
-def resolve_suggested_name(info, res: "ScanResult", group: str) -> str:
-    """제안 받은 이름이 이미 있는 이름과 겹칠 때: 그림이 같으면 같은 아이콘으로(사전 아이콘이면 group["dict"]),
-    다르면 뒤에 _2, _3 …을 붙여 다른 이름으로 바꾼다. 결과: "same_dict" | "same_row" | "renamed" | ""."""
-    gi = res.groups.get(group) or {}
-    name = (gi.get("suggest") or "").strip()
-    by_id = {o.id: o for o in res.occurrences}
-    rep = by_id.get(gi.get("rep") or "")
-    if not name or rep is None or not rep.png:
-        return ""
-    sh = shape_pair(load_png(Path(rep.png)))
-    known = _known_shapes(info)
-    taken = set(load_dictionary(info)["icons"])
-    if rep.unique:  # 그림 배경 칸의 아이콘: 그림이 같아 보여도 같은 아이콘으로 보지 않고 겹치면 다른 이름
-        for g, o_gi in res.groups.items():
-            if g != group and not o_gi.get("not_icon"):
-                taken.add(o_gi.get("suggest") or "")
-        if name not in taken:
-            return ""
-        gi["suggest"] = free_name(name, taken)
-        return "renamed"
-    if name in known and number_allows(known[name][1], rep.num) and same_icon(sh, known[name][0]) >= SAME_SHAPE:
-        gi["dict"] = name  # 사전의 그 아이콘과 같음: 같은 아이콘으로 등록
-        return "same_dict"
-    for g, o_gi in res.groups.items():
-        if g == group or o_gi.get("not_icon"):
-            continue
-        o_name = o_gi.get("suggest") or ""
-        taken.add(o_name)
-        if o_name == name and name not in known:
-            o_rep = by_id.get(o_gi.get("rep") or "")
-            if (o_rep is not None and o_rep.png and o_rep.num == rep.num
-                    and same_icon(sh, shape_pair(load_png(Path(o_rep.png)))) >= SAME_SHAPE):
-                return "same_row"  # 다른 줄과 같은 그림: 같은 이름 그대로 (확정할 때 한 아이콘이 된다)
-    if name not in taken:
-        return ""
-    gi["suggest"] = free_name(name, taken)  # 그림이 다른 아이콘: 다른 이름
-    return "renamed"
-
-
-def free_name(name: str, taken: set) -> str:
-    """name이 이미 있을 때 쓸 다른 이름.
-    coin·coin_2가 있으면 coin_2 -> coin_3 처럼 이미 있는 번호만 이어 간다 (coin, coin_2, …, coin_N이 빠짐없이 있을 때만).
-    그 밖에는 숫자에 뜻이 있는 이름으로 보고 떼지 않는다: dice·dice_6만 있으면 dice_6_2, gold_2만 있으면 gold_2_2
-    (이름 제안은 gold_2처럼 그림의 숫자를 이름에 넣으므로, 번호를 바꾸면 다른 값이 된다)."""
-    m = re.fullmatch(r"(.+)_(\d+)", name)
-    copies = bool(m) and m.group(1) in taken and all(f"{m.group(1)}_{i}" in taken for i in range(2, int(m.group(2))))
-    base = m.group(1) if copies else name
-    k = 2
-    while f"{base}_{k}" in taken:
-        k += 1
-    return f"{base}_{k}"
-
-
-# ---------------------------------------------------------------- 이름 제안 (모델)
-SUGGEST_SYSTEM ="""You name small icons printed inside board game card text, for a translation tool.
-For each icon image, give a short identifier (lowercase English letters, digits or _ only, e.g. coin, heart,
-sword), what the icon stands for in the original language of the card text (meaning), and a natural Korean name
-(ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context.
-Each group is a visually different icon. A number, sign or small mark printed on or right next to the icon is
-part of that icon: put it in the identifier (e.g. gold_2, coin_plus1, card_minus) and in meaning/ko. Give two
-groups the same identifier only when their images are truly the same icon."""
-
-
-def _suggest_schema() -> dict:
-    return {"type": "object", "properties": {"items": {"type": "array", "items": {
-        "type": "object",
-        "properties": {"group": {"type": "string"}, "name": {"type": "string"},
-                       "meaning": {"type": "string"}, "ko": {"type": "string"}},
-        "required": ["group", "name", "meaning", "ko"], "additionalProperties": False}}},
-        "required": ["items"], "additionalProperties": False}
-
-
-def suggest_names(res: ScanResult, client, model: str, work_dir: Path) -> tuple[float, float]:
-    """묶음마다 이름·뜻·한국어 이름을 제안 받아 res.groups에 넣는다."""
-    from app.llm import complete_json
-
-    by_id = {o.id: o for o in res.occurrences}
-    lines, images = [], []
-    for g, info in res.groups.items():
-        if not info.get("rep"):
-            continue
-        o = by_id[info["rep"]]
-        images.append(Path(o.png))
-        lines.append(json.dumps({"group": g, "image": Path(o.png).name, "sentence": o.context}, ensure_ascii=False))
-    if not lines:
-        return 0.0, 0.0
-    prompt = "Icons (JSON lines; open each image file):\n" + "\n".join(lines)
-    data, api, eq = complete_json(client, model, SUGGEST_SYSTEM, prompt, _suggest_schema(), work_dir, images=images)
-    for it in data.get("items", []):
-        g = res.groups.get(it["group"])
-        if g is not None:
-            nm = re.sub(r"[^a-z0-9_]", "_", it["name"].strip().lower()).strip("_")
-            g.update(suggest=nm, meaning=it["meaning"], ko=it["ko"])
-    return api, eq
-
-
-# ---------------------------------------------------------------- 검증 엑셀
-REVIEW_HEADERS = ["묶음", "그림", "제안 이름", "이름", "뜻(원문)", "한국어 이름", "처리", "표시 크기", "등장 횟수", "예문"]
-
-
-def export_review(info, res: ScanResult, out: Path) -> Path:
-    from openpyxl import Workbook
-    from openpyxl.comments import Comment
-    from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.styles import Alignment, Font, PatternFill
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "아이콘"
-    ws.append(REVIEW_HEADERS)
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    col = {h: i + 1 for i, h in enumerate(REVIEW_HEADERS)}
-    by_id = {o.id: o for o in res.occurrences}
-    known = sorted(load_dictionary(info)["icons"])
-    yellow = PatternFill("solid", fgColor="FFE066")
-    r = 1
-    for g, gi in res.groups.items():
-        if gi.get("absorbed"):  # 세트에 포함된 자리: 따로 정할 것이 없다 (확정하면 원문에서 뺀다)
-            continue
-        r += 1
-        members = [o for o in res.occurrences if o.group == g]
-        ex = "\n".join(f"{o.file_key} p{o.page} {o.region}: {o.context}" for o in members[:3])
-        ws.cell(r, col["묶음"], g)
-        ws.cell(r, col["제안 이름"], gi.get("suggest") or None)
-        ws.cell(r, col["이름"], gi.get("suggest") or None)
-        ws.cell(r, col["뜻(원문)"], gi.get("meaning") or None)
-        ws.cell(r, col["한국어 이름"], gi.get("ko") or None)
-        ws.cell(r, col["표시 크기"], DEFAULT_SCALE)
-        ws.cell(r, col["등장 횟수"], len(members))
-        ws.cell(r, col["예문"], ex).alignment = Alignment(wrap_text=True, vertical="top")
-        if gi.get("rep"):
-            img = XLImage(by_id[gi["rep"]].png)
-            scale = 48 / max(img.height, 1)
-            img.width, img.height = int(img.width * scale), int(img.height * scale)
-            ws.add_image(img, f"B{r}")
-            ws.row_dimensions[r].height = 42
-        else:
-            reason = members[0].reason if members else ""
-            ws.cell(r, col["그림"], "없음").fill = yellow
-            ws.cell(r, col["그림"]).comment = Comment(f"위치를 못 찾음: {reason}. 사전에 있는 이름을 쓰거나 "
-                                                     f"‘{NOT_ICON}’으로 표시하세요", "CardTranslater")
-    # 모든 등장 위치 (묶음 시트의 예문은 3개까지만 보이므로)
-    wl = wb.create_sheet("위치")
-    loc_head = ["묶음", "카드", "영역", "줄", "줄에서 순서", "그림", "위치 찾기", "원문"]
-    wl.append(loc_head)
-    for c in wl[1]:
-        c.font = Font(bold=True)
-    for i, o in enumerate(res.occurrences, start=2):
-        wl.append([o.group, f"{o.file_key} p{o.page}", o.region, o.line or None, o.order or None, None,
-                   "찾음" if o.png else f"못 찾음: {o.reason}", o.context])
-        if o.png:
-            img = XLImage(o.png)
-            sc = 28 / max(img.height, 1)
-            img.width, img.height = int(img.width * sc), int(img.height * sc)
-            wl.add_image(img, f"F{i}")
-            wl.row_dimensions[i].height = 24
-        else:
-            wl.cell(i, 7).fill = yellow
-    for colw, w in zip("ABCDEFGH", (18, 26, 10, 5, 9, 8, 24, 70)):
-        wl.column_dimensions[colw].width = w
-    wl.freeze_panes = "A2"
-    ws2 = wb.create_sheet("안내")
-    for line in [
-        "이름: 영문 소문자·숫자·_ 만. 같은 이름을 쓴 묶음은 하나의 아이콘으로 합칩니다.",
-        f"처리: 아이콘이 아니면 ‘{NOT_ICON}’ (원문에서 뺍니다).",
-        "사전에 이미 있는 이름을 쓰면 그 아이콘으로 바꿉니다 (그림은 사전 것을 씀).",
-        "표시 크기: 한글 글자 높이 대비 (기본 1.1).",
-        "이미 있는 이름: " + (", ".join(known) if known else "(없음)"),
-    ]:
-        ws2.append([line])
-    for h, w in {"묶음": 18, "그림": 10, "제안 이름": 14, "이름": 14, "뜻(원문)": 16, "한국어 이름": 14,
-                 "처리": 12, "표시 크기": 9, "등장 횟수": 9, "예문": 70}.items():
-        ws.column_dimensions[chr(64 + col[h])].width = w
-    out = Path(out)
-    wb.save(out)
-    return out
-
-
-@dataclass
-class IconImport:
-    blocking: list[str] = field(default_factory=list)
-    added: list[str] = field(default_factory=list)
-    reused: list[str] = field(default_factory=list)
-    removed: int = 0
-    replaced: int = 0
-    # 아이콘 자리가 바뀐 칸 [(파일 폴더, 쪽, 칸)]: 손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음.
-    # 모델이 그 자리를 잘못 읽었을 수 있어 ③ 원문 확인에서 다시 읽고 확인해야 한다 (확인 필요로 표시해 둔다)
-    changed_cells: list = field(default_factory=list)
-
-
-def _group_num(res: ScanResult, by_id: dict, g: str) -> str:
-    """묶음 대표 자리의 옆 숫자 (사전 항목 number로 적는 그대로의 글자, 손으로 잡은 자리는 "")."""
-    o = by_id.get(res.groups.get(g, {}).get("rep") or "")
-    return "" if o is None or o.manual else (o.number or {}).get("text", "")
-
-
-def _number_conflicts(res: ScanResult, by_id: dict, decision: dict[str, str], d: dict) -> list[str]:
-    """그림 속 숫자가 어긋나는 이름 정하기를 막는 문구들.
-    - 옆 숫자가 다른 묶음(상자+2·상자+5)을 한 이름으로: 그림은 하나라 다른 묶음 자리에 다른 숫자가 함께 보인다.
-    - 숫자가 있는 사전 항목과 숫자가 다른 묶음: 사전 그림의 숫자가 카드의 수량과 다르게 보인다.
-    - 예전 사전 항목(number 키 없음)을 숫자 있는 묶음에: 예전 그림에 숫자가 들어 있는지 몰라 수량을 잃거나 겹친다.
-    모두 숫자가 없으면 괜찮다. 그림 없는 묶음(위치 못 찾음)은 숫자를 모르므로 보지 않는다."""
-    def shown(ns):
-        return ", ".join(n or "숫자 없음" for n in ns)
-
-    def named(name, n, old=""):  # crate_5를 숫자 2로 나누라고 할 때는 crate_2 (crate_5_2가 아니라)
-        base = name[:-len(old) - 1] if old and name.endswith(f"_{old}") else name
-        return f"{base}_{n}" if n else base
-
-    out = []
-    for name in dict.fromkeys(n for n in decision.values() if n and not n.startswith("=")):
-        seen = [g for g, n in decision.items() if n == name and res.groups[g].get("rep")]
-        nums = sorted({num_key(_group_num(res, by_id, g)) for g in seen})
-        if len(nums) > 1:
-            out.append(f"수량이 다른 아이콘을 같은 이름 {name}로 정할 수 없습니다 ({shown(nums)}): "
-                       f"{'·'.join(named(name, n) for n in nums)}처럼 나눠 주세요")
-            continue
-        e = d["icons"].get(name)
-        if e is None or not nums:
-            continue
-        en, n = entry_number(e), nums[0]
-        if en is None:
-            if n:
-                out.append(f"사전의 예전 아이콘 {name}은 그림에 숫자가 들어 있는지 알 수 없어 숫자 {n}이 붙은 아이콘에 "
-                           f"쓸 수 없습니다: {name}_{n}처럼 새 이름을 정해 주세요")
-        elif en != n:
-            out.append(f"수량이 다른 아이콘을 같은 이름 {name}로 정할 수 없습니다 (사전 그림: {shown([en])}, "
-                       f"이 아이콘: {shown([n])}): {named(name, n, en) if n else '다른 이름'}처럼 새 이름을 정해 주세요")
-    return out
-
-
-def import_review(info, xlsx: Path, work: Path) -> IconImport:
-    """검증 엑셀을 읽어 사전에 넣고 원문 [[?]]를 바꾼다. 막는 문제가 있으면 아무것도 바꾸지 않는다."""
-    from openpyxl import load_workbook
-
-    ws = load_workbook(xlsx)["아이콘"]
-    head = [c.value for c in ws[1]]
-    rows = [dict(zip(head, r)) for r in ws.iter_rows(min_row=2, values_only=True) if any(r)]
-    return import_rows(info, rows, work)
-
-
-def import_rows(info, rows: list[dict], work: Path) -> IconImport:
-    """검증 행(엑셀이나 화면): {"묶음", "이름", "뜻(원문)", "한국어 이름", "처리", "표시 크기"}."""
-    res = load_scan(work)
-    d = load_dictionary(info)
-    out = IconImport()
-    decision: dict[str, str] = {}  # 묶음 -> 이름 ('' = 아이콘 아님)
-    meta: dict[str, dict] = {}
-    for row in rows:
-        g = str(row.get("묶음") or "")
-        if g not in res.groups:
-            out.blocking.append(f"모르는 묶음: {g} (다른 프로젝트·이전 검증 엑셀?)")
-            continue
-        if res.groups[g].get("absorbed") and not str(row.get("이름") or "").strip()                 and not str(row.get("글자") or "").strip():
-            decision[g] = ""  # 세트(옆 아이콘)에 포함된 자리: 원문에서 뺀다 (글자를 적었으면 아래에서 그 글자로)
-            continue
-        if str(row.get("처리") or "").strip() == NOT_ICON:
-            text = str(row.get("글자") or "").strip()
-            decision[g] = f"={text}" if text else ""  # 글자를 적으면 그 글자로, 비우면 뺀다
-            continue
-        name = str(row.get("이름") or "").strip()
-        if not name:
-            out.blocking.append(f"{g}: 이름이 비어 있음 (아이콘이 아니면 처리 열에 ‘{NOT_ICON}’)")
-            continue
-        if not NAME_RE.match(name):
-            out.blocking.append(f"{g}: 이름은 영문 소문자·숫자·_ 만 ({name})")
-            continue
-        if not res.groups[g].get("rep") and name not in d["icons"] and name not in [
-                str(r.get("이름") or "").strip() for r in rows if res.groups.get(str(r.get("묶음") or ""), {}).get("rep")]:
-            out.blocking.append(f"{g}: 그림이 없어 새 아이콘으로 만들 수 없음 (사전에 있는 이름을 쓰거나 ‘{NOT_ICON}’)")
-            continue
-        decision[g] = name
-        m = meta.setdefault(name, {})
-        for k_src, k in (("뜻(원문)", "meaning"), ("한국어 이름", "ko")):
-            if row.get(k_src) and not m.get(k):
-                m[k] = str(row[k_src]).strip()
-        if row.get("표시 크기"):
-            try:
-                m["scale"] = float(row["표시 크기"])
-            except (TypeError, ValueError):
-                out.blocking.append(f"{g}: 표시 크기가 숫자가 아님 ({row['표시 크기']})")
-    for g, gi in res.groups.items():  # 세트에 포함된 자리는 표·엑셀에 없어도 원문에서 뺀다
-        if gi.get("absorbed") and g not in decision:
-            decision[g] = ""
-    missing = [g for g in res.groups if g not in decision and not any(g in b for b in out.blocking)]
-    for g in missing:
-        out.blocking.append(f"{g}: 엑셀에 행이 없음")
-    by_id = {o.id: o for o in res.occurrences}
-    out.blocking += _number_conflicts(res, by_id, decision, d)
-    if out.blocking:
-        return out
-    # 사전에 넣기 (같은 이름은 하나로: 가장 큰 대표 그림)
-    dst = icons_dir(info)
-    for name, m in meta.items():
-        groups = [g for g, n in decision.items() if n == name]
-        reps = [by_id[res.groups[g]["rep"]].png for g in groups if res.groups[g].get("rep")]
-        if name in d["icons"]:
-            e = d["icons"][name]
-            for k in ("meaning", "ko", "scale"):
-                if m.get(k) is not None:
-                    e[k] = m[k]
-            seen = [g for g in groups if res.groups[g].get("rep")]
-            # 예전 항목: 숫자 없는 묶음으로 확정하면 사람이 ② 창에서 사전 그림을 보고 고른 것이므로 number ""로 적는다.
-            # 숫자 있는 묶음은 _number_conflicts가 막았다 (그림 속 숫자를 몰라 묶음 숫자를 적지도, 원문에서 빼지도 않는다).
-            # 그림 있는 묶음이 없으면(위치 못 찾음만) 예전 항목 그대로 둔다
-            if entry_number(e) is None and seen and all(num_key(_group_num(res, by_id, g)) == "" for g in seen):
-                e["number"] = ""
-            out.reused.append(name)
-        else:
-            # 대표 그림: 가장 많이 나온 묶음의 그림 (합친 작은 묶음은 잘못 잘린 조각일 수 있음)
-            with_rep = [g for g in groups if res.groups[g].get("rep")]
-            top = max(with_rep, key=lambda g: (res.groups[g].get("count", 0), _area(by_id[res.groups[g]["rep"]].png)))
-            best = by_id[res.groups[top]["rep"]].png
-            save_png(load_png(Path(best)), dst / f"{name}.png")
-            d["icons"][name] = {"file": f"{name}.png", "meaning": m.get("meaning", ""), "ko": m.get("ko", ""),
-                                "scale": m.get("scale", DEFAULT_SCALE), "valign": "center",
-                                "number": _group_num(res, by_id, top),
-                                "from_project": info.name}
-            out.added.append(name)
-        samples = dst / "samples" / name
-        for p in reps:  # 카드별 원본 조각도 보관
-            samples.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, samples / f"{info.name}_{Path(p).name}")
-    save_dictionary(info, d)
-    # 원문 바꾸기 (칸마다 한 번에)
-    # 옆 숫자는 아이콘 이름으로 정했고 상자를 손으로 잡지 않았고 사전 그림의 숫자와 같을 때만 원문에서 뺀다
-    # (‘아이콘 아님’·손으로 잡은 자리는 숫자를 남긴다. 숫자가 다른 묶음을 같은 이름으로 합치는 것은 _number_conflicts가
-    # 막는다. 예전 항목(None)은 어떤 숫자와도 같지 않아 빼지 않는다)
-    per_region: dict[tuple, dict[int, str]] = {}
-    strips: dict[tuple, dict[int, dict]] = {}
-    changed: dict[tuple, list[str]] = {}
-    for o in res.occurrences:
-        key = (o.file, o.page, o.region)
-        name = decision[o.group]
-        gi = res.groups.get(o.group, {})
-        # 찾기가 스스로 합친 세트(auto)는 사람이 바꾼 것이 아니고 읽은 글자도 그대로라 다시 읽지 않는다
-        why = ("손으로 자리를 다시 잡음" if o.manual else "세트로 합침" if (gi.get("absorbed") and not gi.get("auto"))
-               else "" if (o.set_of or gi.get("auto")) else "아이콘 아님" if (not name or name.startswith("="))
-               else "위치를 못 찾음" if not (o.box or o.png) else "")
-        if why and not gi.get("by_keep"):  # ‘원본 그대로’로 빠진 자리: 사람이 정한 칸이라 다시 읽어 확인할 것이 없다
-            changed.setdefault(key, []).append(why)
-        per_region.setdefault(key, {})[o.index] = name
-        e = d["icons"].get(name) if name and not name.startswith("=") else None
-        if e is not None and o.number and not o.manual and entry_number(e) == o.num:
-            strips.setdefault(key, {})[o.index] = o.number
-    for (f, page, region), mapping in per_region.items():
-        apply_region(_occ_dir(info, f), page, region, mapping, strips.get((f, page, region)))
-        out.removed += sum(1 for v in mapping.values() if v == "")
-        out.replaced += sum(1 for v in mapping.values() if v)
-    for (f, page, region), whys in changed.items():
-        fd = _occ_dir(info, f)
-        mark_icon_changed(fd, page, region, sorted(set(whys)))
-        out.changed_cells.append((fd, page, region))
-    shutil.rmtree(work, ignore_errors=True)
-    return out
-
-
-ICON_CHANGED_NOTE = "② 아이콘 정의에서 아이콘 자리가 바뀜"
-
-
-def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -> None:
-    """아이콘 자리가 바뀐 칸을 ‘확인 필요’로 표시한다 (③ 원문 확인이 그 칸을 보여 주고, 다시 읽어 비교하게).
-    사람이 원문 확인에서 저장하면 풀린다."""
-    for f in _extract_files(file_dir, page):
-        rec = json.loads(f.read_text(encoding="utf-8"))
-        r = rec["regions"].get(region)
-        if not r or not isinstance(r.get("source"), str):
-            continue
-        r["uncertain"] = True
-        r["icon_changed"] = whys
-        r["icon_reread"] = True  # 아직 다시 읽지 않음: ③ 원문 확인을 열 때 먼저 다시 읽는다 (다시 읽으면 풀림)
-        note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
-        # 예전 ‘아이콘 자리가 바뀜’ 메모만 새것으로 바꾸고, 그 앞의 메모(사람이 고친 기록 등)는 남긴다
-        kept = [s for s in (r.get("note") or "").split(" / ") if s and not s.startswith(ICON_CHANGED_NOTE)]
-        r["note"] = " / ".join(kept + [note])
-        r.pop("checked_by", None)
-        workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
+def __dir__():
+    return sorted(set(globals()) | {n for p in _PARTS for n in p.__dict__ if not n.startswith("__")})

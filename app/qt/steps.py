@@ -197,9 +197,11 @@ class StepActions:
         self._icons_from_finish = from_finish
         if dlg.exec() and dlg.result:
             r = dlg.result
+            notes = getattr(r, "notes", None) or []
             QMessageBox.information(self.page, "아이콘 확정",
                                     f"새로 넣음: {', '.join(r.added) or '-'}\n사전에 있던 것: {', '.join(r.reused) or '-'}\n"
-                                    f"원문에서 바꿈 {r.replaced}곳, 뺌 {r.removed}곳")
+                                    f"원문에서 바꿈 {r.replaced}곳, 뺌 {r.removed}곳"
+                                    + ("\n\n알림:\n" + "\n".join(f"• {n}" for n in notes) if notes else ""))
             self.page.refresh()
             if r.changed_cells:
                 self._reread_icon_cells(r.changed_cells)
@@ -214,8 +216,9 @@ class StepActions:
                        f"아이콘 자리가 바뀐 칸이 {n}개 있습니다 (손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음).\n"
                        "그 자리를 모델이 잘못 읽었을 수 있습니다. 지금 다시 읽을까요?",
                        [(f"{n}칸 다시 읽기", "accept"), ("나중에 (원문 확인에서)", "reject")], default=0,
-                       informative="다시 읽은 결과는 ③ 원문 확인의 ‘읽은 결과’에 들어가고, 원문은 사람이 보고 저장할 때 바뀝니다.\n"
-                                   "이 칸들은 ‘확인 필요’로 표시되어 원문 확인의 확인할 칸에 나옵니다.")
+                       informative="보통 읽기와 정밀 읽기로 모두 읽습니다 (한 번 읽기의 약 두 배 비용).\n"
+                                   "두 결과가 같고 지금 원문과도 같으면 바로 확인된 것으로 둡니다. 다른 칸만 "
+                                   "‘아이콘 고침 · 확인 필요’로 ③ 원문 확인의 확인할 칸에 나옵니다.")
         if c != 0:
             if getattr(self, "_icons_from_finish", False):
                 QMessageBox.information(self.page, "③ 원문 확인 먼저",

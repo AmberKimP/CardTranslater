@@ -50,10 +50,11 @@ def test_icons_find_and_import_cover_every_project_of_the_game(tmp_path):
     assert icons.pending_count(info) == icons.pending_count(info2) == 3
     run = FakeRunner([_suggest([{"group": "g01", "name": "Gold Coin", "meaning": "Gold", "ko": "금화"}])])
     r = service.find_icons(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
-    assert r.state == "icons_review" and r.groups == 1 and r.occurrences == 3
+    assert r.state == "icons_review" and r.groups == 3 and r.occurrences == 3  # 카드의 아이콘 하나 = 한 줄
     ws = load_workbook(r.review_xlsx)["아이콘"]
     head = [c.value for c in ws[1]]
-    ws.cell(2, head.index("이름") + 1).value = "coin"
+    for k in (2, 3, 4):
+        ws.cell(k, head.index("이름") + 1).value = "coin"
     _save(ws, r.review_xlsx)
     ok = service.import_icons(info.dir, r.review_xlsx)
     assert ok.state == "confirmed" and ok.replaced == 3

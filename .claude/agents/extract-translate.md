@@ -1,6 +1,6 @@
 ---
 name: extract-translate
-description: 추출·번역 담당. Claude로 카드 원문 읽기(app/extract.py, app/extract_cc.py, app/llm.py), 용어집 후보·검증·확정(app/glossary.py), 초벌 번역(app/translate.py), 아이콘 찾기·사전(app/icons.py), 번역 검수 엑셀(app/excel_io.py)과 그 프롬프트·출력 스키마를 만들거나 고칠 때 사용한다. 원문을 잘못 읽음, 용어가 카드마다 다르게 번역됨, [[?]] 아이콘이 안 바뀜, 한도로 멈춘 뒤 이어 하기가 안 됨, 비용·모델 선택 같은 문제에 쓴다. PRD 2장(3~6단계)·4장(엑셀)·5.2·5.3·5.6·F8 범위.
+description: 추출·번역 담당. Claude로 카드 원문 읽기(app/extract.py, app/extract_cc.py, app/llm.py), 용어집 후보·검증·확정(app/glossary.py), 초벌 번역(app/translate.py), 아이콘 찾기·사전(app/icons.py·icons_cells.py·icons_place.py·icons_review.py), 번역 검수 엑셀(app/excel_io.py)과 그 프롬프트·출력 스키마를 만들거나 고칠 때 사용한다. 원문을 잘못 읽음, 용어가 카드마다 다르게 번역됨, [[?]] 아이콘이 안 바뀜, 한도로 멈춘 뒤 이어 하기가 안 됨, 비용·모델 선택 같은 문제에 쓴다. PRD 2장(3~6단계)·4장(엑셀)·5.2·5.3·5.6·F8 범위.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: opus
 ---

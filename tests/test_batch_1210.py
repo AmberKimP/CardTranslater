@@ -42,7 +42,7 @@ def _named_project(tmp_path, name):
     assert _confirm_all(info, "lily").state == "confirmed"
     _set_src(fd, "AB[[lily]]CD[[?]]")
     service.find_icons(info.dir, suggest=False)
-    occ = next(o for o in icons.load_scan(info.game_dir / "work" / "icons").occurrences if o.page == 1)
+    occ = next(o for o in icons.load_scan(info.game_dir / "work" / "icons").occurrences if o.page == 1 and not o.named)
     return info, fd, occ.id
 
 
@@ -51,7 +51,8 @@ def test_place_items_named_has_token_index_and_picture(tmp_path):
     info, fd, occ = _named_project(tmp_path, "nm")
     items = service.icon_place(info.dir, occ)["items"]
     named = next(it for it in items if it["state"] == "named")
-    assert named["name"] == "lily" and named["ti"] == 0 and named["png"].endswith(".png")
+    # 확정 아이콘도 자리(줄)가 있다: 목록에서 고르고 고칠 수 있게 (표시 이름은 ② 표의 그 줄 이름)
+    assert named["prev"] == "lily" and named["occ"] and named["ti"] == 0 and named["png"].endswith(".png")
 
 
 def test_reopen_named_icon_makes_slot_with_dictionary_name(tmp_path):
@@ -62,10 +63,10 @@ def test_reopen_named_icon_makes_slot_with_dictionary_name(tmp_path):
     by = {o.id: o for o in scan.occurrences}
     assert by[r["occ"]].index == 0 and by[occ].index == 1  # 뒤 자리 순번이 밀린다
     gi = scan.groups[r["group"]]
-    assert gi["dict"] == "lily" and gi["suggest"] == "lily"
+    assert gi["dict"] == "lily" and gi["dict_how"] == "prev" and by[r["occ"]].prev == "lily"
     rev = service.icon_review(info.dir)
     g = next(x for x in rev["groups"] if x["group"] == r["group"])
-    assert g["dict"] == "lily"  # 2A에서 사전 lily가 미리 골라진다
+    assert g["dict"] == "lily" and g["suggest"] == "lily"  # 2A에서 이름 칸에 lily가 미리 채워진다
     with pytest.raises(ValueError):
         service.reopen_icon(info.dir, occ, 0)  # 이미 [[?]]
 
@@ -78,17 +79,20 @@ def test_dialog_merges_named_icon_with_slot(qapp, tmp_path):
     info, fd, occ = _named_project(tmp_path, "mnamed")
     g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == occ for w in x["where"]))
     dlg = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    dlg.focus_named("#ti0")  # 누르기만: 원문은 그대로
-    assert _src(fd) == "AB[[lily]]CD[[?]]" and dlg._named["name"] == "lily"
+    assert [dlg.items.item(k).data(Qt.ItemDataRole.UserRole + 1) for k in range(dlg.items.count())] == ["named", "found"]
     for k in range(dlg.items.count()):
         dlg.items.item(k).setSelected(True)
     host, others = dlg._merge_plan()
-    assert host and others and dlg.merge_btn.isEnabled()
+    assert host == occ and others and dlg.merge_btn.isEnabled()  # 확정 아이콘은 합칠 곳이 되지 않는다
     dlg.merge_btn.click()
-    assert _src(fd).count("[[?]]") == 2 and "lily" not in _src(fd)  # 확정 아이콘을 열어 합침
+    assert _src(fd) == "AB[[lily]]CD[[?]]"  # 원문은 확정할 때 바뀐다
     states = [it["state"] for it in service.icon_place(info.dir, occ)["items"]]
     assert "absorbed" in states
     dlg.close()
+    rows = [{"group": x["group"], "name": "" if x["not_icon"] else "lily_set", "ko": "백합 세트",
+             "not_icon": x["not_icon"]} for x in service.icon_review(info.dir)["groups"]]
+    assert service.confirm_icons(info.dir, rows).state == "confirmed"
+    assert _src(fd) == "ABCD[[lily_set]]"  # 합친 확정 아이콘은 원문에서 빠진다
 
 
 # ---------------------------------------------------------------- 두 줄 높이 상자
@@ -154,17 +158,17 @@ def test_rebox_new_group_inherits_typed_name(qapp, tmp_path):
     info, fd = _project(tmp_path, "inherit", pages=2)
     service.find_icons(info.dir, suggest=False)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    i = next(k for k, g in enumerate(dlg.review["groups"]) if g["count"] > 1)
+    i = 0
     g = dlg.review["groups"][i]
     dlg.widgets[i][1].setText("lily")
     dlg.widgets[i][3].setText("백합")
     occ = g["where"][0]["occ"]
     box = service.icon_place(info.dir, occ)["box"]
     r = service.set_icon_box(info.dir, occ, [box[0], box[1], box[2] + 6, box[3] + 6])
-    assert dlg._after_place(r) is (bool(r.get("new_group")))
-    if r.get("new_group"):
-        j = next(k for k, w in enumerate(dlg.widgets) if w[0] == r["group"])
-        assert dlg.widgets[j][1].text() == "lily" and dlg.widgets[j][3].text() == "백합"
+    assert r["group"] == g["group"]  # 다시 잡아도 같은 줄 (카드의 아이콘 하나 = 한 줄)
+    assert dlg._after_place(r) is True  # 적어 둔 이름이 있었다 (제안으로 덮지 않음)
+    j = next(k for k, w in enumerate(dlg.widgets) if w[0] == r["group"])
+    assert dlg.widgets[j][1].text() == "lily" and dlg.widgets[j][3].text() == "백합"
 
 
 # ---------------------------------------------------------------- 3A: 줄을 골라도 가로 스크롤 그대로
@@ -222,11 +226,11 @@ def test_picture_background_icons_are_not_grouped(tmp_path):
     info, fd = _project(tmp_path, "pic", pages=2)
     service.find_icons(info.dir, suggest=False)
     groups = [g for g in service.icon_review(info.dir)["groups"] if g["image"]]
-    assert any(g["count"] == 2 for g in groups)  # 보통 칸: 같은 아이콘 두 쪽이 한 묶음
+    assert len(groups) == 2 and len({g["shape"] for g in groups}) == 1  # 보통 칸: 같은 아이콘 두 쪽이 같은 모양
     _picture(fd)
     service.find_icons(info.dir, suggest=False)
     groups = [g for g in service.icon_review(info.dir)["groups"] if g["image"]]
-    assert len(groups) == 2 and all(g["count"] == 1 for g in groups)
+    assert len(groups) == 2 and len({g["shape"] for g in groups}) == 2 and all(g["shape_count"] == 1 for g in groups)
     scan = icons.load_scan(info.game_dir / "work" / "icons")
     assert all(o.unique for o in scan.occurrences if o.png)
 
@@ -237,13 +241,15 @@ def test_picture_background_skips_dictionary_auto_match(tmp_path):
     assert _confirm_all(info, "lily").state == "confirmed"
     _set_src(fd, "AB[[?]]CD", page=1)
     service.find_icons(info.dir, suggest=False)
-    assert _src(fd, 1) == "AB[[lily]]CD"  # 보통 칸: 사전과 같아 바로 바뀜
-    _set_src(fd, "AB[[?]]CD", page=1)
+    assert _src(fd, 1) == "AB[[?]]CD"  # 원문은 확정할 때 바뀐다
+    rev = {g["where"][0]["page"]: g for g in service.icon_review(info.dir)["groups"]}
+    assert rev[1]["dict_how"] == "same" and rev[1]["suggest"] == "lily"  # 보통 칸: 사전과 같아 이름을 미리 채움
     _picture(fd, pages=(1,))
     service.find_icons(info.dir, suggest=False)
-    assert _src(fd, 1) == "AB[[?]]CD"  # 그림 배경 칸: 자동으로 바꾸지 않는다
-    rev = service.icon_review(info.dir)
-    assert not any(g.get("dict") for g in rev["groups"])
+    assert _src(fd, 1) == "AB[[?]]CD"
+    rev = {g["where"][0]["page"]: g for g in service.icon_review(info.dir)["groups"]}
+    assert not rev[1].get("dict")  # 그림 배경 칸: 사전과 같다고 보지 않는다
+    assert rev[2]["named"] == "lily"  # 2쪽의 확정된 [[lily]]는 확정됨 줄
 
 
 def test_picture_background_same_suggestion_gets_new_name(tmp_path):

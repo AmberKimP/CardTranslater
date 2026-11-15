@@ -90,14 +90,16 @@ def test_find_review_import_and_reuse_in_next_project(tmp_path):
     assert icons.pending_count(info) == 2
     run = FakeRunner([_suggest([{"group": "g01", "name": "Gold Coin", "meaning": "Gold", "ko": "금화"}])])
     r = service.find_icons(info.dir, client=ClaudeCodeClient(exe="claude", runner=run))
-    assert r.state == "icons_review" and r.groups == 1 and r.occurrences == 2 and r.not_found == 0
+    # 카드의 아이콘 하나 = 한 줄 (같은 모양 두 자리 = 두 줄). 이름 제안은 모양마다 한 번 (그림 하나만 보냄)
+    assert r.state == "icons_review" and r.groups == 2 and r.occurrences == 2 and r.not_found == 0
+    assert len(run.calls) == 1
     args, cwd = run.calls[0]
     assert args[args.index("--tools") + 1] == "Read" and list(cwd.glob("o00*.png"))  # 그림을 열어 보게 함
     ws = load_workbook(r.review_xlsx)["아이콘"]
     head = [c.value for c in ws[1]]
-    row = dict(zip(head, [c.value for c in ws[2]]))
-    assert row["제안 이름"] == "gold_coin" and row["한국어 이름"] == "금화" and row["등장 횟수"] == 2
-    assert len(ws._images) == 1
+    rows = [dict(zip(head, [c.value for c in ws[k]])) for k in (2, 3)]
+    assert all(x["제안 이름"] == "gold_coin" and x["한국어 이름"] == "금화" and x["등장 횟수"] == 1 for x in rows)
+    assert len(ws._images) == 2
 
     # 이름 규칙을 어기면 아무것도 바꾸지 않는다
     ws.cell(2, head.index("이름") + 1).value = "Coin!"
@@ -105,7 +107,8 @@ def test_find_review_import_and_reuse_in_next_project(tmp_path):
     bad = service.import_icons(info.dir, r.review_xlsx)
     assert bad.state == "blocked" and "영문 소문자" in bad.blocking[0] and _source(fd, 1) == "AB[[?]]CD"
 
-    ws.cell(2, head.index("이름") + 1).value = "coin"
+    for k in (2, 3):
+        ws.cell(k, head.index("이름") + 1).value = "coin"
     _save(ws, r.review_xlsx)
     ok = service.import_icons(info.dir, r.review_xlsx)
     assert ok.state == "confirmed" and ok.added == ["coin"] and ok.replaced == 2
@@ -116,12 +119,21 @@ def test_find_review_import_and_reuse_in_next_project(tmp_path):
     assert png.shape[2] == 4 and png[0, 0, 3] == 0 and png[:, :, 3].max() == 255  # 배경 투명
     assert icons.pending_count(info) == 0
 
-    # 같은 게임의 다음 프로젝트: 사전과 모양이 같으면 모델 없이 바로 바꾼다
+    # 같은 게임의 다음 프로젝트: 사전과 모양이 같으면 모델 없이 이름을 미리 채운다 (원문은 확정할 때 바꾼다).
+    # 1차의 확정된 [[coin]] 두 자리도 표에 보인다 (고칠 수 있게)
     info2, fd2 = _project(tmp_path, "2차", pages=1)
     run2 = FakeRunner([])
     r2 = service.find_icons(info2.dir, client=ClaudeCodeClient(exe="claude", runner=run2))
-    assert r2.state == "done" and r2.auto == {"coin": 1} and run2.calls == []
-    assert _source(fd2, 1) == "AB[[coin]]CD"
+    assert r2.state == "icons_review" and not r2.auto and run2.calls == [] and r2.prefilled == 1 and r2.named == 2
+    assert _source(fd2, 1) == "AB[[?]]CD"
+    rv = service.icon_review(info2.dir)
+    assert [(g["suggest"], g["dict_how"]) for g in rv["groups"]] == [("coin", "named"), ("coin", "named"),
+                                                                     ("coin", "same")]
+    assert all(g["ko"] == "금화" for g in rv["groups"])  # 사전 값
+    ok2 = service.confirm_icons(info2.dir, [{"group": g["group"], "name": g["suggest"], "keep_dict": True}
+                                            for g in rv["groups"]])
+    assert ok2.state == "confirmed" and ok2.replaced == 1 and ok2.reused == ["coin"] and not ok2.added
+    assert _source(fd2, 1) == "AB[[coin]]CD" and _source(fd, 1) == "AB[[coin]]CD"
     # 합성은 게임 사전 폴더와 아이콘별 크기를 쓴다
     st = icons.style_for_compose(fd2)
     assert Path(st["icons_dir"]) == icons.icons_dir(info2) and st["icon_scales"] == {"coin": icons.DEFAULT_SCALE}
@@ -140,16 +152,20 @@ def test_different_color_is_a_new_icon_and_not_icon_is_removed(tmp_path):
     r2 = service.find_icons(info2.dir, suggest=False)
     assert r2.state == "icons_review" and not r2.auto  # 파란 동그라미는 빨간 것과 다른 아이콘
     ws = load_workbook(r2.review_xlsx)["아이콘"]
-    ws.cell(2, head.index("처리") + 1).value = icons.NOT_ICON
+    head = [c.value for c in ws[1]]
+    names = [ws.cell(k, head.index("이름") + 1).value for k in (2, 3)]
+    assert names == ["red", None]  # 1차의 확정된 [[red]]도 줄로 보인다 (그대로 두면 원문은 그대로)
+    ws.cell(3, head.index("처리") + 1).value = icons.NOT_ICON
     _save(ws, r2.review_xlsx)
     res = service.import_icons(info2.dir, r2.review_xlsx)
     assert res.state == "confirmed" and res.removed == 1 and _source(fd2, 1) == "ABCD"
+    assert _source(fd, 1) == "AB[[red]]CD"
 
 
 def test_finish_extraction_stops_for_unnamed_icons(tmp_path):
     info, _fd = _project(tmp_path, "1차", pages=2)
     r = service.finish_extraction(info.dir, client=ClaudeCodeClient(exe="claude", runner=FakeRunner([_suggest([])])))
-    assert r.state == "icons_review" and r.review_xlsx.name == "아이콘_검증.xlsx" and "1개" in r.reason
+    assert r.state == "icons_review" and r.review_xlsx.name == "아이콘_검증.xlsx" and "2곳" in r.reason
 
 
 @pytest.mark.skipif(not GAEGU.exists(), reason="fonts/ 없음")
@@ -199,15 +215,17 @@ def test_exports_list_icon_positions_groups_and_fonts(tmp_path):
     # 확정 뒤: 사전 그림이 붙고, 다음 프로젝트에서 자동으로 맞춘 것은 ‘확인 권장’
     ws = load_workbook(r.review_xlsx)["아이콘"]
     head = [c.value for c in ws[1]]
-    ws.cell(2, head.index("이름") + 1).value = "coin"
+    for k in (2, 3):  # 한 줄 = 카드의 아이콘 하나
+        ws.cell(k, head.index("이름") + 1).value = "coin"
     _save(ws, r.review_xlsx)
-    service.import_icons(info.dir, r.review_xlsx)
+    assert service.import_icons(info.dir, r.review_xlsx).state == "confirmed"
     wb = load_workbook(service.export_excel(fd, force=True))
     assert {i["상태"] for i in _rows(wb["아이콘"])} == {"사전 확인됨"} and len(wb["아이콘"]._images) == 2
+    # 다음 프로젝트: 사전과 모양이 같아도 원문은 확정할 때까지 [[?]] (이름은 ② 표에 미리 채워짐)
     info2, fd2 = _project(tmp_path, "2차", pages=1)
     service.find_icons(info2.dir, suggest=False)
     ic2 = _rows(load_workbook(service.export_excel(fd2))["아이콘"])
-    assert ic2[0]["아이콘"] == "[[coin]]" and "자동으로 맞춤" in ic2[0]["상태"]
+    assert ic2[0]["아이콘"] == "[[?]]" and "이름 없음" in ic2[0]["상태"]
 
 
 def test_locate_ignores_card_frame_and_divider():
@@ -347,11 +365,13 @@ def test_manual_box_for_not_found_icon_regroups_and_shows_guess(tmp_path, monkey
     with pytest.raises(ValueError):
         service.set_icon_box(info.dir, occ, (10, 10, 12, 12))
     r = service.set_icon_box(info.dir, occ, good)
-    assert r["group"] == found["group"] and r["old_gone"] and not r["new_group"]
+    # 줄은 그대로 (카드의 아이콘 하나 = 한 줄), 그림이 처음 생겼고 모양이 같은 줄과 같은 shape
+    assert r["group"] == lost["group"] and not r["old_gone"] and r["new_group"]
     review = service.icon_review(info.dir)
-    assert len(review["groups"]) == 1 and review["groups"][0]["count"] == 2
+    assert len(review["groups"]) == 2 and len({g["shape"] for g in review["groups"]}) == 1
+    assert all(g["shape_count"] == 2 for g in review["groups"])
     assert service.icon_place(info.dir, occ)["box"] == list(good)
-    res = service.confirm_icons(info.dir, [{"group": review["groups"][0]["group"], "name": "coin", "ko": "금화"}])
+    res = service.confirm_icons(info.dir, [{"group": g["group"], "name": "coin", "ko": "금화"} for g in review["groups"]])
     assert res.state == "confirmed" and res.replaced == 2
     assert _source(fd, 1) == _source(fd, 2) == "AB[[coin]]CD"
 
@@ -381,10 +401,11 @@ def test_manual_box_new_row_gets_name_suggestion(tmp_path, monkeypatch):
     assert s["suggest"] == "coin" and s["ko"] == "동전"
     g = next(x for x in service.icon_review(info.dir)["groups"] if x["group"] == r["group"])
     assert g["suggest"] == "coin" and g["ko"] == "동전"
-    # 잘못 잡은 자리를 다시 고치면 같은 모양 줄로 합쳐지고 제안 받은 새 줄은 없어진다
+    # 잘못 잡은 자리를 다시 고치면 같은 줄이 그대로 남고 모양만 다른 줄과 같아진다
     r2 = service.set_icon_box(info.dir, lost["where"][0]["occ"], good)
-    assert r2["old_gone"] and not r2["new_group"]
-    assert len(service.icon_review(info.dir)["groups"]) == 1
+    assert r2["group"] == r["group"] and not r2["new_group"]
+    rv = service.icon_review(info.dir)["groups"]
+    assert len(rv) == 2 and len({g["shape"] for g in rv}) == 1
 
 
 def test_text_line_with_background_drawing_is_not_dropped():
@@ -637,13 +658,15 @@ def test_scan_does_not_auto_match_spots_found_at_the_same_place(tmp_path, monkey
     assert r2.state == "icons_review" and not r2.auto
     assert _source(fd2, 1) == "AB[[?]]CD[[?]]を得る"
     scan = icons.load_scan(info.game_dir / "work" / "icons")
-    assert len(scan.occurrences) == 2
-    assert all(not o.png and o.reason == icons.SHARED_BOX_REASON for o in scan.occurrences)
-    # 하나만 그 자리에 있으면 예전처럼 사전으로 바로 바꾼다
+    mine = [o for o in scan.occurrences if not o.named]  # 1차의 확정된 [[coin]]도 한 줄로 들어 있다
+    assert len(mine) == 2 and len(scan.occurrences) == 3
+    assert all(not o.png and o.reason == icons.SHARED_BOX_REASON for o in mine)
+    assert not any(scan.groups[o.group].get("dict") for o in mine)
+    # 하나만 그 자리에 있으면 사전 이름을 미리 채운다 (원문은 확정할 때 바꾼다)
     d["regions"]["본문"]["source"] = "AB[[?]]CD"
     p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-    assert service.find_icons(info2.dir, suggest=False).auto == {"coin": 1}
-    assert _source(fd2, 1) == "AB[[coin]]CD"
+    r3 = service.find_icons(info2.dir, suggest=False)
+    assert r3.prefilled == 1 and _source(fd2, 1) == "AB[[?]]CD"
 
 
 def test_find_icons_renames_suggestion_that_clashes_with_dictionary(tmp_path):
@@ -655,8 +678,8 @@ def test_find_icons_renames_suggestion_that_clashes_with_dictionary(tmp_path):
     assert service.confirm_icons(info.dir, [{"group": g, "name": "crown", "ko": "왕관"}]).state == "confirmed"
 
     info2, _fd2 = _project(tmp_path, "2차", pages=1, icon_color=(0.1, 0.1, 0.85))  # 다른 그림
-    run = FakeRunner([_suggest([{"group": "g01", "name": "crown", "meaning": "crown", "ko": "왕관"}])])
+    run = FakeRunner([_suggest([{"group": "g02", "name": "crown", "meaning": "crown", "ko": "왕관"}])])
     r = service.find_icons(info2.dir, client=ClaudeCodeClient(exe="claude", runner=run))
     assert r.state == "icons_review"
-    g2 = service.icon_review(info2.dir)["groups"][0]
+    g2 = next(g for g in service.icon_review(info2.dir)["groups"] if not g["named"])
     assert g2["suggest"] == "crown_2" and not g2["dict"]

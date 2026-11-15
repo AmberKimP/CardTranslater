@@ -17,7 +17,7 @@ from app.qt.dialogs import (
     PRIMARY_QSS, ask_choice, file_label, fit_to_screen, hint_bar, set_hint, show_error, show_problem,
 )
 from app.qt.step_common import (
-    DIFF_STYLE, KEEP_LABEL, KEEP_UNDO_LABEL, FitImage, ICON_TOKEN_RE, LABEL_COLORS, REREAD_MODELS, REREAD_TAG, UNKNOWN_ICON, _fail_as, as_text,
+    DIFF_STYLE, KEEP_LABEL, KEEP_UNDO_LABEL, FitImage, ICON_REVIEW_LABEL, ICON_TOKEN_RE, LABEL_COLORS, REREAD_MODELS, UNKNOWN_ICON, _fail_as, as_text,
     diff_html, fill_icon_names, label_text, plain_note, precise_index, reader_name, source_font, state_label,
 )
 
@@ -60,7 +60,7 @@ class SourceReviewDialog(QDialog):
             self.file.setItemData(self.file.count() - 1, f["key"], Qt.ItemDataRole.ToolTipRole)
         self.file.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.file.setMinimumContentsLength(18)
-        self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·확인 필요·아직 읽지 않음)")
+        self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·아이콘 고침·확인 필요·아직 읽지 않음)")
         self.only.setChecked(only_check)
         self.count = QLabel()
         self.count.setStyleSheet("color: #3A3A3C; background: white; border: 1px solid #E5E5EA;"
@@ -241,13 +241,13 @@ class SourceReviewDialog(QDialog):
     @staticmethod
     def needs_check(c: dict) -> bool:
         # 글자도 있는 ‘원본 그대로’ 칸은 ‘확인할 칸만’ 목록에도 보인다 (글자가 번역되지 않고 남는지 확인)
-        return c["uncertain"] or c["label"] in ("결론 못 냄", SourceReviewDialog.UNREAD) or \
+        return c["uncertain"] or c["label"] in ("결론 못 냄", ICON_REVIEW_LABEL, SourceReviewDialog.UNREAD) or \
             SourceReviewDialog.kept_with_text(c) or c.get("keep_mode") == "broken"
 
     @staticmethod
     def needs_attention(c: dict) -> bool:
         """사람이 보고 판단할 칸 (아직 읽지 않은 칸은 뺀다)."""
-        return c["label"] != SourceReviewDialog.UNREAD and (c["uncertain"] or c["label"] == "결론 못 냄")
+        return c["label"] != SourceReviewDialog.UNREAD and (c["uncertain"] or c["label"] in ("결론 못 냄", ICON_REVIEW_LABEL))
 
     # ---- 고친 글 지키기
     def _dirty(self) -> bool:
@@ -328,7 +328,9 @@ class SourceReviewDialog(QDialog):
         self.cells = [c for c in allc if self.needs_check(c)] if self.only.isChecked() else allc
         n_att = sum(1 for c in allc if self.needs_attention(c))
         n_unread = sum(1 for c in allc if c["label"] == self.UNREAD)
-        self.count.setText(f"확인할 칸 {n_att} · 아직 읽지 않은 칸 {n_unread} / 전체 {len(allc)}")
+        n_icon = sum(1 for c in allc if c["label"] == ICON_REVIEW_LABEL)  # 확인할 칸 가운데 아이콘을 고쳐 다시 볼 칸
+        self.count.setText(f"확인할 칸 {n_att}" + (f" (아이콘 고침 {n_icon})" if n_icon else "")
+                           + f" · 아직 읽지 않은 칸 {n_unread} / 전체 {len(allc)}")
         if n_att:
             set_hint(self.guide, f"확인할 칸 {n_att}개가 남았습니다. 그림과 비교해 고친 뒤 ‘저장하고 다음 칸’을 누르세요.", "todo")
         elif n_unread:
@@ -482,7 +484,7 @@ class SourceReviewDialog(QDialog):
     def reading_texts(c: dict, known=None) -> list[tuple[str, str]]:
         """[(‘보통 읽기’ 등, 읽은 결과 글)]. 이름을 정한 아이콘은 [[?]] 대신 [[이름]]으로."""
         src = as_text(c["source"])
-        return [(reader_name(rd["model"]) + (REREAD_TAG if rd.get("reread") else ""),
+        return [(reader_name(rd["model"]),  # 다시 읽은 결과라는 꼬리표는 붙이지 않는다
                  fill_icon_names(as_text(rd["source"]), src, known, _removed(c)))
                 for rd in c["readings"]]
 
@@ -508,6 +510,17 @@ class SourceReviewDialog(QDialog):
             return plain_note(note) or "따로 확인할 점은 없습니다. 틀린 곳이 보이면 고쳐서 저장하세요.", ""
         # 엔진 메모 ‘두 모델이 다르게 읽음 (A: … / B: …). 덧붙인 말’에서 두 결과는 표에 있으니 덧붙인 말만
         memo = note.rsplit(").", 1)[1].strip() if note.startswith("두 모델이") and ")." in note else ""
+        if c["label"] == ICON_REVIEW_LABEL:  # ② 아이콘 정의에서 아이콘 자리를 고친 칸 (고치기 전 원문은 본 적 없음)
+            if "아이콘 고친 뒤" not in note:  # 다시 읽기를 취소했거나 한도·실패로 못 읽음 (메모는 서비스가 적는다)
+                return ("② 아이콘 정의에서 아이콘 자리가 바뀌었는데 아직 다시 읽지 못했습니다. "
+                        "그림과 비교하거나 ‘이 칸 다시 읽기’로 읽어 보세요."), ""
+            if differ:
+                return "아이콘을 고친 뒤 두 번 읽은 결과가 다릅니다. 그림과 비교해 맞게 고쳐 저장하세요.", ""
+            if "지금 원문과 다름" in note:
+                return "아이콘을 고친 뒤 두 번 읽은 결과가 같지만 지금 원문과 다릅니다. 그림과 비교해 저장하세요.", ""
+            if "확실하지 않다고 함" in note:
+                return "아이콘을 고친 뒤 두 번 읽었지만 확실하지 않다고 했습니다. 그림과 비교해 저장하세요.", ""
+            return "아이콘을 고친 뒤 다시 읽은 결과를 그림과 비교해 저장하세요.", ""
         if differ:
             base = "두 번 읽은 결과가 다릅니다. 그림과 비교해 맞게 고쳐 저장하세요."
         elif c["readings"]:

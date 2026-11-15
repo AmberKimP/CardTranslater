@@ -511,11 +511,12 @@ class ProjectPage(QWidget):
         return lb
 
     # ---- 목록 오른쪽 클릭 메뉴
-    def _menu_items(self, kind: str) -> list[tuple[str, object] | None]:
-        """줄 종류별 메뉴 [(글자, 부를 함수)], None은 구분선."""
+    def _menu_items(self, kind: str, d: dict | None = None) -> list[tuple[str, object] | None]:
+        """줄 종류별 메뉴 [(글자, 부를 함수)], None은 구분선. d: 고른 줄의 정보 (이미지로 넣은 파일이면 ‘다시 자르기’)."""
         if kind == "file":
+            recut = [("다시 자르기…", self.recut_selected)] if (d or {}).get("from_images") else []
             return [("영역 지정", self.edit_regions), ("뺄 쪽…", self.exclude_pages), ("폴더 열기", self.open_folder),
-                    None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
+                    None, *recut, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
         if kind == "group":
             return [("영역 지정", self.edit_regions), ("이름 바꾸기…", self.rename_group), ("폴더 열기", self.open_folder),
                     None, ("초기화…", self.reset_selected), ("삭제…", self.delete_selected)]
@@ -530,7 +531,7 @@ class ProjectPage(QWidget):
         if not sel:
             return
         menu = QMenu(self)
-        for entry in self._menu_items(sel[0]):
+        for entry in self._menu_items(sel[0], sel[1] if isinstance(sel[1], dict) else None):
             if entry is None:
                 menu.addSeparator()
             else:
@@ -915,6 +916,59 @@ class ProjectPage(QWidget):
             return
         self.win.statusBar().showMessage(f"‘{d.get('key') or d['name']}’을(를) 휴지통으로 옮겼습니다")
         self.refresh()
+
+    def recut_selected(self):
+        """이미지 시트로 넣은 파일을 지금 방식으로 다시 자른다 (예전 버전에서 잘못 잘린 시트)."""
+        sel = self._selected()
+        if not sel or sel[0] != "file":
+            return
+        d = sel[1]
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            chk = service.recut_check(d["dir"])
+        except (OSError, ValueError) as e:
+            chk = service.RecutCheck(False, str(e))
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not chk.can:
+            show_problem(self, "다시 자를 수 없습니다", chk.reason)
+            return
+        if not chk.changed:
+            QMessageBox.information(self, "다시 자르기", f"‘{d['key']}’은(는) 지금 방식으로 잘라도 카드 자리가 같습니다 "
+                                    f"(카드 {chk.cards_after}장). 다시 자를 필요가 없습니다.")
+            return
+        diff = (f"카드 수가 {chk.cards_before}장에서 {chk.cards_after}장으로 바뀝니다." if chk.cards_before != chk.cards_after
+                else f"카드 {chk.cards_after}장의 자리가 최대 {chk.moved_px}px 달라집니다.")
+        what = (f"‘{d['key']}’을(를) 지금 방식으로 다시 자를까요?\n\n{diff}\n\n"
+                "카드 그림이 바뀌므로 이 파일의 추출·지운 카드·한글 카드는 휴지통(.trash)으로 옮기고, "
+                "① 글자 추출부터 다시 해야 합니다. 그룹의 영역은 그대로입니다."
+                + (" 뺄 쪽 설정도 그대로 이어받습니다." if chk.cards_before == chk.cards_after else ""))
+        if QMessageBox.question(self, "다시 자르기", what) != QMessageBox.StandardButton.Yes:
+            return
+        # 뒤에서 글자를 지우는 중이면 끝난 뒤에 (지우는 중인 폴더를 옮기면 반쯤 남는다)
+        self.bg.stop()
+        if not self.bg.idle:
+            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 다시 자릅니다")
+        self.bg.when_idle(lambda: self._do_recut(d, chk))
+
+    def _do_recut(self, d: dict, chk):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            res = service.recut_file(d["dir"], check=chk)
+        except Exception as e:  # noqa: BLE001 - 무엇이 실패해도 알리고 (예전 파일은 recut_file이 되돌린다)
+            res = None
+            err = str(e) or type(e).__name__
+        finally:
+            QApplication.restoreOverrideCursor()
+        if res is None:
+            show_problem(self, "다시 자르지 못했습니다", err,
+                         "보통은 예전 파일을 그대로 되돌립니다 (되돌리지 못하면 위에 휴지통 위치가 나옵니다). "
+                         "이 파일의 엑셀·PDF가 열려 있으면 닫고 다시 하세요.")
+            self.refresh()
+            return
+        self.win.statusBar().showMessage(f"‘{d['key']}’을(를) 다시 잘랐습니다 (카드 {res.pages}장). ① 글자 추출부터 다시 하세요")
+        self.refresh()
+        self._restore_selection(("file", str(res.file_dir)))
 
     def exclude_pages(self):
         sel = self._selected()

@@ -20,7 +20,9 @@ READER_NAMES = {"sonnet": "보통 읽기", "opus": "정밀 읽기", "haiku": "�
 LABEL_TEXT = {"결론 못 냄": "다시 봐야 함"}
 JA_FONTS = ["Yu Gothic UI", "Meiryo"]  # 원문(일본어) 칸 글꼴: 차례로, 없으면 기본 글꼴
 ENGINE_LABELS = [("claude-code", "Claude 구독 (Claude Code)"), ("api", "API 키 (사용한 만큼 요금)")]  # 로그인 창과 같은 말
-LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3"}
+ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"  # app.extract.ICON_REVIEW_LABEL과 같은 상태 (② 아이콘 정의 뒤 다시 읽어 결론 못 냄)
+LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3",
+                ICON_REVIEW_LABEL: "#D9C3F0"}
 
 
 STATE_LABEL = {"done": "끝남", "skipped": "건너뜀", "blocked": "할 수 없음", "failed": "실패",
@@ -190,7 +192,6 @@ def precise_index(readings: list[dict]) -> int | None:
 
 
 REREAD_MODELS = [("opus", "정밀 읽기 (Opus)"), ("sonnet", "보통 읽기 (Sonnet)")]  # ‘이 칸 다시 읽기’ 모델
-REREAD_TAG = " (다시 읽기)"
 KEEP_LABEL = "아이콘만 있음 · 원본 그대로"  # 원문 확인·번역 검수·결과 보기의 같은 버튼
 KEEP_UNDO_LABEL = "원본 그대로 두는 중 · 되돌리기"
 

@@ -69,6 +69,10 @@ python -m venv .venv
 # 8단계 한글 넣기 -> projects/sample/translated/ (지우기 없이 엑셀 번역만 다시 넣음. 고칠 때마다 반복)
 .venv/Scripts/python -m app.cli compose --project projects/sample --excel projects/sample/번역_검수.xlsx
 .venv/Scripts/python -m pytest -q
+# 실제 카드 회귀 비교: projects/·데이터 폴더의 프로젝트와 scripts/regress_cases.json의 시트로 시트 자르기·지우기·한글 넣기를
+# 다시 해 기준(test_runs/regress/baseline)과 비교 -> test_runs/regress/runs/<시각>/report.html (프로젝트는 읽기만, Claude 안 부름)
+.venv/Scripts/python scripts/regress.py save      # 지금 결과를 기준으로 (의도한 변화를 받아들일 때도)
+.venv/Scripts/python scripts/regress.py check     # 기준과 비교. 입력 데이터가 바뀐 대상은 ‘입력도 바뀜’으로 따로 알림
 ```
 
 `--test`를 붙이면 프로젝트 폴더 대신 `test_runs/<시각>-erase|compose/`에 쓴다. 엑셀에 확인할 항목(빈 번역, 빠진 행, 원문 수정)이 있으면 목록을 보여 주고 멈춘다. 확인했으면 `--yes`를 붙여 다시 실행한다. 다른 프로젝트의 엑셀이면 항상 멈춘다.

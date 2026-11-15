@@ -176,27 +176,37 @@ class RereadResult:
     equiv_usd: float = 0.0  # Claude Code 요금제로 읽은 분량의 API 정가 환산 (청구되지 않음)
     reason: str = ""  # 멈춘·못 한 이유
     retry_after: str | None = None
+    # 아이콘이 바뀐 칸을 보통·정밀 읽기로 두 번 읽어(double=True) 두 결과가 같고 지금 원문과도 같아 확인이 끝남
+    settled: bool = False
 
 
 CELL_BLOCKED = ("다시 읽지 못했습니다", "응답에 이 칸의 결과가 없습니다")  # 로그인·한도가 아닌, 그 칸만의 실패
 
 
-def reread_cells(cells: list[dict], *, model: str = "opus", engine: str | None = None, client=None,
+def reread_cells(cells: list[dict], *, model: str | None = None, engine: str | None = None, client=None,
                  progress: _base.ProgressFn | None = None, cancel: _base.CancelToken | None = None) -> dict:
-    """여러 칸을 차례로 다시 읽는다 (② 아이콘 정의에서 아이콘 자리가 바뀐 칸 등). cells: [{"file_dir", "page", "region"}].
-    결과는 칸마다 rereads에 덧붙고 원문은 그대로다 (③ 원문 확인에서 사람이 비교해 고른다).
-    {"done": 읽은 수, "failed": [(칸, 이유)], "state": done|paused|blocked, "reason", "retry_after", "spent_usd"}.
+    """② 아이콘 정의에서 아이콘 자리가 바뀐 칸을 차례로 다시 읽는다. cells: [{"file_dir", "page", "region"}].
+    model=None(기본): 원문 추출의 꼼꼼히 모드와 같은 두 모델(보통·정밀 읽기)로 모두 읽어, 두 결과가 같고 지금 원문과도
+    같으면 확인을 끝내고(icon_changed가 풀림) 아니면 ‘아이콘 고침 · 확인 필요’로 둔다 (비용은 한 번 읽기의 약 두 배).
+    model을 주면 그 모델로 한 번만 읽어 rereads에 덧붙인다 (예전 동작, 원문·상태는 그대로).
+    {"done": 읽은 수, "settled": 확인이 끝난 수, "failed": [(칸, 이유)], "state": done|paused|blocked, "reason",
+    "retry_after", "spent_usd"}.
     한도에 걸리면 거기서 멈춘다 (남은 칸은 ‘확인 필요’로 남아 원문 확인에서 하나씩 다시 읽을 수 있다)."""
     progress = progress or _base._noop
-    out = {"done": 0, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0}
+    out = {"done": 0, "settled": 0, "failed": [], "state": "done", "reason": "", "retry_after": None,
+           "spent_usd": 0.0}
     for i, c in enumerate(cells):
         if cancel:
             cancel.check()
         progress(_base.ProgressEvent("reread", i, len(cells), f"{c['page']}쪽 {c['region']} 다시 읽는 중"))
-        r = reread_region(c["file_dir"], c["page"], c["region"], model=model, engine=engine, client=client)
+        if model is None:
+            r = reread_region(c["file_dir"], c["page"], c["region"], engine=engine, client=client, double=True)
+        else:
+            r = reread_region(c["file_dir"], c["page"], c["region"], model=model, engine=engine, client=client)
         out["spent_usd"] += r.spent_usd
         if r.state == "done":
             out["done"] += 1
+            out["settled"] += bool(getattr(r, "settled", False))
         elif r.state == "blocked" and r.reason.startswith(CELL_BLOCKED):  # 이 칸만의 문제: 기록하고 다음 칸
             out["failed"].append((f"{c['page']}쪽 {c['region']}", r.reason))
             skip_icon_reread([c])  # 다음에 원문 확인을 열 때 또 읽지(돈을 쓰지) 않는다 — ‘이 칸 다시 읽기’로 읽는다
@@ -214,21 +224,21 @@ def reread_cells(cells: list[dict], *, model: str = "opus", engine: str | None =
 
 
 def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = "opus",
-                  engine: str | None = None, client=None) -> RereadResult:
+                  engine: str | None = None, client=None, double: bool = False) -> RereadResult:
     """원문 확인 화면에서 고른 칸 하나만 다시 읽는다. 결과는 그 칸의 rereads에 덧붙이고, 원문(source)·
     readings(두 번 읽기 결과)·확인 필요는 바꾸지 않는다 — 칸 상태는 사람이 보고 저장할 때 바뀐다.
+    double=True: ② 아이콘 정의에서 아이콘 자리가 바뀐 칸 — 보통·정밀 읽기(원문 추출 꼼꼼히 모드의 두 모델)로 모두 읽어
+    readings에 둘을 남긴다 (_settle_icon_cell). model은 쓰지 않는다.
     시험 모드·뺀 쪽이어도 읽는다(사람이 고른 칸).
     한도·로그인 문제는 state="paused"·"blocked"로 돌려준다 (예외 아님)."""
-    import pymupdf
-
-    from app.extract import (Paused, _iso_after, _read_regions_once, cell_rereads, make_client, model_readings,
-                             page_file, resolve_model)
-    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+    from app.extract import make_client, resolve_model
+    from app.extract_cc import ClaudeCodeClient
 
     log = logging.getLogger("cardtranslater.extract")
     fd = Path(file_dir)
     try:
-        model_id = resolve_model(model)
+        model_ids = ([resolve_model(m) for m in _extract.EXTRACT_MODES["double-check"]] if double
+                     else [resolve_model(model)])
     except ValueError as e:
         return RereadResult("blocked", reason=str(e))
     proj = load_project(fd)
@@ -241,26 +251,71 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
             client = ClaudeCodeClient() if eng == "claude-code" else make_client()
         except Exception as e:  # noqa: BLE001  (키·claude 명령이 없을 때 등)
             return RereadResult("blocked", reason=f"Claude에 연결할 수 없습니다: {e}")
-    base = fd / "extract"
+    entries: list[dict] = []
+    spent = equiv = 0.0
+    for model_id in model_ids:  # 보통 읽기 먼저 (싸다): 그것이 한도에 걸리면 정밀 읽기에 돈을 쓰지 않는다
+        got = _read_cell(client, proj, page, reg, model_id, fd / "extract")
+        if isinstance(got, RereadResult):  # 멈춤·실패: 먼저 읽은 결과는 ‘이 칸 다시 읽기’ 결과로 남긴다 (쓴 돈을 버리지 않게)
+            if entries:
+                _update_cell(fd, page, region, lambda cell: cell.setdefault("rereads", []).extend(entries))
+            got.spent_usd += spent
+            got.equiv_usd += equiv
+            return got
+        entry, s, e = got
+        entries.append(entry)
+        spent, equiv = spent + s, equiv + e
+    if double:
+        a, b = entries
+        settled = _update_cell(fd, page, region, lambda cell: _settle_icon_cell(cell, a, b))
+        log.info("아이콘 고친 칸 두 번 읽음: %d쪽 %s (%s)", page, region,
+                 "같음 — 확인 끝" if settled else "확인 필요")
+        return RereadResult("done", b["source"], b["uncertain"], b["note"], spent, equiv, settled=bool(settled))
+
+    # 이미 읽은 칸에만 덧붙인다 (아직 읽지 않은 칸은 편집 칸에 넣어 주고, 저장할 때 원문이 생긴다)
+    def add(cell: dict):
+        cell.setdefault("rereads", []).append(entries[0])
+        cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
+    _update_cell(fd, page, region, add)
+    log.info("칸 다시 읽음: %d쪽 %s (%s)", page, region, model_ids[0])
+    e0 = entries[0]
+    return RereadResult("done", e0["source"], e0["uncertain"], e0["note"], spent, equiv)
+
+
+def _read_cell(client, proj, page: int, reg, model_id: str, base: Path):
+    """칸 하나를 한 모델로 읽는다. (rereads·readings에 넣을 결과, API 비용, 요금제 환산), 못 읽으면 RereadResult."""
+    import pymupdf
+
+    from app.extract import Paused, _iso_after, _read_regions_once
+    from app.extract_cc import CardError, NotAvailable
+
+    log = logging.getLogger("cardtranslater.extract")
     try:
         # 잘라 낸 그림은 extract/reread/에 둔다 (extract/crops/의 그 쪽 첫 칸 그림을 덮어쓰지 않게)
         with pymupdf.open(proj.source_pdf) as src_doc:
             got, spent, equiv = _read_regions_once(client, proj, page, src_doc, model_id, base / "reread", [reg])
     except Paused as p:
-        log.warning("칸 다시 읽기 일시 정지 (%d쪽 %s): %s", page, region, p.reason)
+        log.warning("칸 다시 읽기 일시 정지 (%d쪽 %s): %s", page, reg.name, p.reason)
         return RereadResult("paused", reason=p.reason, retry_after=_iso_after(p.retry_after_s))
     except NotAvailable as e:
         return RereadResult("blocked", reason=str(e))
     except CardError as e:
-        log.warning("칸 다시 읽기 실패 (%d쪽 %s): %s", page, region, e)
+        log.warning("칸 다시 읽기 실패 (%d쪽 %s): %s", page, reg.name, e)
         return RereadResult("blocked", reason=f"다시 읽지 못했습니다: {e}")
-    r = got.get(region)
+    r = got.get(reg.name)
     if r is None:
         return RereadResult("blocked", reason="응답에 이 칸의 결과가 없습니다", spent_usd=spent, equiv_usd=equiv)
     entry = {"model": model_id, "source": r["source"], "uncertain": bool(r.get("uncertain")),
              "note": r.get("note", ""), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
              "cost_usd": round(spent, 6), "cost_equiv_usd": round(equiv, 6)}
-    # 이미 읽은 칸에만 덧붙인다 (아직 읽지 않은 칸은 편집 칸에 넣어 주고, 저장할 때 원문이 생긴다)
+    return entry, spent, equiv
+
+
+def _update_cell(fd: Path, page: int, region: str, fn):
+    """그 쪽의 추출 결과 파일들에서 칸 하나를 fn(cell)로 고쳐 저장한다 (이미 읽은 칸만). 마지막 fn의 반환값."""
+    from app.extract import cell_rereads, model_readings, page_file
+
+    base = fd / "extract"
+    ret = None
     for f in (page_file(base, page), base / f"page-{page:03d}.json"):
         if not f.exists():
             continue
@@ -277,17 +332,98 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
                 cell["readings"] = keep
             else:
                 cell.pop("readings", None)
-        cell.setdefault("rereads", []).append(entry)
-        cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
+        ret = fn(cell)
         workspace._write(f, rec)  # 임시 파일로 쓰고 바꿔 넣기 (뒤에서 지우는 스레드가 읽는 중이면 다시 시도)
-    log.info("칸 다시 읽음: %d쪽 %s (%s)", page, region, model_id)
-    return RereadResult("done", r["source"], bool(r.get("uncertain")), r.get("note", ""), spent, equiv)
+    return ret
+
+
+ICON_SETTLED_NOTE = "아이콘 고친 뒤 보통 읽기·정밀 읽기가 같게 읽음"
+
+
+def _icon_core(text, numbers: list | None = None) -> str:
+    """지금 원문과 다시 읽은 결과를 견줄 글 (추출 비교처럼 공백·전각/반각 무시).
+    아이콘 토큰은 이름과 상관없이 같은 표시 하나로 바꾼다: 모델은 이름을 모르고 [[?]]로 읽지만, 아이콘의 자리와 수는
+    같아야 한다 (② 카드 보기에서 넣은 아이콘의 자리가 틀렸으면 확인 끝으로 보지 않는다).
+    numbers: 칸의 icon_numbers — ②가 아이콘 그림에 넣어 원문에서 뺀 숫자를 그 자리에 되살려 견준다
+    (다른 숫자는 그대로 견준다: 숫자를 잘못 읽은 것을 숨기지 않게)."""
+    from app.extract import _norm
+    from app.icons import TOKEN_RE
+
+    if isinstance(text, list):
+        text = "\n".join(text)
+    text = text or ""
+    by_idx = {e["index"]: e for e in (numbers or []) if isinstance(e, dict) and isinstance(e.get("index"), int)}
+    out, last = [], 0
+    for ti, t in enumerate(TOKEN_RE.finditer(text)):
+        out.append(text[last:t.start()])
+        rep = MARK
+        e = by_idx.get(ti)
+        if e and e.get("text"):
+            sep = e.get("sep", "")
+            rep = f"{e['text']}{sep}{MARK}" if e.get("side") == "before" else f"{MARK}{sep}{e['text']}"
+        out.append(rep)
+        last = t.end()
+    out.append(text[last:])
+    return _norm("".join(out))
+
+
+MARK = "\x00"  # 견줄 때 아이콘 하나 (글자로 나올 일이 없는 표시)
+
+
+def _settle_icon_cell(cell: dict, a: dict, b: dict) -> bool:
+    """아이콘이 바뀐 칸을 보통 읽기(a)·정밀 읽기(b)로 읽은 결과를 칸에 적는다. 확인이 끝났으면 True.
+    - 두 결과가 같고(추출의 두 번 읽기와 같은 비교) 둘 다 확실하고, 지금 원문과도 (아이콘 말고) 같으면: 확인 끝 —
+      icon_changed·확인 필요를 지운다. 원문은 그대로 둔다 (② 아이콘 정의에서 정한 [[이름]]을 지키려고).
+    - 아니면 ‘아이콘 고침 · 확인 필요’(icon_changed 남김)로 두고 ③ 원문 확인에서 사람이 고른다. 원문은 그대로.
+    두 결과는 readings에 둔다 (원문 확인이 두 번 읽은 칸처럼 나란히 보인다). 예전 readings·rereads는 아이콘을 고치기 전
+    결과라 before_icon_reread에 기록만 남긴다."""
+    from app.extract import _norm
+    from app.icons import ICON_CHANGED_NOTE
+
+    same = _norm(a["source"]) == _norm(b["source"])
+    sure = not a["uncertain"] and not b["uncertain"]
+    as_source = _icon_core(b["source"]) == _icon_core(cell.get("source"), cell.get("icon_numbers"))
+    settled = same and sure and as_source
+    prev = {k: cell[k] for k in ("readings", "rereads") if cell.get(k)}
+    if prev:
+        cell.setdefault("before_icon_reread", []).append({**prev, "at": b["at"]})
+    cell.pop("rereads", None)
+    cell["readings"] = [a, b]
+    cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
+    notes = [s for s in (cell.get("note") or "").split(" / ") if s]
+    if settled:
+        cell.pop("icon_changed", None)
+        cell["uncertain"] = False
+        cell["note"] = " / ".join([s for s in notes if not s.startswith((ICON_CHANGED_NOTE, "아이콘 고친 뒤"))]
+                                 + [ICON_SETTLED_NOTE])
+        return True
+    if not same:
+        why = "두 모델이 다르게 읽음"
+    elif not sure:
+        why = "두 모델이 같게 읽었지만 확실하지 않다고 함"
+    else:
+        why = "두 모델이 같게 읽었지만 지금 원문과 다름"
+    cell["uncertain"] = True
+    cell["icon_changed"] = cell.get("icon_changed") or ["다시 읽어 확인 필요"]
+    extra = " ".join(x for x in (a.get("note"), b.get("note")) if x)
+    cell["note"] = " / ".join([s for s in notes if not s.startswith("아이콘 고친 뒤")]
+                              + [f"아이콘 고친 뒤 {why}" + (f". {extra}" if extra else "")])
+    return False
 
 
 # ---------------------------------------------------------------- 화면용: 아이콘 이름 확인 (2차)
+ICON_HOW_LABEL = {"named": "확정됨", "same": "사전과 모양 같음", "legacy": "사전 그림과 비슷 (확인)",
+                  "prev": "확정됨 · 다시 잡는 중"}
+
+
 def icon_review(project_dir: Path | str) -> dict | None:
-    """find_icons 뒤 이름을 정할 묶음: {"groups": [{"group", "image", "suggest", "meaning", "ko", "count",
-    "examples"}], "known": [사전 이름]}. 찾기 결과가 없으면 None."""
+    """find_icons 뒤 ② 아이콘 정의 표: 카드의 아이콘 하나 = 한 줄 (세트에 포함된 자리는 빼고).
+    {"groups": [{"group", "occ", "image", "dict_image", "suggest"(이름 칸에 처음 보일 이름), "meaning", "ko", "scale",
+    "named"(원문에 이미 있는 이름), "dict", "dict_how", "how_label", "shape", "shape_count"(같은 모양 줄 수), "count"(1),
+    "card": (파일 폴더, 쪽), "card_label", "region", "line", "order", "examples", "where": [자리 하나], "not_icon",
+    "absorbed_group", "absorbed_name", "reason", "first", "set_size", "issue"}], "known": [사전 이름]}.
+    줄은 카드 순서(파일·쪽, 그 안에서는 원문 순서). 찾기 결과가 없으면 None.
+    이름 칸: 확정된 이름 → 사전과 모양이 같은 이름 → 모델 제안. 그 이름이 사전에 있으면 뜻·한국어 이름·크기는 사전 값."""
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
@@ -295,36 +431,64 @@ def icon_review(project_dir: Path | str) -> dict | None:
     if not (work / "scan.json").exists():
         return None
     res = icons.load_scan(work)
+    dic = icons.load_dictionary(info)["icons"]
     by_id = {o.id: o for o in res.occurrences}
-    groups = []
+    order = {o.id: i for i, o in enumerate(res.occurrences)}
     set_extra: dict[str, int] = {}  # 세트 첫 자리 id -> 함께 붙은 아이콘 수 (자동으로 합친 것)
     for gi in res.groups.values():
         if gi.get("auto") and gi.get("absorbed"):
             set_extra[gi["absorbed"]] = set_extra.get(gi["absorbed"], 0) + 1
+    shape_n: dict[str, int] = {}
+    for gi in res.groups.values():
+        if gi.get("shape") and not (gi.get("auto") and gi.get("absorbed")):
+            shape_n[gi["shape"]] = shape_n.get(gi["shape"], 0) + 1
+    multi_files = len({o.file for o in res.occurrences}) > 1
+    groups = []
     for g, gi in res.groups.items():
         if gi.get("auto") and gi.get("absorbed"):  # 세트의 나머지 자리: 표에 따로 보이지 않는다 (확정하면 원문에서 뺀다)
             continue
         members = [o for o in res.occurrences if o.group == g]
-        groups.append({"group": g,
-                       "set_size": max((set_extra.get(o.id, 0) + 1 for o in members), default=1), "image": by_id[gi["rep"]].png if gi.get("rep") else None,
-                       "suggest": gi.get("suggest", ""), "meaning": gi.get("meaning", ""), "ko": gi.get("ko", ""),
-                       "count": len(members),
-                       "examples": [f"{o.file_key} p{o.page} {o.region} {o.line}줄: {o.context}" for o in members],
-                       "where": [{"file_dir": icons._occ_dir(info, o.file), "page": o.page, "region": o.region, "line": o.line,
-                                  "png": o.png or None, "occ": o.id, "manual": o.manual,
-                                  "label": f"{o.file_key} {o.page}쪽 {o.region} {o.line}줄"}
-                                 for o in members],
-                       "dict": gi.get("dict", ""),
-                       "not_icon": bool(gi.get("not_icon")),  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
-                       "absorbed_group": by_id[gi["absorbed"]].group if gi.get("absorbed") in by_id else "",
-                       "absorbed_name": gi.get("absorbed_name", ""),  # 세트 첫 자리가 사전 이름으로 바로 바뀐 경우
-                       "reason": members[0].reason if members and not gi.get("rep") else "",
-                       "first": min((res.occurrences.index(o) for o in members), default=len(res.occurrences))})
-    for g in groups:  # 사람이 봐야 하는 것: 한국어 이름이 비어 있음 (창에서 노랑 칸)
-        g["issue"] = "" if g["ko"].strip() else "한국어 이름 없음"
-    # 이슈가 있는 것을 맨 위로, 그 밖에는 원문에 처음 나온 순서
-    groups.sort(key=lambda g: (not g["issue"], g["first"]))
-    return {"groups": groups, "known": sorted(icons.load_dictionary(info)["icons"])}
+        if not members:
+            continue
+        o = members[0]
+        name = icons.prefill_name(gi)
+        e = dic.get(name)
+        de = dic.get(o.named or gi.get("dict") or "") or {}
+        dimg = icons.icons_dir(info) / de.get("file", f"{o.named or gi.get('dict')}.png") if de else None
+        fd = icons._occ_dir(info, o.file)
+        card_label = (f"{o.file_key} " if multi_files else "") + f"{o.page}"
+        groups.append({
+            "group": g, "occ": o.id,
+            "set_size": max((set_extra.get(x.id, 0) + 1 for x in members), default=1),
+            "image": by_id[gi["rep"]].png if gi.get("rep") in by_id else None,
+            "dict_image": str(dimg) if dimg is not None and dimg.exists() else None,
+            "suggest": name,
+            "meaning": (e.get("meaning", "") if e else gi.get("meaning", "")) or "",
+            "ko": (e.get("ko", "") if e else gi.get("ko", "")) or "",
+            "scale": float(e.get("scale", icons.DEFAULT_SCALE)) if e else icons.DEFAULT_SCALE,
+            "named": o.named, "dict": gi.get("dict", ""), "dict_how": gi.get("dict_how", ""),
+            "how_label": ICON_HOW_LABEL.get(gi.get("dict_how", ""), ""),
+            "shape": gi.get("shape", ""), "shape_count": shape_n.get(gi.get("shape", ""), 1),
+            "added": o.added,
+            "count": len(members),
+            "card": (str(fd), o.page), "card_label": card_label, "region": o.region, "line": o.line, "order": o.order,
+            "examples": [f"{x.file_key} p{x.page} {x.region} {x.line}줄: {x.context}" for x in members],
+            "where": [{"file_dir": icons._occ_dir(info, x.file), "page": x.page, "region": x.region, "line": x.line,
+                       "png": x.png or None, "occ": x.id, "manual": x.manual, "named": x.named,
+                       "label": f"{x.file_key} {x.page}쪽 {x.region} {x.line}줄"}
+                      for x in members],
+            "not_icon": bool(gi.get("not_icon")),  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 뺀 자리
+            "absorbed_group": by_id[gi["absorbed"]].group if gi.get("absorbed") in by_id else "",
+            "absorbed_name": gi.get("absorbed_name", ""),  # (예전) 세트 첫 자리가 사전 이름으로 바로 바뀐 경우
+            "reason": o.reason if not gi.get("rep") else "",
+            "first": min(order[x.id] for x in members)})
+    for g in groups:  # 사람이 봐야 하는 것 (창에서 노랑): 위치 못 찾음·이름 빈 칸·한국어 이름 빈 칸 (아이콘 아님이면 없음)
+        g["issue"] = "" if g["not_icon"] else (
+            "위치 못 찾음" if not (g["image"] or g["named"]) else "이름 없음" if not g["suggest"].strip()
+            else "한국어 이름 없음" if not g["ko"].strip() else "")
+    # 카드 순서 (문제 카드를 위로 올리는 것은 화면이 한다: 사람이 적는 값에 따라 바뀌므로)
+    groups.sort(key=lambda g: g["first"])
+    return {"groups": groups, "known": sorted(dic)}
 
 
 def icon_place(project_dir: Path | str, occ_id: str) -> dict:
@@ -343,7 +507,61 @@ def icon_place(project_dir: Path | str, occ_id: str) -> dict:
     ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
     if not ok:
         raise OSError("영역 그림을 만들지 못함")
-    return {**p, "png": buf.tobytes(), "size": (img.shape[1], img.shape[0])}
+    try:
+        card = _card_overview_png(info, work, occ_id)
+    except Exception:  # noqa: BLE001 - 카드 전체 그림은 보조 (없어도 자리는 잡는다)
+        card = b""
+    return {**p, "png": buf.tobytes(), "size": (img.shape[1], img.shape[0]), "card_png": card}
+
+
+CARD_OVERVIEW_DPI = 60
+
+
+def _card_overview_png(info, work: Path, occ_id: str) -> bytes:
+    """카드 보기 옆에 보일 카드 전체 그림 (PNG): 그 자리의 영역은 굵은 파랑, 그 카드의 다른 아이콘 영역은 옅은 회색 테두리."""
+    import cv2
+    import numpy as np
+    import pymupdf
+
+    from app import icons
+    from app.regions import ratio_to_pt
+
+    res = icons.load_scan(work)
+    o = next(x for x in res.occurrences if x.id == occ_id)
+    fd = icons._occ_dir(info, o.file)
+    proj = load_project(fd)
+    others = {x.region for x in res.occurrences if (x.file, x.page) == (o.file, o.page)}
+    with pymupdf.open(proj.source_pdf) as doc:
+        page = doc[o.page - 1]
+        pm = page.get_pixmap(matrix=pymupdf.Matrix(CARD_OVERVIEW_DPI / 72, CARD_OVERVIEW_DPI / 72), alpha=False)
+        img = np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width, pm.n)[:, :, :3].copy()
+        pr = tuple(page.rect)
+    k = CARD_OVERVIEW_DPI / 72
+    for reg in proj.template.regions_for(o.page):
+        if reg.name != o.region and reg.name not in others:
+            continue
+        x0, y0, x1, y1 = (int(round((v - off) * k)) for v, off in zip(ratio_to_pt(reg.rect, pr), (pr[0], pr[1], pr[0], pr[1])))
+        mine = reg.name == o.region
+        cv2.rectangle(img, (x0, y0), (x1, y1), (31, 111, 235) if mine else (150, 150, 150), 3 if mine else 1)
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    return buf.tobytes() if ok else b""
+
+
+def add_icon_box(project_dir: Path | str, anchor_occ: str, box) -> dict:
+    """카드 보기 ‘아이콘 추가’: 원문에 없던 아이콘을 그림에서 감싼 자리에 넣는다. 그 칸 원문에 [[?]]가 하나 늘고
+    (그 줄에서 상자 가로 위치에 맞는 글자 사이 — icons.insert_at) 표에 새 줄이 생긴다.
+    {"occ", "group", "line", "order", "dict"}. 상자가 너무 작으면 ValueError."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.add_icon(info, work, anchor_occ, tuple(box))
+    log.info("아이콘 추가: %s 칸에 %s (%d줄 %d번째)", anchor_occ, r.get("occ"), r.get("line", 0), r.get("order", 0))
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
+        pass
+    return r
 
 
 def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
@@ -498,14 +716,16 @@ def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True) 
             with pymupdf.open(proj.source_pdf) as doc:
                 prect = doc[o.page - 1].rect
             boxes = [b for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region)
-                     and row_of(x) in kept_lines and not res.groups.get(x.group, {}).get("not_icon")
+                     and not x.named and row_of(x) in kept_lines and not res.groups.get(x.group, {}).get("not_icon")
                      and not res.groups.get(x.group, {}).get("absorbed")
                      for b in [icons.region_box_to_pt(prect, reg, x.box)] if b]
         set_keep_paragraphs(fd, o.page, o.region, kept_lines, boxes)
     else:
         set_keep_original(fd, o.page, o.region, keep)
     done, restored = [], []
-    cell = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of]
+    # 이미 이름이 있는 아이콘(named)은 그대로 둔다 (원본 그대로여도 원문의 [[이름]]은 남는다: 예전과 같게)
+    cell = [x for x in res.occurrences if (x.file, x.page, x.region) == (o.file, o.page, o.region) and not x.set_of
+            and not x.named]
     if keep:
         for x in cell:
             gi = res.groups.get(x.group, {})
@@ -716,4 +936,5 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> _extract.IconImp
     if r.blocking:
         return _extract.IconImportResult("blocked", blocking=r.blocking)
     return _extract.IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed,
-                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells])
+                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells],
+                            notes=r.notes)

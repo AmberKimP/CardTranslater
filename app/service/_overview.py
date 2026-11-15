@@ -67,6 +67,7 @@ def project_overview(project_dir: Path | str) -> dict:
                 "composed": (fd / "translated" / "translated.pdf").exists(),
                 "review_xlsx": _translate_erase.review_xlsx_for(fd),
                 "no_regions": no_regions,
+                "from_images": bool(workspace.file_settings(fd).get("from_images")),
             })
         n_regions = (len({r.get("name") for ps in (tdata.get("page_regions") or {}).values()
                           for r in ps.get("regions", [])}) if per_card else g["regions"])

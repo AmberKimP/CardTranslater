@@ -1,6 +1,6 @@
 ---
 name: pdf-engine
-description: 글자 지우기·PDF 담당 (7단계). 카드 영역 안 글자만 지우고(레드랙션 + 배경 정리 + 태그 라벨 다시 그리기) cleared/에 저장하는 코드(app/erase.py, app/regions.py, app/project.py, app/report.py), 프로젝트 단위 지우기 흐름(service.erase/erase_project), JPG·PNG 카드를 PDF로 바꾸는 입력(app/images.py), 결과 PDF 저장·묶기를 만들거나 고칠 때 사용한다. 지운 자국·얼룩이 남음, 그림이 같이 지워짐, 라벨 모양이 틀림, 이미지 시트가 잘못 잘림 같은 문제에 쓴다. Claude로 원문 읽기·용어집·번역은 extract-translate, 한글 넣기는 korean-typesetter 담당. PRD 5.1·5.4·F15·F18·F27 범위.
+description: 글자 지우기·PDF 담당 (7단계). 카드 영역 안 글자만 지우고(레드랙션 + 배경 정리 + 태그 라벨 다시 그리기) cleared/에 저장하는 코드(app/erase.py·erase_fill.py·erase_labels.py·erase_strokes.py, app/regions.py, app/project.py, app/report.py), 프로젝트 단위 지우기 흐름(service.erase/erase_project), JPG·PNG 카드를 PDF로 바꾸는 입력(app/images.py), 결과 PDF 저장·묶기를 만들거나 고칠 때 사용한다. 지운 자국·얼룩이 남음, 그림이 같이 지워짐, 라벨 모양이 틀림, 이미지 시트가 잘못 잘림 같은 문제에 쓴다. Claude로 원문 읽기·용어집·번역은 extract-translate, 한글 넣기는 korean-typesetter 담당. PRD 5.1·5.4·F15·F18·F27 범위.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: opus
 ---

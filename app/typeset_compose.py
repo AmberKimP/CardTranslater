@@ -773,6 +773,121 @@ def kept_lead_icon(page: pymupdf.Page, src_page: pymupdf.Page, ln: dict, ko: str
 KEPT_CHANGED = 0.15  # 원본·지운 쪽 밝기가 크게(40/255 넘게) 다른 픽셀이 이 비율보다 적으면 지우지 않은 자리
 KEPT_CONTRAST = 60.0  # 그 자리 밝기 폭(5~95%)이 이보다 크면 그림(아이콘)이 있다
 
+# ---- 그림 아래 짧은 이름 줄 (‘工房 / 馬車 / 商館’: 그림마다 아래에 이름, 사이 ‘/’는 그림이거나 크게 띄운 글자)
+SEG_SPLIT = re.compile(r"\s+/\s+|\s*／\s*")  # 줄을 나누는 ‘ / ’(앞뒤 빈칸)·‘／’ (1/2·HP/MP·</b>는 나누지 않음)
+SEG_GAP = 1.5  # 지운 잉크 덩어리 사이가 글자 높이의 이 배 넘게 비어야 따로 떨어진 덩어리 (낱말 사이 띄어쓰기는 이어 본다)
+SEG_NOISE = 0.15  # 글자 높이의 이 배보다 좁은 덩어리는 잡티로 버린다
+SEG_MIN_W = 0.5  # 이름 덩어리는 글자 높이의 이 배 이상 넓어야 한다
+SEG_SLASH_W = 1.2  # 지운 ‘/’ 글자 덩어리는 글자 높이의 이 배보다 좁다
+SEG_MARGIN = 0.25  # 이름 양옆으로 이웃 덩어리와 사이 빈 곳의 이 비율까지 글자가 나가도 된다 (사이 ‘/’ 그림을 덮지 않게)
+SEG_DIFF = 40  # 원본·지운 쪽 밝기 차이(0~255)가 이보다 크면 지운 잉크
+SEG_DARK = 110  # 원본에서 이보다 어두운 픽셀이 획 (끝이 잘려 지워진 그림을 찾을 때)
+SEG_GRAPHIC_KEEP = 0.2  # 획 덩어리의 이 비율 이상이 줄 밖에 지우지 않고 남았으면 줄에 걸친 그림 (글자 아님)
+SEG_CORE = 0.25  # 바뀐 픽셀 수가 가장 많은 세로줄의 이 배 이상인 세로줄만 덩어리로 본다
+
+
+def split_segments(line: str | None) -> list[str] | None:
+    """‘ / ’(또는 ‘／’)로 나뉜 줄의 조각들. 나뉘지 않거나 빈 조각이 있으면 None."""
+    parts = [p.strip() for p in SEG_SPLIT.split((line or "").strip())]
+    if len(parts) < 2 or any(not strip_tags(p).strip() for p in parts):
+        return None
+    return parts
+
+
+def erased_clusters(page: pymupdf.Page, src_page: pymupdf.Page, box, gh: float) -> list[tuple[float, float]]:
+    """원문 줄 상자(box) 둘레에서 지운 잉크(원본과 지운 쪽이 크게 다른 픽셀)가 가로로 모인 덩어리 [(x0, x1)] (pt).
+    덩어리 사이가 글자 높이의 SEG_GAP배보다 좁으면 이어 본다. 지우지 않은 그림(사이 ‘/’ 그림)은 나오지 않는다.
+
+    - 줄 높이에서 끝이 잘려 지워진 그림(위아래로 길게 이어진 ‘/’ 그림의 아래 끝 등)은 뺀다: 원본의 어두운 획 덩어리 중
+      줄 밖(위·아래)에 지우지 않고 남은 부분이 있는 것 (SEG_GRAPHIC_KEEP)
+    - 글자 둘레 흰 테두리·그림자 끝처럼 옅게만 바뀐 세로줄은 뺀다: 바뀐 픽셀 수가 가장 많은 세로줄의 SEG_CORE배 이상인
+      세로줄만 덩어리로 본다 (테두리·그림자 끝이 이름과 사이 ‘/’ 끝을 이어 한 덩어리로 만들지 않게)"""
+    import cv2
+
+    band = pymupdf.Rect(box[0] - gh, box[1] - 0.15 * gh, box[2] + gh, box[3] + 0.15 * gh) & src_page.rect & page.rect
+    if band.is_empty or band.width < gh:
+        return []
+    win = pymupdf.Rect(band.x0, band.y0 - 1.5 * gh, band.x1, band.y1 + 1.5 * gh) & src_page.rect & page.rect
+    a = _gray(src_page, win)
+    e = _gray(page, win)
+    if a.shape != e.shape or a.size == 0:
+        return []
+    k = win.width / a.shape[1]  # 픽셀 -> pt
+    r0 = max(0, int(round((band.y0 - win.y0) / k)))
+    r1 = min(a.shape[0], int(round((band.y1 - win.y0) / k)))
+    changed = np.abs(a - e) > SEG_DIFF
+    inband = np.zeros(changed.shape, bool)
+    inband[r0:r1] = True
+    n, lab = cv2.connectedComponents((a < SEG_DARK).astype(np.uint8), connectivity=8)
+    graphic = np.zeros(n, bool)
+    for c in np.unique(lab[inband & changed & (lab > 0)]):
+        m = lab == c
+        kept_out = int((m & ~inband & ~changed).sum())
+        graphic[c] = kept_out >= max(10, SEG_GRAPHIC_KEEP * int(m.sum()))
+    counts = (changed & inband & ~graphic[lab]).sum(axis=0)
+    if counts.max(initial=0) < 2:
+        return []
+    cols = counts >= max(2, SEG_CORE * counts.max())
+    runs: list[list[float]] = []
+    x = 0
+    while x < cols.size:
+        if not cols[x]:
+            x += 1
+            continue
+        s = x
+        while x < cols.size and cols[x]:
+            x += 1
+        x0, x1 = win.x0 + s * k, win.x0 + x * k
+        if runs and x0 - runs[-1][1] < SEG_GAP * gh:
+            runs[-1][1] = x1
+        else:
+            runs.append([x0, x1])
+    return [(u, v) for u, v in runs if v - u >= SEG_NOISE * gh]
+
+
+def segment_layout(src_line: str | None, ko_line: str | None, clusters: list[tuple[float, float]], gh: float,
+                   x_lo: float, x_hi: float) -> list[tuple[str, float, float]] | None:
+    """그림 아래 짧은 이름 줄: 번역 조각마다 [(글, 왼쪽, 오른쪽)] — 조각을 원문 잉크 덩어리 가운데에 맞춰 넣을 자리.
+    원문·번역이 같은 수(N≥2)의 ‘/’ 조각이고, 지운 잉크 덩어리가
+    - N개면: ‘/’는 그림(지우지 않음)이다. 조각만 덩어리마다 넣고 ‘/’는 그리지 않는다
+    - 2N-1개이고 사이 덩어리가 좁으면: ‘/’도 지운 글자다. ‘/’도 그 덩어리 가운데에 넣는다
+    그 밖(수가 다름·이름 덩어리가 너무 좁음·조각 안 서식 태그 짝이 깨짐)은 None (보통 줄로 넣는다).
+    x_lo·x_hi: 넣을 수 있는 가로 끝 (영역)."""
+    ss, ks = split_segments(src_line), split_segments(ko_line)
+    if not ss or not ks or len(ss) != len(ks) or gh <= 0:
+        return None
+    if any(parse_markup(t)[1] for t in ks):
+        return None
+    n = len(ks)
+    cl = sorted(clusters)
+    if len(cl) == n:
+        names, items = cl, list(zip(ks, cl))
+    elif len(cl) == 2 * n - 1:
+        names, slashes = cl[0::2], cl[1::2]
+        if any(v - u >= SEG_SLASH_W * gh for u, v in slashes):
+            return None
+        items = []
+        for i, t in enumerate(ks):
+            items.append((t, names[i]))
+            if i < n - 1:
+                items.append(("/", slashes[i]))
+    else:
+        return None
+    if any(v - u < SEG_MIN_W * gh for u, v in names):
+        return None
+    out = []
+    for i, (t, (c0, c1)) in enumerate(items):
+        gl = c0 - items[i - 1][1][1] if i > 0 else float("inf")
+        gr = items[i + 1][1][0] - c1 if i < len(items) - 1 else float("inf")
+        m = SEG_MARGIN * min(gl, gr)
+        lb, rb = max(x_lo, c0 - m), min(x_hi, c1 + m)
+        cx = (c0 + c1) / 2
+        hw = min(cx - lb, rb - cx)
+        if hw <= 0:
+            return None
+        out.append((t, cx - hw, cx + hw))
+    return out
+
 
 def _gray(page: pymupdf.Page, clip) -> np.ndarray:
     """clip 자리를 300dpi 회색 배열로 (내용만: 한글 넣기가 그린 것은 아직 없다)."""
@@ -1035,6 +1150,20 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     results: list[tuple[TypesetResult, str]] = []
     slots = []  # (줄 모양, 번역, 사각형, 서식, 위)
     slot_k = 1.6 * max(1.0, float(style_d.get("size_scale") or 1.0))  # 크기를 키우면 줄 자리도 높게
+    seg_cache: dict = {}
+
+    def seg_plan(ln: dict, ko: str):
+        """그림 아래 짧은 이름 줄이면 조각마다 넣을 자리 (segment_layout), 아니면 None.
+        자동 정렬·돌리지 않은 영역에서 원본 쪽(src_page)이 있고 원문 줄이 맞춰졌을 때만 본다."""
+        if ((style_d.get("align") or "") or pivot is not None or src_page is None or ln.get("keep")
+                or not split_segments(ln.get("_src")) or not split_segments(ko)):
+            return None
+        key = (id(ln), ko)
+        if key not in seg_cache:
+            cl = erased_clusters(page, src_page, ln["bbox_pt"], ln["glyph_h_pt"])
+            seg_cache[key] = segment_layout(ln["_src"], ko, cl, ln["glyph_h_pt"], rect.x0, rect.x1)
+        return seg_cache[key]
+
     def paragraph(src: list[dict], sec: dict):
         """묶음 전체를 한 글 칸으로: (사각형, 서식, 첫 줄 위)."""
         ln0 = dict(src[0])
@@ -1063,7 +1192,9 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         if (icon_lines_out or len(src) < 2 or (style_d.get("align") or "") == "original" or any(ln.get("keep") for ln in src)
                 or len({ln["_g"] for ln in src}) > 1 or len({bool(ln.get("bold")) for ln in src}) > 1):
             return None
-        firsts = two_line_sentences(kos)
+        # 그림 아래 이름 줄은 앞뒤 줄과 잇지 않는다 (조각마다 그림 아래에 넣는다)
+        firsts = [i for i in two_line_sentences(kos)
+                  if not seg_plan(src[i], kos[i]) and not seg_plan(src[i + 1], kos[i + 1])]
         if not firsts:
             return None
         r, st, top = paragraph(src, sec)
@@ -1088,6 +1219,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         return join_lines_at(kos, ok), r, st, top
 
     joined_note: list[str] = []
+    seg_note: list[str] = []
     auto_mode = not (style_d.get("align") or "")
     text_left = text_left_edge(lines_all)
     for sec, kos in zip(secs, parts):
@@ -1107,6 +1239,24 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                     continue
                 b = ln["bbox_pt"]
                 gh = ln["glyph_h_pt"]
+                seg = seg_plan(ln, ko)
+                if seg:
+                    # 그림 아래 짧은 이름 줄: 조각마다 원문 잉크 덩어리 가운데에 따로 넣는다 (같은 높이·서식)
+                    cy = ln.get("cy_pt") if ln.get("cy_pt") is not None else (b[1] + b[3]) / 2
+                    for t, x0s, x1s in seg:
+                        st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
+                        st.align = "center"
+                        top = cy - gh / 2
+                        r = pymupdf.Rect(x0s, top, x1s, top + slot_k * gh)
+                        s_ = max([icon_fit.get(n_, 0.0) for n_ in re.findall(r"\[\[([a-z0-9_]+)\]\]", t)] + [0.0])
+                        if s_ > 1.0:  # 큰 아이콘: 보통 줄과 같이 자리를 위·아래로 넓힌다
+                            extra = (s_ - 1.0) / 2 * gh
+                            top -= extra
+                            r = pymupdf.Rect(r.x0, r.y0 - extra, r.x1, max(r.y1, r.y0 - extra + s_ * gh * 1.2))
+                        slots.append({"ln": ln, "ko": t, "r": r, "st": st, "top": top, "pinned": False,
+                                      "mode": "segment"})
+                    seg_note.append(f"그림 아래 이름 {len(split_segments(ko))}개를 원문 자리마다 가운데에")
+                    continue
                 st = _line_style(style_d, base_dir, ln, region_accents, pivot, icon_fit)
                 blk = block_of.get(id(ln))
                 pinned = False  # 줄 앞에 지우지 않은 그림이 붙어 있어 그 자리에서 시작하는 줄 (옮기지 않는다)
@@ -1165,6 +1315,12 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             r, st, top = paragraph(src, sec)
             results.append((typeset_region(page, r, "\n".join(kos), st, top_anchor=top, draw=draw), "paragraph"))
     # 1차: 그리지 않고 줄마다 맞는 크기 -> 같은 묶음은 가장 작은 크기로 그린다
+
+    def _size_key(s: dict):
+        """크기를 함께 맞출 묶음. 그림 아래 이름 조각은 그 줄의 조각끼리만 (좁은 이름 칸이 같은 묶음의 다른 줄까지
+        작게 만들지 않게)."""
+        return ("segment", id(s["ln"])) if s.get("mode") == "segment" else s["ln"]["_g"]
+
     fit_size: dict[int, float] = {}
     own: dict[int, float] = {}
     for i, s in enumerate(slots):
@@ -1172,10 +1328,10 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         if d.size:
             own[i] = d.size
             if _WORDY.search(re.sub(r"\[\[[^\]]*\]\]|</?(?:b|i|c\d+)>", "", s["ko"])):
-                fit_size[s["ln"]["_g"]] = min(fit_size.get(s["ln"]["_g"], d.size), d.size)
+                fit_size[_size_key(s)] = min(fit_size.get(_size_key(s), d.size), d.size)
     for i, s in enumerate(slots):
         ln, ko, r, st, top = s["ln"], s["ko"], s["r"], s["st"], s["top"]
-        size = fit_size.get(ln["_g"])
+        size = fit_size.get(_size_key(s))
         if size and i in own and size > own[i] + 1e-6:
             # 기호·아이콘 줄처럼 원문 높이가 낮게 재진 줄: 묶음 크기로 넣어 보고, 안 들어가면 이 줄만 작게
             st.fixed_size_pt = size
@@ -1218,7 +1374,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
                 res.status = ["글자 축소"] + res.status
         else:
             res = typeset_region(page, r, ko, st, top_anchor=top, draw=draw)
-        results.append((res, "slot"))
+        results.append((res, s.get("mode", "slot")))
     status = sorted({s for r, _ in results for s in r.status} | ({STATUS_TAG_MISMATCH} if tag_errors else set()))
     # 지운 줄보다 읽은(원문) 줄이 적다: 추출이 줄을 빠뜨렸으면 그 줄은 지워지기만 하고 다시 넣지 못한다
     n_src = len([t for t in (source_text or "").split("\n") if t.strip()]) if source_text else None
@@ -1232,6 +1388,8 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
         errors_note = ""
     if joined_note:
         errors_note = "; ".join(filter(None, [errors_note, "두 줄 문장을 한 줄로 (" + ", ".join(joined_note) + ")"]))
+    if seg_note:
+        errors_note = "; ".join(filter(None, [errors_note] + seg_note))
     return {
         "layout": "lines", "sections": len(secs), "line_modes": [m for _, m in results],
         "status": status, "size_pt": round(float(np.median(sizes)), 3) if sizes else None,

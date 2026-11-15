@@ -53,11 +53,15 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
             issues.append(f"‘결론 못 냄’ 칸 (원문이 틀렸을 수 있음): {s['file']} {s['no_verdict']}칸")
     if issues and not accept_issues:
         return GlossaryReviewResult("needs_confirmation", issues=issues)
-    # 이름 없는 아이콘이 남아 있으면 용어집으로 넘어가지 않는다 (PRD 2장 3단계 뒤 안전장치)
-    ic = _extract.find_icons(info.dir, engine=engine, client=client)
-    if ic.state == "icons_review":
+    # 이름 없는 아이콘이 남아 있으면 용어집으로 넘어가지 않는다 (PRD 2장 3단계 뒤 안전장치).
+    # 이름이 모두 정해졌으면 찾지 않는다 (찾기는 확정된 아이콘도 표에 보이므로 늘 ‘정할 것 있음’이 된다)
+    from app import icons as _icons
+
+    n_unnamed = _icons.pending_count(info)
+    ic = _extract.find_icons(info.dir, engine=engine, client=client) if n_unnamed else None
+    if ic is not None and ic.state == "icons_review":
         return GlossaryReviewResult("icons_review", review_xlsx=ic.review_xlsx, issues=issues,
-                                    reason=f"이름을 정할 아이콘 묶음 {ic.groups}개 ({ic.occurrences}곳)"
+                                    reason=f"이름 없는 아이콘 {n_unnamed}곳"
                                            + (f", 위치 못 찾음 {ic.not_found}곳" if ic.not_found else "")
                                            + (f". {ic.reason}" if ic.reason else ""))
     sources = glossary.collect_sources(info, game=True)

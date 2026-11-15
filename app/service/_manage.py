@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -443,3 +444,133 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     if fd is not None:
         _extract.back_to_extracting(workspace.load_project_info(project_dir))  # 새 카드: add_files와 같은 이유
     return ImageAddResult(group, fd, res.pages, res.warnings, skipped, r["has_regions"])
+
+
+# ---------------------------------------------------------------- 이미지 시트 다시 자르기
+RECUT_TOL_PX = 3  # 카드 꼭짓점이 이 px 넘게 움직여야 ‘다르게 잘림’
+
+
+@dataclass
+class RecutCheck:
+    can: bool  # 다시 자를 수 있는 파일인가
+    reason: str = ""  # 못 하는 까닭 (화면에 그대로)
+    changed: bool = False  # 지금 방식으로 자르면 카드 자리가 달라지나
+    moved_px: int = 0  # 가장 많이 움직인 카드 꼭짓점 (원본 이미지 px)
+    cards_before: int = 0
+    cards_after: int = 0
+
+
+def _recut_sources(fd: Path) -> tuple[dict, list[Path], Path | None]:
+    """(from_images 설정, 원본 이미지 사본 목록, 원래 PDF 사본 또는 None)."""
+    from app import workspace
+
+    fi = workspace.file_settings(fd).get("from_images") or {}
+    keep = fd / "source" / "images"
+    imgs = [keep / n for n in fi.get("files", [])]
+    pdf = keep / fi["pdf"] if fi.get("pdf") else None
+    return fi, imgs, pdf
+
+
+def recut_check(file_dir: Path | str) -> RecutCheck:
+    """이미지 시트로 넣은 파일을 지금 자르는 방식으로 다시 자르면 카드 자리가 달라지는지 본다 (파일은 바꾸지 않는다).
+    예전 버전에서 잘못 잘린 파일을 찾을 때 쓴다 (1.21.1 붙은 시트 고침 등)."""
+    from app import images
+    from app.service import _translate_erase  # _translate_erase가 이 모듈을 불러 위에서 부르지 않는다
+
+    fd = Path(file_dir)
+    fi, imgs, _pdf = _recut_sources(fd)
+    if not fi:
+        return RecutCheck(False, "이미지(JPG·PNG 등)로 넣은 파일만 다시 자를 수 있습니다")
+    if fi.get("manual"):
+        return RecutCheck(False, "카드 자리를 직접 그려 넣은 파일입니다. 다시 그리려면 파일을 삭제하고 다시 넣으세요")
+    _owner, members = _translate_erase.sheet_family(fd)
+    if len(members) > 1:
+        return RecutCheck(False, "쪽 일부를 다른 그룹으로 옮긴 파일은 다시 자를 수 없습니다. 파일을 삭제하고 다시 넣으세요")
+    missing = [p.name for p in imgs if not p.exists()]
+    if not imgs or missing:
+        return RecutCheck(False, "원본 이미지 사본이 없습니다 (source/images/): " + ", ".join(missing))
+    old = _translate_erase.image_sheet_layouts(fd)
+    new = []
+    for src in imgs:
+        for frame in range(len(images.load_images(src))):
+            new.append(images.cut_sheet(src, fi.get("cols", 1), fi.get("rows", 1), frame=frame).layout())
+    ob = [b for s in old for b in s.get("boxes", [])]
+    nb = [b for s in new for b in s.get("boxes", [])]
+    if len(ob) != len(nb):
+        return RecutCheck(True, changed=True, cards_before=len(ob), cards_after=len(nb))
+    moved = max((abs(int(u) - int(v)) for a, b in zip(ob, nb) for u, v in zip(a, b)), default=0)
+    return RecutCheck(True, changed=moved > RECUT_TOL_PX, moved_px=moved, cards_before=len(ob), cards_after=len(nb))
+
+
+def recut_file(file_dir: Path | str, check: RecutCheck | None = None) -> ImageAddResult:
+    """이미지 시트 파일을 지금 방식으로 다시 자른다: 파일을 휴지통으로 옮기고 같은 그룹·이름·배열로 다시 넣는다.
+    카드 그림이 바뀌므로 추출·지운 카드·한글 카드는 함께 휴지통으로 가고 ① 글자 추출부터 다시 한다.
+    카드 수가 그대로면 뺄 쪽 설정은 이어받는다. 다시 넣다가 실패하면 휴지통의 예전 파일을 되돌린다."""
+    import tempfile
+
+    from app import workspace
+
+    fd = Path(file_dir).resolve()
+    chk = check if check is not None else recut_check(fd)  # 화면이 방금 본 결과를 다시 재지 않게
+    if not chk.can:
+        raise ValueError(chk.reason)
+    info = workspace.project_of(fd)
+    if info is None or fd.parent.name != "files":
+        raise ValueError(f"그룹 안의 파일 폴더가 아닙니다: {fd}")
+    group = workspace._read(fd.parents[1] / "group.json")["name"]
+    settings = workspace.file_settings(fd)
+    fi, imgs, pdf = _recut_sources(fd)
+    with tempfile.TemporaryDirectory(prefix="recut-") as td:
+        tmp = Path(td)
+        copies = []
+        for p in imgs:  # 사본 이름 그대로 (다시 넣으면 같은 이름이 된다)
+            shutil.copyfile(p, tmp / p.name)
+            copies.append(tmp / p.name)
+        pdf_copy = None
+        if pdf is not None and pdf.exists():
+            (tmp / "pdf").mkdir()
+            pdf_copy = tmp / "pdf" / pdf.name
+            shutil.copyfile(pdf, pdf_copy)
+        # 예전 폴더는 이름 바꾸기로만 옮긴다: 열린 파일(엑셀·PDF)이 있으면 아무것도 바꾸지 않고 바로 실패한다
+        # (shutil.move는 복사 + 지우기로 넘어가 반쯤 지운 폴더를 남길 수 있다). delete_file은 쓰지 않는다:
+        # 프로젝트 진행 상태를 처음으로 되돌리는데, 실패해 예전 파일을 되살리면 그 상태가 남는다.
+        root = info.dir.parent.parent
+        trash = root / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        trashed = trash / f"{time.strftime('%Y%m%d-%H%M%S')}-recut-{info.dir.name}-{fd.parent.parent.name}-{fd.name}"
+        n = 1
+        while trashed.exists():
+            n += 1
+            trashed = trashed.with_name(f"{trashed.name}-{n}")
+        project_json = (info.dir / "project.json").read_bytes()
+        try:
+            os.rename(fd, trashed)
+        except OSError as e:
+            raise OSError(f"파일 폴더를 옮기지 못했습니다 (열려 있는 파일이 있나요?): {e}") from e
+        try:
+            res = add_images(info.dir, copies, group, cols=fi.get("cols", 1), rows=fi.get("rows", 1),
+                             name=fd.name, origin_pdf=pdf_copy)
+            if res.file_dir is None:
+                raise RuntimeError("다시 넣지 못했습니다: " + "; ".join(res.skipped))
+        except BaseException:
+            # 다시 넣다가 멈춤: 반쯤 만든 새 폴더는 휴지통으로, 예전 폴더와 프로젝트 상태는 그대로 되돌린다
+            (info.dir / "project.json").write_bytes(project_json)
+            if fd.exists():
+                partial = trashed.with_name(trashed.name + "-partial")
+                try:
+                    os.rename(fd, partial)
+                except OSError:
+                    shutil.rmtree(fd, ignore_errors=True)
+            try:
+                if fd.exists():
+                    raise OSError(f"반쯤 만든 새 폴더를 치우지 못했습니다: {fd}")
+                os.rename(trashed, fd)
+            except OSError as e2:  # 되돌리기도 실패: 예전 파일이 어디 있는지 알린다
+                raise OSError(f"다시 자르다 멈췄고 예전 파일을 되돌리지 못했습니다. 예전 파일은 휴지통에 있습니다: "
+                              f"{trashed} ({e2})") from e2
+            raise
+    if chk.cards_before == chk.cards_after and settings.get("exclude_pages"):
+        workspace.set_excluded_pages(res.file_dir, settings["exclude_pages"], settings.get("exclude_reason", ""))
+    applog.log.info("다시 자르기: %s (예전 파일: %s, 카드 %d -> %d, 최대 %dpx)", workspace.file_key(res.file_dir),
+                    trashed, chk.cards_before, chk.cards_after, chk.moved_px)
+    return res

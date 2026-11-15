@@ -252,11 +252,13 @@ def extract_project(project_dir: Path | str, group: str | None = None, *, mode: 
 class IconScanResult:
     state: str  # done | icons_review | blocked
     review_xlsx: Path | None = None
-    auto: dict = field(default_factory=dict)  # 사전과 같아 바로 바꾼 아이콘 {이름: 횟수}
-    groups: int = 0  # 이름을 정해야 할 묶음
-    occurrences: int = 0
+    auto: dict = field(default_factory=dict)  # (예전) 사전과 같아 바로 바꾼 아이콘. 이제는 늘 비어 있다 (줄에 미리 채움)
+    groups: int = 0  # 표의 줄 수 (카드의 아이콘 하나 = 한 줄, 세트에 포함된 자리는 빼고)
+    occurrences: int = 0  # 찾은 아이콘 자리 ([[?]]와 이미 이름이 있는 아이콘)
     not_found: int = 0  # 위치를 못 찾은 [[?]]
     reason: str = ""
+    prefilled: int = 0  # 사전과 모양이 같아 이름을 미리 채운 [[?]] 줄
+    named: int = 0  # 이미 이름이 있는 아이콘 줄
 
 
 ICON_SUGGEST_MODEL = "claude-sonnet-5-5"
@@ -264,13 +266,15 @@ ICON_SUGGEST_MODEL = "claude-sonnet-5-5"
 
 def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=None,
                suggest: bool = True) -> IconScanResult:
-    """원문의 이름 없는 아이콘 [[?]]를 찾아 사전과 같은 것은 바로 바꾸고, 나머지는 ‘아이콘_검증.xlsx’로 만든다."""
+    """원문의 아이콘(이름 없는 [[?]]와 이미 이름이 있는 [[이름]])을 모두 찾아 카드의 아이콘 하나 = 한 줄로 만든다.
+    사전과 모양이 같은 [[?]]는 이름을 미리 채워 두기만 한다 (원문은 확정할 때 바꾼다). ‘아이콘_검증.xlsx’도 만든다.
+    아이콘이 하나도 없으면 state="done"."""
     from app import icons, workspace
     from app.extract import Paused, make_client
     from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
 
     info = workspace.load_project_info(project_dir)
-    if not icons.pending_count(info):
+    if not icons.token_count(info):
         return IconScanResult("done")
     work = info.game_dir / "work" / "icons"
     res = icons.scan(info, work)
@@ -278,13 +282,27 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
     if not res.occurrences:
         return out
     note = ""
-    if suggest and any(g.get("rep") for g in res.groups.values()):
+    if suggest and any(icons.needs_suggest(g) for g in res.groups.values()):
         try:
             if client is None:
                 client = ClaudeCodeClient() if engine == "claude-code" else make_client()
             icons.suggest_names(res, client, ICON_SUGGEST_MODEL, work / "suggest")
             icons._save_scan(work, res)  # 받은 제안부터 남긴다 (아래 겹침 확인이 실패해도 제안은 쓴다)
-            for g in list(res.groups):  # 제안이 사전 이름(crown 등)과 겹치면: 그림이 같을 때만 그 아이콘, 다르면 crown_2
+            # 제안이 사전 이름(crown 등)과 겹치면: 그림이 같을 때만 그 아이콘, 다르면 crown_2. 모양마다 한 줄만 보고
+            # 같은 모양 줄에 그대로 옮긴다 (줄마다 보면 그림 비교가 줄 수의 제곱만큼 든다)
+            done_shape: dict[str, str] = {}
+            for g, gi in list(res.groups.items()):
+                if not gi.get("suggest") or not icons.needs_suggest(gi):
+                    continue
+                sh = gi.get("shape") or g
+                if sh in done_shape:
+                    src_gi = res.groups[done_shape[sh]]
+                    gi["suggest"] = src_gi.get("suggest", gi["suggest"])
+                    for k in ("dict", "dict_how"):
+                        if src_gi.get(k):
+                            gi[k] = src_gi[k]
+                    continue
+                done_shape[sh] = g
                 try:
                     icons.resolve_suggested_name(info, res, g)
                 except Exception:  # noqa: BLE001 - 그 줄만 겹침 확인 없이 둔다
@@ -294,8 +312,11 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
             note = f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
     xlsx = icons.export_review(info, res, info.game_dir / "아이콘_검증.xlsx")  # 아이콘 검증은 게임 단위
     _translate_erase._retire_legacy(info, ["아이콘_검증.xlsx"])
-    return IconScanResult("icons_review", xlsx, res.auto, len(res.groups), len(res.occurrences),
-                          sum(1 for o in res.occurrences if not o.png), note)
+    rows = [gi for gi in res.groups.values() if not (gi.get("auto") and gi.get("absorbed"))]
+    return IconScanResult("icons_review", xlsx, res.auto, len(rows), len(res.occurrences),
+                          sum(1 for o in res.occurrences if not o.png and not o.named), note,
+                          prefilled=sum(1 for gi in rows if gi.get("dict_how") == "same"),
+                          named=sum(1 for gi in rows if gi.get("named")))
 
 
 @dataclass
@@ -308,6 +329,7 @@ class IconImportResult:
     blocking: list[str] = field(default_factory=list)
     # 아이콘 자리가 바뀌어 ③ 원문 확인에서 다시 읽어 확인할 칸 [{"file_dir", "page", "region"}]
     changed_cells: list[dict] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # 알릴 것 (같은 이름 줄의 한국어 이름·뜻이 서로 다름 등)
 
 
 def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
@@ -322,4 +344,5 @@ def import_icons(project_dir: Path | str, xlsx: Path | str) -> IconImportResult:
     if r.blocking:
         return IconImportResult("blocked", blocking=r.blocking)
     return IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed,
-                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells])
+                            changed_cells=[{"file_dir": fd, "page": pg, "region": rg} for fd, pg, rg in r.changed_cells],
+                            notes=r.notes)

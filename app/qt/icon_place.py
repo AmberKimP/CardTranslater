@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 from app import service
 from app.qt import worker
 from app.qt.dialogs import ask_choice, fit_to_screen, hint_bar, show_error, show_problem
@@ -159,13 +159,16 @@ class IconPlaceView(QWidget):
 
 
 class IconPlaceDialog(QDialog):
-    """아이콘이 나온 카드 자리를 보며, 못 찾았거나 잘못 잘린 아이콘을 마우스로 감싸 직접 잡는다."""
+    """② 아이콘 정의 표의 한 줄(카드의 아이콘 하나)의 카드를 보여 준다: 오른쪽 위에 카드 전체(그 영역은 파랑 테두리),
+    가운데에 그 영역 그림, 옆에 그 영역의 아이콘 목록. 목록에서 골라 자리 다시 잡기(끌어 감싸 저장)·이름 고치기·
+    삭제(아이콘 아님)·합치기·되돌리기, 그림에서 끌어 감싸 ‘아이콘 추가’(원문에 없던 아이콘)·‘둘로 나누기’를 한다."""
 
-    def __init__(self, project_dir: Path, g: dict, row_label, on_saved, parent=None):
+    def __init__(self, project_dir: Path, g: dict, row_label, on_saved, parent=None, on_rename=None):
         super().__init__(parent)
         self.project_dir = Path(project_dir)
         self.row_label = row_label  # 묶음 -> ‘3번’ 같은 화면 이름
         self.on_saved = on_saved
+        self.on_rename = on_rename  # (줄, 이름) -> 표의 그 줄 이름 칸에 적기 (없으면 이름 고치기를 숨김)
         self.outcome: tuple[str, str | None] = ("", None)  # 닫은 뒤 표가 고를 줄: ("saved"|"not_icon", 묶음)
         self.setWindowTitle("카드 보기 · 아이콘 자리 잡기")
         fit_to_screen(self, 1100, 720, maximize_below=0)
@@ -187,11 +190,27 @@ class IconPlaceDialog(QDialog):
                         '<span style="color:#7B2CBF">■</span> 목록에서 고름 &nbsp; '
                         '<span style="color:#8A8A8A">■</span> 아이콘 아님·포함')
         hint = hint_bar("아이콘을 마우스로 끌어 감싸세요 (테두리까지 조금 넉넉하게). 다시 끌면 새로 잡습니다.\n"
-                        "‘이 자리로 저장’을 누르면 그 자리로 그림을 다시 잘라 같은 모양끼리 다시 묶습니다. "
-                        "한 상자에 아이콘이 둘이면 하나만 감싸 ‘둘로 나누기’.", "info")
+                        "‘이 자리로 저장’은 고른 아이콘의 그림을 그 자리로 다시 자릅니다. 원문에 없던 아이콘이면 감싼 뒤 "
+                        "‘아이콘 추가’, 한 상자에 아이콘이 둘이면 하나만 감싸 ‘둘로 나누기’.", "info")
         self.save_btn = QPushButton("이 자리로 저장")
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save)
+        self.add_btn = QPushButton("아이콘 추가")  # 원문에 없던 아이콘: 감싼 자리에 [[?]]를 넣는다
+        self.add_btn.setToolTip("원문에 빠진 아이콘을 그림에서 끌어 감싼 뒤 누르세요.\n"
+                                "원문의 그 자리(그 줄에서 상자 가로 위치에 맞는 글자 사이)에 [[?]]를 넣고 표에 새 줄을 만듭니다.\n"
+                                "이 칸은 확정한 뒤 ③ 원문 확인에서 다시 읽어 확인합니다.")
+        self.add_btn.setEnabled(False)
+        self.add_btn.clicked.connect(self._add)
+        self.card_view = QLabel()  # 카드 전체 (그 영역은 파랑 테두리)
+        self.card_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.card_view.setToolTip("카드 전체: 파랑 테두리가 지금 보는 영역, 회색은 아이콘이 있는 다른 영역")
+        self._card_key = None  # 카드 전체 그림을 그린 (파일, 쪽, 영역)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("이름 (영문 소문자·숫자·_)")
+        self.name_btn = QPushButton("이름 적용")
+        self.name_btn.setToolTip("목록에서 고른 아이콘 줄의 이름을 ② 표에 적습니다 (확정은 표에서 ‘이름 확정’)")
+        self.name_btn.clicked.connect(self._rename)
+        self.name_edit.returnPressed.connect(self._rename)
         self.absorb_btn = QPushButton("옆 아이콘에 포함됨")  # 못 찾은 자리인데 바로 옆 자리의 상자가 이 자리까지 감쌌을 때
         self.absorb_btn.setToolTip("바로 옆에 붙은 아이콘을 잡은 상자가 이 자리까지 감싸고 있으면 누르세요.\n"
                                    "둘을 하나의 아이콘으로 보고 이 자리는 원문에서 뺍니다 (예: 문양 셋이 붙은 아이콘).")
@@ -245,15 +264,24 @@ class IconPlaceDialog(QDialog):
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
         side = QVBoxLayout()
+        side.addWidget(self.card_view)
         side.addWidget(QLabel("잘라 낸 그림:"))
         side.addWidget(self.crop)
         side.addWidget(QLabel("<b>이 칸의 아이콘</b>"))
         side.addWidget(self.items, 1)
-        edit_hint = QLabel("수정: 목록에서 고르고 그림에서 끌어 감싼 뒤 ‘이 자리로 저장’")
+        edit_hint = QLabel("수정: 목록에서 고르고 그림에서 끌어 감싼 뒤 ‘이 자리로 저장’. 추가: 빈 곳을 감싸 ‘아이콘 추가’")
         edit_hint.setWordWrap(True)
         edit_hint.setStyleSheet("color: #666")
         side.addWidget(edit_hint)
-        for b in (self.save_btn, self.del_btn, self.merge_btn, self.restore_btn, self.keep_btn):
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(self.name_edit, 1)
+        name_row.addWidget(self.name_btn)
+        self.name_box = QWidget()
+        self.name_box.setLayout(name_row)
+        self.name_box.setVisible(on_rename is not None)
+        side.addWidget(self.name_box)
+        for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.keep_btn):
             side.addWidget(b)
         side_w = QWidget()
         side_w.setLayout(side)
@@ -555,6 +583,16 @@ class IconPlaceDialog(QDialog):
         else:
             self.status.setText("자동으로 찾지 못했습니다. 아이콘을 끌어 감싸세요.")
         self.save_btn.setEnabled(False)
+        self.add_btn.setEnabled(False)
+        key = (str(w.get("file_dir") or ""), w.get("page"), w.get("region"))
+        if p.get("card_png") and key != self._card_key:
+            cpm = QPixmap()
+            cpm.loadFromData(p["card_png"], "PNG")
+            if not cpm.isNull():
+                self.card_view.setPixmap(cpm.scaled(240, 220, Qt.AspectRatioMode.KeepAspectRatio,
+                                                    Qt.TransformationMode.SmoothTransformation))
+                self._card_key = key
+        self._show_name()
 
     def _cell_info(self, p: dict) -> None:
         """목록의 다른 자리(다른 묶음)를 고를 때 쓸 그림 조각·직접 잡음 정보."""
@@ -570,7 +608,50 @@ class IconPlaceDialog(QDialog):
 
     def _drawn(self):
         self.save_btn.setEnabled(self.view.new is not None)
+        self.add_btn.setEnabled(self.view.new is not None)
         self._update_tools()
+
+    def _cur_group(self) -> str:
+        """목록에서 고른(또는 지금) 자리의 줄."""
+        occ = (self._cur() or {}).get("occ")
+        it = self._items_by_key.get(occ or "") or {}
+        return it.get("group") or ""
+
+    def _show_name(self) -> None:
+        """이름 칸: 지금 자리 줄의 표 이름 (‘3번 crown’ → crown)."""
+        g = self._cur_group()
+        label = self.row_label(g) if g else ""
+        self.name_edit.setText(label.split(" ", 1)[1] if " " in label else "")
+        self.name_box.setEnabled(bool(g) and self.on_rename is not None)
+
+    @busy
+    def _rename(self) -> None:
+        g = self._cur_group()
+        name = self.name_edit.text().strip()
+        if not g or self.on_rename is None:
+            return
+        self.on_rename(g, name)
+        self._load()
+        self.status.setText(f"표의 그 줄 이름을 ‘{name}’로 적었습니다." if name else "표의 그 줄 이름을 비웠습니다.")
+
+    @busy
+    def _add(self) -> None:
+        """그림에서 감싼 자리를 원문에 없던 아이콘으로 넣는다 (원문에 [[?]] 하나, 표에 새 줄)."""
+        box = self.view.new
+        w = self._cur()
+        if not box or w is None:
+            return
+        try:
+            r = service.add_icon_box(self.project_dir, w["occ"], box)
+        except ValueError as e:
+            show_problem(self, "아이콘을 넣지 못했습니다", str(e), "아이콘을 조금 더 크게 감싸 주세요.")
+            return
+        except Exception as e:  # noqa: BLE001
+            show_error(self, "아이콘을 넣지 못했습니다", e)
+            return
+        self.on_saved({"group": r["group"], "dict": r.get("dict", "")})
+        self.outcome = ("saved", self._refresh(r["occ"], extra=[r["occ"]]) or r["group"])
+        self.status.setText(f"원문 {r['line']}줄 {r['order']}번째 아이콘으로 넣었습니다. 표에 새 줄이 생겼습니다 — 이름을 적으세요.")
 
     def _update_tools(self):
         """겹친 아이콘 흡수·둘로 나누기 버튼: 지금 자리(또는 새로 감싼 자리)를 보고 켠다."""

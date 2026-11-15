@@ -30,9 +30,9 @@ model: sonnet
 ## 절차
 
 1. **무엇이 바뀌었나:** `git status --short`, `git diff --stat`으로 바뀐 파일을 보고, 관련 테스트 파일을 고른다.
-   - `app/icons.py` → `tests/test_icons.py`, 아이콘 관련 `tests/test_qt.py`
+   - `app/icons*.py` → `tests/test_icons.py`, 아이콘 관련 `tests/test_qt.py`
    - `app/qt/*` → `tests/test_qt.py`
-   - `app/erase.py`·`typeset*.py` → `tests/test_erase_*.py`, `tests/test_typeset.py`, `tests/test_service.py`
+   - `app/erase*.py`·`typeset*.py` → `tests/test_erase_*.py`, `tests/test_typeset.py`, `tests/test_service.py`
    - `app/translate.py`·`glossary.py`·`excel_io.py` → 각 테스트 + `tests/test_project_steps.py`
    - `app/regions.py`·`project.py`·`workspace.py` → 전체
 2. **관련 테스트 먼저, 그다음 전체**를 돌린다. 전체 수와 시간을 적는다.

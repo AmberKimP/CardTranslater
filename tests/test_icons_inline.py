@@ -158,7 +158,8 @@ def test_loose_bands_keep_short_title_strip_on_icon_only_card():
     assert len(_bands_from(comps, min_rel_h=0.3)) == 3
 
 
-def test_icon_review_puts_issues_first_then_appearance_order(tmp_path, monkeypatch):
+def test_icon_review_lists_rows_in_card_order_and_flags_issues(tmp_path, monkeypatch):
+    """표의 줄은 카드 순서 (문제 카드를 위로 올리는 것은 화면이 사람이 적는 값을 보고 한다). 엔진은 issue만 적는다."""
     from app import icons, service
     from tests.test_icons import _project as icon_project
 
@@ -174,8 +175,9 @@ def test_icon_review_puts_issues_first_then_appearance_order(tmp_path, monkeypat
     res.groups[names[2]]["ko"] = ""  # 마지막에 나온 것만 이슈
     icons._save_scan(work, res)
     groups = service.icon_review(info.dir)["groups"]
-    assert [g["group"] for g in groups] == [names[2], names[0], names[1]]
-    assert groups[0]["issue"] == "한국어 이름 없음" and not groups[1]["issue"]
+    assert [g["group"] for g in groups] == names
+    assert [g["where"][0]["page"] for g in groups] == [1, 2, 3]
+    assert groups[2]["issue"] == "한국어 이름 없음" and not groups[0]["issue"]
 
 
 def test_sentence_blocks_align_multiline_sentence_to_its_outer_edges():
@@ -303,18 +305,20 @@ def test_scan_keeps_number_until_confirm_and_splits_groups_by_number(tmp_path, m
     assert [_cell(fd, p)["source"] for p in (1, 2)] == ["AB 2[[?]]CD", "AB 5[[?]]CD"]  # 찾을 때는 원문 그대로
     res = icons.load_scan(info.game_dir / "work" / "icons")
     assert {o.page: o.number["text"] for o in res.occurrences} == {1: "2", 2: "5", 3: "5", 4: "2"}
-    by_num = {}
+    by_num = {}  # 숫자 -> 모양 (한 줄 = 카드의 아이콘 하나, 같은 모양 줄은 shape이 같다)
     for o in res.occurrences:
-        by_num.setdefault(o.number["text"], set()).add(o.group)
-    assert len(by_num["2"]) == len(by_num["5"]) == 1 and by_num["2"] != by_num["5"]  # 숫자가 다르면 다른 묶음
-    g2, g5 = next(iter(by_num["2"])), next(iter(by_num["5"]))
-    # 4쪽은 손으로 다시 잡는다 -> 숫자는 원문에 남기고, 숫자 없는 묶음으로 옮긴다
+        by_num.setdefault(o.number["text"], set()).add(res.groups[o.group]["shape"])
+    assert len(by_num["2"]) == len(by_num["5"]) == 1 and by_num["2"] != by_num["5"]  # 숫자가 다르면 다른 모양
+    row = {o.page: o.group for o in res.occurrences}
+    # 4쪽은 손으로 다시 잡는다 -> 숫자는 원문에 남기고, 숫자 없는 모양이 된다 (줄은 그대로)
     o4 = next(o for o in res.occurrences if o.page == 4)
     r = service.set_icon_box(info.dir, o4.id, o4.box)
-    assert r["group"] not in (g2, g5) and r["new_group"]
-    out = service.confirm_icons(info.dir, [{"group": g2, "name": "crate_2", "ko": "상자 2"},
-                                           {"group": g5, "not_icon": True},
-                                           {"group": r["group"], "name": "crate", "ko": "상자"}])
+    assert r["group"] == row[4] and not r["new_group"]
+    shapes = {g["group"]: g["shape"] for g in service.icon_review(info.dir)["groups"]}
+    assert shapes[row[4]] not in (shapes[row[1]], shapes[row[2]])
+    out = service.confirm_icons(info.dir, [{"group": row[1], "name": "crate_2", "ko": "상자 2"},
+                                           {"group": row[2], "not_icon": True}, {"group": row[3], "not_icon": True},
+                                           {"group": row[4], "name": "crate", "ko": "상자"}])
     assert out.state == "confirmed", out.blocking
     c1 = _cell(fd, 1)
     assert c1["source"] == "AB [[crate_2]]CD"  # 이름으로 정한 보통 상자: 숫자를 아이콘에 넣고 원문에서 뺀다
@@ -342,12 +346,17 @@ def test_dictionary_auto_match_needs_same_number(tmp_path, monkeypatch):
     assert service.confirm_icons(info.dir, [{"group": g, "name": "crate_5", "ko": "상자 5"}]).state == "confirmed"
     assert _cell(fd, 1)["source"] == "AB [[crate_5]]CD"
 
-    # 다음 프로젝트: 5는 모델·사람 없이 바로 바꾸고 숫자를 뺀다, 2는 모양이 같아도 사람 확인으로
+    # 다음 프로젝트: 5는 사전 이름을 미리 채우고(원문은 확정할 때), 2는 모양이 같아도 숫자가 달라 채우지 않는다.
+    # 1차의 확정된 [[crate_5]]도 한 줄 (숫자 5를 그림에 다시 넣어 사전과 같은 숫자)
     info2, fd2 = _num_project(tmp_path, "2차", ["2", "5"])
     r = service.find_icons(info2.dir, suggest=False)
-    assert r.auto == {"crate_5": 1} and r.state == "icons_review" and r.occurrences == 1
-    assert _cell(fd2, 2)["source"] == "AB [[crate_5]]CD" and _cell(fd2, 2)["icon_numbers"][0]["text"] == "5"
-    assert _cell(fd2, 1)["source"] == "AB 2[[?]]CD"
+    assert not r.auto and r.state == "icons_review" and r.occurrences == 3 and r.prefilled == 1 and r.named == 1
+    assert _cell(fd2, 2)["source"] == "AB 5[[?]]CD" and _cell(fd2, 1)["source"] == "AB 2[[?]]CD"
+    rv = {(g["where"][0]["file_dir"] == fd2, g["where"][0]["page"]): g for g in service.icon_review(info2.dir)["groups"]}
+    assert rv[True, 2]["suggest"] == "crate_5" and rv[True, 2]["dict_how"] == "same" and rv[True, 1]["suggest"] == ""
+    assert rv[False, 1]["named"] == "crate_5"
+    named_occ = next(o for o in icons.load_scan(info.game_dir / "work" / "icons").occurrences if o.named)
+    assert named_occ.number == {"text": "5", "side": "before"}
 
     # 예전 사전 항목(number 키 없음)은 어느 자리와도 자동으로 맞추지 않는다 (예전 그림에 숫자가 박혔을 수 있음).
     # 숫자 없는 자리는 ② 검토에 그 이름을 제안하고, 숫자 있는 자리는 제안하지 않는다
@@ -357,22 +366,25 @@ def test_dictionary_auto_match_needs_same_number(tmp_path, monkeypatch):
     dp.write_text(json.dumps(dic, ensure_ascii=False), encoding="utf-8")
     info3, fd3 = _num_project(tmp_path, "3차", ["5", ""])
     r3 = service.find_icons(info3.dir, suggest=False)
-    assert r3.auto == {} and r3.occurrences == 3  # 2차 1쪽(숫자 2)도 게임 단위로 다시 올라온다
+    # 2차 두 자리·1차의 확정된 [[crate_5]]도 게임 단위로 다시 올라온다
+    assert r3.auto == {} and r3.occurrences == 5
     assert [_cell(fd3, p)["source"] for p in (1, 2)] == ["AB 5[[?]]CD", "AB[[?]]CD"]
-    rev = {(g["where"][0]["file_dir"] == fd3, g["where"][0]["page"]): g
-           for g in service.icon_review(info3.dir)["groups"]}
-    assert rev[True, 2]["dict"] == "crate_5" and rev[True, 1]["dict"] == "" and rev[False, 1]["dict"] == ""
-    other = {"group": rev[False, 1]["group"], "name": "crate_2", "ko": "상자 2"}
-    rev = {k[1]: v for k, v in rev.items() if k[0]}
-    # 숫자 있는 묶음을 예전 이름으로: 그림 속 숫자를 몰라 막는다 (사전·원문은 그대로)
-    bad = service.confirm_icons(info3.dir, [other, {"group": rev[1]["group"], "name": "crate_5"},
-                                            {"group": rev[2]["group"], "name": "crate_5"}])
+    rev = {(str(g["where"][0]["file_dir"]), g["where"][0]["page"]): g for g in service.icon_review(info3.dir)["groups"]}
+    k3, k2 = str(fd3), str(fd2)
+    assert rev[k3, 2]["dict"] == "crate_5" and rev[k3, 1]["dict"] == "" and rev[k2, 1]["dict"] == ""
+    assert rev[k2, 2]["dict"] == ""  # 숫자가 있는 자리에는 예전 항목 이름을 제안하지 않는다
+    other = [{"group": rev[k2, 1]["group"], "name": "crate_2", "ko": "상자 2"},
+             {"group": rev[k2, 2]["group"], "name": "crate_5b", "ko": "상자 5"}]
+    rev = {k[1]: v for k, v in rev.items() if k[0] == k3}
+    # 숫자 있는 줄을 예전 이름으로: 그림 속 숫자를 몰라 막는다 (사전·원문은 그대로)
+    bad = service.confirm_icons(info3.dir, other + [{"group": rev[1]["group"], "name": "crate_5"},
+                                                    {"group": rev[2]["group"], "name": "crate_5"}])
     assert bad.state == "blocked" and any("crate_5_5" in b for b in bad.blocking), bad.blocking
     assert "number" not in icons.load_dictionary(info3)["icons"]["crate_5"]
     assert _cell(fd3, 1)["source"] == "AB 5[[?]]CD"
     # 숫자 없는 묶음만 예전 이름으로 확정: 사람이 그림을 보고 고른 것이므로 number ""로 적는다
-    ok = service.confirm_icons(info3.dir, [other, {"group": rev[1]["group"], "name": "crate_5b", "ko": "상자 5"},
-                                           {"group": rev[2]["group"], "name": "crate_5"}])
+    ok = service.confirm_icons(info3.dir, other + [{"group": rev[1]["group"], "name": "crate_5b", "ko": "상자 5"},
+                                                   {"group": rev[2]["group"], "name": "crate_5"}])
     assert ok.state == "confirmed", ok.blocking
     assert _cell(fd3, 2)["source"] == "AB[[crate_5]]CD"
     assert _cell(fd3, 1)["source"] == "AB [[crate_5b]]CD"
@@ -413,7 +425,7 @@ def test_one_name_for_groups_with_different_numbers_is_blocked(tmp_path, monkeyp
     monkeypatch.setattr(icons, "same_icon", lambda a, b: 0.0)  # 사전과 자동으로 맞추지 않게
     service.find_icons(info2.dir, suggest=False)
     monkeypatch.setattr(icons, "same_icon", lambda a, b: 1.0)
-    g = service.icon_review(info2.dir)["groups"][0]["group"]
+    g = next(x for x in service.icon_review(info2.dir)["groups"] if not x["named"])["group"]  # 1차 확정 줄은 그대로
     r2 = service.confirm_icons(info2.dir, [{"group": g, "name": "crate_5"}])
     assert r2.state == "blocked" and r2.blocking == [
         "수량이 다른 아이콘을 같은 이름 crate_5로 정할 수 없습니다 (사전 그림: 5, 이 아이콘: 2): "
@@ -472,24 +484,24 @@ def test_old_scan_json_without_number_still_loads(tmp_path):
 
 
 def test_one_occurrence_marked_not_icon_from_card_view(tmp_path, monkeypatch):
-    """카드 보기 · 자리 잡기의 ‘이 자리는 아이콘 아님’: 그 자리만 ‘아이콘 아님’ 줄(혼자)로 옮기고, 같은 묶음의
-    다른 자리는 그대로 아이콘으로 정한다."""
+    """카드 보기 · 자리 잡기의 ‘이 자리는 아이콘 아님’: 그 자리(줄)만 ‘아이콘 아님’이 되고, 모양이 같은 다른 줄은
+    그대로 아이콘으로 정한다 (한 줄 = 카드의 아이콘 하나라 옮길 것 없이 그 줄을 표시)."""
     from app import service
 
     _blind_shape(monkeypatch)
     info, fd = _num_project(tmp_path, "1차", ["2", "2", "2"])
     service.find_icons(info.dir, suggest=False)
     res = icons.load_scan(info.game_dir / "work" / "icons")
-    (g,) = {o.group for o in res.occurrences}
+    assert len({o.group for o in res.occurrences}) == 3 and len({res.groups[o.group]["shape"] for o in res.occurrences}) == 1
+    row = {o.page: o.group for o in res.occurrences}
     o3 = next(o for o in res.occurrences if o.page == 3)
     r = service.set_icon_not_icon(info.dir, o3.id)
-    assert r["new_group"] and r["group"] != g
-    rev = service.icon_review(info.dir)
-    by = {x["group"]: x for x in rev["groups"]}
-    assert by[r["group"]]["not_icon"] and by[r["group"]]["count"] == 1 and by[g]["count"] == 2
-    assert not by[g]["not_icon"]
-    out = service.confirm_icons(info.dir, [{"group": g, "name": "crate_2", "ko": "상자 2"},
-                                           {"group": r["group"], "not_icon": True}])
+    assert not r["new_group"] and r["group"] == row[3]
+    by = {x["group"]: x for x in service.icon_review(info.dir)["groups"]}
+    assert by[row[3]]["not_icon"] and not by[row[1]]["not_icon"] and not by[row[2]]["not_icon"]
+    out = service.confirm_icons(info.dir, [{"group": row[1], "name": "crate_2", "ko": "상자 2"},
+                                           {"group": row[2], "name": "crate_2", "ko": "상자 2"},
+                                           {"group": row[3], "not_icon": True}])
     assert out.state == "confirmed", out.blocking
     assert _cell(fd, 1)["source"] == "AB [[crate_2]]CD"
     assert _cell(fd, 3)["source"] == "AB 2CD"  # 이 자리만 아이콘 아님 (숫자도 남음)
