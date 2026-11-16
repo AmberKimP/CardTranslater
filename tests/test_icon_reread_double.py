@@ -63,7 +63,6 @@ def test_agreeing_readings_settle_cell(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("sonnet,opus,why", [
     ({"source": "AB[[?]]CO", "uncertain": False}, {"source": "AB[[?]]CD", "uncertain": False}, "다르게 읽음"),
-    ({"source": "AB[[?]]CD", "uncertain": True}, {"source": "AB[[?]]CD", "uncertain": False}, "확실하지 않다고 함"),
     ({"source": "XB[[?]]CD", "uncertain": False}, {"source": "XB[[?]]CD", "uncertain": False}, "지금 원문과 다름"),
 ])
 def test_problem_readings_get_icon_review_status(tmp_path, monkeypatch, sonnet, opus, why):
@@ -194,3 +193,46 @@ def test_settle_ignores_only_numbers_put_into_icons():
     assert _settle_icon_cell(cell, _r("攻撃力3 2[[?]]"), _r("攻撃力3 2[[?]]"))
     cell = {"source": "攻撃力3 [[coin]]", "icon_numbers": nums, "icon_changed": ["x"]}
     assert not _settle_icon_cell(cell, _r("攻撃力8 2[[?]]"), _r("攻撃力8 2[[?]]"))  # 다른 숫자를 잘못 읽음
+
+
+def test_set_icon_counts_as_one_and_unsure_but_equal_settles():
+    from app.service._cells_icons import _settle_icon_cell
+
+    # ②에서 세트로 합친 아이콘(원문 [[이름]] 하나) — 모델은 [[?]][[?]][[?]]로 읽는다. 둘 다 ‘확실하지 않음’이어도 같으면 끝
+    cell = {"source": "[[quatrefoil_x3]]の山札を見て,任意の1枚", "icon_changed": ["세트로 합침"]}
+    read = "[[?]][[?]][[?]]の山札を見て、任意の1枚"
+    assert _settle_icon_cell(cell, _r(read, True), _r(read.replace("、", ","), True))
+    assert cell.get("icon_settled") and not cell.get("icon_changed")
+    # 글자를 사이에 둔 아이콘 수가 다르면 그대로 확인 필요
+    cell = {"source": "A[[x]]B", "icon_changed": ["x"]}
+    assert not _settle_icon_cell(cell, _r("A[[?]]B[[?]]"), _r("A[[?]]B[[?]]"))
+
+
+def test_resettle_old_cells_without_rereading(tmp_path):
+    import json
+
+    from app.service._cells_icons import resettle_icon_cells
+
+    fd = tmp_path / "f"
+    (fd / "extract" / "pages").mkdir(parents=True)
+    read = "[[?]][[?]]の山札、"
+    cell = {"source": "[[quatrefoil_x3]]の山札,", "icon_changed": ["세트로 합침"], "uncertain": True,
+            "note": "아이콘 고친 뒤 두 모델이 같게 읽었지만 확실하지 않다고 함",
+            "readings": [_r(read, True), _r(read, True)]}
+    other = {"source": "AB", "icon_changed": ["x"], "note": "아이콘 고친 뒤 두 모델이 다르게 읽음",
+             "readings": [_r("AB"), _r("AC")]}
+    f = fd / "extract" / "pages" / "page-001.json"
+    f.write_text(json.dumps({"page": 1, "regions": {"본문": cell, "이름": other}}, ensure_ascii=False), encoding="utf-8")
+    assert resettle_icon_cells([fd]) == 1
+    regs = json.loads(f.read_text(encoding="utf-8"))["regions"]
+    assert regs["본문"].get("icon_settled") and not regs["본문"].get("icon_changed")
+    assert not regs["본문"].get("before_icon_reread")  # 같은 두 결과를 기록에 또 넣지 않음
+    assert regs["이름"]["icon_changed"] == ["x"]  # 다르게 읽은 칸은 그대로
+    assert resettle_icon_cells([fd]) == 0
+
+
+def test_unsure_but_same_readings_settle():
+    from app.service._cells_icons import _settle_icon_cell
+
+    cell = {"source": "AB[[coin]]CD", "icon_changed": ["손으로 자리를 다시 잡음"]}
+    assert _settle_icon_cell(cell, _r("AB[[?]]CD", True), _r("AB[[?]]CD", False))  # 같으면 ‘확실하지 않음’이어도 끝

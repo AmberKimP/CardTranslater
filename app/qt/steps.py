@@ -127,6 +127,10 @@ class StepActions:
         # ② 아이콘 정의에서 아이콘 자리가 바뀐 칸: 원문 확인을 열기 전에 모아서 다시 읽는다 (보통·정밀 두 번 읽기).
         # 그리드에서 고른 범위와 상관없이 이 프로젝트의 모든 파일 (② 확정은 게임 전체에 하므로 빠뜨리지 않게)
         all_dirs = [f["dir"] for g in self.page.ov.get("groups", []) for f in g["files"]] or [f["dir"] for f in files]
+        try:  # 예전 규칙으로 ‘확인 필요’가 남은 칸을 지금 규칙으로 다시 견준다 (다시 읽지 않음)
+            service.resettle_icon_cells(all_dirs)
+        except Exception:  # noqa: BLE001 - 못 해도 원문 확인은 연다
+            pass
         pending = service.icon_reread_pending(all_dirs)
         # 이미 ⑦ 글자 지우기를 한 파일: 원문 확인이 끝나면 바뀐 쪽을 다시 지운다 (B3)
         # (그 칸이 모두 확인된 파일만: 다시 읽기를 취소·실패해 ‘확인 필요’가 남은 파일은 확인 전 원문으로 지우지 않는다)

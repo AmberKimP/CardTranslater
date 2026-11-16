@@ -89,7 +89,7 @@ from app.service._settings import (  # noqa: F401
     default_done_sound, data_dir,
 )
 from app.service._cells_icons import (  # noqa: F401
-    extracted_cells, icon_reread_pending, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
+    extracted_cells, icon_reread_pending, resettle_icon_cells, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
     icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
     suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons, keep_sentence_original, sentence_kept, region_keep_mode,

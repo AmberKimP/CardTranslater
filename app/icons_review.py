@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 SUGGEST_SYSTEM ="""You name small icons printed inside board game card text, for a translation tool.
 For each icon image, give a short identifier (lowercase English letters, digits or _ only, e.g. coin, heart,
 sword), what the icon stands for in the original language of the card text (meaning), and a natural Korean name
-(ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context.
+(ko) used when the icon replaces a noun in a Korean sentence. Use the sentence where it appears as context:
+the icon's own place in the sentence is marked [[THIS]]; other icons in the sentence are [[?]] or [[name]] and are
+NOT part of this image. Name only what is drawn in the image itself — never combine it with a neighbouring icon or
+with words of the sentence (e.g. an arrow image next to the word for "crown" is just an arrow, not "crown_arrow").
 Each group is a visually different icon. A number, sign or small mark printed on or right next to the icon is
 part of that icon: put it in the identifier (e.g. gold_2, coin_plus1, card_minus) and in meaning/ko. Give two
 groups the same identifier only when their images are truly the same icon."""
@@ -41,6 +44,21 @@ def needs_suggest(gi: dict) -> bool:
         and gi.get("dict_how") not in ("named", "same")
 
 
+def marked_context(o) -> str:
+    """이름을 물을 때 보낼 문장: 그 아이콘 자리의 토큰만 [[THIS]]로 바꾼다. 칸에 [[?]]가 여럿이면 모델이 어느 것이
+    이 그림인지 몰라 옆 아이콘·낱말과 섞어 이름을 짓는다 (공주와기사 3쪽 화살표 → crown_return_arrow)."""
+    text = o.context or ""
+    toks = list(_ic.TOKEN_RE.finditer(text))
+    k = o.ti if 0 <= getattr(o, "ti", -1) < len(toks) else None
+    if k is None and o.index >= 0:  # 예전 스캔(ti 없음): 그 칸의 몇 번째 [[?]]
+        ph = [i for i, t in enumerate(toks) if t.group(1) == "?"]
+        k = ph[o.index] if o.index < len(ph) else None
+    if k is None:
+        return text
+    t = toks[k]
+    return text[:t.start()] + "[[THIS]]" + text[t.end():]
+
+
 def suggest_names(res: ScanResult, client, model: str, work_dir: Path) -> tuple[float, float]:
     """모양(shape)마다 한 번 이름·뜻·한국어 이름을 제안 받아, 모양이 같은 줄 모두에 넣는다 (자리마다 물으면 비용이
     카드 수만큼 든다). 이미 확정된 줄·사전과 모양이 같은 줄은 묻지 않는다."""
@@ -55,7 +73,8 @@ def suggest_names(res: ScanResult, client, model: str, work_dir: Path) -> tuple[
     for g in first.values():
         o = by_id[want[g]["rep"]]
         images.append(Path(o.png))
-        lines.append(json.dumps({"group": g, "image": Path(o.png).name, "sentence": o.context}, ensure_ascii=False))
+        lines.append(json.dumps({"group": g, "image": Path(o.png).name, "sentence": marked_context(o)},
+                                ensure_ascii=False))
     if not lines:
         return 0.0, 0.0
     prompt = "Icons (JSON lines; open each image file):\n" + "\n".join(lines)

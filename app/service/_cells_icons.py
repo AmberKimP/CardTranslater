@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -393,7 +394,7 @@ def _update_cell(fd: Path, page: int, region: str, fn):
 ICON_SETTLED_NOTE = "아이콘 고친 뒤 보통 읽기·정밀 읽기가 같게 읽음"
 
 
-def _icon_core(text, numbers: list | None = None) -> str:
+def _icon_core(text, numbers: list | None = None, sets: bool = False) -> str:
     """지금 원문과 다시 읽은 결과를 견줄 글 (추출 비교처럼 공백·전각/반각 무시).
     아이콘 토큰은 이름과 상관없이 같은 표시 하나로 바꾼다: 모델은 이름을 모르고 [[?]]로 읽지만, 아이콘의 자리와 수는
     같아야 한다 (② 카드 보기에서 넣은 아이콘의 자리가 틀렸으면 확인 끝으로 보지 않는다).
@@ -417,7 +418,10 @@ def _icon_core(text, numbers: list | None = None) -> str:
         out.append(rep)
         last = t.end()
     out.append(text[last:])
-    return _agree_norm("".join(out))  # 문장 부호 ‘、’=‘，’·‘。’=‘．’ (B6)
+    # 문장 부호 ‘、’=‘，’·‘。’=‘．’ (B6). sets: ②에서 세트로 합친 칸 — 붙어 있는 아이콘 여럿을 하나로 본다
+    # (세트 아이콘은 원문에 [[이름]] 하나지만 그림을 읽는 모델은 [[?]][[?]][[?]]로 읽는다: 공주와기사 5쪽 quatrefoil_x3)
+    s = _agree_norm("".join(out))
+    return re.sub(MARK + "+", MARK, s) if sets else s
 
 
 MARK = "\x00"  # 견줄 때 아이콘 하나 (글자로 나올 일이 없는 표시)
@@ -436,8 +440,12 @@ def _settle_icon_cell(cell: dict, a: dict, b: dict) -> bool:
     # 문장 부호(、/，·。/．)만 다르면 같게 읽은 것 (B6: 추출의 두 번 읽기와 같은 비교)
     same = _agree_norm(a["source"]) == _agree_norm(b["source"])
     sure = not a["uncertain"] and not b["uncertain"]
-    as_source = _icon_core(b["source"]) == _icon_core(cell.get("source"), cell.get("icon_numbers"))
-    settled = same and sure and as_source
+    sets = any("세트" in str(w) for w in (cell.get("icon_changed") or []))
+    as_source = (_icon_core(b["source"], sets=sets)
+                 == _icon_core(cell.get("source"), cell.get("icon_numbers"), sets=sets))
+    # 두 읽기가 같으면 ‘확실하지 않음’이어도 확인 끝 (모델은 ‘、’와 ‘,’를 못 가린다는 정도로도 확실하지 않다고 한다:
+    # 사용자 요청 — 두 읽기가 같으면 ‘아이콘 고침’ 표시만). 지금 원문과 아이콘 자리·수가 다르면 확인 필요 그대로
+    settled = same and as_source
     prev = {k: cell[k] for k in ("readings", "rereads") if cell.get(k)}
     if prev:
         cell.setdefault("before_icon_reread", []).append({**prev, "at": b["at"]})
@@ -468,6 +476,52 @@ def _settle_icon_cell(cell: dict, a: dict, b: dict) -> bool:
     cell["note"] = " / ".join([s for s in notes if not s.startswith("아이콘 고친 뒤")]
                               + [f"아이콘 고친 뒤 {why}" + (f". {extra}" if extra else "")])
     return False
+
+
+def resettle_icon_cells(file_dirs) -> int:
+    """이미 두 번 읽어 ‘아이콘 고침 · 확인 필요’로 남은 칸을 지금 규칙으로 다시 견준다 (다시 읽지 않음, 사용료 없음).
+    규칙이 바뀐 뒤(세트 아이콘·확실하지 않음) 예전에 남은 칸이 확인 끝이 되게. 확인 끝이 된 칸 수를 돌려준다."""
+    import copy
+
+    n = 0
+    for fd in file_dirs:
+        fd = Path(fd)
+        pages = sorted({int(p.stem.split("-")[-1]) for p in (fd / "extract").rglob("page-*.json")
+                        if p.stem.split("-")[-1].isdigit()})
+        for page in pages:
+            for region, cell in _page_cells(fd, page).items():
+                rd = cell.get("readings") or []
+                if (not cell.get("icon_changed") or cell.get("icon_reread") or len(rd) != 2
+                        or not all(isinstance(x, dict) and "source" in x for x in rd)
+                        or "아이콘 고친 뒤" not in (cell.get("note") or "")):
+                    continue
+
+                def resettle(c: dict, a=rd[0], b=rd[1]) -> bool:
+                    trial = copy.deepcopy(c)
+                    trial.pop("readings", None)  # 같은 두 결과를 before_icon_reread에 또 넣지 않게
+                    trial.pop("rereads", None)
+                    if not _settle_icon_cell(trial, dict(a, uncertain=bool(a.get("uncertain"))),
+                                             dict(b, uncertain=bool(b.get("uncertain")))):
+                        return False
+                    trial["rereads"] = c.get("rereads") or []
+                    if not trial["rereads"]:
+                        trial.pop("rereads")
+                    c.clear()
+                    c.update(trial)
+                    return True
+                if _update_cell(fd, page, region, resettle):
+                    n += 1
+    return n
+
+
+def _page_cells(fd: Path, page: int) -> dict:
+    from app.extract import page_file
+
+    base = fd / "extract"
+    for f in (page_file(base, page), base / f"page-{page:03d}.json"):
+        if f.exists():
+            return (json.loads(f.read_text(encoding="utf-8")).get("regions") or {})
+    return {}
 
 
 # ---------------------------------------------------------------- 화면용: 아이콘 이름 확인 (2차)

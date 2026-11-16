@@ -272,3 +272,17 @@ def test_confirm_stops_without_half_changes_when_named_token_is_gone(tmp_path):
     assert out.state != "confirmed" and out.blocking
     assert json.dumps(icons.load_dictionary(info), sort_keys=True) == before_dict  # 사전도
     assert _source(fd, 1) == "AB[[coin]]CD"  # 앞 토큰도 그대로
+
+
+def test_suggest_sentence_marks_this_icon_only():
+    from app.icons import Occurrence
+    from app.icons_review import marked_context
+
+    o = Occurrence("o1", "f", "f", 3, "본문", 1, "[[?]]を戻した数だけ[[?]]を軽減 / [[?]]")
+    o.ti = 2
+    assert marked_context(o) == "[[?]]を戻した数だけ[[?]]を軽減 / [[THIS]]"
+    o.ti = -1  # 예전 스캔: 몇 번째 [[?]]인지로
+    assert marked_context(o) == "[[?]]を戻した数だけ[[THIS]]を軽減 / [[?]]"
+    o2 = Occurrence("o2", "f", "f", 3, "본문", 0, "[[crown]]を[[?]]")
+    o2.ti = 1
+    assert marked_context(o2) == "[[crown]]を[[THIS]]"
