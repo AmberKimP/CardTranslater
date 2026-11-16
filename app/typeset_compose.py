@@ -631,6 +631,48 @@ def swap_line_accents(lines: list[dict], src_lines: list[str] | None) -> list[di
     return out
 
 
+def _chroma(color: str) -> int:
+    r, g, b = _rgb(color)
+    return max(r, g, b) - min(r, g, b)
+
+
+def order_tag_accents(lines: list[dict], src_lines: list[str] | None) -> list[dict]:
+    """색 태그(<cN>)가 한 가지인 원문 줄에서, 태그 안 글자 자리를 가장 많이 덮는 강조색을 맨 앞(c1)으로 옮긴다.
+
+    지우기는 강조색을 줄 왼쪽부터 늘어놓는다. 지우기가 찾지 못한 글 속 아이콘(파란 원형 토큰 등)의 색이 태그 글보다
+    왼쪽에 있으면 그 색이 c1이 되어 빨간 ‘(최대 14개)’가 파랗게 그려졌다 (text_accents는 찾은 아이콘 자리만 뺀다).
+    태그 안을 비슷하게 덮는 색이 여럿이면(글자 가장자리의 섞인 색) 가장 짙은(채도 높은) 색을 고른다.
+    태그 안보다 태그 밖을 더 덮는 색만 있으면 그대로 둔다. src_lines: 줄마다 원문 (줄 수가 다르면 None → 그대로)."""
+    if not src_lines or len(src_lines) != len(lines):
+        return lines
+    out = []
+    for ln, src in zip(lines, src_lines):
+        acc = ln.get("accents") or []
+        # swap_line_accents가 줄 색과 맞바꾼 줄(맨 앞 강조색에 자리가 없음)은 이미 태그 색을 맨 앞에 두었다
+        fr = _tagged_fractions(src) if len(acc) > 1 and acc[0].get("x_pt") else None
+        b = ln.get("bbox_pt")
+        if not fr or not b or b[2] - b[0] <= 0:
+            out.append(ln)
+            continue
+        plain, tagged = fr
+        x0, w = b[0], b[2] - b[0]
+
+        def cover(a, parts):
+            return sum(max(0.0, min(v, x0 + q * w) - max(u, x0 + p * w)) for u, v in a.get("x_pt") or [] for p, q in parts)
+
+        cand = [a for a in acc if cover(a, tagged) > cover(a, plain)]
+        if not cand:
+            out.append(ln)
+            continue
+        top = max(cover(a, tagged) for a in cand)
+        best = max((a for a in cand if cover(a, tagged) >= 0.5 * top), key=lambda a: _chroma(a["color"]))
+        if best is acc[0]:
+            out.append(ln)
+            continue
+        out.append({**ln, "accents": [best] + [a for a in acc if a is not best]})
+    return out
+
+
 def _source_lines_for(lines: list[dict], source_text: str | None) -> list[str] | None:
     """원문 줄을 지우기가 잰 줄에 하나씩 맞춘 목록. 줄 수가 같으면 그대로, 아이콘만 있는 원문 줄을 빼야 같으면 뺀 것
     (원본 그대로 남긴 아이콘 줄 자리가 없을 때). 맞출 수 없으면 None."""
@@ -680,6 +722,25 @@ def measured_icon_scales(layout: dict) -> dict:
         if ic.get("scale"):
             by.setdefault(ic["name"], []).append(float(ic["scale"]))
     return {k: float(np.median(v)) for k, v in by.items()}
+
+
+def with_guessed_icon_scales(icon_fit: dict, text: str | None, dict_scales: dict | None = None) -> dict:
+    """지우기 때 크기를 재지 못한 글 속 아이콘은 같은 칸에서 잰 다른 아이콘 크기(가운데 값)를 쓴 사본.
+    한 카드의 글 속 아이콘은 보통 크기가 같다: 재지 못한 아이콘(가로로 긴 세트 그림 등)만 사전 기본 크기(1.1→1.3)로
+    그리면 원본보다 훨씬 작게 나온다. 사전에서 크기를 따로 정한 아이콘(기본 1.1이 아닌 것)은 그 크기를 따른다.
+    잰 아이콘이 하나도 없으면 그대로."""
+    if not icon_fit or not text or "[[" not in text:
+        return dict(icon_fit or {})
+    med = float(np.median(list(icon_fit.values())))
+    out = dict(icon_fit)
+    for nm in re.findall(r"\[\[([^\]]+)\]\]", text):
+        if nm in out:
+            continue
+        ds = (dict_scales or {}).get(nm)
+        if ds is not None and abs(float(ds) - 1.1) > 1e-6:
+            continue
+        out[nm] = med
+    return out
 
 
 _OPENING = re.compile(r"\s*(?:</?(?:b|i|c\d+)>)*\s*(?:[「『（(［【〔〈《“‘｢]|\[(?!\[))")  # 여는 괄호·따옴표로 시작하는 원문 줄 ([[아이콘]] 빼고)
@@ -994,7 +1055,8 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
     if not lines or not (text or "").strip() or layout.get("dividers_pt"):
         return None  # 구분선 위아래가 다른 칸: 한 덩어리로 넣으면 선을 넘고 서식이 섞인다 (넘친 글자는 결과 보기에 알린다)
     lines = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in lines]
-    lines = swap_line_accents(lines, _source_lines_for(lines, source_text))
+    src_of = _source_lines_for(lines, source_text)
+    lines = order_tag_accents(swap_line_accents(lines, src_of), src_of)
     gh = float(np.median([ln["glyph_h_pt"] for ln in lines]))
     # 가장 많은 줄의 서식(색·굵기·테두리)으로: 맨 위 이름 줄(빨간 굵은 글자 등) 서식으로 본문까지 그리지 않게
     style_of = lambda ln: (ln.get("color"), bool(ln.get("bold")), ln.get("stroke_color"))  # noqa: E731
@@ -1011,7 +1073,8 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
         pitch = float(np.median(np.diff(tops))) or None
     top = max(rect.y0, min(min(tops), rect.y1 - gh))
     boxes = [pymupdf.Rect(rect.x0, top, rect.x1, rect.y1), rect]  # 원문 첫 줄 위부터, 안 되면 영역 전체
-    st = _line_style(style_d, base_dir, ln0, [], None, measured_icon_scales(layout), line_pitch_pt=pitch)
+    icon_fit = with_guessed_icon_scales(measured_icon_scales(layout), text, style_d.get("icon_scales"))
+    st = _line_style(style_d, base_dir, ln0, [], None, icon_fit, line_pitch_pt=pitch)
     mode = style_d.get("align") or ""
     if mode in ("left", "center", "right"):
         st.align = mode
@@ -1065,7 +1128,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     # 아이콘 자리에서 잰 색은 <cN> 색이 아니다 (돌리기 전 페이지 좌표에서 아이콘 상자와 견준다)
     good = [{**ln, "accents": text_accents(ln, layout.get("icons") or [])} for ln in good]
     src_of = _source_lines_for(good, source_text)
-    good = swap_line_accents(good, src_of)
+    good = order_tag_accents(swap_line_accents(good, src_of), src_of)
     if src_of:  # 줄마다 원문 (문장 묶음의 왼쪽 시작점을 잴 때 괄호로 시작하는 줄을 가린다)
         good = [{**ln, "_src": s} for ln, s in zip(good, src_of)]
     # 지운 줄 앞·뒤 아이콘은 그 줄의 일부: 줄 상자를 아이콘까지 넓힌다 (한글 줄 앞 아이콘을 원래 아이콘 자리에 그린다)
@@ -1119,7 +1182,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             return None
         layout = {**layout, "lines": lines_all}
         secs = layout_sections(layout, rect)
-    icon_fit = measured_icon_scales(layout)
+    icon_fit = with_guessed_icon_scales(measured_icon_scales(layout), text, style_d.get("icon_scales"))
     parts = assign_lines(ko_lines, [len(s["lines"]) for s in secs])
     region_accents: list[str] = []
     for ln in lines_all:

@@ -450,6 +450,24 @@ def _find_icons(sub: np.ndarray, lb, src, reg) -> list:
     return out
 
 
+SET_ICON_ASPECT = 2.0  # 사전 그림의 가로/세로가 이 이상이면 아이콘 여럿을 옆으로 늘어놓은 세트 그림으로 본다
+
+
+def inline_icon_box_ok(box, lim_px: float, template=None) -> bool:
+    """글 속 아이콘 상자가 글 속 아이콘으로 믿을 만한 크기인가 (lim_px보다 크면 아이콘 찾기가 그림에 속은 것).
+    가로세로 모두 lim_px까지. 다만 사전 그림이 세트 그림(가로/세로 SET_ICON_ASPECT 이상: 문·광석·궁전, 네잎 문양 3개)이면
+    폭은 lim_px × 그 비까지 봐 준다 (가로로 긴 세트 아이콘을 버리지 않는다). 아이콘 하나짜리(왕관·도시 1.3~1.9)는
+    예전대로: 이름표가 붙은 큰 아이콘(공주 6쪽 도시+社交)을 지우면 이름표만 남는다."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    aspect = 1.0
+    shape = getattr(template, "shape", None)
+    if shape is not None and len(shape) >= 2 and shape[0] > 0:
+        a = float(shape[1]) / float(shape[0])
+        if a >= SET_ICON_ASPECT:
+            aspect = a
+    return h <= lim_px and w <= lim_px * aspect
+
+
 def _inline_icons(found: list, lay: dict, tm) -> list:
     """글 줄 안의 아이콘 자리를 tm.mask에 더한다 (그 자리를 지운다).
     [(이름, sub 안 px 상자, 그 줄 글자 높이 대비 크기 | None)]. 아이콘만 있는 줄과 원본 그대로 남긴 줄(keep)의
@@ -805,8 +823,11 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
         if pic is not None:
             # 글 속 아이콘이라기엔 너무 큰 상자는 아이콘 찾기가 그림에 속은 것: 통째로 지우면 큰 아이콘·그림이 망가진다
+            # 높이로 잰다: 여러 아이콘을 합친 세트 그림(문·광석·궁전 등)은 가로로 길어, 폭으로 재면 버려져 원본 크기를
+            # 잃고 한글 넣기가 사전 기본 크기(작게)로 그렸다. 폭은 사전 그림의 가로세로 비만큼 넓게 봐 준다
             lim = INLINE_ICON_SCALE_RANGE[1] * pic.glyph_px
-            found = [f_ for f_ in found if f_[2] or max(f_[1][2] - f_[1][0], f_[1][3] - f_[1][1]) <= 1.5 * lim]
+            found = [f_ for f_ in found
+                     if f_[2] or inline_icon_box_ok(f_[1], 1.5 * lim, (icon_templates or {}).get(f_[0]))]
         if lay.get("keep_failed"):
             found = []  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
         icons_found = _inline_icons(found, lay, tm)
