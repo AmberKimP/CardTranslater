@@ -127,7 +127,7 @@ class ResultViewer(QDialog):
         # 이 카드의 이 영역 고치기: 번역·글꼴·지우기 방식 (다른 카드는 그대로)
         self.edit_text = QPlainTextEdit()
         self.edit_text.setPlaceholderText("이 칸에 넣을 한글 (줄을 바꾸면 그 자리에서 줄을 바꿉니다)")
-        self.edit_text.setMaximumHeight(96)
+        self.edit_text.setMaximumHeight(130)  # 문단마다 영역은 [====] 줄이 더 있다
         self.edit_text.setToolTip("검수 엑셀은 바꾸지 않습니다. 저장하면 이 파일의 한글 넣기에 쓰고, 검수 엑셀을 다시 만들면 들어갑니다.\n"
                                   "그 뒤 검수 엑셀에서 같은 칸을 고치면 엑셀 쪽을 씁니다.")
         self.edit_font = QComboBox()
@@ -200,6 +200,8 @@ class ResultViewer(QDialog):
         form.addRow("번역", self.edit_text)
         form.addRow("글꼴", self.edit_font)
         self.para_label = QLabel("문단 글꼴")
+        self.para_label.setToolTip("문단은 번역 칸의 [====] 줄로 나뉩니다. 줄을 넣거나 빼거나 옮기면 문단 목록이 바로 바뀌고, "
+                                   "저장하면 이 카드의 한글 넣기에 그 나눔을 씁니다 ([====]는 번역 글에 들어가지 않음).")
         form.addRow(self.para_label, self.para_box)
         form.addRow("글자 크기", srow)
         form.addRow("위치", orow)
@@ -457,7 +459,10 @@ class ResultViewer(QDialog):
             return
         for w in (self.edit_text, self.edit_font, self.erase_mode, self.edit_size, self.edit_align):
             w.blockSignals(True)
-        self.edit_text.setPlainText(info["ko"])
+        # 문단마다 다른 글꼴 영역: 문단이 시작하는 줄 앞에 [====] (한글 넣기가 쓰는 나눔 그대로, 고칠 수 있다)
+        box0 = (service.mark_paragraphs(info["ko"], info.get("ko_paragraph_breaks"))
+                if info["paragraph_mode"] else info["ko"])
+        self.edit_text.setPlainText(box0)
         self.edit_size.setSpecialValueText(f"영역 설정대로 ({round(info['region_size'] * 100)} %)")
         self.edit_size.setValue(round(info["size"] * 100) if info["size"] else self.edit_size.minimum())
         self.edit_align.clear()
@@ -500,7 +505,8 @@ class ResultViewer(QDialog):
         for w in (self.off_x, self.off_y, self.off_zero, *self.nudge_btns):
             w.setEnabled(not kept and text_kind)
         self._edit = {"page": p["page"], "region": name, "info": info, "offset": (float(off[0]), float(off[1])),
-                      "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok}
+                      "erase": self.erase_mode.currentData() if erase_ok else None, "erase_ok": erase_ok,
+                      "box0": box0}
         self._para_picks = dict(info["paragraph_fonts"])
         self._rebuild_paragraphs(load=True)
         self._mark_dirty()
@@ -529,8 +535,9 @@ class ResultViewer(QDialog):
         while self.para_form.rowCount():
             self.para_form.removeRow(0)
         self._para_combos = []
-        # ③에서 정한 문단 나눔이 있으면 그것으로 (한글 넣기와 같게)
-        paras = service.split_paragraphs(self.edit_text.toPlainText(), self.file_dir(), e["page"], e["region"])
+        # 번역 칸의 [====]대로 (한글 넣기와 같게)
+        text, br = self._box()
+        paras = service.split_paragraphs(text, breaks=br)
         fonts = list(self._font_list())
         fonts += [(f, service.font_label(f)) for f in set(self._para_picks.values())
                   if f and all(f != x for x, _l in fonts)]
@@ -548,6 +555,26 @@ class ResultViewer(QDialog):
             self.para_form.addRow(lab, cb)
             self._para_combos.append(cb)
         self._mark_dirty()
+
+    def _para_on(self) -> bool:
+        e = getattr(self, "_edit", None)
+        return bool(e and e["info"].get("paragraph_mode"))
+
+    def _box(self) -> tuple[str, list[int] | None]:
+        """번역 칸 글과 문단 나눔. 문단마다 다른 글꼴 영역이면 [====] 줄을 빼고 그 자리를 나눔으로 (아니면 None)."""
+        text = self.edit_text.toPlainText()
+        if self._para_on():
+            return service.unmark_paragraphs(text)
+        return text, None
+
+    def _breaks_changed(self) -> bool:
+        """[====] 자리가 칸을 열 때(한글 넣기가 쓰던 나눔)와 달라졌나 (글은 따로 비교)."""
+        if not self._para_on():
+            return False
+        info = self._edit["info"]
+        text, br = self._box()
+        return br != service.paragraph_starts(text, info.get("ko_paragraph_breaks")) \
+            if text.strip() == info["ko"].strip() else True
 
     def _saved_paras(self) -> dict:
         """저장된 문단 글꼴 중 지금 글에 있는 문단만 (글이 짧아져 없는 문단은 비교하지 않는다)."""
@@ -567,7 +594,7 @@ class ResultViewer(QDialog):
         if not e:
             return False
         info = e["info"]
-        return (self.edit_text.toPlainText().strip() != info["ko"].strip()
+        return (self._box()[0].strip() != info["ko"].strip() or self._breaks_changed()
                 or (self.edit_font.currentData() or "") != info["font"]
                 or (e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
                 or self._size_value() != info["size"]
@@ -624,7 +651,9 @@ class ResultViewer(QDialog):
         e = self._edit
         if not e:
             return
-        self.edit_text.setPlainText(e["info"]["base"])
+        base = e["info"]["base"]
+        self.edit_text.setPlainText(service.mark_paragraphs(base, e["info"].get("base_paragraph_breaks"))
+                                    if self._para_on() else base)
         self.edit_font.setCurrentIndex(0)
         self.edit_size.setValue(self.edit_size.minimum())
         self.edit_align.setCurrentIndex(0)
@@ -642,11 +671,12 @@ class ResultViewer(QDialog):
         if not (e and fd):
             return
         try:
-            png = service.card_preview(fd, e["page"], e["region"], self.edit_text.toPlainText(),
+            text, br = self._box()  # [====]는 그리지 않고 나눔으로
+            png = service.card_preview(fd, e["page"], e["region"], text,
                                        self.edit_font.currentData() or None, self._size_value(),
                                        self.edit_align.currentData() or "",
                                        self._para_fonts() if e["info"]["paragraph_mode"] else None,
-                                       offset=self._offset())
+                                       offset=self._offset(), paragraph_breaks=br)
         except Exception as ex:  # noqa: BLE001
             if silent:
                 self.edit_note.setText(f"미리 보기를 만들지 못했습니다: {ex}")
@@ -671,13 +701,16 @@ class ResultViewer(QDialog):
         if not (e and fd and self._dirty()):
             return
         page, region = e["page"], e["region"]
-        text = self.edit_text.toPlainText()
+        text, br = self._box()  # [====] 줄은 번역에 남기지 않는다 (문단 나눔으로 따로 저장)
         erase_changed = bool(e["erase_ok"] and self.erase_mode.currentData() != e["erase"])
         try:
             info = e["info"]
             paras = self._para_fonts() if info["paragraph_mode"] else None
+            text_changed = text.strip() != info["ko"].strip()
             service.save_card_edit(fd, page, region,
-                                   text=text if text.strip() != info["ko"].strip() else None,
+                                   text=text if text_changed else None,
+                                   paragraph_breaks=br if br is not None and (text_changed or self._breaks_changed())
+                                   else None,
                                    font=self.edit_font.currentData() or None,
                                    set_font=(self.edit_font.currentData() or "") != info["font"],
                                    size=self._size_value(), set_size=self._size_value() != info["size"],

@@ -971,11 +971,12 @@ def preview_source(file_dir: Path | str, page: int, region: str) -> dict | None:
 def preview_render(file_dir: Path | str, page: int, region: str, font_file: str | None, scale: float = 1.0,
                    align: str | None = None, sentence: int | None = None, text=None, slots: dict | None = None,
                    base_font: str | None = None, para_fonts: dict | None = None,
-                   offset: tuple[float, float] | None = None) -> bytes | None:
+                   offset: tuple[float, float] | None = None, para_breaks: list[int] | None = None) -> bytes | None:
     """글꼴 창 미리 보기를 한글 넣기와 똑같이 그린 PNG (지운 카드 사본에 그 칸만 실제로 넣어 본다).
     원본 미리 보기(preview_source)와 같은 자리·배율. sentence가 있으면 그 문장에만 그 글꼴 (‘문장마다 글꼴’).
     text: 저장하지 않은 고친 번역으로 그려 본다. 번역이 없거나 그리지 못하면 None (화면은 예전처럼 간단히 그린다).
-    offset: 결과 보기에서 옮긴 글 위치 (dx, dy) pt. 옮긴 자리까지 보이게 잘라 낸다."""
+    offset: 결과 보기에서 옮긴 글 위치 (dx, dy) pt. 옮긴 자리까지 보이게 잘라 낸다.
+    para_breaks: 결과 보기에서 [====]로 정하는 중인 번역문 문단 나눔 (주면 그것으로 그린다)."""
     import pymupdf
 
     from app.project import load_project
@@ -1015,6 +1016,8 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
             entry = {k: v for k, v in entry.items() if k != "paragraph_breaks"}
             if b is not None:
                 entry["paragraph_breaks"] = b
+        if para_breaks is not None:
+            entry = {**entry, "paragraph_breaks": sorted({int(i) for i in para_breaks})}
         smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or "", _ko_breaks(entry)))) if slots else {}
         smap.update({int(k): v for k, v in (para_fonts or {}).items() if v})  # 이 카드에서 문단마다 고른 것
         if sentence is not None:

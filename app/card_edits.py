@@ -22,25 +22,30 @@ def norm(v) -> str:
 
 
 def load(file_dir: Path | str) -> dict:
-    """{쪽(int): {영역: {"ko": 고친 번역, "base": 고칠 때의 번역}}}."""
+    """{쪽(int): {영역: {"ko": 고친 번역, "base": 고칠 때의 번역, "paragraph_breaks"(선택)}}}.
+    paragraph_breaks: 문단마다 다른 글꼴 영역에서 결과 보기의 [====]로 정한 번역문 문단 나눔 (ko의 빈 줄 뺀 줄 번호,
+    0 빼고). 있으면 한글 넣기가 이 카드에 그대로 쓴다 (원문 쪽 나눔·기본 규칙보다 먼저)."""
     from app.workspace import file_settings
 
     raw = file_settings(Path(file_dir)).get(KEY) or {}
     return {int(p): dict(regs) for p, regs in raw.items() if regs}
 
 
-def set_text(file_dir: Path | str, page: int, region: str, ko, base) -> None:
-    """그 칸의 번역을 ko로 고친다 (base: 지금 쓰는 번역). ko가 base와 같으면 고친 것을 지운다 (원래대로)."""
+def set_text(file_dir: Path | str, page: int, region: str, ko, base, paragraph_breaks: list[int] | None = None) -> None:
+    """그 칸의 번역을 ko로 고친다 (base: 지금 쓰는 번역). ko가 base와 같고 문단 나눔도 주지 않았으면 고친 것을 지운다
+    (원래대로). paragraph_breaks: 결과 보기에서 정한 번역문 문단 나눔 (load 참고)."""
     from app import workspace
 
     fd = Path(file_dir)
     data = workspace.file_settings(fd)
     edits = data.setdefault(KEY, {})
     card = edits.setdefault(str(int(page)), {})
-    if norm(ko) == norm(base):
+    if norm(ko) == norm(base) and paragraph_breaks is None:
         card.pop(region, None)
     else:
-        card[region] = {"ko": ko, "base": base}
+        card[region] = {"ko": ko, "base": base,
+                        **({"paragraph_breaks": sorted({int(i) for i in paragraph_breaks})}
+                           if paragraph_breaks is not None else {})}
     if not card:
         edits.pop(str(int(page)), None)
     if not edits:
@@ -67,8 +72,12 @@ def apply(file_dir: Path | str, cards: dict, source_of=None) -> tuple[dict, list
             card = out.setdefault(page, {"page": page})
             entry = card.get(region) if isinstance(card.get(region), dict) else None
             cur = entry.get("ko") if entry else None
+            br = e.get("paragraph_breaks") if isinstance(e.get("paragraph_breaks"), list) else None
             if norm(cur) == norm(e.get("ko")):
-                continue  # 엑셀을 다시 만들어 고친 번역이 이미 들어 있다 (알릴 것 없음)
+                # 엑셀을 다시 만들어 고친 번역이 이미 들어 있다 (알릴 것 없음). 결과 보기에서 정한 문단 나눔은 붙인다
+                if br is not None:
+                    card[region] = {**entry, "paragraph_breaks": br}
+                continue
             if norm(cur) != norm(e.get("base")):
                 notes.append(f"{page}쪽 {region}: 검수 엑셀에서 그 뒤에 고쳐 결과 보기에서 고친 번역은 쓰지 않음")
                 continue
@@ -76,5 +85,7 @@ def apply(file_dir: Path | str, cards: dict, source_of=None) -> tuple[dict, list
             if "source" not in new and source_of is not None:
                 new["source"] = source_of(page, region)
             new["ko"] = e["ko"]
+            if br is not None:  # 결과 보기에서 정한 번역문 문단 나눔 (extract.with_paragraph_breaks가 덮지 않는다)
+                new["paragraph_breaks"] = br
             card[region] = new
     return out, notes

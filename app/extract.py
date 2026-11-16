@@ -427,6 +427,7 @@ def breaks_for_text(r: dict | None, text) -> list[int] | None:
 def with_paragraph_breaks(cards: dict, extracted: dict) -> dict:
     """한글 넣기용 카드({쪽: {영역: {"ko", "source", …}}})에 칸의 문단 나눔을 붙인 새 dict (원래 dict는 그대로):
     "paragraph_breaks" = 번역문(ko) 줄 번호, "source_paragraph_breaks" = 그 칸 번역 원문(source) 줄 번호.
+    번역문 나눔의 차례: 결과 보기에서 정한 것(이미 붙어 있음, card_edits) → 원문 쪽 나눔을 맞춘 것 → 없음(기본 규칙).
     맞출 수 없거나 나눔을 정하지 않은 칸은 붙이지 않는다 (기본 규칙). extracted = load_extracted."""
     out = {}
     for pno, regs in (cards or {}).items():
@@ -438,7 +439,8 @@ def with_paragraph_breaks(cards: dict, extracted: dict) -> dict:
                 continue
             add = {}
             ko = e.get("ko")
-            if isinstance(ko, str):
+            if isinstance(ko, str) and not isinstance(e.get("paragraph_breaks"), list):
+                # (결과 보기에서 번역문 쪽으로 정한 나눔(card_edits.apply가 붙임)이 있으면 그것을 쓴다)
                 b = breaks_for_text(r, ko)
                 if b is not None:
                     add["paragraph_breaks"] = b

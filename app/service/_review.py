@@ -145,12 +145,25 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
     card_size = ((data.get("card_sizes") or {}).get(pg) or {}).get(region)
     card_align = ((data.get("card_aligns") or {}).get(pg) or {}).get(region) or ""
     paras = ((data.get("sentences") or {}).get(pg) or {}).get(region) or {}
-    mode = font_plan.region_font_modes(fd).get(region) == "sentence" and (reg is None or reg.kind == "text")
+    # 카드별 영역 설정이 있으면 그것 (원문 확인·카드 보기와 같은 규칙)
+    fm = ((getattr(reg, "style", None) or {}).get("font_mode") if reg is not None else None) \
+        or font_plan.region_font_modes(fd).get(region)
+    mode = fm == "sentence" and (reg is None or reg.kind == "text")
     from app.extract import keep_state, load_extracted
+
+    from app.extract import breaks_for_text
 
     ext = (load_extracted(fd).get(int(page)) or {}).get(region) or {}
     keep_mode, keep_lines = keep_state(ext)
-    return {"ko": card_edits.norm(e["ko"] if e else base), "base": card_edits.norm(base), "edited": bool(e),
+    ko_now = card_edits.norm(e["ko"] if e else base)
+    # 번역문 문단 나눔 (한글 넣기와 같은 차례): 결과 보기에서 정한 것 → 원문 쪽 나눔을 맞춘 것 → None(기본 규칙)
+    ko_breaks = e.get("paragraph_breaks") if e and isinstance(e.get("paragraph_breaks"), list) else None
+    if ko_breaks is None and mode:
+        ko_breaks = breaks_for_text(ext, ko_now)
+    return {"ko": ko_now, "base": card_edits.norm(base), "edited": bool(e),
+            # 문단마다 다른 글꼴 영역: 번역 칸의 [====] 자리 (빈 줄 뺀 줄 번호, None = 기본 규칙)
+            "ko_paragraph_breaks": ko_breaks,
+            "base_paragraph_breaks": breaks_for_text(ext, card_edits.norm(base)) if mode else None,
             # 칸 전체 원본 그대로 (지우기·한글 넣기 안 함). 아이콘 문단만 원본 그대로인데 맞출 수 없는 칸도 칸 전체
             "keep_original": keep_mode in ("whole", "broken"),
             # 아이콘 문단만 원본 그대로: 남긴 원문 줄 수 (그 문단은 번역·한글 넣기 안 함, 나머지 문단만 고친다)
@@ -164,12 +177,13 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
 
 
 def split_paragraphs(text: str, file_dir: Path | str | None = None, page: int | None = None,
-                     region: str | None = None) -> list[str]:
-    """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙). 칸(file_dir·page·region)을 주면
-    ③에서 정한 문단 나눔(paragraph_breaks)을 이 글의 줄에 맞춰 쓴다 (맞출 수 없으면 기본 규칙)."""
+                     region: str | None = None, breaks: list[int] | None = None) -> list[str]:
+    """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙). breaks를 주면 그 나눔(결과 보기의
+    [====])으로, 칸(file_dir·page·region)을 주면 ③에서 정한 문단 나눔을 이 글의 줄에 맞춰 쓴다 (맞출 수 없으면 기본 규칙)."""
     from app.typeset_layout import paragraphs
 
-    breaks = None
+    if breaks is not None:
+        return paragraphs(text or "", breaks)
     if file_dir is not None and page is not None and region:
         from app.extract import breaks_for_text, load_extracted
 
@@ -302,20 +316,34 @@ def _translation_cards_read(fd: Path, xlsx) -> dict:
 def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | None = None,
                    font: str | None = None, set_font: bool = False, size: float | None = None,
                    set_size: bool = False, align: str | None = None, set_align: bool = False,
-                   paragraph_fonts: dict | None = None) -> None:
+                   paragraph_fonts: dict | None = None, paragraph_breaks: list[int] | None = None) -> None:
     """결과 보기에서 고친 것을 저장한다 (반영은 recompose_file·redo_file로).
     text: 고친 번역 (None이면 그대로, 엑셀·초벌 번역과 같으면 고친 것을 지움). 태그 칸은 줄마다 태그 하나.
+    paragraph_breaks: 문단마다 다른 글꼴 영역에서 번역 칸의 [====]로 정한 번역문 문단 나눔 (빈 줄 뺀 줄 번호).
+    card_edits에 번역과 함께 두어 한글 넣기가 이 카드에 그대로 쓴다. 번역 줄 수가 원문과 같으면(아이콘 문단만 원본
+    그대로인 칸이 아닐 때) 원문 칸의 paragraph_breaks도 같게 고친다 (③ 원문 확인의 [====]가 같게 보이도록).
     set_font=True면 font(None·''이면 영역 글꼴을 따름)를 이 카드의 이 영역 글꼴로.
     set_size·set_align: 이 카드만의 글자 크기 배율·정렬 (None·''이면 글꼴 창의 영역 설정).
     paragraph_fonts: {문단 번호: 글꼴 | None} — 이 카드의 문단마다 글꼴 (주면 그것으로 바꾼다)."""
     from app import card_edits, font_plan
 
     fd = Path(file_dir)
+    if text is None and paragraph_breaks is not None:  # 번역은 그대로, 문단 나눔만 바꿈
+        entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
+        base0 = entry.get("ko") if isinstance(entry, dict) else None
+        e0 = card_edits.edit_for(card_edits.load(fd), page, region, base0)
+        text = card_edits.norm(e0["ko"] if e0 else base0)
     if text is not None:
+        if PARAGRAPH_MARK in text:  # [====] 줄은 번역 글이 아니다 (화면이 빼지 못했을 때도 새지 않게)
+            text, br = unmark_paragraphs(text)
+            paragraph_breaks = br if paragraph_breaks is None else paragraph_breaks
         entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
         base = entry.get("ko") if isinstance(entry, dict) else None
         ko = [t.strip() for t in text.splitlines() if t.strip()] if isinstance(base, list) else text.strip()
-        card_edits.set_text(fd, page, region, ko, base)
+        card_edits.set_text(fd, page, region, ko, base,
+                            paragraph_breaks if isinstance(ko, str) else None)
+        if paragraph_breaks is not None and isinstance(ko, str):
+            _sync_source_breaks(fd, page, region, ko, paragraph_breaks)
         from app import review_marks
 
         review_marks.mark(fd, page, region, ko)  # 결과 보기에서 고쳐 저장한 칸 = 사람이 본 칸
@@ -328,9 +356,32 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
     font_plan._raw_cache.clear()
 
 
+def _sync_source_breaks(fd: Path, page: int, region: str, ko: str, breaks: list[int]) -> None:
+    """결과 보기에서 정한 번역문 문단 나눔을 원문 칸에도 (③ 원문 확인이 같은 [====]를 보이게). 번역과 원문의 줄 수
+    (빈 줄 뺌)가 같고, 아이콘 문단만 원본 그대로인 칸이 아닐 때만 (줄을 맞출 수 없으면 원문 쪽은 그대로)."""
+    from app import workspace
+    from app.extract import PARAGRAPH_BREAKS, keep_state, page_file
+    from app.typeset_layout import nonblank_count
+
+    for f in (page_file(fd / "extract", page), fd / "extract" / f"page-{int(page):03d}.json"):
+        if not f.exists():
+            continue
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        cell = (rec.get("regions") or {}).get(region)
+        src = (cell or {}).get("source")
+        if not isinstance(src, str) or keep_state(cell)[0] or nonblank_count(src) != nonblank_count(ko):
+            continue
+        new = sorted({int(i) for i in breaks})
+        if cell.get(PARAGRAPH_BREAKS) == new:
+            continue
+        cell[PARAGRAPH_BREAKS] = new
+        workspace._write(f, rec)
+
+
 def card_preview(file_dir: Path | str, page: int, region: str, text: str | None, font: str | None,
                  size: float | None = None, align: str | None = None,
-                 paragraph_fonts: dict | None = None, offset: tuple[float, float] | None = None) -> bytes | None:
+                 paragraph_fonts: dict | None = None, offset: tuple[float, float] | None = None,
+                 paragraph_breaks: list[int] | None = None) -> bytes | None:
     """결과 보기에서 저장 전에 그 칸을 한글 넣기와 똑같이 그려 본 PNG (지금 지운 카드 위). 못 그리면 None.
     offset: 화면에서 옮기는 중인 글 위치 (dx, dy) pt (None이면 저장된 위치).
     화면에서 고른 그대로 그린다: font·size가 None이면 영역 글꼴·영역 크기, align ''이면 영역 정렬
@@ -341,6 +392,9 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
     data = font_plan.load(fd)
     f = font or (data.get("regions") or {}).get(region)  # 없으면 영역 글꼴 (화면이 ‘영역 글꼴대로’를 고른 것)
     entry = (_translation_cards(fd).get(int(page)) or {}).get(region) or {}
+    if isinstance(text, str) and PARAGRAPH_MARK in text:  # [====] 줄은 그리지 않는다 (나눔으로만)
+        text, br = unmark_paragraphs(text)
+        paragraph_breaks = br if paragraph_breaks is None else paragraph_breaks
     ko = text
     if text is not None and isinstance(entry.get("ko"), list):
         ko = [t.strip() for t in text.splitlines() if t.strip()]
@@ -356,7 +410,7 @@ def card_preview(file_dir: Path | str, page: int, region: str, text: str | None,
         {int(i): v for i, v in ((((data.get("sentences") or {}).get(str(int(page))) or {}).get(region)) or {}).items()}
     off = tuple(offset) if offset is not None else tuple(card_text_offset(fd, page, region))
     return font_plan.preview_render(fd, page, region, f, scale, al or None, None, ko, slots=slots, para_fonts=paras,
-                                    offset=off)
+                                    offset=off, para_breaks=paragraph_breaks)
 
 
 # ---------------------------------------------------------------- 화면용: 번역 검수

@@ -300,6 +300,97 @@ def test_result_viewer_paragraphs_use_stored_breaks(tmp_path):
     assert service.split_paragraphs("가.\n나.", fd, 1, "본문") == ["가. 나."]  # 줄 수가 다르면 기본 규칙
 
 
+# ---------------------------------------------------------------- 1.24.5: 결과 보기(9A)의 [====]
+def test_card_edit_breaks_win_in_compose_cards(tmp_path):
+    from app import card_edits
+    from app.extract import with_paragraph_breaks
+
+    fd = tmp_path / "f"
+    fd.mkdir()
+    (fd / "file.json").write_text("{}", encoding="utf-8")
+    card_edits.set_text(fd, 1, "본문", "가\n나\n다", "가\n나\n다", [2])  # 번역은 그대로, 나눔만
+    assert card_edits.load(fd)[1]["본문"]["paragraph_breaks"] == [2]
+    cards, _ = card_edits.apply(fd, {1: {"본문": {"ko": "가\n나\n다", "source": "一\n二\n三"}}})
+    assert cards[1]["본문"]["paragraph_breaks"] == [2]
+    ext = {1: {"본문": {"source": "一\n二\n三", "paragraph_breaks": [1]}}}
+    got = with_paragraph_breaks(cards, ext)
+    assert got[1]["본문"]["paragraph_breaks"] == [2]  # 결과 보기에서 정한 번역문 나눔이 원문 쪽보다 먼저
+    assert got[1]["본문"]["source_paragraph_breaks"] == [1]
+    card_edits.set_text(fd, 1, "본문", "가\n나\n다", "가\n나\n다")  # 나눔 없이 같은 번역 = 고친 것 지움
+    assert card_edits.load(fd) == {}
+
+
+def _r9a_project(tmp_path, monkeypatch):
+    from tests.test_fonts_sentences import _project_with_mode
+
+    info, fd = _project_with_mode(tmp_path, "sentence")
+    cards = {1: {"이름": {"ko": "첫째 줄이다.\n둘째 줄이다.\n셋째 줄."}}, 2: {"이름": {"ko": "하나뿐"}}}
+    assert service._compose_with_cards(fd, cards, None, None).state == "done"
+    monkeypatch.setattr(service, "_translation_cards", lambda _fd: cards)
+    return info, fd, cards
+
+
+def test_result_viewer_shows_markers_follows_and_saves_breaks(qapp, tmp_path, monkeypatch):
+    from app import card_edits
+    from app.qt import results
+    from app.qt.results import ResultViewer
+
+    info, fd, cards = _r9a_project(tmp_path, monkeypatch)
+    v = ResultViewer([("이미지", fd / "translated")])
+    v.pages.setCurrentRow(0)
+    v.regions.setCurrentRow(1)
+    ko = cards[1]["이름"]["ko"]
+    assert v.edit_text.toPlainText() == ko and len(v._para_combos) == 1  # 기본: 문장 끝으로는 안 나눔
+    v.edit_text.setPlainText("첫째 줄이다.\n[====]\n둘째 줄이다.\n[====]\n셋째 줄.")
+    v._rebuild_paragraphs()  # (화면은 잠시 뒤 타이머로)
+    assert len(v._para_combos) == 3 and v.redo_btn.isEnabled()  # 문단 목록이 [====]를 따른다
+    jobs = []
+    monkeypatch.setattr(results.bg_erase, "run_exclusive", lambda *a, **k: jobs.append(a))
+    v.save_edit()
+    e = card_edits.load(fd)[1]["이름"]
+    assert e["ko"] == ko and e["paragraph_breaks"] == [1, 2] and "[====]" not in e["ko"]  # 기호는 번역에 없다
+    info1 = service.card_edit_info(fd, 1, "이름")
+    assert info1["ko"] == ko and info1["ko_paragraph_breaks"] == [1, 2]
+    assert service.mark_paragraphs(info1["ko"], info1["ko_paragraph_breaks"]).count("[====]") == 2
+    v.close()
+
+
+def test_saved_korean_breaks_reach_compose_and_never_leak(tmp_path, monkeypatch):
+    from app import typeset_compose
+
+    info, fd, cards = _r9a_project(tmp_path, monkeypatch)
+    service.save_card_edit(fd, 1, "이름", text="첫째 줄이다.\n[====]\n둘째 줄이다.\n셋째 줄.")  # 화면이 못 뺐어도
+    seen = {}
+    real = typeset_compose.compose_page
+
+    def spy(page, src_page, meta, card, *a, **k):
+        if card and "이름" in card:
+            seen[meta.get("source_page") or len(seen) + 1] = dict(card["이름"])
+        return real(page, src_page, meta, card, *a, **k)
+
+    monkeypatch.setattr(typeset_compose, "compose_page", spy)
+    assert service._compose_with_cards(fd, cards, None, None).state == "done"
+    first = next(v for v in seen.values() if "첫째" in v["ko"])
+    assert "[====]" not in first["ko"] and first["paragraph_breaks"] == [1]
+    # 원문 칸에는 줄 수가 같을 때만 같은 나눔 (이 견본은 원문이 없거나 줄 수가 달라 그대로)
+    assert "[====]" not in json_dumps_file(fd / "file.json")
+
+
+def test_korean_breaks_copied_to_source_when_lines_match(tmp_path):
+    from app.service._review import _sync_source_breaks
+
+    _info, fd = _changed_project(tmp_path, "sync")
+    service.save_source(fd, 1, "본문", "一。\n二。\n三。")
+    _sync_source_breaks(fd, 1, "본문", "가.\n나.", [1])  # 줄 수가 다름: 원문 쪽은 그대로
+    assert "paragraph_breaks" not in _cell(fd)
+    _sync_source_breaks(fd, 1, "본문", "가.\n나.\n다.", [2])
+    assert _cell(fd)["paragraph_breaks"] == [2]  # ③ 원문 확인도 같은 [====]
+
+
+def json_dumps_file(p):
+    return Path(p).read_text(encoding="utf-8")
+
+
 def test_breaks_do_not_break_partial_keep(tmp_path):
     from app.extract import keep_state
 
