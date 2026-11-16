@@ -218,9 +218,13 @@ def test_review_dialog_card_order_problem_cards_first_and_bands(qapp, tmp_path):
     assert pages == [3, 1, 2]  # 문제 카드 먼저, 그다음 카드 순서
     assert dlg._card_of[dlg.widgets[0][0]][1] and not dlg._card_of[dlg.widgets[1][0]][1]
     assert dlg.table.item(0, dlg.C_PAGES).font().bold()
-    assert dlg.table.item(0, dlg.C_PAGES).background().color().name().lower() in ("#fbe3e3", "#f6d0d0")
+    # 1.24: 카드 칸은 옅은 띠(구분만), 분홍은 그 줄 자체가 문제일 때만 (상태·예문 칸)
+    assert dlg.table.item(0, dlg.C_PAGES).background().color().name().lower() in dlg.BAND_COLORS_LOWER
+    assert dlg.table.item(0, dlg.C_STATE).background().color().name().lower() == dlg.PROBLEM_COLOR.lower()
+    assert dlg.table.item(1, dlg.C_STATE).background().color().name().lower() != dlg.PROBLEM_COLOR.lower()
     dlg.widgets[0][1].setText("coin")  # 사전 이름: 한국어 이름이 채워져 문제가 아니게
     assert dlg.widgets[0][3].text() == "금화"
+    assert dlg.table.item(0, dlg.C_STATE).background().color().name().lower() != dlg.PROBLEM_COLOR.lower()
     dlg._sort_by(dlg.C_PAGES)  # 다시 누르면 카드 순서 반대 (문제 카드 없음)
     assert [g["where"][0]["page"] for g in dlg.review["groups"]] == [3, 2, 1]
     dlg.close()

@@ -147,7 +147,7 @@ def test_save_keeps_window_open_when_lost_remains(qapp, tmp_path, monkeypatch):
     dlg.view.new = [b[0], b[1], b[2] - 1, b[3]]
     dlg._save()
     assert dlg.result() != QDialog.DialogCode.Accepted  # extra가 아직 위치 못 찾음
-    assert "닫지 않았습니다" in dlg.status.text()
+    assert "위치를 못 찾은 아이콘이 있습니다" in dlg.status.text()
     dlg.close()
 
 

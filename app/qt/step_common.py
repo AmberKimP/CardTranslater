@@ -21,8 +21,10 @@ LABEL_TEXT = {"결론 못 냄": "다시 봐야 함"}
 JA_FONTS = ["Yu Gothic UI", "Meiryo"]  # 원문(일본어) 칸 글꼴: 차례로, 없으면 기본 글꼴
 ENGINE_LABELS = [("claude-code", "Claude 구독 (Claude Code)"), ("api", "API 키 (사용한 만큼 요금)")]  # 로그인 창과 같은 말
 ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"  # app.extract.ICON_REVIEW_LABEL과 같은 상태 (② 아이콘 정의 뒤 다시 읽어 결론 못 냄)
+# 아이콘을 고친 뒤 두 번 읽어 같음 (app.extract.ICON_SETTLED_LABEL): 알림만 — 보라 아님, 확인할 칸 아님
+ICON_SETTLED_LABEL = "아이콘 고침"
 LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3",
-                ICON_REVIEW_LABEL: "#D9C3F0"}
+                ICON_REVIEW_LABEL: "#D9C3F0", ICON_SETTLED_LABEL: "#E2EFDA"}
 
 
 STATE_LABEL = {"done": "끝남", "skipped": "건너뜀", "blocked": "할 수 없음", "failed": "실패",

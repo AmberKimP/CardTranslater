@@ -452,6 +452,15 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
             return None, "찾은 덩어리 크기가 아이콘 같지 않음"
         if by1 - by0 >= TALL_ICON * em and tall_box_problem(img, text, (bx0, by0, bx1, by1)):
             return None, "찾은 덩어리가 글자 두 줄 높이 (위아래 아이콘 두 개?)"
+        # 줄 띠가 아래·위 그림·줄과 붙어 커지면(em이 큼) 위 검사가 빠진다: 상자 안에 다른 글 줄의 글자가 들어 있으면
+        # 위아래 줄의 아이콘·글자까지 한 상자로 잡은 것이다 (공주와기사 3쪽 1줄 문양 셋 상자가 2줄 ‘マーカーを’까지,
+        # 5쪽 1줄 백합 문장 상자가 2줄 ‘加える’까지 감쌈)
+        if text_line:
+            out_x = [c for c in comps if not (bx0 <= c[0] + c[2] / 2 <= bx1) and em_line * 0.5 <= c[3] <= em_line * 1.3]
+            mids = sorted(c[1] + c[3] / 2 for c in out_x)
+            line_mid = mids[len(mids) // 2] if mids else (y0 + y1) / 2
+            if crosses_other_line(all_comps, (bx0, by0, bx1, by1), em_line, line_mid):
+                return None, "찾은 덩어리가 위아래 두 줄에 걸침 (위아래 아이콘·글자까지 한 상자로 잡힘)"
         return (int(bx0), int(by0), int(bx1), int(by1)), ""
 
     first = _try(_bands_from(all_comps, rules))
@@ -483,6 +492,19 @@ def text_em(img: np.ndarray, text: str) -> float:
     if not bands:
         return H / max(1, len(lines))
     return float(sorted(b[1] - b[0] for b in bands)[len(bands) // 2])
+
+
+def crosses_other_line(comps, box, em: float, line_mid: float) -> bool:
+    """아이콘 상자 안에 그 줄(가운데 높이 line_mid)이 아닌 다른 글 줄의 글자가 들어 있는가.
+    글자 = 높이 0.5~1.3 em이고 잉크가 찬 덩어리. 상자 안 글자의 높이가 그 줄에서 0.8 em 넘게 떨어져 있고, 같은 높이에
+    상자 밖으로도 글자가 이어지면(= 진짜 글 줄) 위아래 줄까지 감싼 상자다. 상자 옆에만 글자가 있는 큰 아이콘(글 두 줄
+    왼쪽·오른쪽)이나 아이콘 그림 속 작은 글씨(상자 밖으로 이어지지 않음)는 걸리지 않는다."""
+    x0, y0, x1, y1 = (float(v) for v in box)
+    glyphs = [(cx + cw / 2, cy + ch / 2) for cx, cy, cw, ch, a in comps
+              if em * 0.5 <= ch <= em * 1.3 and a >= 0.12 * cw * ch]
+    inside = [m for x, m in glyphs if x0 <= x <= x1 and y0 <= m <= y1 and abs(m - line_mid) > 0.8 * em]
+    outside = [m for x, m in glyphs if not (x0 <= x <= x1)]
+    return any(abs(o - m) <= 0.4 * em for m in inside for o in outside)
 
 
 def tall_box_problem(img: np.ndarray, text: str, box) -> str:
@@ -1390,6 +1412,7 @@ def scan(info, work: Path) -> ScanResult:
                     _cells.save_png(_cells.cut_out(img, box), png)
                     oc.png = str(png)
                     left.append(oc)
+                _drop_shared_named(left)
                 left.sort(key=lambda o: o.ti)  # 원문 순서 (읽는 순서)
                 res.occurrences.extend(left)
         finally:
@@ -1397,6 +1420,24 @@ def scan(info, work: Path) -> ScanResult:
     _group(res)
     _save_scan(work, res)
     return res
+
+
+def _drop_shared_named(cell: list[Occurrence]) -> None:
+    """한 칸에서 이름이 있는 아이콘([[이름]])의 자리가 다른 토큰의 자리와 같으면(거의 겹치면) 둘 다 ‘위치 못 찾음’으로.
+    인쇄된 아이콘은 서로 다른 자리에 있으므로 같은 상자는 적어도 하나가 잘못 찾은 것이다 ([[?]]끼리는 scan이
+    shared_boxes·세트로 이미 가린다). 이런 상자는 위아래 줄의 아이콘 둘을 한 상자로 감싼 경우가 많다
+    (공주와기사 6쪽: 1줄 사교 아이콘과 2줄 도시 아이콘이 crown_4·city 두 토큰에 같은 상자로 잡힘)."""
+    boxed = [o for o in cell if o.box and not o.set_of]
+    bad: set[str] = set()
+    for i, a in enumerate(boxed):
+        for b in boxed[i + 1:]:
+            if (a.named or b.named) and _place._iou(a.box, b.box) >= _place.SHARED_BOX_IOU:
+                bad.update((a.id, b.id))
+    for o in cell:
+        if o.id in bad:
+            o.box, o.png, o.number = [], "", {}
+            o.match, o.score, o.hint = "", 0.0, ""
+            o.reason = _place.SHARED_BOX_REASON
 
 
 def _group(res: ScanResult) -> None:

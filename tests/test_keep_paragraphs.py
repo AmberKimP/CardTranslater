@@ -48,7 +48,9 @@ def _kept_project(tmp_path, name):
 def test_icon_line_is_its_own_paragraph():
     """문장 끝 없이 이어진 아이콘 줄도 앞 글 줄과 한 문단이 되지 않는다 (글 줄은 번역한다)."""
     assert extract.keep_paragraph_lines(SRC) == [1]
-    assert extract.keep_paragraph_lines("効果を得る。\nコストを払い[[coin]]を\n得る。\n次へ進む") == [1, 2]
+    t = "効果を得る。\nコストを払い[[coin]]を\n得る。\n次へ進む"
+    assert extract.keep_paragraph_lines(t, [1, 3]) == [1, 2]  # ③에서 [====]로 나눈 문단
+    assert extract.keep_paragraph_lines(t) == [0, 1, 2, 3]  # 1.24 기본: 문장 끝으로는 나누지 않아 한 문단
     assert extract.keep_paragraph_lines("アイコンなし") == []
 
 

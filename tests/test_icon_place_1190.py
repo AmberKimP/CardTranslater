@@ -94,23 +94,23 @@ def test_dialog_save_as_set_keeps_window_open_and_shows_merged_icon(qapp, tmp_pa
     assert place.result() != QDialog.DialogCode.Accepted  # 합쳤으면 창을 닫지 않는다
     assert place.view.box == [int(v) for v in wide] and place.view.new is None  # 합친 자리를 새로 보여 줌
     cur = place.where[place.combo.currentIndex()]
-    assert cur["occ"] == host and cur["png"] and not place.crop.pixmap().isNull()
+    assert cur["occ"] == host and cur["png"]
 
 
-def test_dialog_split_adds_new_spot_to_list(qapp, tmp_path):
+def test_dialog_has_no_split_button_or_crop_preview(qapp, tmp_path):
+    """1.24: ‘아이콘 추가’가 생겨 ‘둘로 나누기’는 화면에서 뺐고(엔진 split_icon은 남음), 잘라 낸 그림 미리 보기도 없다."""
     from app.qt.icon_place import IconPlaceDialog
 
     info, fd = _project(tmp_path, "sp", pages=1)
     service.find_icons(info.dir, suggest=False)
     g, occ, (x0, y0, x1, y1) = _located(info)
+    from PySide6.QtWidgets import QPushButton
+
     place = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    assert not place.split_btn.isEnabled()  # 감싸기 전에는 못 누름
-    place.view.new = [x0, y0, (x0 + x1) // 2, y1]
-    place._drawn()
-    assert place.split_btn.isEnabled()
-    n = place.combo.count()
-    place._split()
-    assert place.combo.count() == n + 1 and _source(fd, 1) == "AB[[?]][[?]]CD"
+    assert not hasattr(place, "split_btn") and not hasattr(place, "crop")
+    texts = {b.text() for b in place.findChildren(QPushButton)}
+    assert "둘로 나누기" not in texts and place.KEEP_TEXT == "이 칸 전체 원본 그대로(글자 없음)"
+    place.close()
 
 
 def test_split_shifts_icon_number_positions_and_skips_guesses(tmp_path):

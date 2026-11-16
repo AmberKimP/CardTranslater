@@ -175,8 +175,23 @@ def grey_note(text: str) -> QLabel:
     return lb
 
 
+def allow_maximize(w) -> None:
+    """대화상자 제목줄에 최대화 버튼을 붙인다 (Windows 대화상자는 기본으로 없다). 창을 띄우기 전에 부른다.
+    최소화 버튼은 붙이지 않는다: 모달 창을 최소화하면 막힌 부모 창만 남는다."""
+    if not w.isWindow():
+        return
+    flags = w.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint
+    if flags != w.windowFlags():
+        visible = w.isVisible()
+        w.setWindowFlags(flags)
+        if visible:  # 이미 떠 있던 창은 flags를 바꾸면 숨겨진다
+            w.show()
+
+
 def fit_to_screen(w, width: int, height: int, margin: float = 0.92, maximize_below: int = 800) -> None:
-    """원하는 크기로 열되 화면(작업 표시줄 제외)보다 크지 않게 줄인다. 화면 높이가 낮으면 최대화로 연다."""
+    """원하는 크기로 열되 화면(작업 표시줄 제외)보다 크지 않게 줄인다. 화면 높이가 낮으면 최대화로 연다.
+    창 제목줄에 최대화 버튼을 붙인다 (대화상자도 전체 화면으로 키울 수 있게)."""
+    allow_maximize(w)
     scr = None
     try:
         scr = (w.parentWidget() or w).screen()
@@ -448,6 +463,7 @@ class AddFilesDialog(QDialog):
         self._tmp = None
         self.finished.connect(lambda _r: self._cleanup())
         self.setWindowTitle("파일 넣기")
+        allow_maximize(self)
         self.groups = service.list_groups(self.project_dir)
         self.files = QListWidget()
         self.files.setTextElideMode(Qt.TextElideMode.ElideMiddle)  # 긴 경로는 가운데를 줄여 파일 이름이 보이게

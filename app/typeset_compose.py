@@ -213,6 +213,10 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
         # ---- 이름·본문
         text = entry.get("ko")
+        # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역만, 번역문 줄 번호. extract.with_paragraph_breaks가 붙임)
+        para_breaks = entry.get("paragraph_breaks") if style_d.get("font_mode") == "sentence" else None
+        if not isinstance(para_breaks, list):
+            para_breaks = None
         sent = (sentence_fonts or {}).get(name)
         if sent and text and style_d.get("font_mode") == "sentence":
             ok = {}
@@ -223,7 +227,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
                     rec["warnings"].append(f"고른 글꼴 파일이 없어 영역 글꼴로 넣음 ({int(k) + 1}번째 문장): {f}")
                     rec["font_missing"] = f
             if ok:
-                text, tag_fonts = wrap_sentence_fonts(text, ok)
+                text, tag_fonts = wrap_sentence_fonts(text, ok, para_breaks)
                 style_d = {**style_d, "tag_fonts": {**(style_d.get("tag_fonts") or {}), **tag_fonts}}
                 rec["sentence_fonts"] = {str(k): v for k, v in sorted(ok.items())}
         layout = reg.get("text_layout") or {}
@@ -249,7 +253,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
             # 먼저 그리지 않고 해 본다: 원문 줄 자리에 다 들어가면 그대로 그리고, 넘치면 영역 전체에 줄여 넣는다
             # (넘친 글자를 버리면 카드에서 내용이 사라진다)
             dry = compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"), draw=False,
-                                        src_page=src_page)
+                                        src_page=src_page, para_breaks=para_breaks)
             fb = None
             # (아이콘 문단만 원본 그대로인 칸은 영역 전체에 줄여 넣지 않는다: 남긴 문단 위에 겹친다)
             if (dry is not None and dry.get("overflow_text") and int(style_d.get("rotate", 0)) % 360 == 0
@@ -261,7 +265,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
                 out[name] = rec
                 continue
             r_ = (compose_layout_region(page, rect, text, style_d, layout, base_dir, entry.get("source"),
-                                        src_page=src_page)
+                                        src_page=src_page, para_breaks=para_breaks)
                   if dry is not None else None)
             if r_ is not None:
                 rec["warnings"] += r_.pop("warnings")
@@ -895,8 +899,11 @@ def _gray(page: pymupdf.Page, clip) -> np.ndarray:
     return np.frombuffer(pm.samples, np.uint8).reshape(pm.height, pm.width).astype(np.float32)
 
 
-def sentence_blocks(src: list[dict], kos: list[str], all_lines: list[dict] | None = None) -> dict[int, dict]:
+def sentence_blocks(src: list[dict], kos: list[str], all_lines: list[dict] | None = None,
+                    starts: set | None = None) -> dict[int, dict]:
     """줄을 문장으로 묶는다 (번역 줄이 ‘다’·마침표·닫는 괄호로 끝나면 문장 끝, 아이콘만 남긴 줄도 끝).
+    starts: 사람이 ③에서 정한 문단 나눔이 있는 칸 — 새 묶음이 시작하는 줄(id(줄)). 주면 문장 끝으로 나누지 않고 그 줄에서만
+    나눈다 (서식이 다른 줄·아이콘만 남긴 줄에서는 그대로 나눈다).
     두 줄 이상인 문장마다 {"x0", "x1", "align"}: 왼쪽 시작점(왼쪽 정렬이면 줄 시작점의 가운데 값, 아니면 가장 왼쪽)·
     가장 오른쪽, 그리고 원문 줄들이 맞춰진 쪽 (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것. 줄에 지우기가 본
     정렬(align)이 있으면 left와 그 정렬들 가운데서만). 줄의 "_src"(원문 줄)가 있으면 여는 괄호로 시작하는 줄은
@@ -964,8 +971,10 @@ def sentence_blocks(src: list[dict], kos: list[str], all_lines: list[dict] | Non
         if cur and (ln.get("_g") != cur[-1].get("_g")
                     or abs(ln["glyph_h_pt"] - cur[-1]["glyph_h_pt"]) > 0.25 * max(ln["glyph_h_pt"], cur[-1]["glyph_h_pt"])):
             close()  # 서식(색·글자 크기)이 다른 줄은 다른 문장 (카드 번호·제목 등)
+        if starts is not None and id(ln) in starts:
+            close()  # 사람이 정한 문단 시작
         cur.append(ln)
-        if _SENTENCE_END.search(re.sub(r"<[^>]+>", "", ko)):
+        if starts is None and _SENTENCE_END.search(re.sub(r"<[^>]+>", "", ko)):
             close()
     close()
     return out
@@ -1034,7 +1043,7 @@ def fit_whole_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout:
 
 def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, layout: dict,
                           base_dir: Path = ROOT, source_text: str | None = None, draw: bool = True,
-                          src_page: pymupdf.Page | None = None) -> dict:
+                          src_page: pymupdf.Page | None = None, para_breaks: list[int] | None = None) -> dict:
     """원문 줄 모양(지우기 때 잰 text_layout)대로 한글을 넣는다.
 
     - 원문 줄 자리마다 번역 한 줄: 같은 높이·색·테두리·굵기·정렬 (줄 수가 같을 때)
@@ -1043,6 +1052,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     - 왼쪽 정렬 글이 원문보다 짧으면 글 덩어리를 원문 글 칸 가운데 쪽으로 옮긴다 (block_center_shift,
       영역 서식 "block_center": false면 안 옮김)
     src_page: 원본 쪽. 주면 줄 앞 아이콘이 지워지지 않고 남았는지 지운 쪽과 견줘 본다 (남았으면 다시 그리지 않음).
+    para_breaks: ③에서 정한 문단 나눔 (번역문의 빈 줄 뺀 줄 번호). 주면 줄 정렬 묶음(sentence_blocks)을 그 문단으로 나눈다.
     """
     rect = pymupdf.Rect(rect)
     # 잡음 줄(테두리 조각 등 아주 낮은 줄)은 빼고, 남는 줄이 없으면 None (영역 전체 배치로)
@@ -1092,11 +1102,17 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     else:
         text = close_tags_per_line(text or "")  # 줄바꿈을 걸친 <b>…</b>: 줄마다 닫고 다시 열어 짝을 맞춘다
     ko_lines = [t.strip() for t in (text or "").split("\n") if t.strip()]
+    # 문단이 시작하는 번역 줄 (ko_lines 번호): 사람이 정한 문단 나눔이 있을 때만
+    para_starts: set[int] | None = None if para_breaks is None else {int(i) for i in para_breaks}
     # 아이콘만 있는 줄(큰 칼 두 개 등)은 원본 그대로 남겼다: 글 줄 수가 남은 줄 자리와 맞으면 그 줄들은 빼고 넣는다
     ko_text = [t for t in ko_lines if not is_icon_line(strip_tags(t))]
     icon_lines_out = False  # 아이콘 줄을 뺐으면 그 앞뒤 줄은 이어진 문장이 아니다 (두 줄 합치기 안 함)
     if len(ko_text) < len(ko_lines) and len(ko_text) == sum(1 for ln in lines_all if not ln.get("keep")):
         icon_lines_out = True
+        if para_starts is not None:  # 뺀 아이콘 줄에서 시작하던 문단은 다음 글 줄에서
+            kept_idx = [i for i, t in enumerate(ko_lines) if not is_icon_line(strip_tags(t))]
+            para_starts = {j for j, i in enumerate(kept_idx)
+                           if i in para_starts or (j and any(p in para_starts for p in range(kept_idx[j - 1] + 1, i)))}
         ko_lines = ko_text
         lines_all = [ln for ln in lines_all if not ln.get("keep")]
         if not lines_all:
@@ -1218,6 +1234,13 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             return None
         return join_lines_at(kos, ok), r, st, top
 
+    # 묶음마다 번역 줄이 ko_lines의 몇 번째부터인가 (나눈 줄 수가 모두 맞을 때만: 문단 나눔을 줄에 맞춘다)
+    part_off: dict[int, int] = {}
+    if para_starts is not None and sum(len(p) for p in parts) == len(ko_lines):
+        acc = 0
+        for p in parts:
+            part_off[id(p)] = acc
+            acc += len(p)
     joined_note: list[str] = []
     seg_note: list[str] = []
     auto_mode = not (style_d.get("align") or "")
@@ -1233,7 +1256,11 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             joined_note.append(f"{len(kos)}줄 → {len(new_kos)}줄")
             continue
         if len(kos) == len(src):
-            block_of = sentence_blocks(src, kos, lines_all)
+            starts = None
+            if para_starts is not None and id(kos) in part_off:  # 사람이 정한 문단 나눔: 그 줄에서 새 묶음
+                off = part_off[id(kos)]
+                starts = {id(ln) for j, ln in enumerate(src) if off + j in para_starts}
+            block_of = sentence_blocks(src, kos, lines_all, starts)
             for ln, ko in zip(src, kos):
                 if ln.get("keep"):  # 아이콘·숫자만 있는 줄: 원문 그대로 남겼다 (지우지도 그리지도 않음)
                     continue
@@ -1459,6 +1486,15 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         return source_of(project, _ext["x"], pno, rname)[0]
 
     cards, edit_notes = card_edits.apply(project.root, cards, _src)
+    # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역): 칸의 번역문 줄 번호로 붙인다 (없으면 기본 규칙)
+    from app.extract import with_paragraph_breaks
+
+    try:
+        if "x" not in _ext:
+            _ext["x"] = load_extracted(project.root)
+        cards = with_paragraph_breaks(cards, _ext["x"])
+    except Exception:  # noqa: BLE001 - 추출 결과를 못 읽으면 기본 규칙
+        pass
 
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)

@@ -15,6 +15,7 @@ from app import service
 from app.qt.step_common import KEEP_LABEL, KEEP_UNDO_LABEL
 from app.qt import bg_erase, worker
 from app.qt.dialogs import (
+    allow_maximize,
     ask_choice, card, erase_modes, file_label, fit_to_screen, grey_note, hint_bar, make_primary, page_title, section_title, set_hint, set_ok_text,
     show_error, show_failure, show_problem, subtitle,
 )
@@ -528,7 +529,8 @@ class ResultViewer(QDialog):
         while self.para_form.rowCount():
             self.para_form.removeRow(0)
         self._para_combos = []
-        paras = service.split_paragraphs(self.edit_text.toPlainText())
+        # ③에서 정한 문단 나눔이 있으면 그것으로 (한글 넣기와 같게)
+        paras = service.split_paragraphs(self.edit_text.toPlainText(), self.file_dir(), e["page"], e["region"])
         fonts = list(self._font_list())
         fonts += [(f, service.font_label(f)) for f in set(self._para_picks.values())
                   if f and all(f != x for x, _l in fonts)]
@@ -1272,6 +1274,7 @@ class TestHistoryDialog(QDialog):
 
         super().__init__(parent)
         self.setWindowTitle("시험 기록")
+        allow_maximize(self)
         self.setMinimumSize(760, 360)
         self.group_dir = Path(group_dir)
         self.on_rerun = on_rerun

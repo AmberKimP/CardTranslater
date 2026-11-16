@@ -163,11 +163,77 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
             "paragraph_mode": mode, "paragraph_fonts": {int(i): f for i, f in paras.items() if f}}
 
 
-def split_paragraphs(text: str) -> list[str]:
-    """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙)."""
+def split_paragraphs(text: str, file_dir: Path | str | None = None, page: int | None = None,
+                     region: str | None = None) -> list[str]:
+    """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙). 칸(file_dir·page·region)을 주면
+    ③에서 정한 문단 나눔(paragraph_breaks)을 이 글의 줄에 맞춰 쓴다 (맞출 수 없으면 기본 규칙)."""
     from app.typeset_layout import paragraphs
 
-    return paragraphs(text or "")
+    breaks = None
+    if file_dir is not None and page is not None and region:
+        from app.extract import breaks_for_text, load_extracted
+
+        try:
+            breaks = breaks_for_text((load_extracted(Path(file_dir)).get(int(page)) or {}).get(region), text or "")
+        except Exception:  # noqa: BLE001 - 못 읽으면 기본 규칙
+            breaks = None
+    return paragraphs(text or "", breaks)
+
+
+# ---------------------------------------------------------------- ③ 원문 확인: 문단 나눔 [====] (1.24 B4)
+# ‘문단마다 다른 글꼴’ 영역의 문단은 사람이 정한다: 원문 편집 칸에 문단이 시작하는 줄 앞마다 [====] 줄을 보이고,
+# 저장하면 그 자리를 칸의 paragraph_breaks(extract.PARAGRAPH_BREAKS: 빈 줄 뺀 줄 번호)로 적는다. 원문 글은 바꾸지 않는다
+# (빈 줄을 넣지 않음). 나눔을 정한 적이 없는 칸은 기본 규칙(빈 줄·머리 줄·‘——이름’, 문장 끝으로는 나누지 않음)으로 보인다.
+PARAGRAPH_MARK = "[====]"
+
+
+def paragraph_starts(text: str | None, breaks: list[int] | None = None) -> list[int]:
+    """글에서 문단이 시작하는 줄 번호 (빈 줄 뺀 번호, 0 빼고). breaks가 있으면 그것, 없으면 기본 규칙.
+    줄 가운데에서 나뉘는 ‘——이름’은 줄 번호로 적을 수 없어 넣지 않는다."""
+    from app.typeset_layout import paragraph_spans
+
+    text = text or ""
+    starts, pos = [], 0  # 빈 줄 아닌 줄의 시작 위치 (앞 공백 뺌)
+    for ln in text.split("\n"):
+        if ln.strip():
+            starts.append(pos + len(ln) - len(ln.lstrip()))
+        pos += len(ln) + 1
+    pos_of = {s: k for k, s in enumerate(starts)}
+    return sorted({pos_of[a] for a, _b in paragraph_spans(text, breaks)[1:] if a in pos_of and pos_of[a] > 0})
+
+
+def mark_paragraphs(text: str | None, breaks: list[int] | None = None) -> str:
+    """원문 편집 칸에 보일 글: 문단이 시작하는 줄 앞에 [====] 줄을 넣는다 (빈 줄은 그대로).
+    breaks: 칸에 저장된 나눔 (이 글의 줄 번호, 없으면 기본 규칙)."""
+    if not text:
+        return text or ""
+    want = set(paragraph_starts(text, breaks))
+    out, k = [], 0
+    for ln in text.split("\n"):
+        if ln.strip():
+            if k in want:
+                out.append(PARAGRAPH_MARK)
+            k += 1
+        out.append(ln)
+    return "\n".join(out)
+
+
+def unmark_paragraphs(text: str) -> tuple[str, list[int]]:
+    """편집 칸 글(mark_paragraphs 형식)을 (저장할 원문, 문단 나눔)으로. [====] 줄만 빼고 원문은 그대로 (빈 줄도 그대로).
+    문단 나눔 = [====] 다음 첫 글 줄의 번호 (빈 줄 뺀 번호, 첫 줄 앞의 [====]는 뜻이 없어 버린다)."""
+    lines, breaks, pending = [], set(), False
+    k = 0
+    for ln in (text or "").split("\n"):
+        if ln.strip() == PARAGRAPH_MARK:
+            pending = True
+            continue
+        lines.append(ln)
+        if ln.strip():
+            if pending and k > 0:
+                breaks.add(k)
+            pending = False
+            k += 1
+    return "\n".join(lines), sorted(breaks)
 
 
 _TRANSLATION_CARDS: dict = {}

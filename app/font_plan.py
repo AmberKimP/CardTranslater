@@ -131,6 +131,17 @@ def _ko_text(entry) -> str | None:
     return ko if isinstance(ko, str) else None
 
 
+def _ko_breaks(entry) -> list[int] | None:
+    """칸 번역문의 문단 나눔 (③에서 정한 [====], extract.with_paragraph_breaks가 붙임). 없으면 None (기본 규칙)."""
+    b = entry.get("paragraph_breaks") if isinstance(entry, dict) else None
+    return b if isinstance(b, list) else None
+
+
+def _src_breaks(entry) -> list[int] | None:
+    b = entry.get("source_paragraph_breaks") if isinstance(entry, dict) else None
+    return b if isinstance(b, list) else None
+
+
 def sentences_for_page(data: dict, page: int, card: dict | None = None) -> dict:
     """그 쪽의 {영역: {문장 번호(int): 글꼴 파일}}. card(그 쪽 번역)를 주면 문장 자리별 글꼴(sentence_slots)을
     그 카드의 문장 수에 맞게 펼치고, 카드·문장마다 고른 것을 그 위에 덮는다."""
@@ -143,7 +154,7 @@ def sentences_for_page(data: dict, page: int, card: dict | None = None) -> dict:
             text = _ko_text(card.get(name))
             if not text:
                 continue
-            m = slot_fonts(sl, len(split_sentences(text)))
+            m = slot_fonts(sl, len(split_sentences(text, _ko_breaks(card.get(name)))))
             m.update(out.get(name) or {})
             if m:
                 out[name] = m
@@ -310,8 +321,9 @@ def _raw_cards(file_dir: Path) -> dict:
     fd = Path(file_dir)
     xlsx = service.review_xlsx_for(fd)
     fj = fd / "file.json"
+    ext_mt = max([p.stat().st_mtime for p in (fd / "extract").glob("**/page-*.json")] + [0.0])  # 문단 나눔이 바뀜
     stamp = (str(fd), _signature(fd), str(xlsx), xlsx.stat().st_mtime if xlsx and xlsx.exists() else 0,
-             fj.stat().st_mtime if fj.exists() else 0)
+             fj.stat().st_mtime if fj.exists() else 0, ext_mt)
     if _raw_cache.get("key") == stamp:
         return _raw_cache["cards"]
     cards = {}
@@ -332,6 +344,12 @@ def _raw_cards(file_dir: Path) -> dict:
     from app import card_edits
 
     cards, _notes = card_edits.apply(fd, cards)  # 결과 보기에서 고친 번역
+    try:  # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역)
+        from app.extract import load_extracted, with_paragraph_breaks
+
+        cards = with_paragraph_breaks(cards, load_extracted(fd))
+    except Exception:  # noqa: BLE001 - 못 읽으면 기본 규칙
+        log.debug("문단 나눔 읽기 실패", exc_info=True)
     _raw_cache.update(key=stamp, cards=cards)
     return cards
 
@@ -370,10 +388,10 @@ def _visible_len(s: str) -> int:
     return len(re.sub(r"\[\[[^\]]*\]\]", "□", re.sub(r"</?[a-z0-9]+>", "", s or "")))
 
 
-def paragraph_rects(source: str, lines: list[dict]) -> list[list[float]] | None:
+def paragraph_rects(source: str, lines: list[dict], breaks: list[int] | None = None) -> list[list[float]] | None:
     """원문(source)의 문단마다 원본 쪽 위 사각형 [x0, y0, x1, y1] (pt). 원문 줄과 지우기가 찾은 줄(lines)의 수가
     같을 때만 (아니면 None). 한 줄을 다른 문단과 나눠 쓰는 문단은 글자 수 비율로 그 줄의 가로 구간을 어림하고,
-    그 조각이 MIN_PART_CHARS보다 짧으면 줄 전체를 쓴다."""
+    그 조각이 MIN_PART_CHARS보다 짧으면 줄 전체를 쓴다. breaks: ③에서 정한 문단 나눔 (paragraph_spans)."""
     from app.typeset_layout import paragraph_spans
 
     source = source or ""
@@ -385,7 +403,7 @@ def paragraph_rects(source: str, lines: list[dict]) -> list[list[float]] | None:
     if not rows or len(rows) != len(lines):
         return None
     out = []
-    for a, b in paragraph_spans(source):
+    for a, b in paragraph_spans(source, breaks):
         parts = []
         for (la, lb), ln in zip(rows, lines):
             oa, ob = max(a, la), min(b, lb)
@@ -451,7 +469,10 @@ def _paragraph_samples(metas: list[dict], name: str, cards: dict, src, cl, cance
     def ko_of(page):
         return _ko_text((cards.get(page) or {}).get(name)) or ""
 
-    r = max((len(paragraphs(ko_of(m["_page"]))) for m in metas), default=0)
+    def ko_paras(page):
+        return paragraphs(ko_of(page), _ko_breaks((cards.get(page) or {}).get(name)))
+
+    r = max((len(ko_paras(m["_page"])) for m in metas), default=0)
     if r < 2:
         return None
     feats: dict[int, list] = {k: [] for k in range(r)}
@@ -470,14 +491,14 @@ def _paragraph_samples(metas: list[dict], name: str, cards: dict, src, cl, cance
         lines = tl.get("lines") or []
         if tl.get("keep_paragraphs"):  # 아이콘 문단만 원본 그대로: 번역 원문(source)에는 남긴 줄이 없다
             lines = [ln for ln in lines if not ln.get("keep_para")]
-        rects = paragraph_rects(source, lines)
+        rects = paragraph_rects(source, lines, _src_breaks(entry))
         if not rects:
             continue
         if cancel is not None:
             cancel.check()
         used += 1
         n = len(rects)
-        kos = paragraphs(ko_of(m["_page"]))
+        kos = ko_paras(m["_page"])
         for i, rect in enumerate(rects):
             k = slot_of(i, n, r)
             if len(feats[k]) >= SAMPLE_PAGES:
@@ -806,8 +827,9 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                     "selected": ((data.get("cards") or {}).get(str(pg)) or {}).get(name), "sentences": []}
             if mode == "sentence":
                 chosen = sentences_for_page(data, pg).get(name, {})
+                br = _ko_breaks((_raw_cards(fd).get(pg) or {}).get(name))  # ③에서 정한 문단 나눔
                 card["sentences"] = [{"idx": i, "text": t, "selected": chosen.get(i)}
-                                     for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, "")))]
+                                     for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, ""), br))]
             cards.append(card)
         # 기준 카드: 문장이 가장 많은 카드 (같으면 앞 카드). 그 카드의 모든 문장 자리를 정할 수 있게
         ref = max((c for c in cards if c["sentences"]), key=lambda c: len(c["sentences"]), default=None)
@@ -984,7 +1006,16 @@ def preview_render(file_dir: Path | str, page: int, region: str, font_file: str 
         # 문장 자리별 글꼴(slots)은 이 카드의 문장 수에 맞게 펼치고, 고른 문장(sentence)은 그 위에
         from app.typeset_layout import paragraphs as split_sentences
 
-        smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or ""))) if slots else {}
+        if text is not None and _ko_breaks(entry) is not None:
+            # 고치는 중인 번역: 붙어 있던 나눔은 예전 번역 기준 — 이 글에 맞춰 다시
+            from app.extract import breaks_for_text, load_extracted
+
+            cell = (load_extracted(fd).get(int(page)) or {}).get(region)
+            b = breaks_for_text(cell, text)
+            entry = {k: v for k, v in entry.items() if k != "paragraph_breaks"}
+            if b is not None:
+                entry["paragraph_breaks"] = b
+        smap = slot_fonts(slots, len(split_sentences(_ko_text(entry) or "", _ko_breaks(entry)))) if slots else {}
         smap.update({int(k): v for k, v in (para_fonts or {}).items() if v})  # 이 카드에서 문단마다 고른 것
         if sentence is not None:
             if font_file:

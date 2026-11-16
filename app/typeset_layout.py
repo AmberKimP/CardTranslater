@@ -180,7 +180,8 @@ def sentences(text: str) -> list[str]:
     return [re.sub(r"\s+", " ", strip_tags(text[a:b])).strip() for a, b in sentence_spans(text or "")]
 
 
-PARA_END = set(".!?。！？…」』”’)）\"'")  # 줄이 이것으로 끝나면 그 줄에서 문단이 끝난다
+# (예전) 줄이 이것으로 끝나면 문단이 끝났다. 1.24부터 문단 나누기에는 쓰지 않는다 (문단은 [====]·빈 줄·머리 줄·‘——’로만)
+PARA_END = set(".!?。！？…」』”’)）\"'")
 DASH_START_RE = re.compile(r"(?:(?<=\s)|^)[—―–]{1,2}")  # ‘——탐험가’ 같은 말한 사람 (새 문단)
 HEADING_RE = re.compile(r"[:：]")
 
@@ -190,11 +191,35 @@ def _visible(s: str) -> str:
     return strip_tags(ICON_RE.sub("■", s)).strip()
 
 
-def paragraph_spans(text: str) -> list[tuple[int, int]]:
-    """번역문(태그·아이콘 포함)을 문단으로 나눈 (시작, 끝) 위치 (끝은 포함하지 않음).
-    카드 글의 줄바꿈은 대개 원문 줄 폭 때문이라, 줄이 문장 끝(. ! ? 。 」 등)으로 끝나거나 짧은 머리 줄(‘공포: 1’)일 때,
-    빈 줄이 있을 때, 그리고 ‘——이름’(말한 사람) 앞에서만 문단을 나눈다. 문장 중간에서 바뀐 줄은 같은 문단."""
+def nonblank_count(text) -> int:
+    """글의 빈 줄이 아닌 줄 수 (문단 나눔 paragraph_breaks의 줄 번호는 이 줄들의 번호)."""
+    if isinstance(text, list):
+        text = "\n".join(text)
+    return sum(1 for ln in (text or "").split("\n") if ln.strip())
+
+
+def paragraph_spans(text: str, breaks: list[int] | None = None) -> list[tuple[int, int]]:
+    """‘문단마다 다른 글꼴’ 영역의 글(원문·번역문, 태그·아이콘 포함)을 문단으로 나눈 (시작, 끝) 위치 (끝은 포함하지 않음).
+
+    breaks: 사람이 ③ 원문 확인에서 [====]로 정한 문단 나눔 (칸의 paragraph_breaks, extract.breaks_for_text로 이 글의
+    번호에 맞춘 것) — 새 문단이 시작하는 줄 번호 (빈 줄을 뺀 줄 번호, 0부터; 0은 늘 시작이라 적지 않음). 주면 그 줄에서만
+    나눈다 (빈 줄·머리 줄·‘——’로도 나누지 않음, 빈 목록이면 한 문단). 이 글 줄 수에 맞지 않는 번호는 버린다.
+    breaks가 없으면(None) 기본 규칙: 빈 줄, 짧은 머리 줄(‘공포: 1’), ‘——이름’(말한 사람) 앞에서만 나눈다.
+    문장 끝(。 . ! ? 」 등)만으로는 나누지 않는다 (1.24: 사용자 결정 — 문단은 사람이 [====]로 정의, 문장은 나누지 않음).
+    문장 중간에서 바뀐 줄은 같은 문단."""
     text = text or ""
+    if breaks is not None:
+        rows, pos = [], 0
+        for line in text.split("\n"):
+            if line.strip():
+                lead = len(line) - len(line.lstrip())
+                rows.append((pos + lead, pos + len(line.rstrip())))
+            pos += len(line) + 1
+        if not rows:
+            return []
+        cut = sorted({int(i) for i in breaks if isinstance(i, int) and 0 < int(i) < len(rows)})
+        bounds = [0] + cut + [len(rows)]
+        return [(rows[s][0], rows[e - 1][1]) for s, e in zip(bounds, bounds[1:])]
     pieces: list[tuple[int, int]] = []  # 줄(또는 줄 안 ‘——’ 앞뒤 조각)
     pos = 0
     blank_before: set[int] = set()
@@ -220,7 +245,6 @@ def paragraph_spans(text: str) -> list[tuple[int, int]]:
         prev_vis = _visible(text[pieces[k - 1][0]:pieces[k - 1][1]])
         cur_vis = _visible(text[pieces[k][0]:pieces[k][1]])
         new = (k in blank_before
-               or (prev_vis and prev_vis[-1] in PARA_END)
                or (len(prev_vis) <= 12 and bool(HEADING_RE.search(prev_vis)))
                or bool(DASH_START_RE.match(cur_vis)) or bool(DASH_START_RE.match(prev_vis)))
         if new:
@@ -230,19 +254,19 @@ def paragraph_spans(text: str) -> list[tuple[int, int]]:
     return [(a, b) for a, b in paras]
 
 
-def paragraphs(text: str) -> list[str]:
-    """문단마다 태그를 뺀 글 (화면 표시용)."""
-    return [re.sub(r"\s+", " ", strip_tags(text[a:b])).strip() for a, b in paragraph_spans(text or "")]
+def paragraphs(text: str, breaks: list[int] | None = None) -> list[str]:
+    """문단마다 태그를 뺀 글 (화면 표시용). breaks: paragraph_spans."""
+    return [re.sub(r"\s+", " ", strip_tags(text[a:b])).strip() for a, b in paragraph_spans(text or "", breaks)]
 
 
-def wrap_sentence_fonts(text: str, fonts: dict) -> tuple[str, dict]:
+def wrap_sentence_fonts(text: str, fonts: dict, breaks: list[int] | None = None) -> tuple[str, dict]:
     """문단마다 고른 글꼴을 내부 태그 <fN>…</fN>로 감싼다. fonts: {문단 번호(0부터): 글꼴 파일}.
-    (이름은 예전 ‘문장마다’ 그대로. 나누는 단위는 문단: paragraph_spans)
+    (이름은 예전 ‘문장마다’ 그대로. 나누는 단위는 문단: paragraph_spans, breaks = 사람이 정한 문단 나눔)
     줄바꿈에서는 태그를 닫았다 다시 연다 (줄마다 따로 배치하는 그림 카드에서도 짝이 맞게).
     돌려줌: (태그를 붙인 글, {"f1": 글꼴 파일, ...})."""
     keys: dict[str, str] = {}
     out, pos = [], 0
-    for idx, (a, b) in enumerate(paragraph_spans(text or "")):
+    for idx, (a, b) in enumerate(paragraph_spans(text or "", breaks)):
         f = fonts.get(idx) if idx in fonts else fonts.get(str(idx))
         if not f:
             continue

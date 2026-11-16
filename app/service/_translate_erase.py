@@ -343,8 +343,14 @@ def set_keep_paragraphs(file_dir: Path | str, page: int, region: str, lines: lis
         r[KEEP_PARAGRAPHS] = {"lines": keep, "n": len(rows),
                               "rows": [keep_row_print(rows[i]) if 0 <= i < len(rows) else "" for i in keep],
                               **({"boxes_pt": [list(b) for b in boxes_pt]} if boxes_pt else {})}
-        r.pop("icon_changed", None)  # 원본 그대로 둘 아이콘 자리: ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다
-        r.pop("icon_reread", None)
+        # 아이콘이 든 줄을 모두 남기면 ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다. 아이콘 줄이 남은 문장(번역하는 쪽)에도
+        # 있으면 그 문장은 아이콘 자리가 바뀐 채 번역되므로 표시를 두어 다시 읽게 한다
+        from app.icons import TOKEN_RE
+
+        icon_rows = {i for i, t in enumerate(rows) if TOKEN_RE.search(t)}
+        if icon_rows <= set(keep):
+            r.pop("icon_changed", None)
+            r.pop("icon_reread", None)
         workspace._write(f, rec)
     _review._clear_review_caches()
 
@@ -401,6 +407,35 @@ def files_needing_erase(project_dir: Path | str, files: list | None = None) -> l
             continue  # 영역이 아직 없는 그룹
         done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
         if not done or stale_erased_pages(fd):
+            out.append(fd)
+    return out
+
+
+def stale_erase_files(file_dirs, cells: list[dict] | None = None) -> list[Path]:
+    """이미 ⑦ 글자 지우기를 한(cleared/cleared.pdf가 있는) 파일 중 그 뒤 원문·설정이 바뀌어 다시 지울 쪽이 있는 파일.
+    ② 아이콘 정의에서 바뀐 칸을 ③ 원문 확인에서 다시 읽은 뒤 묻지 않고 다시 지울 때 (아직 안 지운 파일은 넣지 않는다).
+    cells([{"file_dir", "page", "region"}], ② 뒤 바뀐 칸)를 주면 그 칸이 모두 확인된 파일만: 두 번 읽어 같았거나 사람이
+    저장해 icon_changed가 풀린 칸. 다시 읽기를 취소·실패해 아직 ‘확인 필요’인 칸이 있는 파일은 확인 전 원문으로 무거운
+    지우기를 하지 않는다 (확인한 뒤 ⑦ 글자 지우기나 뒤에서 지우기가 한다)."""
+    from app.extract import load_extracted
+
+    unsure: set[str] = set()
+    by_file: dict[str, list[dict]] = {}
+    for c in cells or []:
+        by_file.setdefault(str(Path(c["file_dir"])), []).append(c)
+    for key, cs in by_file.items():
+        try:
+            ext = load_extracted(Path(key))
+        except Exception:  # noqa: BLE001 - 못 읽으면 확인 안 된 것으로
+            unsure.add(key)
+            continue
+        if any(((ext.get(int(c["page"])) or {}).get(c["region"]) or {}).get("icon_changed") for c in cs):
+            unsure.add(key)
+    out = []
+    for fd in map(Path, file_dirs or []):
+        if str(fd) in unsure:
+            continue
+        if (fd / "cleared" / "cleared.pdf").exists() and stale_erased_pages(fd):
             out.append(fd)
     return out
 

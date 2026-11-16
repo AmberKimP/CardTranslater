@@ -66,7 +66,7 @@ from app.service._glossary import (  # noqa: F401
 from app.service._translate_erase import (  # noqa: F401
     TRANSLATE_MODELS, translate_project, game_dir, review_xlsx_for, export_project_excel, _retire_legacy,
     cards_from_translation, ProjectStepResult, erase_project, erase_sig, KEEP_ORIGINAL, erase_sources,
-    icon_only_regions, set_keep_original, set_keep_paragraphs, erase_keep_lines, stale_erased_pages, files_needing_erase, _cleared_pages, set_card_limit,
+    icon_only_regions, set_keep_original, set_keep_paragraphs, erase_keep_lines, stale_erased_pages, files_needing_erase, stale_erase_files, _cleared_pages, set_card_limit,
     compose_project, image_sheet_layouts, sheet_family, _attach_sheet_images, EDITED_DIR, EDITED_PDF,
     EditedImportResult, can_import_edited, edited_sheet_images, import_edited_pdf, _compose_with_cards,
 )
@@ -92,11 +92,11 @@ from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
     icon_review, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
     suggest_icon_name, icon_dictionary,
-    update_icon_dictionary, confirm_icons,
+    update_icon_dictionary, confirm_icons, keep_sentence_original, sentence_kept, region_keep_mode,
 )
 from app.service._review import (  # noqa: F401
     result_pages, card_erase_info, set_card_erase_mode, card_text_offset, card_text_offsets, set_card_text_offset,
-    card_edit_info, split_paragraphs, _TRANSLATION_CARDS,
+    card_edit_info, split_paragraphs, PARAGRAPH_MARK, paragraph_starts, mark_paragraphs, unmark_paragraphs, _TRANSLATION_CARDS,
     _NOT_FOR_CARDS, _file_json_sig, _regions_sig, _translation_cards, _translation_cards_read, save_card_edit,
     card_preview, REVIEW_STATUS, _review_check, _review_file_rows, _review_counts, _excel_info, review_rows,
     _review_row, check_review_text, save_review, set_review_checked, resolve_review_conflict, _REVIEW_PROGRESS,

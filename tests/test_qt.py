@@ -2496,7 +2496,7 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     monkeypatch.setattr(icons, "locate", real)
     dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
     assert len(dlg.widgets) == 2
-    views = [dlg.table.cellWidget(i, dlg.C_VIEW).text() for i in range(2)]
+    views = [dlg._views[i].text() for i in sorted(dlg._views)]  # 카드마다 버튼 하나 (두 카드)
     assert views == ["카드 보기 · 자리 잡기"] * 2  # 찾은 줄도 자리를 다시 잡을 수 있다
     found_i = next(i for i, g in enumerate(dlg.review["groups"]) if g["image"])
     lost = next(g for g in dlg.review["groups"] if not g["image"])
@@ -2510,7 +2510,8 @@ def test_icon_place_dialog_saves_drawn_box_and_keeps_typed_names(qapp, tmp_path,
     place._drawn()
     assert place.save_btn.isEnabled() and place.add_btn.isEnabled()
     place._save()
-    assert place.result() == QDialog.DialogCode.Accepted  # 저장하면 닫고 이름 정하기 표로 돌아간다
+    assert place.result() != QDialog.DialogCode.Accepted  # 1.24: 칸의 아이콘을 다 찾아도 창을 닫지 않는다
+    assert place.outcome[0] == "saved" and "저장했습니다" in place.status.text()
     rows = {w[0]: w for w in dlg.widgets}
     assert len(dlg.widgets) == 2 and rows[found_g][1].text() == "coin" and rows[found_g][3].text() == "금화"
     lost_g = dlg.review["groups"][next(k for k, w in enumerate(dlg.widgets) if w[0] == lost["group"])]
@@ -2669,16 +2670,16 @@ def test_result_viewer_paragraph_fonts_for_paragraph_region(qapp, tmp_path, monk
     from tests.test_fonts_sentences import GAEGU, _project_with_mode
 
     info, fd = _project_with_mode(tmp_path, "sentence")
-    cards = {1: {"이름": {"ko": "첫 문단.\n둘째 문단."}}}
+    cards = {1: {"이름": {"ko": "첫 문단.\n\n둘째 문단."}}}
     assert service._compose_with_cards(fd, cards, None, None).state == "done"
     monkeypatch.setattr(service, "_translation_cards", lambda _fd: cards)
     i0 = service.card_edit_info(fd, 1, "이름")
     assert i0["paragraph_mode"] and i0["paragraph_fonts"] == {}
-    assert service.split_paragraphs("첫 문단.\n둘째 문단.") == ["첫 문단.", "둘째 문단."]
+    assert service.split_paragraphs("첫 문단.\n\n둘째 문단.") == ["첫 문단.", "둘째 문단."]
     service.save_card_edit(fd, 1, "이름", paragraph_fonts={1: GAEGU})
     assert font_plan.load(fd)["sentences"] == {"1": {"이름": {"1": GAEGU}}}
     assert service.card_edit_info(fd, 1, "이름")["paragraph_fonts"] == {1: GAEGU}
-    png = service.card_preview(fd, 1, "이름", "첫 문단.\n둘째 문단.", None, paragraph_fonts={1: GAEGU})
+    png = service.card_preview(fd, 1, "이름", "첫 문단.\n\n둘째 문단.", None, paragraph_fonts={1: GAEGU})
     assert png and png[1:4] == b"PNG"
 
 
@@ -2724,7 +2725,7 @@ def test_result_viewer_keeps_each_cells_paragraph_fonts_and_preview_uses_region(
     from tests.test_fonts_sentences import GAEGU, SANS, _project_with_mode
 
     info, fd = _project_with_mode(tmp_path, "sentence")
-    cards = {1: {"이름": {"ko": "가.\nB."}}, 2: {"이름": {"ko": "하나.\n둘.\n셋."}}}
+    cards = {1: {"이름": {"ko": "가.\n\nB."}}, 2: {"이름": {"ko": "하나.\n\n둘.\n\n셋."}}}
     assert service._compose_with_cards(fd, cards, None, None).state == "done"
     monkeypatch.setattr(service, "_translation_cards", lambda _fd: cards)
     service.save_card_edit(fd, 2, "이름", paragraph_fonts={0: GAEGU})
@@ -3853,8 +3854,10 @@ def test_finish_issues_no_opens_source_review_on_unresolved_cell(qapp, tmp_path,
     dlg.close()
 
 
-def test_icon_confirm_offers_reread_of_changed_cells(qapp, tmp_path, monkeypatch):
-    """아이콘 정의 확정 뒤 아이콘 자리가 바뀐 칸이 있으면 다시 읽을지 묻고, 예면 그 칸들을 다시 읽는다."""
+def test_icon_confirm_does_not_ask_to_reread_changed_cells(qapp, tmp_path, monkeypatch):
+    """1.24 B2: 아이콘 정의 확정 뒤 아이콘 자리가 바뀐 칸이 있어도 묻지 않는다 (알림에 적고, ③ 원문 확인을 열 때 다시 읽음)."""
+    from types import SimpleNamespace
+
     from app.qt import steps
 
     from app.qt.main import MainWindow
@@ -3863,16 +3866,23 @@ def test_icon_confirm_offers_reread_of_changed_cells(qapp, tmp_path, monkeypatch
     win = MainWindow(root=tmp_path)
     win.open_project(info.dir)
     acts = steps.StepActions(win.project)
-    cells = [{"file_dir": tmp_path, "page": 1, "region": "본문"}]
-    ran = {}
-    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: 0)
-    monkeypatch.setattr(acts, "_engine", lambda: "api")
+    res = SimpleNamespace(added=["a"], reused=[], replaced=1, removed=0, notes=["메모"],
+                          changed_cells=[{"file_dir": tmp_path, "page": 1, "region": "본문"}])
 
-    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True, **_kw):
-        ran["fn"], ran["args"] = job.fn, job.args
-        on_done({"done": 1, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0})
+    class FakeDlg:
+        def __init__(self, *a, **k):
+            self.result = res
 
-    monkeypatch.setattr(steps.worker, "run_with_dialog", fake_run)
-    monkeypatch.setattr(steps.QMessageBox, "question", lambda *a, **k: steps.QMessageBox.StandardButton.No)
-    acts._reread_icon_cells(cells)
-    assert ran["fn"] is service.reread_cells and ran["args"][0] == cells
+        def exec(self):
+            return True
+
+    shown, asked, ran = [], [], []
+    monkeypatch.setattr(steps, "IconReviewDialog", FakeDlg)
+    monkeypatch.setattr(steps.QMessageBox, "information", lambda _p, _t, text: shown.append(text))
+    monkeypatch.setattr(steps.QMessageBox, "question", lambda *a, **k: asked.append(a))
+    monkeypatch.setattr(steps, "ask_choice", lambda *a, **k: asked.append(a))
+    monkeypatch.setattr(steps.worker, "run_with_dialog", lambda *a, **k: ran.append(a))
+    assert acts._open_icon_review({"groups": []}) is res
+    assert asked == [] and ran == []  # 묻지 않고, 지금 다시 읽지도 않는다
+    assert len(shown) == 1 and "메모" in shown[0] and "1개는 ‘③ 원문 확인’을 열 때" in shown[0]
+    assert "용어집 만들기는 멈췄습니다" in steps.StepActions.confirm_text(res, [], from_finish=True)

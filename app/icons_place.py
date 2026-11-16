@@ -85,6 +85,7 @@ def place_info(info, work: Path, occ_id: str) -> dict:
         box = x.box or (list(_ic.locate(img, text, ti)[0] or []) if x.png else [])
         item = _place_item(res, x, box)
         item["ti"] = ti
+        item["row"] = row = text[:t.start()].count("\n")  # 지금 원문의 줄 (겹친 아이콘 흡수가 위아래 줄을 넣지 않게)
         if x.named:
             item["prev"] = x.named
             if item["state"] in ("found", "manual", "lost"):
@@ -102,7 +103,7 @@ def place_info(info, work: Path, occ_id: str) -> dict:
         # 아이콘 아님·옆 아이콘에 포함으로 정한 자리는 상자가 있어도 회색 (일반 아이콘과 헷갈리지 않게)
         settled = "absorbed" if gi.get("absorbed") else "not_icon" if gi.get("not_icon") else ""
         extra = {**({"not_icon": True} if gi.get("not_icon") else {}), **({"settled": settled} if settled else {}),
-                 **({"named": x.named, "ti": ti} if x.named else {})}
+                 **({"named": x.named, "ti": ti} if x.named else {}), "row": row}
         if box:
             out["marks"].append({"box": box, "group": x.group, "occ": x.id, **extra})
         else:  # 위치를 못 찾은 다른 자리도 예상 자리에 보여 준다 (빠뜨리지 않게).
@@ -392,16 +393,18 @@ def placeholder_runs(text: str, same_line: bool = False) -> list[list[int]]:
 
 
 def run_partners(info, work: Path, occ_id: str) -> dict:
-    """그 자리와 글자 없이 붙어 있는 다른 [[?]] 자리: {"boxed": [그림이 있는 자리 id], "unfound": [위치 못 찾은 자리 id]}.
+    """그 자리와 글자 없이 붙어 있는 다른 [[?]] 자리: {"boxed": [그림이 있는 자리 id], "unfound": [위치 못 찾은 자리 id],
+    "boxed_line": boxed 중 같은 줄인 것, "other_line": 다른 줄(위아래)인 자리 id}.
     ‘아이콘 아님’으로 이미 뺀 자리는 넣지 않는다. 다른 줄(위아래)의 자리는 위치를 못 찾았으면 넣지 않는다:
-    위아래로 이어진 아이콘은 사람이 상자로 함께 감쌌을 때(찾은 자리가 그 상자 안)만 합친다."""
+    위아래로 이어진 아이콘은 사람이 상자로 함께 감싸고(찾은 자리가 그 상자 안) ‘한 세트로’ 질문에 예라고 할 때만 합친다.
+    (‘옆 아이콘에 포함됨’ 제안은 boxed_line만 쓴다: 위아래 아이콘을 자동으로 포함하는 길은 없다)"""
     from app.extract import load_extracted
 
     res = _ic.load_scan(Path(work))
     o = next(x for x in res.occurrences if x.id == occ_id)
     src = (load_extracted(_ic._occ_dir(info, o.file)).get(o.page, {}).get(o.region) or {}).get("source")
     run = next((r for r in placeholder_runs(src if isinstance(src, str) else "") if o.index in r), [])
-    out = {"boxed": [], "unfound": []}
+    out = {"boxed": [], "unfound": [], "boxed_line": [], "other_line": []}
     for x in res.occurrences:
         if (x.file, x.page, x.region) != (o.file, o.page, o.region) or x.id == o.id or x.index not in run:
             continue
@@ -410,6 +413,10 @@ def run_partners(info, work: Path, occ_id: str) -> dict:
         if not x.png and x.line != o.line:
             continue
         out["boxed" if x.png else "unfound"].append(x.id)
+        if x.png and x.line == o.line:
+            out["boxed_line"].append(x.id)
+        if x.line != o.line:
+            out["other_line"].append(x.id)
     return out
 
 
@@ -544,14 +551,16 @@ def _overlap_ratio(a, b) -> float:
     return ix * iy / small if small > 0 else 0.0
 
 
-def overlapping_occ(marks: list[dict], box, exclude: str = "") -> list[str]:
+def overlapping_occ(marks: list[dict], box, exclude: str = "", row: int | None = None) -> list[str]:
     """카드 보기 표시(place_info의 marks) 중 box와 겹친 다른 [[?]] 자리 id (이미 이름이 있는 [[이름]]은 빼고).
-    한 아이콘을 두 [[?]]로 읽어 두 자리가 같은 그림을 가리키면, 한쪽에 흡수시켜 다른 쪽을 원문에서 뺀다."""
+    한 아이콘을 두 [[?]]로 읽어 두 자리가 같은 그림을 가리키면, 한쪽에 흡수시켜 다른 쪽을 원문에서 뺀다.
+    row(지금 자리의 원문 줄)를 주면 다른 줄(위아래)의 자리는 넣지 않는다 (위아래 아이콘을 흡수 후보로 내놓지 않음)."""
     if not box:
         return []
     return [m["occ"] for m in marks
             if m.get("occ") and m["occ"] != exclude and m.get("box") and not m.get("not_icon") and not m.get("guess")
-            and not m.get("named") and _overlap_ratio(box, m["box"]) >= OVERLAP_MIN]
+            and not m.get("named") and (row is None or m.get("row") is None or m["row"] == row)
+            and _overlap_ratio(box, m["box"]) >= OVERLAP_MIN]
 
 
 def split_icon(info, work: Path, occ_id: str, part_box) -> dict:

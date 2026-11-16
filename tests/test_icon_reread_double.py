@@ -54,7 +54,10 @@ def test_agreeing_readings_settle_cell(tmp_path, monkeypatch):
     assert not cell.get("icon_changed") and not cell.get("icon_reread") and not cell["uncertain"]
     assert [x["model"] for x in cell["readings"]] == [MODELS["sonnet"], MODELS["opus"]]
     c = next(c for c in service.extracted_cells(fd) if c["page"] == 1)
-    assert c["label"] == "두 번 확인" and len(c["readings"]) == 2
+    # 1.24 B5: 확인이 끝나도 ‘아이콘 고침’ 알림 (보라 ‘확인 필요’ 아님, 확인할 칸 아님)
+    assert c["label"] == "아이콘 고침" and len(c["readings"]) == 2 and cell.get("icon_settled")
+    from app.qt.source_review import SourceReviewDialog
+    assert not SourceReviewDialog.needs_check(c) and not SourceReviewDialog.needs_attention(c)
     assert _status(info)["icon_changed"] == 0  # 확인이 끝난 칸은 용어집 만들기를 막지 않는다
 
 

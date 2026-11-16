@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from app import service
-from app.qt.dialogs import card, grey_note, hint_bar, page_title, set_ok_text, show_error, subtitle
+from app.qt.dialogs import allow_maximize, card, grey_note, hint_bar, page_title, set_ok_text, show_error, subtitle
 from app.qt.step_common import ENGINE_LABELS, MODE_LABELS
 
 
@@ -18,6 +18,7 @@ class ExtractDialog(QDialog):
     def __init__(self, groups: list[str], parent=None, card_limit: int | None = None, summary: str = ""):
         super().__init__(parent)
         self.setWindowTitle("글자 추출")
+        allow_maximize(self)
         self.summary = hint_bar(summary, "info")
         self.summary.setVisible(bool(summary))
         self.group = QComboBox()

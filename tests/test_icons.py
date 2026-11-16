@@ -500,8 +500,9 @@ def test_absorb_adjacent_unfound_icon_into_boxed_one(tmp_path):
     info, fd = _project(tmp_path, "run", pages=1)
     host, extra = _add_run_partner(info, fd)
     work = info.game_dir / "work" / "icons"
-    assert icons.run_partners(info, work, host) == {"boxed": [], "unfound": [extra]}
-    assert icons.run_partners(info, work, extra) == {"boxed": [host], "unfound": []}
+    assert icons.run_partners(info, work, host) == {"boxed": [], "unfound": [extra], "boxed_line": [], "other_line": []}
+    assert icons.run_partners(info, work, extra) == {"boxed": [host], "unfound": [], "boxed_line": [host],
+                                                     "other_line": []}
     assert service.icon_place(info.dir, extra)["run_host"] == [host]
     assert service.icon_place(info.dir, host)["run_host"] == []  # 자리가 있는 쪽은 아님
     service.absorb_icon_run(info.dir, host, [extra])

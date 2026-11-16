@@ -342,6 +342,9 @@ def cell_rereads(r: dict) -> list[dict]:
 # ② 아이콘 정의에서 아이콘 자리가 바뀐 칸: 보통·정밀 읽기로 다시 읽어 결론을 못 냈거나 아직 다시 읽지 못함.
 # 사람은 아이콘을 고치기 전의 원문을 본 적이 없어, 보통의 ‘결론 못 냄’(다시 봐야 함)과 나눠 보인다.
 ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"
+# 아이콘이 바뀐 칸을 보통·정밀 읽기로 다시 읽어 둘이 같고 지금 원문과도 (아이콘 자리·수까지) 같아 확인이 끝남 (칸의
+# icon_settled). 알림만 — 확인할 칸이 아니다 (1.24 B5)
+ICON_SETTLED_LABEL = "아이콘 고침"
 
 
 def verification_label(r: dict | None) -> str:
@@ -350,6 +353,8 @@ def verification_label(r: dict | None) -> str:
         return "손 입력"
     if r.get("icon_changed"):  # 사람이 원문 확인에서 저장하거나, 두 번 읽어 같으면 풀린다
         return ICON_REVIEW_LABEL
+    if r.get("icon_settled"):  # 아이콘을 고친 뒤 두 번 읽어 같음 (확인 끝. 그 뒤 사람이 원문 확인에서 저장하면 풀린다)
+        return ICON_SETTLED_LABEL
     if r.get("edited_by"):  # 화면에서 사람이 고친 칸
         return "사람이 고침"
     if r.get("checked_by"):  # 사람이 보고 읽은 그대로 맞다고 저장한 칸
@@ -380,11 +385,79 @@ def keep_row_print(row: str) -> str:
     return re.sub(r"[\s0-9０-９]+", "", TOKEN_RE.sub("", row or ""))
 
 
-def keep_paragraph_lines(source: str | None) -> list[int]:
+# ‘문단마다 다른 글꼴’ 영역에서 사람이 ③ 원문 확인의 [====]로 정한 문단 나눔 (1.24). 칸에 적는 값:
+# 새 문단이 시작하는 원문 줄 번호 목록 (빈 줄을 뺀 줄 번호, 0부터, 정렬; 0은 적지 않음. 빈 목록 = 칸 전체가 한 문단).
+# 없으면(키가 없음) typeset_layout.paragraph_spans의 기본 규칙(빈 줄·머리 줄·‘——이름’)으로 나눈다.
+# 번호는 칸의 원문(source) 기준이다. 번역문·아이콘 문단만 원본 그대로인 칸의 번역 원문 등 다른 글에 쓸 때는 breaks_for_text.
+PARAGRAPH_BREAKS = "paragraph_breaks"
+
+
+def breaks_for_text(r: dict | None, text) -> list[int] | None:
+    """칸 r의 문단 나눔(paragraph_breaks)을 글 text(그 칸의 원문·번역 원문·번역문)의 줄 번호로. 없거나 맞출 수 없으면 None
+    (그러면 기본 규칙). 줄 수(빈 줄 뺌)가 원문과 같으면 그대로, 아이콘 문단만 원본 그대로인 칸의 번역 원문(남긴 줄을 뺀 글)과
+    같으면 남긴 줄을 빼고 번호를 당긴다 (남긴 줄에서 시작하던 문단은 다음 남은 줄에서 시작)."""
+    from app.typeset_layout import nonblank_count
+
+    r = r or {}
+    br = r.get(PARAGRAPH_BREAKS)
+    src = r.get("source")
+    if not isinstance(br, list) or not isinstance(src, str) or text is None:
+        return None
+    n_text = nonblank_count(text)
+    rows = src.split("\n")
+    full = [i for i, t in enumerate(rows) if t.strip()]  # 빈 줄 뺀 번호 -> 원문 줄 번호
+    br = sorted({int(i) for i in br if isinstance(i, int) and 0 < int(i) < len(full)})
+    if n_text == len(full):
+        return br
+    mode, kept = keep_state(r)
+    if mode != "partial":
+        return None
+    kept = set(kept)
+    left = [k for k, i in enumerate(full) if i not in kept]  # 남은 줄 (빈 줄 뺀 번호)
+    if n_text != len(left):
+        return None
+    out = set()
+    for b in br:
+        j = next((m for m, k in enumerate(left) if k >= b), None)
+        if j:
+            out.add(j)
+    return sorted(out)
+
+
+def with_paragraph_breaks(cards: dict, extracted: dict) -> dict:
+    """한글 넣기용 카드({쪽: {영역: {"ko", "source", …}}})에 칸의 문단 나눔을 붙인 새 dict (원래 dict는 그대로):
+    "paragraph_breaks" = 번역문(ko) 줄 번호, "source_paragraph_breaks" = 그 칸 번역 원문(source) 줄 번호.
+    맞출 수 없거나 나눔을 정하지 않은 칸은 붙이지 않는다 (기본 규칙). extracted = load_extracted."""
+    out = {}
+    for pno, regs in (cards or {}).items():
+        row = dict(regs or {})
+        cells = extracted.get(int(pno)) or {}
+        for name, e in list(row.items()):
+            r = cells.get(name)
+            if not isinstance(e, dict) or not r or not isinstance(r.get(PARAGRAPH_BREAKS), list):
+                continue
+            add = {}
+            ko = e.get("ko")
+            if isinstance(ko, str):
+                b = breaks_for_text(r, ko)
+                if b is not None:
+                    add["paragraph_breaks"] = b
+            if isinstance(e.get("source"), str):
+                b = breaks_for_text(r, e["source"])
+                if b is not None:
+                    add["source_paragraph_breaks"] = b
+            if add:
+                row[name] = {**e, **add}
+        out[pno] = row
+    return out
+
+
+def keep_paragraph_lines(source: str | None, breaks: list[int] | None = None) -> list[int]:
     """원문에서 아이콘([[…]])이 든 문단의 줄 번호 (source.split("\n") 기준, 0부터).
-    문단은 ‘문단마다 다른 글꼴’과 같은 규칙(typeset_layout.paragraph_spans)으로 나누되, 아이콘·숫자·기호만 있는 줄은
-    따로 한 문단으로 본다 (‘いずれかを選択し実行’ 아래 아이콘 줄처럼 문장 끝 없이 이어진 아이콘 줄이 앞 글 줄과 한 문단이
-    되어 글 줄까지 번역되지 않는 일이 없게). 지우기·한글 넣기는 줄 단위라 아이콘 문단이 걸친 줄은 통째로 남긴다."""
+    문단은 ‘문단마다 다른 글꼴’과 같은 규칙(typeset_layout.paragraph_spans, breaks = 칸의 paragraph_breaks)으로 나누되,
+    아이콘·숫자·기호만 있는 줄은 따로 한 문단으로 본다 (‘いずれかを選択し実行’ 아래 아이콘 줄처럼 문장 끝 없이 이어진 아이콘
+    줄이 앞 글 줄과 한 문단이 되어 글 줄까지 번역되지 않는 일이 없게). 지우기·한글 넣기는 줄 단위라 아이콘 문단이 걸친 줄은
+    통째로 남긴다."""
     from app.erase_text import is_icon_line
     from app.icons import TOKEN_RE
     from app.typeset_layout import paragraph_spans
@@ -395,7 +468,7 @@ def keep_paragraph_lines(source: str | None) -> list[int]:
         rows.append((pos, pos + len(ln)))
         pos += len(ln) + 1
     units: list[list[int]] = []
-    for a, b in paragraph_spans(src):
+    for a, b in paragraph_spans(src, breaks):
         cur: list[int] = []
         for i, (la, lb) in enumerate(rows):
             if max(a, la) >= min(b, lb):
@@ -1021,6 +1094,47 @@ def _norm(s) -> str:
     return "".join(s.split())
 
 
+# 두 읽기가 문장 부호만 다를 때 고를 쪽: ‘、’와 ‘，’가 맞서면 ‘，’, ‘。’와 ‘．’가 맞서면 ‘．’ (1.24 B6).
+# (NFKC는 ‘，’→‘,’·‘．’→‘.’로 바꾸지만 ‘、’·‘。’는 그대로라 _norm만으로는 다른 글로 보였다)
+PUNCT_PREFER = {"、": "，", "。": "．"}
+_PUNCT_SAME = {"、": ("，", ","), "。": ("．", ".")}  # 그 부호와 맞서는 것 (반각도 NFKC로 같은 글)
+
+
+def _agree_norm(s) -> str:
+    """두 읽기를 견줄 글: _norm에 더해 ‘、’=‘，’, ‘。’=‘．’로 본다 (그 차이만 있으면 같게 읽은 것)."""
+    if isinstance(s, list):
+        s = "\n".join(s)
+    s = s or ""
+    for a, b in PUNCT_PREFER.items():
+        s = s.replace(a, b)
+    return _norm(s)
+
+
+def prefer_punct(base, other):
+    """base(원문으로 쓸 읽기)에서 other와 맞서는 문장 부호를 고른 쪽으로 바꾼다: base의 ‘、’가 other에서 ‘，’면 ‘，’,
+    ‘。’가 ‘．’면 ‘．’. 나머지 글·줄바꿈·공백은 base 그대로. 태그 칸(목록)은 줄 수가 같을 때 줄마다."""
+    if isinstance(base, list):
+        if isinstance(other, list) and len(other) == len(base):
+            return [prefer_punct(x, y) for x, y in zip(base, other)]
+        return base
+    if not isinstance(base, str) or not isinstance(other, str):
+        return base
+    if not any(ch in base for ch in PUNCT_PREFER):
+        return base
+    bi = [i for i, ch in enumerate(base) if not ch.isspace()]  # 공백을 뺀 글자끼리 맞춘다
+    bs = "".join(base[i] for i in bi)
+    os_ = "".join(ch for ch in other if not ch.isspace())
+    out = list(base)
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, bs, os_, autojunk=False).get_opcodes():
+        if tag != "replace" or i2 - i1 != j2 - j1:
+            continue
+        for k in range(i2 - i1):
+            ca, cb = bs[i1 + k], os_[j1 + k]
+            if ca in _PUNCT_SAME and cb in _PUNCT_SAME[ca]:
+                out[bi[i1 + k]] = PUNCT_PREFER[ca]
+    return "".join(out)
+
+
 def evaluate(extracted: dict, truth: dict) -> dict:
     """칸별 비교. truth는 samples.json의 cards (쪽 -> 카드). 공백·전각/반각 차이는 무시한다."""
     rows = []
@@ -1284,12 +1398,13 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
             a, b = rec["regions"][n], second[n]
             out.checked_cells += 1
             readings = [{"model": first_model, "source": a["source"]}, {"model": check_model, "source": b["source"]}]
-            if _norm(a["source"]) == _norm(b["source"]) and not b.get("uncertain"):
-                rec["regions"][n] = {**a, "uncertain": False, "note": f"{check_model}로 다시 읽어 같음",
-                                     "readings": readings}
+            # 문장 부호(、/，·。/．)만 다르면 같게 읽은 것으로 보고, 원문은 ‘，’·‘．’ 쪽을 쓴다 (B6)
+            same = _agree_norm(a["source"]) == _agree_norm(b["source"])
+            if same and not b.get("uncertain"):
+                rec["regions"][n] = {**a, "source": prefer_punct(a["source"], b["source"]), "uncertain": False,
+                                     "note": f"{check_model}로 다시 읽어 같음", "readings": readings}
                 out.agreed += 1
             else:
-                same = _norm(a["source"]) == _norm(b["source"])
                 head = ("두 모델이 같게 읽었지만 다시 읽은 모델도 확실하지 않음" if same
                         else "두 모델이 다르게 읽음")
                 rec["regions"][n] = {"source": b["source"], "uncertain": True,

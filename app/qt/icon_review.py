@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox, QHeaderView, QLineEdit, QPushButton,
+    QCheckBox, QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox, QHBoxLayout, QHeaderView, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 from app import service
@@ -15,6 +15,21 @@ from app.qt.dialogs import (
     ask_choice, card, fit_to_screen, grey_note, hint_bar, page_title, set_hint, set_ok_text, show_problem, subtitle,
 )
 from app.qt.icon_place import IconPlaceDialog
+
+
+class NoWheelSpinBox(QDoubleSpinBox):
+    """표 안의 ‘표시 크기’ 칸: 마우스 휠로 표를 내리다 지나가며 값이 바뀌지 않게, 포커스가 있을 때(눌러서 고르는 중)만
+    휠로 바꾼다. 포커스가 없으면 휠은 표로 넘겨 표가 스크롤된다."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # 휠만으로는 포커스를 가져가지 않는다
+
+    def wheelEvent(self, e):
+        if not self.hasFocus():
+            e.ignore()  # 부모(표 화면)로 넘어가 표가 스크롤된다
+            return
+        super().wheelEvent(e)
 
 
 # ================================================================ 아이콘 사전 (표)
@@ -60,7 +75,7 @@ class IconDictionaryPanel(QWidget):
             self.table.setItem(i, 1, name)
             self.table.setItem(i, 2, QTableWidgetItem(r.get("ko", "")))
             self.table.setItem(i, 3, QTableWidgetItem(r.get("meaning", "")))
-            sp = QDoubleSpinBox()
+            sp = NoWheelSpinBox()
             sp.setRange(0.3, 4.0)  # ② 정의 줄(0.3~)과 같게: 작게 정한 크기가 저장할 때 바뀌지 않게
             sp.setSingleStep(0.1)
             sp.setValue(float(r.get("scale") or 1.1))
@@ -161,14 +176,21 @@ class IconDictionaryDialog(QDialog):
 class IconReviewDialog(QDialog):
     """이번 찾기에서 발견한 모든 아이콘의 이름·뜻·한국어 이름을 정한다 (엑셀 대신). 카드의 아이콘 하나 = 한 줄.
 
-    줄은 카드 순서로 묶여 보이고(같은 카드는 같은 띠 색), 손볼 것이 있는 카드가 맨 위에 온다. 사전과 모양이 같은
-    아이콘은 이름이 미리 채워져 있고, 이미 이름이 정해진 아이콘(확정됨)도 보여 이름을 바꾸거나 ‘아이콘 아님’으로 할 수
-    있다 (그대로 두면 원문은 바뀌지 않는다). 같은 이름을 적은 줄들은 한 아이콘이다. ‘카드 보기’로 그 카드에서
-    아이콘 자리를 다시 잡고, 빠진 아이콘을 넣고, 합치거나 나눈다."""
+    줄은 카드 순서로 묶여 보이고(같은 카드는 ‘카드’·‘카드 보기’ 칸을 합치고 옅은 띠 색으로 구분), 손볼 것이 있는 카드가
+    맨 위에 온다. 분홍은 그 줄 자체에 손볼 것(위치 못 찾음·이름 빈 칸·한국어 이름 빈 칸)이 있을 때만 (아이콘 아님이면
+    아님). 사전과 모양이 같은 아이콘은 이름이 미리 채워져 있고, 이미 이름이 정해진 아이콘(확정됨)도 보여 이름을 바꾸거나
+    ‘아이콘 아님’으로 할 수 있다 (그대로 두면 원문은 바뀌지 않는다). 같은 이름을 적은 줄들은 한 아이콘이다. ‘카드 보기’로
+    그 카드에서 아이콘 자리를 다시 잡고, 빠진 아이콘을 넣고, 합친다.
+    뜻(원문)은 이 표에 없다 (사전 탭·엑셀에서): 확정할 때는 이름 제안이 준 뜻이나 사전 값을 쓴다. ‘아이콘 아님’ 줄은
+    이름 칸이 ‘그 자리 글자’ 칸으로 바뀐다 (적으면 [[?]]를 그 글자로, 비우면 원문에서 뺀다)."""
 
-    COLS = ["그림", "이름", "뜻(원문)", "한국어 이름", "아이콘 아님", "표시 크기", "상태", "카드", "카드 보기", "예문"]
-    C_STATE, C_PAGES, C_VIEW, C_EX = 6, 7, 8, 9
-    CONFLICT_COLOR = "#F4B183"  # 같은 이름인데 한국어 이름·뜻이 다른 줄
+    COLS = ["그림", "이름", "한국어 이름", "아이콘 아님", "표시 크기", "상태", "카드", "카드 보기", "예문"]
+    C_NAME, C_KO, C_NOT, C_SCALE = 1, 2, 3, 4
+    C_STATE, C_PAGES, C_VIEW, C_EX = 5, 6, 7, 8
+    CONFLICT_COLOR = "#F4B183"  # 같은 이름인데 한국어 이름이 다른 줄
+    PROBLEM_COLOR = "#F8D0D0"  # 그 줄 자체에 손볼 것이 있음 (분홍)
+    BAND_COLORS = ("#EEF3FA", "#FFFFFF")  # 카드 묶음 구분 (옅은 띠, 문제 표시 아님)
+    BAND_COLORS_LOWER = tuple(c.lower() for c in BAND_COLORS)
 
     def __init__(self, project_dir: Path, review: dict, parent=None):
         super().__init__(parent)
@@ -283,15 +305,21 @@ class IconReviewDialog(QDialog):
         review = {**review, "groups": self._sorted(review["groups"], keep)}
         self.review = review
         groups = review["groups"]
-        self.table.clearContents()
+        # 합친 칸(span)·칸 위젯을 남기지 않게 비우고 다시 만든다 (정렬이 바뀌면 카드 묶음도 바뀜)
+        self.table.clearSpans()
+        self.table.setRowCount(0)
         self.table.setRowCount(len(groups))
         self.widgets = []
+        self._views: dict[int, QPushButton] = {}  # 카드 묶음 첫 줄 -> ‘카드 보기’ 버튼
         known = list(review.get("known") or [])
         completer = QCompleter(known, self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        spans = self._card_spans(groups)  # [(첫 줄, 줄 수)] (카드 순서로 정렬했을 때만)
+        span_of = {r: (a, n) for a, n in spans for r in range(a, a + n)}
         for i, g in enumerate(groups):
             pic = g.get("image") or (g.get("dict_image") if g.get("named") else None)
-            img = QTableWidgetItem("" if pic else "위치 못 찾음")
+            img = QTableWidgetItem("" if pic else self.LOST_TEXT)
+            img.setData(Qt.ItemDataRole.UserRole, "" if pic else "lost")
             if pic:
                 img.setIcon(QIcon(QPixmap(pic)))
                 if not g.get("image"):
@@ -300,32 +328,54 @@ class IconReviewDialog(QDialog):
                 img.setToolTip("못 찾은 이유: " + (g.get("reason") or "-") + "\n‘카드 보기’에서 아이콘을 끌어 감싸면 잡을 수 있습니다")
                 img.setBackground(QBrush(QColor(self.LOST_COLOR)))
             self.table.setItem(i, 0, img)
-            name, meaning, ko = QLineEdit(g["suggest"]), QLineEdit(g["meaning"]), QLineEdit(g["ko"])
+            name, ko = QLineEdit(g["suggest"]), QLineEdit(g["ko"])
+            # 뜻(원문): 표에는 없다 (이름 제안·사전 값을 그대로 넘김). ‘아이콘 아님’ 줄에서는 이름 칸 자리에 ‘그 자리 글자’로 보인다
+            meaning = QLineEdit(g["meaning"])
             name.setPlaceholderText("영문 소문자·숫자·_")
             name.setCompleter(completer)  # 사전 이름을 고를 수 있게
+            name_cell = QWidget()
+            nl = QHBoxLayout(name_cell)
+            nl.setContentsMargins(0, 0, 0, 0)
+            nl.setSpacing(0)
+            nl.addWidget(name)
+            nl.addWidget(meaning)
+            meaning.setVisible(False)
             not_icon = QCheckBox()
-            scale = QDoubleSpinBox()
+            scale = NoWheelSpinBox()
             scale.setRange(0.3, 4.0)
             scale.setSingleStep(0.05)
             scale.setValue(float(g.get("scale") or 1.1))
-            view = QPushButton("카드 보기 · 자리 잡기")  # 찾은 아이콘도 자리를 다시 잡을 수 있다
-            view.setToolTip("그 카드를 보고 아이콘 자리를 고칩니다: 다시 잡기·빠진 아이콘 넣기·합치기·나누기·아이콘 아님")
-            if not pic:
-                view.setStyleSheet("font-weight: bold")
-            view.clicked.connect(lambda _c=False, gg=g["group"]: self.show_cards(gg))
-            for j, w in ((1, name), (2, meaning), (3, ko), (4, not_icon), (5, scale), (self.C_VIEW, view)):
+            for j, w in ((self.C_NAME, name_cell), (self.C_KO, ko), (self.C_NOT, not_icon), (self.C_SCALE, scale)):
                 self.table.setCellWidget(i, j, w)
+            a, n = span_of.get(i, (i, 1))
+            if i == a:  # 카드 묶음의 첫 줄에만 버튼 하나 (누르면 그 카드의 첫 문제 줄, 없으면 첫 줄을 연다)
+                view = QPushButton("카드 보기 · 자리 잡기")  # 찾은 아이콘도 자리를 다시 잡을 수 있다
+                view.setToolTip("그 카드를 보고 아이콘 자리를 고칩니다: 다시 잡기·빠진 아이콘 넣기·합치기·아이콘 아님")
+                view.clicked.connect(lambda _c=False, r=i: self._open_card(r))
+                holder = QWidget()  # 합친 칸에서 버튼이 세로로 늘어나지 않게 (가운데에 한 줄 높이로)
+                hl = QVBoxLayout(holder)
+                hl.setContentsMargins(0, 0, 0, 0)
+                hl.addStretch(1)
+                hl.addWidget(view)
+                hl.addStretch(1)
+                self.table.setCellWidget(i, self.C_VIEW, holder)
+                self._views[i] = view
             self.table.setItem(i, self.C_STATE, QTableWidgetItem(self._state_text(g)))
-            where = f"{g.get('card_label') or g['where'][0]['page']} · {g.get('region', '')} {g.get('line', 0)}줄" \
-                if g.get("where") else ""
-            pages = QTableWidgetItem(where)
+            pages = QTableWidgetItem(self._card_text(g, merged=i in span_of))
             pages.setToolTip("\n".join(w["label"] for w in g.get("where", [])))
             self.table.setItem(i, self.C_PAGES, pages)
-            ex = QTableWidgetItem(g["examples"][0] if g["examples"] else "")
+            ex_text = g["examples"][0] if g["examples"] else ""
+            if i in span_of and g.get("where"):  # 카드 칸을 합쳤으면 영역·줄은 예문 앞에
+                ex_text = f"{g.get('region', '')} {g.get('line', 0)}줄 · " + ex_text.split(": ", 1)[-1]
+            ex = QTableWidgetItem(ex_text)
             ex.setToolTip("\n".join(g["examples"]))
             self.table.setItem(i, self.C_EX, ex)
             self.table.setRowHeight(i, 46)
             self.widgets.append((g["group"], name, meaning, ko, not_icon, scale))
+        for a, n in spans:
+            if n > 1:
+                self.table.setSpan(a, self.C_PAGES, n, 1)
+                self.table.setSpan(a, self.C_VIEW, n, 1)
         self.table.setVerticalHeaderLabels([str(i + 1) for i in range(len(groups))])
         row_of = {g["group"]: i for i, g in enumerate(groups)}
         for i, g in enumerate(groups):  # 적어 둔 값 되살리기
@@ -339,6 +389,12 @@ class IconReviewDialog(QDialog):
                 scale.setValue(float(k.get("scale", scale.value())))
             if g.get("not_icon"):  # 카드 보기에서 ‘이 자리는 아이콘 아님’으로 정한 자리 (적어 둔 값보다 우선)
                 not_icon.setChecked(True)
+            if not_icon.isChecked():
+                # 아이콘 아님 줄의 숨은 뜻 칸은 ‘그 자리 글자’: 사람이 적어 둔 글자만 (뜻·사전 값은 글자가 아니다).
+                # 뜻은 따로 맡겨 두었다가 아이콘으로 되돌리면 살린다
+                meaning.setProperty("stashed", g.get("meaning") or "")
+                meaning.setText(str(k.get("meaning", "")) if k and k.get("not_icon") else "")
+                meaning.setProperty("ni", True)
             host = g.get("absorbed_group")
             host_label = (f"{row_of[host] + 1}번" if host in row_of else "") if host else \
                 (f"[[{g['absorbed_name']}]]" if g.get("absorbed_name") else "")
@@ -347,6 +403,7 @@ class IconReviewDialog(QDialog):
                 meaning.setPlaceholderText("")
                 cell = self.table.item(i, 0)
                 cell.setText(f"{host_label}에 포함")
+                cell.setData(Qt.ItemDataRole.UserRole, "absorbed")
                 cell.setIcon(QIcon())
                 cell.setBackground(QBrush(QColor("#E8F0E0")))
                 cell.setToolTip(f"{host_label} 아이콘의 그림이 이 자리까지 감싸 하나의 아이콘(세트)으로 합쳤습니다.\n"
@@ -356,15 +413,15 @@ class IconReviewDialog(QDialog):
             not_icon.toggled.connect(lambda _x, r=i: self._sync_row(r))
             name.textChanged.connect(lambda _t, r=i: self._sync_row(r))
             name.textChanged.connect(lambda _t: self._paint_conflicts())
-            for col, edit in ((1, name), (2, meaning), (3, ko)):
+            for col, edit in ((1, name), (2, meaning), (3, ko)):  # (widgets 순번)
                 edit.editingFinished.connect(lambda r=i, c=col: self._propagate(r, c))
             ko.textChanged.connect(lambda _t, e=ko: self._paint_ko_edit(e))
-            meaning.textChanged.connect(lambda _t: self._paint_conflicts())
+            ko.textChanged.connect(lambda _t, r=i: self._paint_row(r))
             ko.textChanged.connect(lambda _t: self._paint_conflicts())
             self._sync_row(i)
         self._paint_conflicts()
         self.table.resizeColumnToContents(self.C_VIEW)
-        for col, w in ((1, 150), (2, 170), (3, 150), (5, 100)):  # 입력 칸 글이 잘리지 않게
+        for col, w in ((self.C_NAME, 170), (self.C_KO, 150), (self.C_SCALE, 100)):  # 입력 칸 글이 잘리지 않게
             self.table.setColumnWidth(col, w)
         self.table.resizeColumnToContents(self.C_STATE)
         self.table.setColumnWidth(self.C_STATE, min(max(self.table.columnWidth(self.C_STATE), 90), 190))
@@ -385,19 +442,58 @@ class IconReviewDialog(QDialog):
         set_hint(self.steps_text,
                  f"찾은 아이콘 {len(groups)}개 (카드의 아이콘 하나 = 한 줄)"
                  + (f" · 확정됨 {n_named}" if n_named else "") + (f" · 사전과 모양 같음 {n_dict}" if n_dict else "")
-                 + (f" · 손볼 카드 {n_bad_cards}장은 맨 위(붉은 띠)" if n_bad_cards else "")
+                 + (f" · 손볼 카드 {n_bad_cards}장은 맨 위 (손볼 줄은 분홍)" if n_bad_cards else "")
                  + (f" · 위치 못 찾음 {n_lost}개" if n_lost else "")
                  + "\n"
                  "1. 그림을 보고 ‘이름’(영문 소문자)과 ‘한국어 이름’을 채우세요. 같은 이름을 적은 줄은 한 아이콘입니다.\n"
-                 "2. 사전에 있는 이름을 적으면 사전의 한국어 이름·뜻·크기를 씁니다 (고치려면 ‘사전 전체’ 탭).\n"
-                 "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 ‘뜻’ 칸에 그 글자를 적으세요 (비우면 원문에서 뺌).\n"
+                 "2. 사전에 있는 이름을 적으면 사전의 한국어 이름·뜻·크기를 씁니다 (뜻·사전 값 고치기는 ‘사전 전체’ 탭).\n"
+                 "3. 아이콘이 아니라 글자면 ‘아이콘 아님’을 체크하고 이름 칸 자리에 그 글자를 적으세요 (비우면 원문에서 뺌).\n"
                  "4. 자리가 틀렸거나 빠진 아이콘이 있으면 ‘카드 보기’에서 고치세요.", "info")
         self.known_note.setText("사전에 이미 있는 이름: " + (", ".join(known) or "(없음)"))
         for w in self.widgets:  # 한국어 이름이 빈 줄은 노랑
             self._paint_ko_edit(w[3])
 
+    LOST_TEXT = "위치 못 찾음"
+
+    def _card_spans(self, groups: list[dict]) -> list[tuple[int, int]]:
+        """카드 순서로 정렬했을 때 같은 카드 줄들의 (첫 줄, 줄 수). 다른 열로 정렬해 카드가 흩어지면 합치지 않는다 ([])."""
+        if not self._card_of:
+            return []
+        out: list[list[int]] = []
+        prev = object()
+        for i, g in enumerate(groups):
+            card = self._card_of[g["group"]][0]
+            if out and card == prev:
+                out[-1][1] += 1
+            else:
+                out.append([i, 1])
+            prev = card
+        return [(a, n) for a, n in out]
+
+    @staticmethod
+    def _card_text(g: dict, merged: bool) -> str:
+        """‘카드’ 칸: 합친 칸이면 카드만 (‘3쪽’), 아니면 카드·영역·줄."""
+        if not g.get("where"):
+            return ""
+        card = f"{g.get('card_label') or g['where'][0]['page']}"
+        if merged:
+            return f"{card}쪽"
+        return f"{card} · {g.get('region', '')} {g.get('line', 0)}줄"
+
+    def _open_card(self, row: int) -> None:
+        """카드 묶음의 ‘카드 보기’: 그 카드의 첫 문제 줄(없으면 첫 줄)을 연다."""
+        groups = self.review.get("groups") or []
+        a, n = next(((a, n) for a, n in self._card_spans(groups) if a <= row < a + n), (row, 1))
+        keep = self._capture()
+        rows = list(range(a, min(a + n, len(groups))))
+        pick = next((r for r in rows if self._is_problem(groups[r], keep.get(groups[r]["group"], {}))), rows[0] if rows
+                    else row)
+        self.show_cards(groups[pick]["group"])
+
     @staticmethod
     def _state_text(g: dict) -> str:
+        if g.get("not_icon") and not g.get("named"):  # 아이콘 아님으로 정한 줄: 위치 못 찾음이어도 문제가 아니다
+            return "세트로 합침" if g.get("absorbed_group") or g.get("absorbed_name") else "아이콘 아님"
         if g.get("added"):
             base = "추가함"
         else:
@@ -415,11 +511,12 @@ class IconReviewDialog(QDialog):
                 for g, name, meaning, ko, not_icon, scale in self.widgets}
 
     def _row_message(self, msg: str) -> str:
-        """엔진의 ‘묶음: 문제’를 ‘문제: 3번 줄’로 (묶음 이름 ‘위치 못 찾음 o014’는 표에 보이지 않는다)."""
+        """엔진의 ‘묶음: 문제’를 ‘3번 줄: 문제’로 — 어디를 봐야 하는지가 먼저 (묶음 이름 ‘위치 못 찾음 o014’는 표에
+        보이지 않는다)."""
         for i, w in enumerate(self.widgets):
             if msg.startswith(w[0] + ": "):
                 rest = msg[len(w[0]) + 2:].replace("처리 열에 ‘아이콘 아님’", "‘아이콘 아님’ 체크")
-                return f"{rest}: {i + 1}번 줄"
+                return f"{i + 1}번 줄: {rest}"
         return msg
 
     def _row_label(self, group: str) -> str:
@@ -473,22 +570,22 @@ class IconReviewDialog(QDialog):
 
         def key(g):
             k = keep.get(g["group"], {})
-            txt = {1: k.get("name", g["suggest"]), 2: k.get("meaning", g["meaning"]), 3: k.get("ko", g["ko"])}
+            txt = {self.C_NAME: k.get("name", g["suggest"]), self.C_KO: k.get("ko", g["ko"])}
             if col == 0:
                 return (0 if (g.get("image") or g.get("named")) else 1,)
             if col in txt:
                 v = (txt[col] or "").strip().lower()
                 return (v == "", v)  # 빈 칸은 뒤로
-            if col == 4:
+            if col == self.C_NOT:
                 return (bool(k.get("not_icon", g.get("not_icon"))),)
-            if col == 5:
+            if col == self.C_SCALE:
                 return (k.get("scale", g.get("scale", 1.1)),)
             if col == self.C_STATE:
                 return (self._state_text(g),)
             return ((g["examples"][0] if g["examples"] else ""),)
 
         out = sorted(groups, key=key, reverse=desc)
-        if desc and col in (1, 2, 3):  # 빈 칸은 내림차순에서도 뒤로
+        if desc and col in (self.C_NAME, self.C_KO):  # 빈 칸은 내림차순에서도 뒤로
             out = [g for g in out if key(g)[0] is not True] + [g for g in out if key(g)[0] is True]
         return out
 
@@ -522,28 +619,49 @@ class IconReviewDialog(QDialog):
         return out
 
     def _paint_card_bands(self, groups: list[dict]) -> None:
-        """카드 번호로 정렬했을 때: 같은 카드의 줄은 같은 띠 색 (문제 카드는 붉은 띠), 카드의 첫 줄은 카드 칸을 굵게."""
-        if not self._card_of:
-            return
-        prev, band = None, 0
+        """카드 번호로 정렬했을 때: 같은 카드의 줄은 같은 옅은 띠 색 (카드 구분만, 문제 표시 아님), 카드 칸은 굵게.
+        손볼 줄의 분홍은 _paint_row가 그 줄에만 칠한다. 다른 열로 정렬했으면 띠 없이 흰 바탕."""
+        self._band_of: dict[int, str] = {}
+        prev, band = object(), 1
         for i, g in enumerate(groups):
-            card, bad = self._card_of[g["group"]]
-            first_row = card != prev
-            if first_row:
-                band ^= 1
-                prev = card
-            color = ("#FBE3E3" if band else "#F6D0D0") if bad else ("#EEF3FA" if band else "#FFFFFF")
-            it = self.table.item(i, self.C_PAGES)
-            f = it.font()
-            f.setBold(first_row)
-            it.setFont(f)
-            if bad:
-                it.setToolTip("이 카드에 확정 전에 손봐야 할 아이콘이 있습니다 (위치 못 찾음·이름 빈 칸·한국어 이름 빈 칸)\n"
-                              + it.toolTip())
-            for col in (self.C_STATE, self.C_PAGES, self.C_EX):
-                cell = self.table.item(i, col)
-                if cell is not None:
-                    cell.setBackground(QBrush(QColor(color)))
+            if self._card_of:
+                card, bad = self._card_of[g["group"]]
+                first_row = card != prev
+                if first_row:
+                    band ^= 1
+                    prev = card
+                color = self.BAND_COLORS[band]
+                it = self.table.item(i, self.C_PAGES)
+                if first_row and it is not None:
+                    f = it.font()
+                    f.setBold(True)
+                    it.setFont(f)
+                    if bad:
+                        it.setToolTip("이 카드에 확정 전에 손봐야 할 아이콘이 있습니다 (분홍 줄: 위치 못 찾음·이름 빈 칸·"
+                                      "한국어 이름 빈 칸)\n" + it.toolTip())
+                    it.setBackground(QBrush(QColor(color)))
+            else:
+                color = "#FFFFFF"
+            self._band_of[i] = color
+            self._paint_row(i)
+
+    def _row_values(self, r: int) -> dict:
+        _g, name, _m, ko, not_icon, _sc = self.widgets[r]
+        return {"name": name.text(), "ko": ko.text(), "not_icon": not_icon.isChecked()}
+
+    def _paint_row(self, r: int) -> None:
+        """분홍은 그 줄 자체에 손볼 것이 있을 때만 (위치 못 찾음·이름 빈 칸·한국어 이름 빈 칸, 아이콘 아님이면 아님).
+        아니면 카드 띠 색. 적는 대로 바로 바뀐다."""
+        groups = (getattr(self, "review", None) or {}).get("groups") or []
+        if r >= len(groups) or r >= len(getattr(self, "widgets", [])):
+            return
+        bad = self._is_problem(groups[r], self._row_values(r))
+        color = self.PROBLEM_COLOR if bad else (getattr(self, "_band_of", {}) or {}).get(r, "#FFFFFF")
+        for col in (self.C_STATE, self.C_EX):
+            cell = self.table.item(r, col)
+            if cell is not None:
+                cell.setBackground(QBrush(QColor(color)))
+                cell.setData(Qt.ItemDataRole.UserRole, "problem" if bad else "")
 
     def select_group(self, group: str | None) -> None:
         """그 줄을 골라 보이게 한다 (카드 보기를 닫은 뒤)."""
@@ -600,23 +718,35 @@ class IconReviewDialog(QDialog):
                 edit.setText(e.get(key, "") or "")
                 edit.blockSignals(False)
             scale.setValue(float(e.get("scale") or 1.1))
+            meaning.setProperty("dict_filled", True)
             tip = "사전에 있는 이름이라 사전 값을 씁니다. 고치려면 ‘사전 전체’ 탭에서 고치세요"
         else:
             tip = ""
+            if meaning.property("dict_filled") and not not_icon.isChecked():
+                # 사전 이름에서 새 이름으로 바꿈: 사전 항목의 뜻을 새 아이콘에 넣지 않는다 (처음 제안 뜻은 그 제안이 사전
+                # 이름이 아니었을 때만 살린다)
+                meaning.blockSignals(True)
+                meaning.setText("" if self._known_entry(g.get("suggest") or "") else (g.get("meaning") or ""))
+                meaning.blockSignals(False)
+                meaning.setProperty("dict_filled", False)
         for w in (ko, scale):
             w.setEnabled(e is None and not not_icon.isChecked())
             w.setToolTip(tip)
         name.setEnabled(not not_icon.isChecked())
         meaning.setEnabled(e is None)
-        # 아이콘 아님: ‘뜻’ 칸에 그 자리 글자를 적는다 (적으면 [[?]]를 그 글자로, 비우면 뺀다)
-        suggested = g.get("meaning") or ""
-        if not_icon.isChecked() and suggested and meaning.text().strip() == suggested.strip():
-            # 모델이 제안한 아이콘 뜻은 그 자리 글자가 아니다: 비워 둔다 (그대로 두면 원문에 뜻 문장이 글자로 들어감)
+        # 뜻(원문) 열은 없다: ‘아이콘 아님’ 줄만 이름 칸 자리에 ‘그 자리 글자’ 칸을 보인다
+        name.setVisible(not not_icon.isChecked())
+        meaning.setVisible(not_icon.isChecked())
+        # 아이콘 아님: 숨은 뜻 칸이 ‘그 자리 글자’ 칸이 된다 (적으면 [[?]]를 그 글자로, 비우면 뺀다). 뜻(제안·사전 값)은
+        # 그 자리 글자가 아니므로 체크할 때 비우고 맡겨 두었다가, 아이콘으로 되돌리면 살린다
+        was, now = bool(meaning.property("ni")), not_icon.isChecked()
+        if now and not was:
             meaning.setProperty("stashed", meaning.text())
             meaning.setText("")
-        elif not not_icon.isChecked() and meaning.property("stashed") and not meaning.text().strip():
-            meaning.setText(meaning.property("stashed"))  # 다시 아이콘으로 하면 제안 뜻을 되살린다
+        elif was and not now:
+            meaning.setText(meaning.property("stashed") or "")
             meaning.setProperty("stashed", "")
+        meaning.setProperty("ni", now)
         if not_icon.isChecked():
             meaning.setPlaceholderText("그 자리 글자 (예: 最). 비우면 원문에서 뺌")
             meaning.setToolTip("아이콘이 아니라 글자를 잘못 읽은 것이면 여기에 그 글자를 적으세요")
@@ -625,7 +755,7 @@ class IconReviewDialog(QDialog):
             meaning.setToolTip(tip)
         st = self.table.item(r, self.C_STATE)
         if st is not None and g:
-            text = self._state_text(g)
+            text = self._state_text({**g, "not_icon": not_icon.isChecked()})
             if g.get("named"):
                 if not_icon.isChecked():
                     text = "확정됨 → 아이콘 아님"
@@ -634,6 +764,7 @@ class IconReviewDialog(QDialog):
             st.setText(text)
         self._paint_lost(r)
         self._paint_ko_edit(ko)
+        self._paint_row(r)
 
     def _propagate(self, r: int, col: int) -> None:
         """한 줄의 이름·뜻·한국어 이름을 고치면: 모양이 같고 예전 값이 같던 다른 줄도 같이 고친다 (켜 둔 경우)."""
@@ -659,18 +790,20 @@ class IconReviewDialog(QDialog):
     LOST_COLOR, LOST_DONE_COLOR = "#FFE066", "#E0E0E0"  # 위치 못 찾음: 손볼 것(노랑) / 아이콘 아님으로 정함(회색)
 
     def _paint_lost(self, r: int) -> None:
-        """‘위치 못 찾음’ 칸 색: 아이콘 아님을 체크하면 더 손볼 것이 없으므로 회색 (옆 아이콘에 포함된 칸은 그대로)."""
+        """‘위치 못 찾음’ 칸: 아이콘 아님을 체크하면 위치를 찾을 일이 없으므로 ‘아이콘 아님’(회색)으로 보인다
+        (문제처럼 보이지 않게). 옆 아이콘에 포함된 칸은 그대로."""
         cell = self.table.item(r, 0)
         groups = getattr(self, "review", {}).get("groups") or []
-        if cell is None or r >= len(groups) or cell.text() != "위치 못 찾음":
+        if cell is None or r >= len(groups) or cell.data(Qt.ItemDataRole.UserRole) != "lost":
             return
         done = self.widgets[r][4].isChecked()
+        cell.setText("아이콘 아님" if done else self.LOST_TEXT)
         cell.setBackground(QBrush(QColor(self.LOST_DONE_COLOR if done else self.LOST_COLOR)))
         cell.setForeground(QColor("#777") if done else QColor("black"))
 
     def _name_conflicts(self) -> dict[str, list[int]]:
-        """같은 이름(사전에 없는 새 이름)인데 한국어 이름이나 뜻이 서로 다른 줄 {이름: [줄 번호]}.
-        같은 이름은 한 아이콘이므로 확정하면 첫 줄의 값을 쓴다."""
+        """같은 이름(사전에 없는 새 이름)인데 한국어 이름이 서로 다른 줄 {이름: [줄 번호]}.
+        같은 이름은 한 아이콘이므로 확정하면 첫 줄의 값을 쓴다 (뜻은 표에 보이지 않아 견주지 않는다: 첫 줄 값)."""
         by: dict[str, list[int]] = {}
         for i, (_g, name, _m, _k, not_icon, _sc) in enumerate(self.widgets):
             nm = name.text().strip()
@@ -678,7 +811,7 @@ class IconReviewDialog(QDialog):
                 by.setdefault(nm, []).append(i)
         out = {}
         for nm, rows in by.items():
-            for col in (2, 3):
+            for col in (3,):
                 vals = {self.widgets[i][col].text().strip() for i in rows} - {""}
                 if len(vals) > 1:
                     out[nm] = rows
@@ -686,13 +819,13 @@ class IconReviewDialog(QDialog):
         return out
 
     def _paint_conflicts(self):
-        """같은 이름인데 한국어 이름·뜻이 다른 줄은 그 칸을 주황으로 (확정하면 첫 줄 값이 쓰인다)."""
+        """같은 이름인데 한국어 이름이 다른 줄은 그 칸을 주황으로 (확정하면 첫 줄 값이 쓰인다)."""
         if len(getattr(self, "widgets", [])) != self.table.rowCount():
             return
         bad = {i: rows for rows in self._name_conflicts().values() for i in rows}
-        for i, (_g, _name, meaning, ko, _ni, _sc) in enumerate(self.widgets):
+        for i, (_g, _name, _meaning, ko, _ni, _sc) in enumerate(self.widgets):
             rows = bad.get(i)
-            for edit in (meaning, ko):
+            for edit in (ko,):
                 if rows:
                     others = ", ".join(f"{j + 1}번" for j in rows if j != i)
                     edit.setStyleSheet(f"background: {self.CONFLICT_COLOR}")
@@ -705,19 +838,52 @@ class IconReviewDialog(QDialog):
                 self._paint_ko_edit(ko)
 
     def show_cards(self, group: str):
-        """그 줄의 카드를 보여 주고, 그 영역의 아이콘을 고치게 한다."""
+        """그 줄의 카드를 보여 주고, 그 영역의 아이콘을 고치게 한다 (카드 보기에서 이전·다음 칸으로 옮겨 갈 수 있다)."""
         g = next((x for x in self.review["groups"] if x["group"] == group), None)
         if g is None:
             return
         order = [w[0] for w in self.widgets]
         nxt = order[order.index(group) + 1] if group in order and order.index(group) + 1 < len(order) else None
-        dlg = IconPlaceDialog(self.project_dir, g, self._row_label, self._after_place, self, on_rename=self.rename_row)
+        dlg = IconPlaceDialog(self.project_dir, g, self._row_label, self._after_place, self, on_rename=self.rename_row,
+                              nav=self.cells_nav)
         dlg.exec()
         act, where = dlg.outcome
         if act == "not_icon":  # 다음 줄로 (아이콘 아님으로 뺀 줄은 끝났으므로)
             self.select_group(nxt if nxt in [w[0] for w in self.widgets] else where)
-        elif act == "saved":  # 저장한 자리의 줄
+        elif act in ("saved", "moved"):  # 저장한 자리의 줄 · 마지막으로 본 칸의 줄
             self.select_group(where)
+
+    def cells_nav(self) -> list[dict]:
+        """카드 보기의 ‘이전·다음 (문제) 칸’: 지금 표 순서의 칸(카드의 영역) 목록
+        [{"key": (파일 폴더, 쪽, 영역), "group": 열 줄(그 칸의 첫 문제 줄, 없으면 첫 줄), "problem": 손볼 줄이 있는가}]."""
+        out: list[dict] = []
+        at: dict[tuple, int] = {}
+        groups = (getattr(self, "review", None) or {}).get("groups") or []
+        for r, g in enumerate(groups):
+            if not g.get("where"):
+                continue
+            w = g["where"][0]
+            key = (str(w.get("file_dir") or ""), int(w["page"]), w.get("region"))
+            bad = r < len(self.widgets) and self._is_problem(g, self._row_values(r))
+            if key not in at:
+                at[key] = len(out)
+                out.append({"key": key, "group": g, "problem": bad})
+            elif bad and not out[at[key]]["problem"]:
+                out[at[key]].update(group=g, problem=True)
+        return out
+
+    def _focus_problem(self, blocking: list[str]) -> None:
+        """확정을 막은 첫 줄로 커서를 옮긴다 (한국어 이름 문제면 한국어 이름 칸)."""
+        for m in blocking:
+            i = next((i for i, w in enumerate(self.widgets) if m.startswith(w[0] + ": ")), None)
+            if i is None:
+                continue
+            self.select_group(self.widgets[i][0])
+            _g, name, meaning, ko, not_icon, _sc = self.widgets[i]
+            target = meaning if not_icon.isChecked() else name
+            target.setFocus()
+            target.selectAll()
+            return
 
     def rows(self) -> list[dict]:
         """각 줄의 최종 이름·값 (확정에 넘길 것). 사전에 있는 이름이면 keep_dict (사전 값을 덮어쓰지 않음)."""
@@ -741,7 +907,7 @@ class IconReviewDialog(QDialog):
         conflicts = self._name_conflicts()
         if conflicts:
             lines = [f"• {nm}: " + ", ".join(f"{i + 1}번" for i in rws) for nm, rws in conflicts.items()]
-            r = ask_choice(self, "같은 이름, 다른 값", "같은 이름인데 한국어 이름이나 뜻이 다른 줄이 있습니다 (주황):\n"
+            r = ask_choice(self, "같은 이름, 다른 값", "같은 이름인데 한국어 이름이 다른 줄이 있습니다 (주황):\n"
                            + "\n".join(lines),
                            [("첫 줄 값으로 확정", "accept"), ("돌아가서 고치기", "reject")], default=1,
                            informative="같은 이름은 한 아이콘이라 첫 줄의 한국어 이름·뜻을 씁니다. 다른 아이콘이면 "
@@ -752,6 +918,7 @@ class IconReviewDialog(QDialog):
         if r.state != "confirmed":
             show_problem(self, "아이콘 이름을 확정하지 못했습니다", "", "이름을 고친 뒤 다시 누르세요.",
                          items=[self._row_message(m) for m in r.blocking])
+            self._focus_problem(r.blocking)  # 확인을 누르면 그 줄(문제 칸)로
             return
         self.result = r
         super().accept()

@@ -23,6 +23,10 @@ from app.qt.step_common import (
 
 
 # ================================================================ 원문 확인
+def _nonblank(text: str | None) -> int:
+    return sum(1 for ln in (text or "").split("\n") if ln.strip())
+
+
 def _removed(c: dict) -> bool | None:
     """칸에서 ② 아이콘 정의가 [[?]]를 뺀 적이 있나 (None = 모름: 기록 전에 정한 칸)."""
     n = c.get("icon_removed")
@@ -60,7 +64,7 @@ class SourceReviewDialog(QDialog):
             self.file.setItemData(self.file.count() - 1, f["key"], Qt.ItemDataRole.ToolTipRole)
         self.file.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.file.setMinimumContentsLength(18)
-        self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·아이콘 고침·확인 필요·아직 읽지 않음)")
+        self.only = QCheckBox("확인할 칸만 보기 (다시 봐야 함·아이콘 고침 · 확인 필요·아직 읽지 않음)")
         self.only.setChecked(only_check)
         self.count = QLabel()
         self.count.setStyleSheet("color: #3A3A3C; background: white; border: 1px solid #E5E5EA;"
@@ -203,6 +207,7 @@ class SourceReviewDialog(QDialog):
         self._shown_cell: dict | None = None
         self._shown_file: str | None = None
         self._orig_text = ""
+        self._para_breaks: list[int] | None = None  # 저장할 문단 나눔 ([====] 자리, 문단마다 다른 글꼴 영역)
         if focus_key:  # 고칠 칸이 있는 파일부터 (용어집 만들기에서 ‘남은 항목’을 고치러 왔을 때)
             i = next((k for k, f in enumerate(files) if f["key"] == focus_key), -1)
             if i >= 0:
@@ -253,15 +258,41 @@ class SourceReviewDialog(QDialog):
     def _dirty(self) -> bool:
         return self._shown is not None and self.edit.toPlainText() != self._orig_text
 
+    @staticmethod
+    def for_edit(c: dict, text: str) -> str:
+        """편집 칸에 넣을 글: 문단마다 다른 글꼴 영역이면 문단 나눔을 [====] 줄로 보인다 (저장된 나눔은 지금 원문과
+        줄 수가 같은 글에만. 다른 글(줄 수가 다른 읽은 결과)은 기본 규칙)."""
+        if not (c.get("paragraph_mode") and isinstance(text, str)):
+            return text
+        br = c.get("paragraph_breaks")
+        if br is not None and _nonblank(text) != _nonblank(as_text(c.get("source"))):
+            br = None
+        return service.mark_paragraphs(text, br)
+
     def _value_of(self, c: dict):
         text = self.edit.toPlainText().strip("\n")
-        return [t.strip() for t in text.split("\n") if t.strip()] if c["kind"] == "tag_pills" else text
+        self._para_breaks = None
+        if c["kind"] == "tag_pills":
+            return [t.strip() for t in text.split("\n") if t.strip()]
+        if c.get("paragraph_mode"):  # [====] 줄을 빼고 그 자리를 문단 나눔으로 (원문 글은 그대로)
+            text, self._para_breaks = service.unmark_paragraphs(text)
+            text = text.strip("\n")
+        return text
 
     def _save_shown(self):
         c = self._shown_cell
-        service.save_source(self._shown_file, c["page"], c["region"], self._value_of(c))
+        value = self._value_of(c)
+        service.save_source(self._shown_file, c["page"], c["region"], value, paragraph_breaks=self._para_breaks)
         self.saved += 1
         self._orig_text = self.edit.toPlainText()  # 더 묻지 않게
+        if c.get("keep_mode") == "partial":  # 아이콘 문단만 원본 그대로인 칸: 줄을 바꿔 맞출 수 없게 되면 알린다
+            now = next((x for x in service.extracted_cells(self._shown_file)
+                        if (x["page"], x["region"]) == (c["page"], c["region"])), None)
+            if now is not None and now.get("keep_mode") == "broken":
+                QMessageBox.warning(self, "원본 그대로 문단",
+                                    "원문 줄이 바뀌어 원본 그대로 둘 아이콘 문단을 맞출 수 없습니다. "
+                                    "아이콘을 지우지 않도록 이 칸 전체를 원본 그대로 둡니다.\n"
+                                    "다른 문단을 번역하려면 ② 아이콘 정의의 카드 보기에서 ‘원본 그대로’를 다시 정하세요.")
 
     def _ask_save(self) -> str:
         """고친 글이 있으면 묻는다. 'save' | 'discard' | 'cancel' (고친 글이 없으면 'discard')."""
@@ -446,10 +477,13 @@ class SourceReviewDialog(QDialog):
         text = f"<b>{head}</b><br>사유: {reason}"
         if memo:
             text += f'<br><span style="color:#555">읽은 모델의 메모: {_html.escape(memo)}</span>'
+        if c.get("paragraph_mode") and c["source"] is not None:
+            text += ('<br><span style="color:#555">편집 칸의 <b>[====]</b> 줄은 문단 나눔입니다 (문단마다 다른 글꼴). '
+                     '줄을 넣거나 빼거나 옮긴 뒤 저장하면 문단 나눔이 바뀝니다.</span>')
         set_hint(self.info, text, kind)
         self._fill_readings(texts, pi)
         self._fill_picks(texts)
-        self.edit.setPlainText(default)
+        self.edit.setPlainText(self.for_edit(c, default))
         self._shown, self._shown_cell, self._shown_file = (c["page"], c["region"]), c, self.file.currentData()
         self._orig_text = self.edit.toPlainText()
         # 아이콘 문단만 원본 그대로인 칸도 ‘되돌리기’로 보인다 (누르면 풀어서 칸 전체를 다시 한글화)
@@ -576,7 +610,8 @@ class SourceReviewDialog(QDialog):
             b = QPushButton(f"{name}대로")
             b.setAutoDefault(False)
             b.setToolTip(t)
-            b.clicked.connect(lambda _c=False, tt=t: (self.edit.setPlainText(tt), self.edit.setFocus()))
+            b.clicked.connect(lambda _c=False, tt=t: (self.edit.setPlainText(self.for_edit(self.current() or {}, tt)),
+                                                      self.edit.setFocus()))
             self.pick_row.insertWidget(1 + i, b)
             self.pick_buttons.append(b)
 
@@ -654,7 +689,7 @@ class SourceReviewDialog(QDialog):
                                     f"다시 읽은 결과: {as_text(r.source)}")
             return
         text = fill_icon_names(as_text(r.source), as_text(c["source"]), self._known, _removed(c))
-        self.edit.setPlainText(text)  # _orig_text는 그대로: 저장하지 않고 떠나면 묻는다
+        self.edit.setPlainText(self.for_edit(c, text))  # _orig_text는 그대로: 저장하지 않고 떠나면 묻는다
         msg = "다시 읽은 결과를 편집 칸에 넣었습니다. 맞으면 저장하세요."
         if UNKNOWN_ICON in text:
             msg += " 이름 없는 아이콘 [[?]]는 저장한 뒤 ‘② 아이콘 정의’에서 정합니다."
