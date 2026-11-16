@@ -36,6 +36,7 @@ from app.regions import (
     px_box_outer,
     px_to_pt,
     ratio_to_pt,
+    text_only,
     union,
 )
 
@@ -147,6 +148,19 @@ class BackgroundImage:
         return (min(q[0] for q in pts), min(q[1] for q in pts), max(q[0] for q in pts), max(q[1] for q in pts))
 
 
+NO_BACKGROUND_MSG = "배경 이미지를 찾지 못했습니다 (순수 벡터 페이지는 아직 지원하지 않음)"
+
+
+def find_background_image_or_none(page) -> BackgroundImage | None:
+    """find_background_image와 같되, 쪽을 덮는 배경 이미지가 없으면(벡터 인쇄 PDF) None."""
+    try:
+        return find_background_image(page)
+    except RuntimeError as e:
+        if str(e) != NO_BACKGROUND_MSG:
+            raise
+        return None
+
+
 def find_background_image(page) -> BackgroundImage:
     """페이지 대부분을 덮는 가장 큰 이미지(xref 있는 것)."""
     prect = tuple(page.rect)
@@ -166,7 +180,7 @@ def find_background_image(page) -> BackgroundImage:
         if best is None or cover > best[0]:
             best = (cover, BackgroundImage(xref, bbox, (info["width"], info["height"]), tuple(info["transform"])))
     if best is None:
-        raise RuntimeError("배경 이미지를 찾지 못했습니다 (순수 벡터 페이지는 아직 지원하지 않음)")
+        raise RuntimeError(NO_BACKGROUND_MSG)
     return best[1]
 
 
@@ -510,7 +524,12 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     warnings: list[str] = []
     doc = page.parent
     prect: Box = tuple(page.rect)
-    bg = find_background_image(page)
+    bg = find_background_image_or_none(page)
+    if bg is None:  # 배경 스캔 이미지가 없는 벡터 인쇄 PDF: 텍스트 레이어 글자만 지운다 (app.erase_vector)
+        from app.erase_vector import erase_vector_page
+
+        return erase_vector_page(page, template, sample, seed=seed, params=params, modes=modes, sources=sources,
+                                 icon_templates=icon_templates, keep_lines=keep_lines)
     raw = load_image_rgb(doc, bg.xref)
     size = (raw.shape[1], raw.shape[0])
     before, w = render_on_image_grid(page, bg, raw)
@@ -791,6 +810,12 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         if lb != lb_region:  # 좁힌 상자: 상자 위·아래 끝에 붙은 줄(띠 안의 그림 조각)을 먼저 원문에 없는 줄로 본다
             lay["box_y"] = [core[1], core[3]]
         src = (sources or {}).get(name)
+        if isinstance(src, str) and "[[?]]" in src and text_only(regs_by_name.get(name)):
+            # ‘글자만’ 영역: 이름 없는 [[?]]가 남아 있어도(설정 전에 읽은 원문) 아이콘 자리를 찾거나 지키지 않는다.
+            # 이름 붙은 [[이름]]은 사람이 정한 것이라 예전처럼 다룬다
+            from app.extract import drop_unknown_icons
+
+            src = drop_unknown_icons({"source": src})["source"]
         if picture_bg and isinstance(src, str) and not src.strip():
             # 그림 배경인데 읽은 원문이 비어 있다(글자 없는 칸): 글자처럼 보이는 것은 그림 조각이므로 지우지 않는다
             tm.mask[:] = False

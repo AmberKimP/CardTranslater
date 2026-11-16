@@ -23,8 +23,11 @@ import os
 import time
 import unicodedata
 from dataclasses import dataclass, field
+import re
 from difflib import SequenceMatcher
 from pathlib import Path
+
+from app.regions import text_only
 
 log = logging.getLogger("cardtranslater.extract")
 
@@ -182,7 +185,39 @@ def region_hint(reg) -> str:
     words = [v["text"] for v in (reg.extract or {}).get("tag_colors", [])]
     if words:
         hint += " Known label words in this game: " + ", ".join(words) + "."
+    if text_only(reg):  # 영역 지정 창의 ‘아이콘: 글자만’ (기본 영역의 요청은 예전과 같다)
+        hint += NO_ICON_HINT
     return hint
+
+
+NO_ICON_HINT = (" This region contains text only, no inline icons: never write [[?]] here;"
+                " write every printed character, including symbols, as text.")
+_ICON_Q = re.compile(r"[ 　]?\[\[\?\]\][ 　]?")
+
+
+def no_icon_names(project, page_no: int) -> set[str]:
+    """그 카드에서 ‘글자만’으로 정한 영역 이름 (카드별 영역·따로 영역도 그 카드의 설정을 따른다)."""
+    try:
+        return {r.name for r in project.template.regions_for(page_no) if text_only(r)}
+    except Exception:  # noqa: BLE001 — 영역 정보가 없는 가짜 프로젝트 등: 기본 동작
+        return set()
+
+
+def drop_unknown_icons(rec: dict) -> dict:
+    """글자만 영역에 모델이 그래도 [[?]]를 적었으면 그 토큰만 뺀다 (글자는 그대로, 이름 붙은 [[이름]]은 둔다).
+    뺀 개수는 note에 적어 사람이 원문 확인에서 볼 수 있게 한다. 태그 목록·빈 원문은 그대로."""
+    src = rec.get("source")
+    if not isinstance(src, str) or "[[?]]" not in src:
+        return rec
+    n = src.count("[[?]]")
+
+    def one(m: re.Match) -> str:  # 앞뒤 빈칸이 둘 다 있으면 하나만 남긴다 ("A [[?]] B" -> "A B")
+        t = m.group(0)
+        return " " if t[:1] in " 　" and t[-1:] in " 　" else ""
+    lines = [_ICON_Q.sub(one, ln).rstrip() for ln in src.split("\n")]
+    note = (rec.get("note") or "").strip()
+    extra = f"글자만 영역이라 [[?]] {n}개를 뺌"
+    return {**rec, "source": "\n".join(lines), "note": f"{note}; {extra}" if note else extra}
 
 
 NO_REGIONS = "영역 없음 (카드마다 영역을 정하는 그룹: 이 카드의 영역을 지정하세요)"
@@ -277,23 +312,26 @@ def output_schema(regions) -> dict:
     }
 
 
-def parse_response(msg, region_kinds: dict) -> dict:
+def parse_response(msg, region_kinds: dict, no_icons=()) -> dict:
     """응답 -> {영역: {"source", "uncertain", "note"}}. 태그 영역은 줄마다 하나씩 목록으로."""
     if getattr(msg, "stop_reason", None) == "refusal":
         raise ValueError("모델이 응답을 거절함")
     if getattr(msg, "stop_reason", None) == "max_tokens":
         raise ValueError("응답이 max_tokens에서 잘림")
     text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
-    return regions_from_json(json.loads(text), region_kinds)
+    return regions_from_json(json.loads(text), region_kinds, no_icons)
 
 
-def regions_from_json(data: dict, region_kinds: dict) -> dict:
+def regions_from_json(data: dict, region_kinds: dict, no_icons=()) -> dict:
+    """no_icons: 글자만 영역 이름 — 그 영역의 [[?]]는 뺀다 (drop_unknown_icons)."""
     out = {}
     for r in data["regions"]:
         src = r["text"]
         if region_kinds.get(r["name"]) == "tag_pills":
             src = [t.strip() for t in src.split("\n") if t.strip()]
         out[r["name"]] = {"source": src, "uncertain": bool(r["uncertain"]), "note": r["note"]}
+        if r["name"] in no_icons:
+            out[r["name"]] = drop_unknown_icons(out[r["name"]])
     return out
 
 
@@ -780,7 +818,7 @@ def run_extract(project, pages: list[int], client, *, batch: bool = False, budge
                 log.warning("%d쪽에서 멈춤: %s %s", pno, p.reason, api_error_detail(exc))
                 raise p
             try:
-                regions = {**parse_response(msg, kinds), **color_tags}
+                regions = {**parse_response(msg, kinds, no_icon_names(project, pno)), **color_tags}
             except (ValueError, KeyError, StopIteration, json.JSONDecodeError) as e:
                 st.failed[pno] = f"응답 오류: {e}"
                 st.spent_usd += cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0
@@ -831,7 +869,7 @@ def _run_batch(project, pages, client, st, spath, done, kinds, src_doc, budget_u
             kind = r.result.type
             if kind == "succeeded":
                 try:
-                    regions = parse_response(r.result.message, kinds)
+                    regions = parse_response(r.result.message, kinds, no_icon_names(project, pno))
                     ct = base / "color_tags" / f"page-{pno:03d}.json"
                     if ct.exists():
                         regions.update(json.loads(ct.read_text(encoding="utf-8")))
@@ -936,7 +974,7 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
                 log.warning("%d쪽에서 멈춤: %s", pno, exc.reason)
             raise exc  # Paused·NotAvailable 등: 멈춘다
         try:
-            regions = {**regions_from_json(reply.regions_json, kinds), **color_tags}
+            regions = {**regions_from_json(reply.regions_json, kinds, no_icon_names(project, pno)), **color_tags}
         except (KeyError, TypeError, ValueError) as e:
             st.failed[pno] = f"응답 오류: {e}"
             st.save(spath)
@@ -1185,6 +1223,7 @@ def _prepare_read(client, project, pno, src_doc, model, base, regions):
     from app.extract_cc import CardError
 
     kinds = {r.name: r.kind for r in project.template.regions}
+    no_icons = {r.name for r in regions if text_only(r)}
     if getattr(client, "engine", "api") == "claude-code":
         args = (project, pno, src_doc, model, base, output_schema(regions), regions)
         if hasattr(client, "prepare_card") and hasattr(client, "run_card"):
@@ -1197,7 +1236,7 @@ def _prepare_read(client, project, pno, src_doc, model, base, regions):
         def run_cc():
             reply = call()
             try:
-                return regions_from_json(reply.regions_json, kinds), 0.0, reply.cost_equiv_usd
+                return regions_from_json(reply.regions_json, kinds, no_icons), 0.0, reply.cost_equiv_usd
             except (KeyError, TypeError, ValueError) as e:
                 raise CardError(f"응답 오류: {e}")
         return run_cc
@@ -1213,7 +1252,7 @@ def _prepare_read(client, project, pno, src_doc, model, base, regions):
             raise p
         c = cost_usd(msg.usage, model) if getattr(msg, "usage", None) else 0.0
         try:
-            return parse_response(msg, kinds), c, 0.0
+            return parse_response(msg, kinds, no_icons), c, 0.0
         except (ValueError, KeyError, StopIteration, json.JSONDecodeError) as e:
             raise CardError(f"응답 오류: {e}")
     return run_api

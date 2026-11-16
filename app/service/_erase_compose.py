@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from app import applog, report
@@ -137,6 +138,29 @@ def _erase(project, pages_spec, final_dir, run_dir, test, progress, cancel, work
     return res
 
 
+CATALOG_KEEP = ("OutputIntents", "Lang", "Metadata")  # select()가 지우는 문서 목록 키 중 인쇄·색에 필요한 것
+
+
+def _catalog_keys(doc) -> dict:
+    """문서 목록(Catalog)에서 select() 뒤에도 남길 키 {이름: (종류, 값)}."""
+    cat = doc.pdf_catalog()
+    out = {}
+    for k in CATALOG_KEEP:
+        kind, val = doc.xref_get_key(cat, k)
+        if kind != "null":
+            out[k] = val
+    return out
+
+
+def _restore_catalog_keys(doc, keys: dict) -> None:
+    """select()가 지운 문서 목록 키를 되살린다. 인쇄용 PDF/X의 OutputIntents(CMYK 출력 프로필)가 빠지면
+    렌더링 색이 바뀌고 인쇄소 확인에서 걸린다 (같은 문서 안이라 참조 번호가 그대로 맞다)."""
+    cat = doc.pdf_catalog()
+    for k, val in keys.items():
+        if doc.xref_get_key(cat, k)[0] == "null":
+            doc.xref_set_key(cat, k, val)
+
+
 def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[list, list]:
     """pages를 지워 run_dir/pdf_name에 저장하고 확인·비교 이미지(run_dir/compare)를 만든다. (쪽 메타, 상자 확인)."""
     import pymupdf
@@ -147,7 +171,9 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
     n = len(pages)
 
     out_doc = pymupdf.open(stream=src_bytes, filetype="pdf")
+    cat_keep = _catalog_keys(out_doc)
     out_doc.select([p - 1 for p in pages])
+    _restore_catalog_keys(out_doc, cat_keep)
 
     from app.workspace import file_settings
 
@@ -275,6 +301,9 @@ def _erase_parallel(project, pages, run_dir, pdf_name, workers, progress, cancel
 def _stream_meta(src_doc, check, pno: int, i: int, meta: dict):
     """원본 배경 이미지 스트림이 바이트 그대로인지와 패치 이미지의 xref·압축 방식을 meta에 적는다. (bg_o, 패치 정보)."""
     sp, op = src_doc[pno - 1], check[i]
+    if meta["background_image"].get("virtual"):  # 벡터 쪽: 배경 스캔 이미지가 없다. 그림 방식 패치만 다시 찾는다
+        _patch_meta(check, op, meta, ())
+        return
     bg = find_background_image(sp)
     bg_o = find_background_image(op)
     s_raw = src_doc.xref_stream_raw(bg.xref)
@@ -285,8 +314,12 @@ def _stream_meta(src_doc, check, pno: int, i: int, meta: dict):
     bgm["stream_untouched"] = s_raw == o_raw
     bgm["filter"] = check.xref_get_key(bg_o.xref, "Filter")[1]
     bgm["output_xref"] = bg_o.xref
-    # 패치: 저장 뒤 xref·압축 방식 다시 확인 (garbage 정리로 번호가 바뀔 수 있음)
-    infos = [x for x in op.get_image_info(xrefs=True) if x.get("xref", 0) not in (0, bg_o.xref)]
+    _patch_meta(check, op, meta, (bg_o.xref,))
+
+
+def _patch_meta(check, op, meta: dict, skip: tuple) -> None:
+    """패치: 저장 뒤 xref·압축 방식 다시 확인 (garbage 정리로 번호가 바뀔 수 있음)."""
+    infos = [x for x in op.get_image_info(xrefs=True) if x.get("xref", 0) not in (0, *skip)]
     for pt in meta["patches"]:
         match = min(infos, key=lambda x: sum(abs(a - b) for a, b in zip(x["bbox"], pt["bbox_pt"])))
         pt["xref"] = match["xref"]
@@ -306,20 +339,37 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
         sb, ob = _boxes(sp), _boxes(op)
         box_checks.append({"source_page": pno, "same": sb == ob, "source": sb, "output": ob})
 
-        bg = find_background_image(sp)
-        raw = load_image_rgb(src_doc, bg.xref)
-        before, _ = render_on_image_grid(sp, bg, raw)
-        bg_o = find_background_image(op)
-        raw_o = load_image_rgb(check, bg_o.xref)
-        after, _ = render_on_image_grid(op, bg_o, raw_o)
-        if raw_o.shape != raw.shape:
-            page_metas[i]["warnings"].append(f"이미지 크기가 바뀜 {raw.shape} -> {raw_o.shape}")
+        vector = bool(page_metas[i]["background_image"].get("virtual"))
+        if vector:  # 벡터 쪽 (배경 스캔 이미지 없음): 같은 렌더링 격자로 원본·결과를 견준다
+            from app.erase_vector import render_page
+
+            before, after = render_page(sp), render_page(op)
+            raw = before
+            if after.shape != before.shape:
+                page_metas[i]["warnings"].append(f"렌더 크기가 바뀜 {before.shape} -> {after.shape}")
+                after = cv2.resize(after, (before.shape[1], before.shape[0]))
+        else:
+            bg = find_background_image(sp)
+            raw = load_image_rgb(src_doc, bg.xref)
+            before, _ = render_on_image_grid(sp, bg, raw)
+            bg_o = find_background_image(op)
+            raw_o = load_image_rgb(check, bg_o.xref)
+            after, _ = render_on_image_grid(op, bg_o, raw_o)
+            if raw_o.shape != raw.shape:
+                page_metas[i]["warnings"].append(f"이미지 크기가 바뀜 {raw.shape} -> {raw_o.shape}")
 
         _stream_meta(src_doc, check, pno, i, page_metas[i])  # 원본 배경 스트림 그대로인지, 패치 xref·압축
         outside = np.ones(raw.shape[:2], bool)
         for pt in page_metas[i]["patches"]:
             x0, y0, x1, y1 = pt["bbox_px"]
             outside[y0:y1, x0:x1] = False
+        if vector:  # 텍스트 레이어 글자를 지운 영역도 바뀐 곳이다
+            for m in page_metas[i]["regions"]:
+                x0, y0, x1, y1 = m.get("work_rect_px") or (0, 0, 0, 0)
+                outside[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2] = False
+            k_ = raw.shape[1] / max(1e-6, sp.rect.width)  # 지운 글자 그림자·광선 효과 자리도 바뀐 곳이다
+            for e in page_metas[i].get("removed_text_effects_pt") or []:
+                outside[max(0, int(e[1] * k_) - 2):int(e[3] * k_) + 3, max(0, int(e[0] * k_) - 2):int(e[2] * k_) + 3] = False
         diff = np.abs(after.astype(int) - before.astype(int)).max(axis=2)
         page_metas[i]["verify"] = {
             "outside_patches_changed_px_at_image_grid": int((diff[outside] > 0).sum()),
@@ -356,6 +406,17 @@ def _verify(pymupdf, project, pages, page_metas, results, src_doc, check, run_di
         tag = f"p{pno:03d}"
         report.save(report.side_by_side(before, after), pdir / f"{tag}_card.png")
         res = results[i]
+        if vector and res.clean is None:  # 벡터 쪽: 영역마다 원본·결과 렌더를 나란히
+            for ri, m in enumerate(page_metas[i]["regions"]):
+                if not m.get("work_rect_px"):
+                    continue
+                x0, y0, x1, y1 = m["work_rect_px"]
+                pad = 14
+                x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+                x1, y1 = min(raw.shape[1], x1 + pad), min(raw.shape[0], y1 + pad)
+                img = report.stacked([("ORIGINAL (rendered)", before[y0:y1, x0:x1]),
+                                      ("RESULT (rendered, vector page)", after[y0:y1, x0:x1])], scale=2)
+                m["compare_png"] = str(report.save(img, pdir / f"{tag}_{safe_name(m['name'], ri)}.png"))
         if res.clean is None:  # 지울 영역이 없는 쪽 (아이콘만 있는 칸만 있었음): 카드 비교 그림만
             page_metas[i]["compare_card_png"] = str(pdir / f"{tag}_card.png")
             page_metas[i].setdefault("timing", {})["verify_s"] = round(time.monotonic() - t_page, 3)

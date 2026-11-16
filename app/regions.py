@@ -47,6 +47,18 @@ class Region:
     extract: dict = field(default_factory=dict)  # 추출 옵션 (예: tag_colors 라벨 색 -> 글자 사전)
 
 
+def text_only(reg) -> bool:
+    """글자만 있는 영역 (영역 지정 창의 ‘아이콘: 글자만’, style.icons == "none"). 글자 영역에만 뜻이 있다.
+    Region과 regions.json의 dict 모두 받는다. 기본(키 없음)은 아이콘이 섞여 있을 수 있는 영역."""
+    if reg is None:
+        return False
+    if isinstance(reg, dict):
+        kind, style = reg.get("kind", "text"), reg.get("style")
+    else:
+        kind, style = getattr(reg, "kind", "text"), getattr(reg, "style", None)
+    return (kind or "text") == "text" and (style or {}).get("icons") == "none"
+
+
 LAYOUT_SHARED = "shared"  # 그룹의 모든 카드가 같은 영역 (기본)
 LAYOUT_PER_CARD = "per_card"  # 카드마다 형식이 달라 카드 한 장씩 영역을 정한다
 

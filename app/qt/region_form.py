@@ -138,6 +138,7 @@ class RegionFormMixin:
                 idx = self.f_font.count() - 1
             self.f_font.setCurrentIndex(max(0, idx))
             self.f_font_mode.setCurrentIndex(max(0, self.f_font_mode.findData(st.get("font_mode") or "cell")))
+            self.f_icons.setCurrentIndex(max(0, self.f_icons.findData(st.get("icons") or "")))
             self.f_erase_mode.setCurrentIndex(max(0, self.f_erase_mode.findData(er.get("mode") or "auto")))
             self.f_keep_tall.setValue(float(er.get("keep_ink_taller_than_pt") or 0))
             self.f_keep_above.setChecked(bool(er.get("keep_ink_above_text")))
@@ -146,6 +147,7 @@ class RegionFormMixin:
             for w in (self.f_rotate, self.f_align, self.f_color, self.f_font, self.f_keep_tall, self.f_keep_above):
                 w.setEnabled(not prot)
             self.f_erase_mode.setEnabled(it.kind == "text")
+            self.f_icons.setEnabled(it.kind == "text")
             self.f_font_mode.setEnabled(it.kind == "text")  # 태그 라벨은 라벨마다 짧은 글이라 칸 단위만
             self.f_ocr_exclude.setEnabled(prot)
             self.f_ocr_exclude.setChecked(bool(it.data.get("ocr_exclude")) and prot)
@@ -211,6 +213,10 @@ class RegionFormMixin:
             st["font_mode"] = "sentence"
         else:
             st.pop("font_mode", None)  # 기본(한 칸 모두 같은 글꼴)은 적지 않는다
+        if self.f_icons.currentData() == "none" and it.kind == "text":
+            st["icons"] = "none"  # 글자만 (아이콘 없음)
+        else:
+            st.pop("icons", None)  # 기본(섞여 있음)은 적지 않는다
         er = d.setdefault("erase", {})
         mode = self.f_erase_mode.currentData()
         if mode and mode != "auto" and it.kind == "text":

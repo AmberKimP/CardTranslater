@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from app import workspace
+from app.regions import text_only
 
 PLACEHOLDER = "[[?]]"
 PLACEHOLDER_RE = re.compile(r"\[\[\?\]\]")
@@ -1211,6 +1212,25 @@ def _occ_dir(info, f: str) -> Path:
     return d if d.exists() else info.dir / f
 
 
+def text_only_cells(fd: Path):
+    """(쪽, 영역 이름) -> ‘글자만’ 영역인가. ② 아이콘 정의는 이 칸의 토큰을 찾지도 세지도 않는다
+    (세기만 하고 찾지 않으면 남은 [[?]] 때문에 ‘추출 완료’가 아이콘 검증에서 멈춘다). 영역 파일은 처음 물을 때 읽는다."""
+    tpl: list = []
+
+    def skip(pno: int, rname: str) -> bool:
+        if not tpl:
+            try:
+                from app.project import load_project
+                tpl.append(load_project(Path(fd)).template)
+            except Exception:  # noqa: BLE001 — 영역 파일이 없으면 기본 동작
+                tpl.append(None)
+        if tpl[0] is None:
+            return False
+        reg = next((r for r in tpl[0].regions_for(int(pno)) if r.name == rname), None)
+        return text_only(reg)
+    return skip
+
+
 def pending_count(info) -> int:
     """게임의 모든 프로젝트(뺀 쪽 제외) 원문에 남은 ``[[?]]`` 수 (아이콘 검증은 게임 단위)."""
     from app.extract import load_extracted
@@ -1219,10 +1239,11 @@ def pending_count(info) -> int:
     n = 0
     for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
+        skip = text_only_cells(fd)
         for pno, regs in load_extracted(fd).items():
             if pno in inc:
-                n += sum(len(PLACEHOLDER_RE.findall(r["source"])) for r in regs.values()
-                         if isinstance(r.get("source"), str))
+                n += sum(len(PLACEHOLDER_RE.findall(r["source"])) for name, r in regs.items()
+                         if isinstance(r.get("source"), str) and not skip(pno, name))
     return n
 
 
@@ -1235,10 +1256,11 @@ def token_count(info) -> int:
     n = 0
     for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
+        skip = text_only_cells(fd)
         for pno, regs in load_extracted(fd).items():
             if pno in inc:
-                n += sum(len(TOKEN_RE.findall(r["source"])) for r in regs.values()
-                         if isinstance(r.get("source"), str))
+                n += sum(len(TOKEN_RE.findall(r["source"])) for name, r in regs.items()
+                         if isinstance(r.get("source"), str) and not skip(pno, name))
     return n
 
 
@@ -1308,6 +1330,8 @@ def scan(info, work: Path) -> ScanResult:
             for pno, rname, text, icon_nums in todo:
                 reg = {r.name: r for r in proj.template.regions_for(pno)}.get(rname)
                 if reg is None:  # 영역을 지운 칸은 그림을 자를 수 없다
+                    continue
+                if text_only(reg):  # ‘글자만’ 영역: 아이콘을 찾지 않는다 (예전에 읽은 [[?]]가 남아 있어도)
                     continue
                 img = region_image(doc[pno - 1], reg)
                 tokens = list(TOKEN_RE.finditer(text))

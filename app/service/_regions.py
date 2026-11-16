@@ -70,6 +70,8 @@ def _validate_region_set(data: dict) -> list[str]:
             problems.append(f"{r.get('name')}: 회전은 0 또는 180만")
         if st.get("align", "left") not in _overview.ALIGNS:
             problems.append(f"{r.get('name')}: 정렬은 left/center/right")
+        if st.get("icons") not in (None, "none"):  # 아이콘: 키 없음 = 섞여 있음, "none" = 글자만
+            problems.append(f"{r.get('name')}: 아이콘 설정은 섞여 있음 또는 글자만(none)")
         f = (st.get("font") or {}).get("file")
         if f and not font_files.resolve(f).exists():
             problems.append(f"{r.get('name')}: 글꼴 파일이 없습니다 ({f})")

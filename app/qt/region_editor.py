@@ -288,6 +288,14 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
             self.f_erase_mode.addItem(t, k)
         self.f_erase_mode.setToolTip("글자 뒤가 그림인 영역에서 원래 글자를 어떻게 지울지 정합니다. 결과 보기에서 카드마다 바꿀 수도 있습니다.\n"
                                      "글자가 따로 들어 있는 PDF는 ‘자동’이면 예전 방식으로 지웁니다.")
+        self.f_icons = QComboBox()  # 단추가 아닌 선택 상자 (단추 코드 순서를 바꾸지 않게)
+        self.f_icons.addItem("섞여 있음", "")
+        self.f_icons.addItem("글자만 (아이콘 없음)", "none")
+        self.f_icons.setToolTip("이 영역에 문장 속 아이콘(그림 기호)이 있는지 정합니다.\n"
+                                "섞여 있음: 글자 사이에 아이콘이 있을 수 있음 (기본)\n"
+                                "글자만 (아이콘 없음): 글자를 읽을 때 아이콘을 찾지 않고, 아이콘 정의·글자 지우기·한글 넣기에서도\n"
+                                "이 영역은 아이콘을 찾지 않습니다. 카드 이름처럼 글자만 있는 칸에 쓰면 잘못 찾은 아이콘이 줄어듭니다.\n"
+                                "글자 영역에서만 고를 수 있습니다.")
         self.f_ocr_exclude = QCheckBox("글자를 읽을 때도 건너뛰기")
         self.f_ocr_exclude.setToolTip("카드 번호·장식 글자처럼 번역하지 않을 글자: 글자를 읽을 때(추출) 가리고, 지우지도 않습니다")
         self.f_keep_above = QCheckBox("글자 위쪽 그림은 남기기")
@@ -302,6 +310,7 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.g_basic, fb = group("기본")
         fb.addRow("이름", self.f_name)
         fb.addRow("종류", self.f_kind)
+        fb.addRow("아이콘", self.f_icons)
         fb.addRow(grey_note("위치·크기 (카드 전체를 1로 본 비율)"))  # 라벨 열을 빌리지 않고 폼 전체 폭을 쓴다
         fb.addRow(xy)
         fb.addRow("보호 영역", self.f_ocr_exclude)  # 보호 영역일 때만 보인다
@@ -355,7 +364,7 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         for w in (self.f_name,):
             w.textEdited.connect(self._from_form)
         self.f_name.returnPressed.connect(self.view.setFocus)  # Enter: 카드 화면으로 (화살표로 바로 옮기기)
-        for w in (self.f_kind, self.f_align, self.f_font, self.f_font_mode, self.f_erase_mode):
+        for w in (self.f_kind, self.f_align, self.f_font, self.f_font_mode, self.f_erase_mode, self.f_icons):
             w.currentIndexChanged.connect(self._from_form)
         for w in (self.f_x, self.f_y, self.f_w, self.f_h, self.f_keep_tall):
             w.valueChanged.connect(self._from_form)
@@ -1019,6 +1028,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.list.clear()
         for it in order:
             kind = dict(KIND_LABELS)[it.kind]
+            if it.kind == "text" and (it.data.get("style") or {}).get("icons") == "none":
+                kind += " (글자만)"
             self.list.addItem(f"{it.name or '(이름 없음)'}  ·  {kind}")
         if keep in order:
             self.list.setCurrentRow(order.index(keep))

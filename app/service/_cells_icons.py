@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app import workspace
 from app.project import load_project
+from app.regions import text_only
 from app.service import _base
 from app.service import _extract
 from app.service import _settings
@@ -106,7 +107,8 @@ def icon_reread_pending(file_dirs) -> list[dict]:
         for pno, regs in sorted(load_extracted(fd).items()):
             if pno not in inc:
                 continue
-            names = {reg.name for reg in tpl.regions_for(pno)}  # 영역을 지운 칸은 다시 읽을 수 없다
+            # 영역을 지운 칸은 다시 읽을 수 없다. ‘글자만’ 영역은 아이콘을 찾지 않으므로 아이콘 때문에 다시 읽지 않는다
+            names = {reg.name for reg in tpl.regions_for(pno) if not text_only(reg)}
             out += [{"file_dir": fd, "page": pno, "region": name} for name, r in regs.items()
                     if r and r.get("icon_reread") and r.get("icon_changed") and name in names
                     # 칸 전체 원본 그대로만 뺀다: 문장만 원본 그대로(partial)인 칸은 나머지 문장을 번역하므로 다시 읽는다
