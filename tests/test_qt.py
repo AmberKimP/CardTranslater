@@ -1685,7 +1685,7 @@ def test_project_tree_all_row_scope_and_buttons_use_selection(qapp, tmp_path, mo
     monkeypatch.setattr(res_mod.QMessageBox, "information", lambda *a, **k: None)
     all_dirs = [f["dir"] for g in page.ov["groups"] for f in g["files"]]
     monkeypatch.setattr(service, "files_needing_erase",  # 아직 안 지운 파일들 (지울 것만 지운다)
-                        lambda _p, files=None: [str(d) for d in (files if files is not None else all_dirs)])
+                        lambda _p, files=None, **_k: [str(d) for d in (files if files is not None else all_dirs)])
     import app.qt.dialogs as dlg_mod
 
     answers = []
@@ -2356,7 +2356,7 @@ def test_translate_can_chain_straight_into_erase(qapp, tmp_path, monkeypatch):
         seen.update(title=title, redo=job.kwargs.get("redo"), done=done)
     monkeypatch.setattr(res_mod.worker, "run_with_dialog", fake_run)
     monkeypatch.setattr("app.qt.steps.worker.run_with_dialog", fake_run)
-    monkeypatch.setattr(service, "files_needing_erase", lambda _p, files=None: ["F"])  # 지울 파일이 있음
+    monkeypatch.setattr(service, "files_needing_erase", lambda _p, files=None, **_k: ["F"])  # 지울 파일이 있음
     exported = []
     monkeypatch.setattr(service, "export_project_excel", lambda *a, **k: exported.append(1) or [])
     opened = []

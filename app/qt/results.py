@@ -1003,7 +1003,8 @@ class OutputActions:
                                     msg + f"뒤에서 글자를 지우는 중입니다 ({bg.text or '진행 중'}).\n"
                                     "우선순위를 높였습니다. 끝나면 목록의 ‘글자 지움’이 채워집니다.")
             return
-        need = {str(d) for d in service.files_needing_erase(self.pdir, scope)}
+        # 초기화로 멈춰 둔 파일도 ⑦을 누르면 지운다 (뒤에서 지우기만 그 파일을 건너뛴다)
+        need = {str(d) for d in service.files_needing_erase(self.pdir, scope, include_paused=True)}
         if not need:  # 이미 다 지웠고 그 뒤 원문·설정도 그대로: 알리기만
             if auto and note:
                 self._erase_done(service.ProjectStepResult("done"))

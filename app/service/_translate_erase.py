@@ -392,7 +392,8 @@ def stale_erased_pages(file_dir: Path | str) -> list[int]:
     return out
 
 
-def files_needing_erase(project_dir: Path | str, files: list | None = None) -> list[Path]:
+def files_needing_erase(project_dir: Path | str, files: list | None = None, *,
+                        include_paused: bool = False) -> list[Path]:
     """지워야 하는 파일 (아직 안 지움·처리할 쪽이 늘어남·지운 뒤 원문이나 설정이 바뀜). 뒤에서 지울 차례."""
     from app import workspace
 
@@ -406,7 +407,8 @@ def files_needing_erase(project_dir: Path | str, files: list | None = None) -> l
             load_project(fd)
         except FileNotFoundError:
             continue  # 영역이 아직 없는 그룹
-        if erase_paused(fd):  # 초기화한 파일: ⑦ 글자 지우기를 누를 때까지 뒤에서 지우지 않는다
+        if erase_paused(fd) and not include_paused:  # 초기화한 파일: ⑦ 글자 지우기를 누를 때까지 뒤에서 지우지 않는다
+            # (include_paused: ⑦을 누른 경우 — 초기화한 파일도 지울 차례다)
             continue
         done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
         if not done or stale_erased_pages(fd):
