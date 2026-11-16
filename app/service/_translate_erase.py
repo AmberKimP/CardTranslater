@@ -190,6 +190,7 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     out = ProjectStepResult("done")
     for fd in _extract.scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
+        set_erase_paused(fd, False)  # 지우기를 하면(⑦·뒤에서) 초기화로 멈춰 둔 것이 풀린다
         pages = workspace.included_pages(fd)
         if ((fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd)
                 and not (stale and stale_erased_pages(fd))):
@@ -405,10 +406,36 @@ def files_needing_erase(project_dir: Path | str, files: list | None = None) -> l
             load_project(fd)
         except FileNotFoundError:
             continue  # 영역이 아직 없는 그룹
+        if erase_paused(fd):  # 초기화한 파일: ⑦ 글자 지우기를 누를 때까지 뒤에서 지우지 않는다
+            continue
         done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
         if not done or stale_erased_pages(fd):
             out.append(fd)
     return out
+
+
+ERASE_PAUSED = "erase_paused"  # file.json: 초기화로 지운 결과를 비운 파일 (뒤에서 지우기가 바로 다시 지우지 않게)
+
+
+def erase_paused(file_dir: Path | str) -> bool:
+    from app import workspace
+
+    return bool(workspace.file_settings(Path(file_dir)).get(ERASE_PAUSED))
+
+
+def set_erase_paused(file_dir: Path | str, paused: bool) -> None:
+    """초기화한 파일을 뒤에서 지우기에서 뺀다 (paused=True). ⑦ 글자 지우기(erase_project)가 그 파일을 지우면 풀린다."""
+    from app import workspace
+
+    fd = Path(file_dir)
+    data = workspace.file_settings(fd)
+    if bool(data.get(ERASE_PAUSED)) == paused:
+        return
+    if paused:
+        data[ERASE_PAUSED] = True
+    else:
+        data.pop(ERASE_PAUSED, None)
+    workspace._write(fd / "file.json", data)
 
 
 def stale_erase_files(file_dirs, cells: list[dict] | None = None) -> list[Path]:

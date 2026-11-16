@@ -864,12 +864,24 @@ class ProjectPage(QWidget):
                                    "‘글자 추출부터 모두’는 읽은 원문도 비우므로 ① 글자 추출부터 다시 해야 합니다.")
         if r not in (0, 1):
             return
+        what = "output" if r == 0 else "all"
+        # 뒤에서 지우는 중이면 그 스레드가 끝난 뒤에 비운다 (지우던 파일이 비운 뒤에 다시 생기지 않게)
+        self.bg.stop()
+        if not self.bg.idle:
+            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 초기화합니다")
+        self.bg.when_idle(lambda: self._do_reset(label, dirs, what))
+
+    def _do_reset(self, label: str, dirs, what: str):
+        from app.qt.dialogs import show_failure
+
         try:
-            res = service.reset_files(self.project_dir, dirs, "output" if r == 0 else "all")
+            res = service.reset_files(self.project_dir, dirs, what)
         except OSError as e:
             show_failure(self, "초기화하지 못했습니다", str(e))
+            self.refresh()
             return
-        self.win.statusBar().showMessage(f"{label}: 결과 {len(res['moved'])}개를 휴지통으로 옮겼습니다")
+        self.win.statusBar().showMessage(f"{label}: 결과 {len(res['moved'])}개를 휴지통으로 옮겼습니다 "
+                                         "(⑦ 글자 지우기를 누를 때까지 뒤에서 다시 지우지 않습니다)")
         self.refresh()
 
     def rename_group(self):
