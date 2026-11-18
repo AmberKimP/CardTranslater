@@ -138,14 +138,14 @@ def test_erase_and_compose_log_page_times_and_problem_cells(tmp_path, caplog):
     assert r.ok
     meta = _json.loads((proj / "cleared" / "meta" / "page-001.json").read_text(encoding="utf-8"))
     assert meta["timing"]["erase_s"] >= 0 and "verify_s" in meta["timing"]
-    assert any("[시간] ⑦ 글자 지우기" in m and "쪽 2" in m for m in caplog.messages)
+    assert any("[시간] 글자 지우기" in m and "쪽 2" in m for m in caplog.messages)
     caplog.clear()
     res = service._compose_with_cards(proj, {1: {"이름": {"ko": "아주 긴 번역 " * 40}}, 2: {"이름": {"ko": "짧음"}}},
                                       None, None)
     assert res.state == "done"
     rep = _json.loads((proj / "translated" / "report.json").read_text(encoding="utf-8"))
     assert "compose_s" in rep["pages_detail"][0]["timing"]
-    assert any("[시간] ⑧ 한글 넣기" in m for m in caplog.messages)
+    assert any("[시간] ⑦ 한글 넣기" in m for m in caplog.messages)
     from app.runlog import COMPOSE_PROBLEMS
 
     bad = {k for s, keys in rep["status_summary"].items() if s in COMPOSE_PROBLEMS for k in keys}

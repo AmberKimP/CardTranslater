@@ -1,6 +1,6 @@
 {
-  "_comment": "Korean font catalog for typesetting and F28 font matching. Every font here is SIL OFL 1.1, so commercial use and PDF embedding are allowed. Font binaries are not committed; run scripts/fetch_fonts.py. style: sans | serif | rounded | handwriting | display. weight: 100-900. width: condensed | normal | wide.",
-  "pack_version": 1,
+  "_comment": "Korean font catalog for typesetting and F28 font matching. Every font here is SIL OFL 1.1, so commercial use and PDF embedding are allowed. Font binaries are not committed; run scripts/fetch_fonts.py (urls: download addresses for families that are not in Google Fonts). style: sans | serif | rounded | handwriting | display. weight: 100-900. width: condensed | normal | wide.",
+  "pack_version": 2,
   "_pack_comment": "bundled: true = shipped inside the program installer. Every other family ships in the separate font installer (packaging/make_font_pack.py); bump pack_version whenever that set of files changes.",
   "families": [
     {
@@ -221,6 +221,68 @@
       "source_files": ["MoiraiOne-Regular.ttf"],
       "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
       "notes": "굵은 윤곽 장식 제목"
-    }
+    },
+    {
+      "name": "LXGW WenKai KR", "ko_name": "LXGW 문해", "dir": "lxgwwenkaikr",
+      "source_files": ["LXGWWenKaiKR-Regular.ttf", "LXGWWenKaiKR-Medium.ttf"],
+      "urls": {"OFL.txt": "https://raw.githubusercontent.com/lxgw/LxgwWenkaiKR/main/OFL.txt",
+               "LXGWWenKaiKR-Regular.ttf": "https://raw.githubusercontent.com/lxgw/LxgwWenkaiKR/main/fonts/TTF/LXGWWenKaiKR-Regular.ttf",
+               "LXGWWenKaiKR-Medium.ttf": "https://raw.githubusercontent.com/lxgw/LxgwWenkaiKR/main/fonts/TTF/LXGWWenKaiKR-Medium.ttf"},
+      "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "또박또박한 펜 손글씨(해서체 느낌), 본문에도 잘 읽힘. 이야기 글·편지·동양풍"
+    },
+    {
+      "name": "LXGW Marker Gothic KR", "ko_name": "LXGW 마커 고딕", "dir": "lxgwmarkergothickr",
+      "source_files": ["LXGWMarkerGothicKR-Regular.ttf"],
+      "urls": {"OFL.txt": "https://raw.githubusercontent.com/lxgw/LxgwMarkerGothicKR/main/OFL.txt",
+               "LXGWMarkerGothicKR-Regular.ttf": "https://raw.githubusercontent.com/lxgw/LxgwMarkerGothicKR/main/fonts/TTF/LXGWMarkerGothicKR-Regular.ttf"},
+      "style": "handwriting", "weight": 500, "width": "normal", "license": "OFL-1.1",
+      "notes": "굵은 마커로 쓴 고딕, 만화·포스터·메모. 자주 쓰는 한글 2,350자만 있음 (없는 글자는 대체 글꼴)"
+    },
+    {
+      "name": "Galmuri11", "ko_name": "갈무리11", "dir": "galmuri11",
+      "source_files": ["Galmuri11.ttf", "Galmuri11-Bold.ttf", "Galmuri11-Condensed.ttf"],
+      "urls": {"OFL.txt": "https://raw.githubusercontent.com/quiple/galmuri/main/dist/LICENSE.txt",
+               "Galmuri11.ttf": "https://raw.githubusercontent.com/quiple/galmuri/main/dist/Galmuri11.ttf",
+               "Galmuri11-Bold.ttf": "https://raw.githubusercontent.com/quiple/galmuri/main/dist/Galmuri11-Bold.ttf",
+               "Galmuri11-Condensed.ttf": "https://raw.githubusercontent.com/quiple/galmuri/main/dist/Galmuri11-Condensed.ttf"},
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "픽셀(도트) 글꼴, 레트로·비디오 게임풍 카드. Bold·Condensed(좁은 폭) 있음"
+    },
+    {
+      "name": "NeoDunggeunmo", "ko_name": "Neo둥근모", "dir": "neodgm",
+      "source_files": ["neodgm.ttf"],
+      "urls": {"OFL.txt": "https://raw.githubusercontent.com/neodgm/neodgm/main/LICENSE.txt",
+               "neodgm.ttf": "https://github.com/neodgm/neodgm/releases/download/v1.601/neodgm.ttf"},
+      "style": "display", "weight": 400, "width": "normal", "license": "OFL-1.1",
+      "notes": "옛 PC(도스) 화면풍 둥근 픽셀 글꼴, 고전 게임·컴퓨터 테마. ♥ 같은 기호는 대체 글꼴"
+    },
+    {
+      "name": "SLEI Gothic", "ko_name": "서평원 꺾깎체", "dir": "sleigothic",
+      "source_files": ["SLEIGothicTTF.ttf"],
+      "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/slei-gothic.zip#SLEI Gothic TTF/LICENSE.txt",
+               "SLEIGothicTTF.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/slei-gothic.zip#SLEI Gothic TTF/SLEIGothicTTF.ttf"},
+      "style": "display", "weight": 800, "width": "condensed", "license": "OFL-1.1",
+      "notes": "굵고 꽉 찬 각진 고딕, 획을 꺾고 깎은 모양. 힘 있는 제목·카드 이름 (서울시평생교육진흥원, 원본은 KERIS 안심폰트)"
+    },
+    {
+      "name": "KCC Ahnjunggeun", "ko_name": "KCC안중근체", "dir": "kccahnjunggeun",
+      "source_files": ["KCCAhnjunggeun.ttf"],
+      "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/kccahnjunggeun.zip#KCCAhnjunggeun/LICENSE.txt",
+               "KCCAhnjunggeun.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/kccahnjunggeun.zip#KCCAhnjunggeun/KCCAhnjunggeun.ttf"},
+      "style": "handwriting", "weight": 400, "width": "wide", "license": "OFL-1.1",
+      "notes": "안중근 의사 글씨를 바탕으로 한 기울어진 손글씨, 고전풍. 역사·편지·동양풍. 영문 글자는 없음 (대체 글꼴, 숫자는 있음) (한국저작권위원회 공유마당)"
+    },
+    {"name": "NanumSquareRound", "ko_name": "나눔스퀘어라운드", "dir": "nanumsquareround", "source_files": ["NanumSquareRound-Light.ttf", "NanumSquareRound-Regular.ttf", "NanumSquareRound-Bold.ttf", "NanumSquareRound-ExtraBold.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumsquareround.zip#NanumSquareRound/LICENSE.txt", "NanumSquareRound-Light.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumsquareround.zip#NanumSquareRound/NanumSquareRoundL.ttf", "NanumSquareRound-Regular.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumsquareround.zip#NanumSquareRound/NanumSquareRoundR.ttf", "NanumSquareRound-Bold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumsquareround.zip#NanumSquareRound/NanumSquareRoundB.ttf", "NanumSquareRound-ExtraBold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumsquareround.zip#NanumSquareRound/NanumSquareRoundEB.ttf"}, "style": "rounded", "weight": 400, "width": "normal", "license": "OFL-1.1", "notes": "둥근 네모꼴 고딕, 굵기 4개. 친근한 카드 본문·제목 (네이버 나눔)"},
+    {"name": "NanumSquare Neo", "ko_name": "나눔스퀘어 네오", "dir": "nanumsquareneo", "source_files": ["NanumSquareNeo-Light.ttf", "NanumSquareNeo-Bold.ttf", "NanumSquareNeo-ExtraBold.ttf", "NanumSquareNeo-Heavy.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanum-square-neo.zip#나눔스퀘어 네오/LICENSE.txt", "NanumSquareNeo-Light.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanum-square-neo.zip#나눔스퀘어 네오/NanumSquareNeoTTF-aLt.ttf", "NanumSquareNeo-Bold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanum-square-neo.zip#나눔스퀘어 네오/NanumSquareNeoTTF-cBd.ttf", "NanumSquareNeo-ExtraBold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanum-square-neo.zip#나눔스퀘어 네오/NanumSquareNeoTTF-dEb.ttf", "NanumSquareNeo-Heavy.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanum-square-neo.zip#나눔스퀘어 네오/NanumSquareNeoTTF-eHv.ttf"}, "style": "sans", "weight": 700, "width": "normal", "license": "OFL-1.1", "notes": "반듯한 네모꼴 고딕, 제목·라벨·현대풍 (네이버 나눔). Regular 굵기는 없음"},
+    {"name": "MaruBuri", "ko_name": "마루부리", "dir": "maruburi", "source_files": ["MaruBuri-Light.ttf", "MaruBuri-Regular.ttf", "MaruBuri-SemiBold.ttf", "MaruBuri-Bold.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/maru-buri.zip#마루 부리/LICENSE.txt", "MaruBuri-Light.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/maru-buri.zip#마루 부리/MaruBuri-Light.ttf", "MaruBuri-Regular.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/maru-buri.zip#마루 부리/MaruBuri-Regular.ttf", "MaruBuri-SemiBold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/maru-buri.zip#마루 부리/MaruBuri-SemiBold.ttf", "MaruBuri-Bold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/maru-buri.zip#마루 부리/MaruBuri-Bold.ttf"}, "style": "serif", "weight": 400, "width": "normal", "license": "OFL-1.1", "notes": "맑고 현대적인 명조, 굵기 4개. 플레이버 글·이야기 글 (네이버 나눔)"},
+    {"name": "NanumBarunpen", "ko_name": "나눔바른펜", "dir": "nanumbarunpen", "source_files": ["NanumBarunpen-Regular.ttf", "NanumBarunpen-Bold.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumbarunpen.zip#NanumBarunpen/LICENSE.txt", "NanumBarunpen-Regular.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumbarunpen.zip#NanumBarunpen/NanumBarunpenR.ttf", "NanumBarunpen-Bold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/nanumbarunpen.zip#NanumBarunpen/NanumBarunpenB.ttf"}, "style": "handwriting", "weight": 400, "width": "normal", "license": "OFL-1.1", "notes": "반듯한 펜 글씨, 작게 써도 잘 읽힘. 손글씨풍 본문 (네이버 나눔)"},
+    {"name": "BM Hanna Pro", "ko_name": "배민 한나체 Pro", "dir": "bmhannapro", "source_files": ["BMHANNAPro.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-pro.zip#BM HANNA Pro/LICENSE.txt", "BMHANNAPro.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-pro.zip#BM HANNA Pro/BMHANNAPro.ttf"}, "style": "rounded", "weight": 700, "width": "normal", "license": "OFL-1.1", "notes": "둥글고 두툼한 고딕, 귀엽고 힘 있는 제목·태그 (배달의민족)"},
+    {"name": "BM Hanna Air", "ko_name": "배민 한나체 Air", "dir": "bmhannaair", "source_files": ["BMHANNAAir.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-air.zip#BM HANNA Air/LICENSE.txt", "BMHANNAAir.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-air.zip#BM HANNA Air/BMHANNAAir_ttf.ttf"}, "style": "rounded", "weight": 300, "width": "normal", "license": "OFL-1.1", "notes": "한나체의 가는 판, 둥글고 가벼운 본문·설명 (배달의민족)"},
+    {"name": "BM Hanna 11yrs old", "ko_name": "배민 한나는 열한살", "dir": "bmhanna11yrs", "source_files": ["BMHANNA11yrsold.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-11yrs-old.zip#BM HANNA 11yrs old/LICENSE.txt", "BMHANNA11yrsold.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-hanna-11yrs-old.zip#BM HANNA 11yrs old/BMHANNA_11yrs_ttf.ttf"}, "style": "handwriting", "weight": 500, "width": "normal", "license": "OFL-1.1", "notes": "어린이가 쓴 듯한 삐뚤빼뚤한 글씨, 어린이·장난스러운 카드 (배달의민족)"},
+    {"name": "BM Euljiro", "ko_name": "배민 을지로체", "dir": "bmeuljiro", "source_files": ["BMEULJIRO.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-euljiro.zip#BM EULJIRO TTF/LICENSE.txt", "BMEULJIRO.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-euljiro.zip#BM EULJIRO TTF/BMEULJIROTTF.ttf"}, "style": "display", "weight": 700, "width": "normal", "license": "OFL-1.1", "notes": "옛 간판에 붓으로 그린 레트로 글씨, 복고풍 제목 (배달의민족)"},
+    {"name": "BM Euljiro 10 years later", "ko_name": "배민 을지로10년후체", "dir": "bmeuljiro10yearslater", "source_files": ["BMEuljiro10yearslater.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/euljiro-10-years-later.zip#을지로10년후체/LICENSE.txt", "BMEuljiro10yearslater.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/euljiro-10-years-later.zip#을지로10년후체/BMEuljiro10yearslater.ttf"}, "style": "display", "weight": 700, "width": "normal", "license": "OFL-1.1", "notes": "을지로체가 조금 낡고 바랜 느낌, 오래된 간판풍 제목 (배달의민족)"},
+    {"name": "BM Euljiro oraeorae", "ko_name": "배민 을지로오래오래체", "dir": "bmeuljirooraeorae", "source_files": ["BMEuljirooraeorae.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/euljiro-oraeo-rae.zip#을지로오래오래체/LICENSE.txt", "BMEuljirooraeorae.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/euljiro-oraeo-rae.zip#을지로오래오래체/BMEuljirooraeorae.ttf"}, "style": "display", "weight": 700, "width": "normal", "license": "OFL-1.1", "notes": "많이 바래고 갈라진 옛 간판 글씨, 폐허·공포풍. 큰 제목에만 (작으면 안 읽힘) (배달의민족)"},
+    {"name": "BM Kkubulim", "ko_name": "배민 꾸불림", "dir": "bmkkubulim", "source_files": ["BMKkubulim.ttf"], "urls": {"OFL.txt": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-kkubulim.zip#BM kkubulim TTF/LICENSE.txt", "BMKkubulim.ttf": "https://github.com/maker-SSAM/korean-ofl-fonts/releases/download/v1.0.0/bm-kkubulim.zip#BM kkubulim TTF/BMKkubulimTTF.ttf"}, "style": "handwriting", "weight": 500, "width": "normal", "license": "OFL-1.1", "notes": "꾸불꾸불한 장난스러운 손글씨, 유머·효과 글 (배달의민족)"}
   ]
 }

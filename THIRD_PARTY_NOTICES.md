@@ -57,13 +57,36 @@ replace them with your own compatible build. Qt source code is available at http
 
 ## 글꼴 (Fonts) — SIL Open Font License 1.1
 
-프로그램 설치 파일의 기본 글꼴(Noto Sans KR)과 글꼴 설치 파일의 한글 글꼴(36종)은 모두 SIL Open Font License 1.1
-글꼴입니다 (Google Fonts). 각 글꼴 폴더에 라이선스 원문 `OFL.txt`가 함께 들어 있습니다.
+프로그램 설치 파일의 기본 글꼴(Noto Sans KR)과 글꼴 설치 파일의 한글 글꼴(52종)은 모두 SIL Open Font License 1.1
+글꼴입니다. 각 글꼴 폴더에 라이선스 원문 `OFL.txt`가 함께 들어 있습니다.
 Noto Sans KR, Noto Serif KR, Hahmlet은 가변 글꼴에서 굵기별 파일로 잘라 썼습니다 (예약된 글꼴 이름은 쓰지 않음).
+아래 17종을 뺀 나머지는 Google Fonts에서 받았고, 아래 17종은 고치지 않은 원본 그대로입니다 (파일 이름만 굵기별로 바꿈).
 
-The bundled Noto Sans KR and the 36 Korean font families in the separate font installer are licensed under the
-SIL Open Font License 1.1 (from Google Fonts); each font folder includes its `OFL.txt`. Noto Sans KR, Noto Serif KR
+| 글꼴 | 저작권 | 출처 |
+|---|---|---|
+| LXGW WenKai KR | The LXGW WenKai Project Authors | https://github.com/lxgw/LxgwWenkaiKR |
+| LXGW Marker Gothic KR | The LXGW Marker Gothic Project Authors | https://github.com/lxgw/LxgwMarkerGothicKR |
+| Galmuri11 | Lee Minseo | https://github.com/quiple/galmuri |
+| NeoDunggeunmo (Neo둥근모) | Eunbin Jeong (Dalgona.) | https://github.com/neodgm/neodgm |
+| SLEI Gothic (서평원 꺾깎체) | Seoul Lifelong Education Institute, Leedotype | https://copyright.keris.or.kr/wft/fntDwnld (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| KCC Ahnjunggeun (KCC안중근체) | Korea Copyright Commission | https://gongu.copyright.or.kr/gongu/wrt/wrt/view.do?wrtSn=13214025 (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| NanumSquareRound (나눔스퀘어라운드) | NAVER Corporation (design: Sandoll) | https://hangeul.naver.com (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| NanumSquare Neo (나눔스퀘어 네오) | NAVER Corp. (design: Sandoll) | https://hangeul.naver.com (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| MaruBuri (마루부리) | NAVER Corp., NAVER Cultural Foundation | https://hangeul.naver.com (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| NanumBarunpen (나눔바른펜) | NHN Corporation (design: YoonDesign) | https://hangeul.naver.com (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Hanna Pro (배민 한나체 Pro) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Hanna Air (배민 한나체 Air) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Hanna 11yrs old (배민 한나는 열한살) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Euljiro (배민 을지로체) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Euljiro 10 years later (배민 을지로10년후체) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Euljiro oraeorae (배민 을지로오래오래체) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+| BM Kkubulim (배민 꾸불림) | WOOWA BROTHERS Corp. | https://www.woowahan.com/fonts (사본: https://github.com/maker-SSAM/korean-ofl-fonts) |
+
+The bundled Noto Sans KR and the 52 Korean font families in the separate font installer are licensed under the
+SIL Open Font License 1.1; each font folder includes its `OFL.txt`. Noto Sans KR, Noto Serif KR
 and Hahmlet were instanced from variable fonts into static weights (no Reserved Font Names are used).
+This product uses NAVER Nanum fonts (이 프로그램에는 네이버에서 제공한 나눔글꼴이 들어 있습니다).
+All families come from Google Fonts except the 17 in the table above, which are shipped unmodified (only file names were changed).
 
 ---
 

@@ -33,6 +33,8 @@ projects/
 output/
 test_runs/
 내 글꼴/
+# 사용자가 넣는 입력 파일 (상업용 글꼴 등, 배포 불가)
+Input/
 
 # Font binaries (download with scripts/fetch_fonts.py)
 fonts/**/*.ttf

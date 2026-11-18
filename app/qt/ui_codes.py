@@ -1,6 +1,6 @@
 """창 번호와 버튼 코드 (기능을 물을 때 창·버튼을 짧게 가리키려고).
 
-- 창 번호: 숫자 1개 + 알파벳 1개. 숫자는 작업 단계(① 글자 추출 = 1 … ⑧ 한글 넣기 = 8, 결과 보기 = 9),
+- 창 번호: 숫자 1개 + 알파벳 1개. 숫자는 작업 단계(① 글자 추출 = 1 … ⑦ 한글 넣기 = 7, 결과 보기 = 9),
   0은 단계에 속하지 않는 창(홈·프로젝트 화면·설정 등). 창 제목 앞에 ``[2B] 카드 보기``처럼 붙는다.
 - 버튼 코드: ``창 번호-순번`` (예: ``2B-03``). 순번은 그 창(또는 홈·프로젝트 화면) 안 버튼의 만든 순서.
 - Ctrl+D: 디버깅 모드. 버튼 글자 대신 버튼 코드를 보이고, 버튼을 누르면 코드만 복사하고 동작은 하지 않는다.
@@ -33,11 +33,11 @@ WINDOW_CODES: dict[str, tuple[str, str]] = {
     "IconPlaceDialog": ("2B", "카드 보기 · 아이콘 자리 잡기"),
     "IconDictionaryDialog": ("2C", "아이콘 사전"),
     "SourceReviewDialog": ("3A", "원문 확인"),
-    "GlossaryReviewDialog": ("5A", "용어집 확정"),
-    "TermChangesDialog": ("5B", "바뀐 용어 반영"),
+    "GlossaryReviewDialog": ("4A", "용어집"),
+    "TermChangesDialog": ("4B", "바뀐 용어 반영"),
     "TranslationReviewDialog": ("6A", "번역 검수"),
-    "FontPlanDialog": ("8A", "한글 글꼴 고르기"),
-    "AddFontDialog": ("8B", "글꼴 추가"),
+    "FontPlanDialog": ("7A", "한글 글꼴 고르기"),
+    "AddFontDialog": ("7B", "글꼴 추가"),
     "ResultViewer": ("9A", "결과 보기"),
     "GroupPickDialog": ("9B", "그룹 고르기"),
     "TestHistoryDialog": ("9C", "시험 기록"),

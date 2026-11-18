@@ -1,7 +1,7 @@
 """영역 설정 ‘아이콘: 글자만 (아이콘 없음)’ (style.icons == "none").
 
 ① 추출 요청에 아이콘 없음을 알리고 응답의 [[?]]를 빼며, ② 아이콘 정의는 그 칸을 찾지도 세지도 않고,
-⑦ 글자 지우기는 그 칸에서 아이콘 자리를 찾지 않는다. 기본(키 없음)은 예전과 같다."""
+글자 지우기는 그 칸에서 아이콘 자리를 찾지 않는다. 기본(키 없음)은 예전과 같다."""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ def test_icon_reread_pending_skips_text_only(tmp_path):
     assert [c["region"] for c in service.icon_reread_pending([fd])] == ["본문"]
 
 
-# ---------------------------------------------------------------- ⑦ 글자 지우기
+# ---------------------------------------------------------------- 글자 지우기
 @pytest.mark.parametrize("style, called", [({"icons": "none"}, False), ({}, True)])
 def test_erase_skips_icon_detection(monkeypatch, style, called):
     from app import erase

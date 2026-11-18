@@ -168,7 +168,7 @@ def test_keep_sentence_keeps_only_that_sentence_and_toggles_back(tmp_path, sente
     cell = _cell(fd)
     assert cell["keep_paragraphs"]["lines"] == [1] and not cell.get("keep_original")
     boxes1 = cell["keep_paragraphs"].get("boxes_pt")
-    assert boxes1 and len(boxes1) == 1  # 1문장(host)의 아이콘 자리: ⑦이 남길 줄을 찾고 아이콘을 지킨다
+    assert boxes1 and len(boxes1) == 1  # 1문장(host)의 아이콘 자리: 글자 지우기가 남길 줄을 찾고 아이콘을 지킨다
     assert service.sentence_kept(info.dir, host, [0]) and not service.sentence_kept(info.dir, host, [1])
     states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, extra)["items"]}
     assert states[host] == "not_icon" and states[extra] != "not_icon"  # 다른 문장의 아이콘은 그대로

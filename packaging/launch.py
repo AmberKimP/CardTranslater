@@ -4,7 +4,7 @@ import multiprocessing
 import sys
 
 if __name__ == "__main__":
-    # ⑦·⑧ 동시 처리의 작업 프로세스로 띄워졌으면 여기서 작업만 하고 끝난다 (창을 띄우지 않음)
+    # 글자 지우기·한글 넣기 동시 처리의 작업 프로세스로 띄워졌으면 여기서 작업만 하고 끝난다 (창을 띄우지 않음)
     multiprocessing.freeze_support()
     from app.qt.main import main
 

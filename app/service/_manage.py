@@ -51,7 +51,7 @@ def self_check() -> dict:
     out["license"] = "BEER-WARE" in license_text() and "AGPL" in license_text()
     from app import parallel
 
-    # ⑦·⑧ 동시 처리: 작업 프로세스가 뜨는지 (안 되면 한 프로세스로 하지만 느리다 — 빌드가 잘못된 것이므로 점검 실패로 본다).
+    # 글자 지우기·한글 넣기 동시 처리: 작업 프로세스가 뜨는지 (안 되면 한 프로세스로 하지만 느리다 — 빌드가 잘못된 것이므로 점검 실패로 본다).
     # 동시 처리를 끈 환경(테스트)이면 None: 점검하지 않는다
     out["parallel"] = parallel.self_check()
     out["font_pack"] = font_files.pack_status()  # 글꼴 묶음은 따로 설치하므로 점검 실패로 보지 않는다
@@ -156,7 +156,7 @@ def reset_files(project_dir: Path | str, files: list | None = None, what: str = 
     from app.service import _translate_erase
 
     for fd in fds:
-        _translate_erase.set_erase_paused(fd, True)  # 비운 뒤 뒤에서 지우기가 바로 다시 지우지 않게 (⑦을 누르면 풀림)
+        _translate_erase.set_erase_paused(fd, True)  # 비운 뒤 뒤에서 지우기가 바로 다시 지우지 않게 (⑦ 한글 넣기·‘글자 지우기…’를 누르면 풀림)
         for sub in RESET_WHAT[what]:
             d = fd / sub
             if d.exists():

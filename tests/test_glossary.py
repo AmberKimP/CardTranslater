@@ -225,7 +225,7 @@ def _review_ready(tmp_path):
 
 
 def test_glossary_rows_confirm_in_app_without_excel(tmp_path):
-    """⑤ 용어집 확정 (화면 표): 엑셀 없이 같은 검사로 확정하고, 고친 값은 검증 엑셀에도 남는다."""
+    """④ 용어집 확정 (화면 표): 엑셀 없이 같은 검사로 확정하고, 고친 값은 검증 엑셀에도 남는다."""
     info = _review_ready(tmp_path)
     rows = service.glossary_review_rows(info.dir)
     by = {r["원문 용어"]: r for r in rows}
@@ -329,3 +329,24 @@ def test_glossary_review_dialog_remove_sorted_and_close_rules(tmp_path, monkeypa
     dlg.import_excel()
     dlg.reject()
     assert saves == []
+
+
+def test_rebuild_candidates_keeps_human_edited_translations(tmp_path):
+    """‘용어 후보 다시 만들기…’: 예전 검증 엑셀에서 사람이 추천과 다르게 고친 번역은 새 후보에도 남는다."""
+    from app import glossary
+    from app.service import _glossary
+
+    xlsx = tmp_path / "용어집_검증.xlsx"
+    old = [glossary.Term("Gold", suggested="금화", chosen="골드"),  # 사람이 고침
+           glossary.Term("Sword", suggested="검", chosen="검"),  # 추천 그대로
+           glossary.Term("Elf", ko="엘프", confirmed=True, chosen="요정")]  # 확정 용어는 게임 용어집이 원본
+    from types import SimpleNamespace
+
+    glossary.export_review(SimpleNamespace(game="G", name="P", game_dir=tmp_path, dir=tmp_path), old, xlsx)
+    olds = glossary.terms_from_review(xlsx)
+    assert {t.source: t.chosen for t in olds}["Gold"] == "골드"
+    new = [glossary.Term("Gold", suggested="금"), glossary.Term("Sword", suggested="장검"),
+           glossary.Term("Orc", suggested="오크")]
+    assert _glossary._carry_choices(new, xlsx) == 1
+    assert [(t.source, t.chosen) for t in new] == [("Gold", "골드"), ("Sword", None), ("Orc", None)]
+    assert _glossary._carry_choices(new, tmp_path / "없음.xlsx") == 0

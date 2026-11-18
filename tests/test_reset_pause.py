@@ -1,4 +1,4 @@
-"""초기화한 파일은 뒤에서 지우기가 바로 다시 지우지 않는다 (⑦ 글자 지우기를 누르면 풀림)."""
+"""초기화한 파일은 뒤에서 지우기가 바로 다시 지우지 않는다 (⑦ 한글 넣기·‘글자 지우기…’를 누르면 풀림)."""
 
 from __future__ import annotations
 
@@ -27,18 +27,18 @@ def test_reset_pauses_background_erase_until_erase_step(tmp_path):
         assert not (fd / "cleared").exists()
         assert service.erase_paused(fd)
         assert service.files_needing_erase(info.dir) == []  # 초기화했으니 뒤에서 다시 지우지 않는다
-        assert service.files_needing_erase(info.dir, include_paused=True) == [fd]  # ⑦을 누르면 지울 차례
+        assert service.files_needing_erase(info.dir, include_paused=True) == [fd]  # ⑦ 한글 넣기·‘글자 지우기…’를 누르면 지울 차례
 
     service.set_erase_paused(fd, False)
     service.reset_files(info.dir, None, "output")
-    r = service.erase_project(info.dir)  # ⑦ 글자 지우기를 누름: 풀리고 지운다
+    r = service.erase_project(info.dir)  # 지우기를 누름: 풀리고 지운다
     assert r.state == "done" and (fd / "cleared" / "cleared.pdf").exists()
     assert not service.erase_paused(fd)
     assert Path(fd / "file.json").exists()
 
 
 def test_erase_button_uses_paused_files():
-    """⑦ 글자 지우기 버튼은 초기화로 멈춘 파일도 ‘지울 차례’로 본다 (1.24.1: 이미 지웠다고 보고 진행하지 않던 문제)."""
+    """글자 지우기(⑦ 한글 넣기·‘글자 지우기…’)는 초기화로 멈춘 파일도 ‘지울 차례’로 본다 (1.24.1: 이미 지웠다고 보고 진행하지 않던 문제)."""
     import inspect
 
     from app.qt.results import OutputActions

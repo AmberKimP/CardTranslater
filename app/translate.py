@@ -230,7 +230,7 @@ def run_translate(project_dir: Path, sources, glossary: list[dict], client, mode
 
     from app.applog import Timings
 
-    tm = Timings(f"⑥ 번역 요청 [{Path(project_dir).name}] {model}")
+    tm = Timings(f"⑤ 번역 요청 [{Path(project_dir).name}] {model}")
     cache = load_cache(project_dir)
     by_source = {t["source"]: t for t in glossary}
     items = unique_sources(sources)

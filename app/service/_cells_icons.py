@@ -531,6 +531,13 @@ ICON_HOW_LABEL = {"named": "확정됨", "same": "사전과 모양 같음", "lega
                   "prev": "확정됨 · 다시 잡는 중"}
 
 
+def icons_pending(project_dir: Path | str) -> int:
+    """게임 원문(모든 프로젝트, 뺀 쪽 제외)에 남은 이름 없는 아이콘 [[?]] 수. ③ 원문 확인이 ② 아이콘 정의를 먼저 할지 본다."""
+    from app import icons, workspace
+
+    return icons.pending_count(workspace.load_project_info(project_dir))
+
+
 def icon_review(project_dir: Path | str) -> dict | None:
     """find_icons 뒤 ② 아이콘 정의 표: 카드의 아이콘 하나 = 한 줄 (세트에 포함된 자리는 빼고).
     {"groups": [{"group", "occ", "image", "dict_image", "suggest"(이름 칸에 처음 보일 이름), "meaning", "ko", "scale",

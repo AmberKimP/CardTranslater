@@ -8,7 +8,7 @@ API 키(sk-ant-…)는 기록하기 전에 가린다. 화면 코드 없음: 화�
 문제를 받았을 때 고칠 수 있게:
 - context(파일=…, 쪽=…, 영역=…): 그 안에서 남긴 경고·오류 줄 끝에 ‘| 위치: …’를 붙인다 (어느 카드에서 났는지).
 - Timings: 작업 하나 안의 단계별 시간 (Claude 요청·원본 자르기·저장 …). 끝에 ‘[시간]’ 줄 하나로 남긴다.
-  작업마다 ‘[시간] 작업 …’ 줄도 남아, 한 사이클(①~⑧)의 단계별 시간을 timing_report()로 모아 볼 수 있다.
+  작업마다 ‘[시간] 작업 …’ 줄도 남아, 한 사이클(①~⑦)의 단계별 시간을 timing_report()로 모아 볼 수 있다.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ tlog = logging.getLogger("cardtranslater.time")
 TIME_TAG = "[시간]"
 # 작업 함수 이름 -> 화면의 단계 이름 (사이클 시간표에 쓴다)
 JOB_LABELS = {
-    "extract_project": "① 글자 추출", "find_icons": "② 아이콘 정의", "finish_extraction": "④ 용어집 만들기",
-    "import_glossary": "⑤ 용어집 확정 (엑셀에서)", "confirm_glossary_rows": "⑤ 용어집 확정", "translate_project": "⑥ 전체 번역", "export_project_excel": "검수 엑셀 만들기",
-    "erase_project": "⑦ 글자 지우기", "compose_project": "⑧ 한글 넣기", "font_plans": "글꼴 추천",
+    "extract_project": "① 글자 추출", "find_icons": "② 아이콘 정의", "finish_extraction": "④ 용어집 (후보 만들기)",
+    "import_glossary": "④ 용어집 확정 (엑셀에서)", "confirm_glossary_rows": "④ 용어집 확정", "translate_project": "⑤ 전체 번역", "export_project_excel": "검수 엑셀 만들기",
+    "erase_project": "글자 지우기", "compose_project": "⑦ 한글 넣기", "font_plans": "글꼴 추천",
     "redo_file": "카드 다시 만들기", "render_preview": "미리 보기", "test_run": "시험 실행",
 }
 _ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("cardtranslater_log_ctx", default={})

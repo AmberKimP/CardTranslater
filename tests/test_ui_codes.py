@@ -63,9 +63,9 @@ def test_title_gets_code_and_keeps_it_after_retitle(ui):
     d = TermChangesDialog()
     d.setWindowTitle("바뀐 용어 반영")
     d.show()
-    assert d.windowTitle() == "[5B] 바뀐 용어 반영"
+    assert d.windowTitle() == "[4B] 바뀐 용어 반영"
     d.setWindowTitle("바뀐 용어 반영 *")  # 화면이 제목을 다시 써도 번호가 남는다
-    assert d.windowTitle() == "[5B] 바뀐 용어 반영 *"
+    assert d.windowTitle() == "[4B] 바뀐 용어 반영 *"
     d.close()
 
 

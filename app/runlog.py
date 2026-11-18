@@ -1,4 +1,4 @@
-"""⑦ 글자 지우기·⑧ 한글 넣기 결과를 로그로 요약한다 (문제를 받았을 때 고칠 곳과 걸린 시간을 알 수 있게).
+"""글자 지우기·⑦ 한글 넣기 결과를 로그로 요약한다 (문제를 받았을 때 고칠 곳과 걸린 시간을 알 수 있게).
 
 쪽마다 걸린 시간은 지우기 메타(page meta의 "timing")·한글 넣기 기록(pages_detail의 "timing")에 남긴다.
 여러 프로세스로 나눠 돌려도(app.parallel) 작업 프로세스의 로그는 파일에 남지 않으므로, 주 프로세스가
@@ -60,7 +60,7 @@ def log_erase(name: str, page_metas: list[dict], wall: float, workers: int) -> N
              f"지우기 {_sum(erase_t)}" if any(erase_t.values()) else "",
              f"확인·비교 이미지 {_sum(verify_t)}" if any(verify_t.values()) else "",
              f"느린 쪽 {_slowest({p: erase_t[p] + verify_t.get(p, 0) for p in erase_t})}"]
-    tlog.info("%s ⑦ 글자 지우기 [%s] %.1f초 | %s", TIME_TAG, name, wall, " | ".join(x for x in parts if x))
+    tlog.info("%s 글자 지우기 [%s] %.1f초 | %s", TIME_TAG, name, wall, " | ".join(x for x in parts if x))
 
 
 def log_compose(name: str, page_recs: list[dict], wall: float, workers: int) -> None:
@@ -92,4 +92,4 @@ def log_compose(name: str, page_recs: list[dict], wall: float, workers: int) -> 
              f"미리보기·비교 이미지 {_sum(rend_t)}" if any(rend_t.values()) else "",
              f"느린 쪽 {_slowest({p: comp_t[p] + rend_t.get(p, 0) for p in comp_t})}",
              ("상태 " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))) if counts else ""]
-    tlog.info("%s ⑧ 한글 넣기 [%s] %.1f초 | %s", TIME_TAG, name, wall, " | ".join(x for x in parts if x))
+    tlog.info("%s ⑦ 한글 넣기 [%s] %.1f초 | %s", TIME_TAG, name, wall, " | ".join(x for x in parts if x))

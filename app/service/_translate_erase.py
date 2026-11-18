@@ -1,4 +1,4 @@
-"""⑤ 번역, 검수 엑셀, 프로젝트 단위 ⑦ 지우기·⑧ 합성, 이미지 시트, 고친 PDF 가져오기."""
+"""⑤ 번역, 검수 엑셀, 프로젝트 단위 지우기·⑦ 합성, 이미지 시트, 고친 PDF 가져오기."""
 
 from __future__ import annotations
 
@@ -190,11 +190,11 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     out = ProjectStepResult("done")
     for fd in _extract.scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
-        set_erase_paused(fd, False)  # 지우기를 하면(⑦·뒤에서) 초기화로 멈춰 둔 것이 풀린다
+        set_erase_paused(fd, False)  # 지우기를 하면(⑦ 한글 넣기·‘글자 지우기…’·뒤에서) 초기화로 멈춰 둔 것이 풀린다
         pages = workspace.included_pages(fd)
         if ((fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd)
                 and not (stale and stale_erased_pages(fd))):
-            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 ⑦ 글자 지우기의 ‘그래도 다시 지우기’)"})
+            out.files.append({"file": key, "state": "skipped", "reason": "이미 지움 (다시 지우려면 목록 오른쪽 클릭 ‘글자 지우기…’의 ‘그래도 다시 지우기’)"})
             continue
         if not pages:
             out.files.append({"file": key, "state": "skipped", "reason": "처리할 쪽 없음"})
@@ -407,8 +407,8 @@ def files_needing_erase(project_dir: Path | str, files: list | None = None, *,
             load_project(fd)
         except FileNotFoundError:
             continue  # 영역이 아직 없는 그룹
-        if erase_paused(fd) and not include_paused:  # 초기화한 파일: ⑦ 글자 지우기를 누를 때까지 뒤에서 지우지 않는다
-            # (include_paused: ⑦을 누른 경우 — 초기화한 파일도 지울 차례다)
+        if erase_paused(fd) and not include_paused:  # 초기화한 파일: ⑦ 한글 넣기·‘글자 지우기…’를 누를 때까지 뒤에서 지우지 않는다
+            # (include_paused: ⑦ 한글 넣기·‘글자 지우기…’를 누른 경우 — 초기화한 파일도 지울 차례다)
             continue
         done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
         if not done or stale_erased_pages(fd):
@@ -426,7 +426,7 @@ def erase_paused(file_dir: Path | str) -> bool:
 
 
 def set_erase_paused(file_dir: Path | str, paused: bool) -> None:
-    """초기화한 파일을 뒤에서 지우기에서 뺀다 (paused=True). ⑦ 글자 지우기(erase_project)가 그 파일을 지우면 풀린다."""
+    """초기화한 파일을 뒤에서 지우기에서 뺀다 (paused=True). 글자 지우기(erase_project)가 그 파일을 지우면 풀린다."""
     from app import workspace
 
     fd = Path(file_dir)
@@ -441,11 +441,11 @@ def set_erase_paused(file_dir: Path | str, paused: bool) -> None:
 
 
 def stale_erase_files(file_dirs, cells: list[dict] | None = None) -> list[Path]:
-    """이미 ⑦ 글자 지우기를 한(cleared/cleared.pdf가 있는) 파일 중 그 뒤 원문·설정이 바뀌어 다시 지울 쪽이 있는 파일.
+    """이미 글자를 지운(cleared/cleared.pdf가 있는) 파일 중 그 뒤 원문·설정이 바뀌어 다시 지울 쪽이 있는 파일.
     ② 아이콘 정의에서 바뀐 칸을 ③ 원문 확인에서 다시 읽은 뒤 묻지 않고 다시 지울 때 (아직 안 지운 파일은 넣지 않는다).
     cells([{"file_dir", "page", "region"}], ② 뒤 바뀐 칸)를 주면 그 칸이 모두 확인된 파일만: 두 번 읽어 같았거나 사람이
     저장해 icon_changed가 풀린 칸. 다시 읽기를 취소·실패해 아직 ‘확인 필요’인 칸이 있는 파일은 확인 전 원문으로 무거운
-    지우기를 하지 않는다 (확인한 뒤 ⑦ 글자 지우기나 뒤에서 지우기가 한다)."""
+    지우기를 하지 않는다 (확인한 뒤 ⑦ 한글 넣기나 뒤에서 지우기가 한다)."""
     from app.extract import load_extracted
 
     unsure: set[str] = set()
@@ -500,7 +500,7 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
     for fd in _extract.scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
         if not (fd / "cleared").exists():
-            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (먼저 ⑦ 글자 지우기)"})
+            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (⑦ 한글 넣기를 누르면 먼저 지웁니다)"})
             out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
             continue
         xlsx = review_xlsx_for(fd)
@@ -650,7 +650,7 @@ def import_edited_pdf(file_dir: Path | str, pdf: Path | str, progress: _base.Pro
     pdf = Path(pdf)
     t = fd / "translated"
     if not ((t / "translated.pdf").exists() and (t / "report.json").exists()):
-        raise ValueError("이 파일은 아직 한글 넣기 결과가 없습니다. 먼저 ⑧ 한글 넣기를 하세요.")
+        raise ValueError("이 파일은 아직 한글 넣기 결과가 없습니다. 먼저 ⑦ 한글 넣기를 하세요.")
     owner, members = sheet_family(fd)
     layouts = image_sheet_layouts(owner) if owner else []
     if not layouts:

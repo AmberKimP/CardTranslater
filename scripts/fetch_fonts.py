@@ -1,5 +1,9 @@
 """Download the Korean font catalog (all SIL OFL) from the Google Fonts GitHub repo.
 
+A family that is not in Google Fonts lists its own download addresses in "urls"
+({local file name: URL}, including "OFL.txt"); everything else comes from google/fonts.
+A URL of the form "<zip URL>#<member path>" takes that one file out of a zip.
+
 Usage:  .venv/Scripts/python scripts/fetch_fonts.py
 Needs:  fonttools (for making static weights out of variable fonts)
 
@@ -9,9 +13,11 @@ PDF embedding needs one file per weight. Files that already exist are skipped.
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,8 +31,13 @@ def download(url: str, dest: Path) -> None:
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        f.write(r.read())
+    url, _, member = url.partition("#")
+    with urllib.request.urlopen(url, timeout=120) as r:
+        data = r.read()
+    if member:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            data = z.read(member)
+    tmp.write_bytes(data)
     tmp.replace(dest)
     print(f"  got   {dest.relative_to(ROOT)} ({dest.stat().st_size // 1024} KB)")
 
@@ -55,9 +66,9 @@ def main() -> int:
     for fam in catalog["families"]:
         print(fam["name"])
         d = FONTS / fam["dir"]
-        download(RAW.format(dir=fam["dir"], file="OFL.txt"), d / "OFL.txt")
-        for file in fam["source_files"]:
-            download(RAW.format(dir=fam["dir"], file=file), d / file)
+        urls = fam.get("urls") or {}
+        for file in ["OFL.txt", *fam["source_files"]]:
+            download(urls.get(file) or RAW.format(dir=fam["dir"], file=file), d / file)
         if fam.get("static_weights"):
             var = d / fam["source_files"][0]
             make_static(var, fam["static_weights"])

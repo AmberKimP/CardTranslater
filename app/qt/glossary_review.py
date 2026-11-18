@@ -1,4 +1,4 @@
-"""⑤ 용어집 확정 창: ④ 용어집 만들기로 모은 용어 후보의 번역을 프로그램 안에서 확인·고쳐 확정한다.
+"""④ 용어집 창: 모은 용어 후보의 번역을 프로그램 안에서 확인·고쳐 확정한다 (‘용어 후보 다시 만들기…’로 후보를 새로 모은다).
 
 엑셀(용어집_검증.xlsx)은 따로 둔다: ‘엑셀로 내보내기’로 표 내용을 엑셀에 쓰고, ‘엑셀에서 가져오기’로 엑셀에서 고친
 것을 그대로 확정할 수 있다 (예전 흐름). 화면에서 고친 값은 닫을 때 검증 엑셀에 저장해 다음에 이어 볼 수 있다."""
@@ -40,9 +40,10 @@ class GlossaryReviewDialog(QDialog):
         super().__init__(parent)
         self.project_dir = project_dir
         self.result = None
+        self.rebuild = False  # ‘용어 후보 다시 만들기…’를 눌러 닫았나 (부른 쪽이 후보를 다시 만든다)
         self._dirty = False  # 표를 고쳤는가 (고친 것이 있을 때만 닫으면서 검증 엑셀에 쓴다)
         self._from_excel = False  # 엑셀에서 가져오기를 해 봤는가 (그 뒤에는 표로 엑셀을 덮어쓰지 않는다)
-        self.setWindowTitle("⑤ 용어집 확정")
+        self.setWindowTitle("④ 용어집")
         fit_to_screen(self, 1400, 760, maximize_below=0)
         self.guide = hint_bar("", "info")
         self.search = QLineEdit()
@@ -73,12 +74,17 @@ class GlossaryReviewDialog(QDialog):
         self.import_btn = QPushButton("엑셀에서 가져오기…")
         self.import_btn.setToolTip("엑셀에서 고친 용어집을 가져와 그대로 확정합니다 (표의 내용 대신)")
         self.import_btn.clicked.connect(self.import_excel)
+        self.rebuild_btn = QPushButton("용어 후보 다시 만들기…")
+        self.rebuild_btn.setToolTip("원문을 고쳤거나 파일을 더 읽었을 때: 지금 원문으로 용어 후보를 다시 모읍니다.\n"
+                                    "표에서 고친 번역은 저장하고 닫은 뒤 만들고, 새 후보에도 같은 원문 용어면 그대로 옮깁니다.\n"
+                                    "확정된 용어는 그대로 남습니다 (원문에서 사라진 용어의 고친 번역은 옮기지 않습니다)")
+        self.rebuild_btn.clicked.connect(self._rebuild)
         self.ok_btn = QPushButton("용어집 확정")
         self.ok_btn.setStyleSheet(PRIMARY_QSS)
         self.ok_btn.clicked.connect(self.confirm)
         close = QPushButton("닫기 (고친 것 저장)")
         close.clicked.connect(self.reject)
-        for b in (self.add_btn, self.del_btn, self.export_btn, self.import_btn, self.ok_btn, close):
+        for b in (self.add_btn, self.del_btn, self.export_btn, self.import_btn, self.rebuild_btn, self.ok_btn, close):
             b.setAutoDefault(False)
         top = QHBoxLayout()
         top.addWidget(self.search, 1)
@@ -89,12 +95,14 @@ class GlossaryReviewDialog(QDialog):
         bottom.addSpacing(16)
         bottom.addWidget(self.export_btn)
         bottom.addWidget(self.import_btn)
+        bottom.addSpacing(16)
+        bottom.addWidget(self.rebuild_btn)
         bottom.addStretch(1)
         bottom.addWidget(self.ok_btn)
         bottom.addWidget(close)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
-        lay.addWidget(page_title("⑤ 용어집 확정", 14))
+        lay.addWidget(page_title("④ 용어집", 14))
         lay.addWidget(self.guide)
         lay.addLayout(top)
         lay.addWidget(self.table, 1)
@@ -104,6 +112,13 @@ class GlossaryReviewDialog(QDialog):
 
     def _mark_dirty(self, _item=None):
         self._dirty = True
+
+    def _rebuild(self):
+        """‘용어 후보 다시 만들기…’: 고친 것을 저장하며 닫고(닫기와 같음), 부른 쪽이 후보를 다시 만든다."""
+        self.rebuild = True
+        self.reject()
+        if self.isVisible():  # 저장하지 못해 창에 남기로 했으면 다시 만들지 않는다
+            self.rebuild = False
 
     # ---- 표
     def _fill(self, rows: list[dict]):

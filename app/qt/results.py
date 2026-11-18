@@ -1008,7 +1008,7 @@ class GroupPickDialog(QDialog):
 
 
 class OutputActions:
-    """프로젝트 화면의 ⑦ 지우기 · ⑧ 한글 넣기 · 결과 보기 · 시험 실행."""
+    """프로젝트 화면의 ⑦ 한글 넣기(안 지운 파일은 먼저 지우기) · 결과 보기 · 시험 실행 · 오른쪽 클릭 ‘글자 지우기…’."""
 
     def __init__(self, page):
         self.page = page
@@ -1022,26 +1022,31 @@ class OutputActions:
         return self.page.scoped_files()
 
     # ---- 지우기
-    def erase(self, auto: bool = False, note: str = ""):
-        """auto=True: 번역에 이어서 부를 때. 묻지 않고 지운 파일은 건너뛴다. note는 끝 창 맨 위에 보인다."""
-        if not auto and self.page.steps.ask_scope("⑦ 글자 지우기") is False:  # 그룹·파일을 고른 채면 전체/고른 항목 (기본 전체)
+    def erase(self):
+        """목록 오른쪽 클릭 ‘글자 지우기…’: 오른쪽 클릭한 줄(전체·그룹·파일)을 지금 지운다 (묻지 않고 그 범위만).
+        보통은 뒤에서 지우기와 ⑦ 한글 넣기가 지운다."""
+        files = self.page.scoped_files()
+        if not files:
+            QMessageBox.information(self.page, "글자 지우기", "지울 파일이 없습니다.")
             return
-        self._note = note
+        no_regions = [g["name"] for g in self.page.ov.get("groups", []) if not g.get("has_regions")
+                      and any(str(f["dir"]) == str(x["dir"]) for f in g["files"] for x in files)]
+        if no_regions:  # 영역이 없는 그룹은 지울 수 없다 (‘이미 지웠다’고 잘못 알리지 않게)
+            QMessageBox.information(self.page, "글자 지우기",
+                                    f"영역을 지정하지 않은 그룹이 있어 지울 수 없습니다: {', '.join(no_regions)}\n"
+                                    "먼저 ‘영역 지정’을 하세요.")
+            return
         scope = self.page.scope()[1]
         bg = getattr(self.page, "bg", None)
         if bg is not None and bg.busy_with(scope):  # 뒤에서 지우는 중: 서두르게만 한다
             bg.boost()
-            msg = f"{note}\n\n" if note else ""
             QMessageBox.information(self.page, "글자 지우기",
-                                    msg + f"뒤에서 글자를 지우는 중입니다 ({bg.text or '진행 중'}).\n"
+                                    f"뒤에서 글자를 지우는 중입니다 ({bg.text or '진행 중'}).\n"
                                     "우선순위를 높였습니다. 끝나면 목록의 ‘글자 지움’이 채워집니다.")
             return
-        # 초기화로 멈춰 둔 파일도 ⑦을 누르면 지운다 (뒤에서 지우기만 그 파일을 건너뛴다)
+        # 초기화로 멈춰 둔 파일도 여기서 누르면 지운다 (뒤에서 지우기만 그 파일을 건너뛴다)
         need = {str(d) for d in service.files_needing_erase(self.pdir, scope, include_paused=True)}
         if not need:  # 이미 다 지웠고 그 뒤 원문·설정도 그대로: 알리기만
-            if auto and note:
-                self._erase_done(service.ProjectStepResult("done"))
-                return
             again = ask_choice(self.page, "글자 지우기", "이미 지웠습니다 (그 뒤 원문·영역 설정도 바뀌지 않았습니다).",
                                [("확인", "accept"), ("그래도 다시 지우기", "destructive")], default=0,
                                informative="카드 한 장만 다르게 지우려면 결과 보기에서 그 영역의 ‘지우기’를 바꾸세요.\n"
@@ -1060,37 +1065,51 @@ class OutputActions:
         from app.qt.step_common import state_label
 
         self.page.refresh()
-        lines = [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
-                                                 else f" — {f.get('reason', '')}") for f in r.files]
-        note, self._note = getattr(self, "_note", ""), ""
-        if note:
-            lines = ["⑥ 전체 번역", note, "", "글자 지우기"] + lines
-        if r.state in ("done", "skipped") and note:  # 번역에 이어 지운 경우: 바로 번역 검수로 갈 수 있게
-            box = QMessageBox(self.page)
-            box.setWindowTitle("글자 지우기")
-            box.setText("\n".join(lines) + (f"\n\n{r.reason}" if r.reason else "")
-                        + "\n\n‘번역 검수’에서 번역을 칸마다 확인하세요.")
-            openb = box.addButton("번역 검수 열기", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() is openb:
-                self.page.steps.review_translation()
-        elif r.state in ("done", "skipped"):
+        lines = self._erase_lines(r)
+        if r.state in ("done", "skipped"):
             QMessageBox.information(self.page, "글자 지우기", "\n".join(lines) + (f"\n\n{r.reason}" if r.reason else ""))
         else:
             show_problem(self.page, f"글자 지우기를 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
                          detail="\n".join(lines))
 
-    # ---- 한글 넣기
+    @staticmethod
+    def _erase_lines(r) -> list[str]:
+        from app.qt.step_common import state_label
+
+        return [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
+                                                         else f" — {f.get('reason', '')}") for f in r.files]
+
+    # ---- ⑦ 한글 넣기
     def compose(self, accept: bool = False):
-        """한글 넣기. 처음 누르면 먼저 글꼴 고르기 창을 띄운다 (엑셀 확인 뒤 다시 부를 때는 묻지 않음)."""
+        """⑦ 한글 넣기. 고른 범위에 아직 지우지 않은 파일(초기화로 멈춘 파일 포함)이 있으면 먼저 지우고,
+        글꼴 고르기 창을 띄운 뒤 넣는다 (엑셀 확인 뒤 다시 부를 때는 묻지 않음)."""
         if accept:
             self._run_compose(True)
             return
-        if not self._pick_group("⑧ 한글 넣기", self._can_compose):
+        if not self._pick_group("⑦ 한글 넣기", self._can_compose):
             return
         if not self._review_left_ok():
             return
+        need = sorted({str(d) for d in service.files_needing_erase(self.pdir, self.page.scope()[1], include_paused=True)})
+        if need:  # 뒤에서 지우는 중이면 run_exclusive가 그 쪽을 마무리하기를 기다린 뒤 지운다
+            job = worker.Job(service.erase_project, self.pdir, files=need)
+            bg_erase.run_exclusive(self.page, "한글 넣기 전에 글자 지우기", job, self._erased_for_compose,
+                                   self._erase_failed)
+            return
+        self._ask_fonts()
+
+    def _erased_for_compose(self, r):
+        """⑦ 한글 넣기 앞의 글자 지우기가 끝남: 다 지웠으면 글꼴 고르기로, 아니면 멈추고 알린다."""
+        from app.qt.step_common import state_label
+
+        self.page.refresh()
+        if r.state not in ("done", "skipped"):
+            show_problem(self.page, f"글자 지우기를 끝내지 못해 한글을 넣지 않았습니다 ({state_label(r.state)})",
+                         r.reason or "", detail="\n".join(self._erase_lines(r)))
+            return
+        self._ask_fonts()
+
+    def _ask_fonts(self):
         job = worker.Job(service.font_plans, self.pdir, files=self.page.scope()[1])
         worker.run_with_dialog(self.page, "글꼴 추천 받는 중", job, self._fonts_ready,
                                lambda m: show_failure(self.page, "글꼴 추천을 받지 못했습니다", m))
@@ -1167,9 +1186,7 @@ class OutputActions:
         if not files:
             return False, "파일 없음"
         if not all(f.get("translated") for f in files):
-            return False, "아직 못 함: 먼저 ⑥ 전체 번역"
-        if not all(f["erased"] for f in files):
-            return False, "아직 못 함: 먼저 ⑦ 글자 지우기"
+            return False, "아직 못 함: 먼저 ⑤ 전체 번역"
         done = sum(1 for f in files if f["composed"])
         return True, f"파일 {n}개 · 한글 {done}/{n}" + (" 완료" if done == n else "")
 
@@ -1181,7 +1198,7 @@ class OutputActions:
     @staticmethod
     def _can_test(g: dict) -> tuple[bool, str]:
         if not g["files"] or not all(f.get("translated") for f in g["files"]):
-            return False, "아직 못 함: 먼저 ⑥ 전체 번역"
+            return False, "아직 못 함: 먼저 ⑤ 전체 번역"
         return True, f"카드 {_group_cards(g)}장"
 
     def _pick_group(self, title: str, check) -> bool:

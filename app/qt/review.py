@@ -29,7 +29,7 @@ STATUSES = ["번역 없음", "일본어 남음", "아이콘 불일치", "원문 
 CONFLICT = "엑셀과 앱이 다름"
 HELP = "Ctrl+S 저장 · Alt+↑/↓ 칸 이동 · Ctrl+F 찾기"
 GUIDE = "주황 칸부터 고치세요. 번역이 맞으면 고치지 않고 Ctrl+Enter = 확인하고 다음 칸."
-NO_PREVIEW_ERASED = "글자를 지운 뒤에 한글 넣은 모습을 볼 수 있습니다 (⑦ 글자 지우기)"
+NO_PREVIEW_ERASED = "글자를 지운 뒤에 한글 넣은 모습을 볼 수 있습니다 (뒤에서 지우는 중이거나 ⑦ 한글 넣기가 지웁니다)"
 CHECK_MS, PREVIEW_MS, SEARCH_MS = 150, 600, 250
 
 
@@ -50,7 +50,7 @@ class TranslationReviewDialog(QDialog):
 
     def __init__(self, project_dir: Path | str, parent=None, preset: tuple | None = None):
         super().__init__(parent)
-        self.setWindowTitle("번역 검수")
+        self.setWindowTitle("⑥ 번역 검수")
         fit_to_screen(self, 1400, 900)
         self.pdir = Path(project_dir)
         self.rows: list[dict] = []
@@ -938,8 +938,8 @@ class TranslationReviewDialog(QDialog):
         n = len(self.saved_ids)
         if not n:
             return ""
-        return f"고친 칸 {n}개는 다음 ⑧ 한글 넣기부터 들어갑니다" if not self.saved_composed else \
-            f"고친 칸 {n}개는 ⑧ 한글 넣기를 다시 하세요 (이미 한글을 넣은 파일이 있습니다)"
+        return f"고친 칸 {n}개는 다음 ⑦ 한글 넣기부터 들어갑니다" if not self.saved_composed else \
+            f"고친 칸 {n}개는 ⑦ 한글 넣기를 다시 하세요 (이미 한글을 넣은 파일이 있습니다)"
 
     def done(self, r):
         if not self._confirm_leave():

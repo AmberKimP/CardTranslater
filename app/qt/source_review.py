@@ -367,7 +367,7 @@ class SourceReviewDialog(QDialog):
         elif n_unread:
             set_hint(self.guide, f"아직 읽지 않은 칸이 {n_unread}개 있습니다. 프로젝트 화면에서 ‘① 글자 추출’을 다시 누르면 이어서 읽습니다.", "info")
         else:
-            set_hint(self.guide, "확인할 칸이 없습니다. 창을 닫고 ‘④ 용어집 만들기’로 넘어가세요.", "done")
+            set_hint(self.guide, "확인할 칸이 없습니다. 창을 닫고 ‘④ 용어집’으로 넘어가세요.", "done")
         self._busy = True
         try:
             self.table.setRowCount(len(self.cells))

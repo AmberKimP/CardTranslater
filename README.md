@@ -38,7 +38,7 @@ CardTranslater/
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python scripts/fetch_fonts.py
-# 화면 (PySide6): 프로젝트·파일·그룹·뺄 쪽·영역 지정 + 추출·원문 확인·아이콘 정의·용어집 만들기·전체 번역 + 지우기·한글 넣기·결과 보기·시험 실행
+# 화면 (PySide6): 프로젝트·파일·그룹·뺄 쪽·영역 지정 + ① 글자 추출 ② 아이콘 정의 ③ 원문 확인 ④ 용어집 ⑤ 전체 번역 ⑥ 번역 검수 + ⑦ 한글 넣기(안 지운 파일은 먼저 지움)·결과 보기·시험 실행
 .venv/Scripts/python -m app.qt          # 시작할 때 로그인 방식(Claude 구독 / API 키) 고르기. --no-login 으로 건너뜀
 # exe 빌드 -> dist/CardTranslater/CardTranslater.exe (폴더째 배포. 빌드 뒤 자가 점검 --selftest)
 .venv/Scripts/python packaging/build.py
