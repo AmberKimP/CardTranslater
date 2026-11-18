@@ -513,6 +513,7 @@ class AddFilesDialog(QDialog):
         self.r_manual = QRadioButton("수동으로 영역 지정")
         self.r_manual.setToolTip("카드가 줄 맞춰 놓이지 않았거나 배열 자르기가 맞지 않을 때, 이미지 위에 카드 자리를 직접 그립니다")
         self.manual_boxes: dict = {}  # {이미지 경로: [(x0, y0, x1, y1) 원본 px]}
+        self.card_mm: tuple[float, float] | None = None  # 미리 보기에서 정한 카드 크기 (가로, 세로) mm (None = 자동)
         ib = QButtonGroup(self)
         ib.addButton(self.r_single)
         ib.addButton(self.r_grid)
@@ -551,9 +552,10 @@ class AddFilesDialog(QDialog):
         for w in (self.r_single, self.r_grid, self.r_manual):
             w.toggled.connect(lambda _c: self._sync())
         for sp in (self.cols, self.rows):
-            sp.valueChanged.connect(lambda _v: self._sync())
-        self.files.model().rowsInserted.connect(lambda *_a: self._sync())
-        self.files.model().rowsRemoved.connect(lambda *_a: self._sync())
+            sp.valueChanged.connect(lambda _v: self._layout_changed())
+        # 넣을 파일이 바뀌면 미리 보기에서 정한 카드 크기는 버린다 (다른 시트에 그 크기를 쓰지 않게)
+        self.files.model().rowsInserted.connect(lambda *_a: self._layout_changed())
+        self.files.model().rowsRemoved.connect(lambda *_a: self._layout_changed())
 
         self.empty_hint = QLabel("‘파일 고르기…’를 눌러 카드 PDF나 그림(JPG·PNG)을 고르세요.\n여러 개를 한 번에 골라도 됩니다.")
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -684,7 +686,9 @@ class AddFilesDialog(QDialog):
                 self.img_info.setText("‘카드 자리 그리기…’를 눌러 이미지·PDF 쪽 위에 카드 자리를 그리세요.")
         elif (imgs or pdfs) and grid:
             per = self.cols.value() * self.rows.value()
-            self.img_info.setText(f"{what} → 카드 약 {(len(imgs) + n_pdf_pages) * per}장 (한 쪽에 한 장씩 PDF로)")
+            size = (f" · 카드 크기 {self.card_mm[0]:.1f}×{self.card_mm[1]:.1f}mm로 찾음" if self.card_mm
+                    else " · 끝이 맞지 않으면 ‘자를 자리 미리 보기’에서 카드 크기를 정하세요")
+            self.img_info.setText(f"{what} → 카드 약 {(len(imgs) + n_pdf_pages) * per}장 (한 쪽에 한 장씩 PDF로){size}")
         elif imgs:
             self.img_info.setText(f"이미지 {len(imgs)}장 → 카드 {len(imgs)}장 (한 쪽에 한 장씩 PDF로)"
                                   + (" · PDF는 그대로 넣습니다" if pdfs else ""))
@@ -721,6 +725,10 @@ class AddFilesDialog(QDialog):
             self.manual_boxes = dlg.result()
         self._sync()
 
+    def _layout_changed(self):
+        self.card_mm = None  # 장수가 바뀌면 정한 카드 크기는 다시 정한다
+        self._sync()
+
     def layout_choice(self) -> tuple[int, int]:
         return (self.cols.value(), self.rows.value()) if self.r_grid.isChecked() else (1, 1)
 
@@ -739,31 +747,22 @@ class AddFilesDialog(QDialog):
             except Exception as e:  # noqa: BLE001
                 show_problem(self, "PDF 쪽을 그림으로 바꾸지 못했습니다", str(e), "PDF가 열리는지 확인하세요.")
                 return
+        from app.qt.cut_preview import CutPreviewDialog
+
         cols, rows = self.layout_choice()
-        try:
-            png, info = service.image_preview(path, cols, rows)
-        except Exception as e:  # noqa: BLE001
-            show_problem(self, "자를 자리를 미리 볼 수 없습니다", str(e),
-                         "그림 파일이 열리는지 확인하고, 가로·세로 장수를 바꿔 다시 해 보세요.")
+        if cols * rows <= 1:  # 한 장에 카드 한 장: 크기를 정할 것이 없다
+            dlg = CutPreviewDialog(path, cols, rows, None, self, ok_text="닫기")
+            dlg.size_row_visible(False)
+            dlg.exec()
             return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"자를 자리 — {Path(path).name}")
-        pic = QLabel()
-        pm = QPixmap()
-        pm.loadFromData(png, "PNG")
-        pic.setPixmap(pm)
-        msg = f"카드 {info['cards']}장으로 자릅니다 (빨간 상자)."
-        if info["warnings"]:
-            msg += "\n" + "\n".join(info["warnings"])
-        note = QLabel(msg)
-        note.setWordWrap(True)
-        close = QPushButton("닫기")
-        close.clicked.connect(dlg.accept)
-        dl = QVBoxLayout(dlg)
-        dl.addWidget(pic)
-        dl.addWidget(note)
-        dl.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
-        dlg.exec()
+        dlg = CutPreviewDialog(path, cols, rows, self.card_mm, self, ok_text="이대로 자르기")
+        if dlg.exec():
+            self.card_mm = dlg.chosen_mm()
+            self._sync()
+
+    def _card_mm_for(self, cols: int, rows: int) -> tuple[float, float] | None:
+        """넣을 때 쓸 카드 크기: 배열로 자를 때 미리 보기에서 정한 것만."""
+        return self.card_mm if self.r_grid.isChecked() and cols * rows > 1 else None
 
     def accept(self):
         files = self.all_files()
@@ -812,7 +811,7 @@ class AddFilesDialog(QDialog):
                                         f"{sum(1 for v in own.values() if not v)}쪽은 넣지 않았습니다")
                     ri = service.add_images(self.project_dir, pages, group, cols=cols, rows=rows,
                                             name=Path(pdf).stem, new_group=new, regions_from=regions_from,
-                                            boxes=own, origin_pdf=pdf)
+                                            boxes=own, origin_pdf=pdf, card_mm=self._card_mm_for(cols, rows))
                     new, regions_from = False, None
                     if ri.file_dir:
                         added.append(ri.file_dir)
@@ -831,7 +830,7 @@ class AddFilesDialog(QDialog):
                 cols, rows = self.layout_choice()
                 ri = service.add_images(self.project_dir, imgs, group, cols=cols, rows=rows,
                                         name=self.img_name.text().strip() or None, new_group=new,
-                                        regions_from=regions_from, boxes=boxes)
+                                        regions_from=regions_from, boxes=boxes, card_mm=self._card_mm_for(cols, rows))
                 if ri.file_dir:
                     added.append(ri.file_dir)
                 skipped += ri.skipped

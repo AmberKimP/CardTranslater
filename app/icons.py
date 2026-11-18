@@ -1318,8 +1318,8 @@ def scan(info, work: Path) -> ScanResult:
     for fd in game_file_dirs(info):
         inc = set(included_pages(fd))
         ext = load_extracted(fd)
-        todo = [(p, r, v["source"], v.get("icon_numbers")) for p, regs in sorted(ext.items()) if p in inc
-                for r, v in regs.items() if isinstance(v.get("source"), str) and TOKEN_RE.search(v["source"])]
+        todo = [(p, r, v["source"], v.get("icon_numbers"), v.get("icon_boxes")) for p, regs in sorted(ext.items())
+                if p in inc for r, v in regs.items() if isinstance(v.get("source"), str) and TOKEN_RE.search(v["source"])]
         if not todo:
             continue
         proj = load_project(fd)
@@ -1327,7 +1327,7 @@ def scan(info, work: Path) -> ScanResult:
         src = next((fd / "source").glob("*.pdf"))
         doc = pymupdf.open(src)
         try:
-            for pno, rname, text, icon_nums in todo:
+            for pno, rname, text, icon_nums, icon_saved in todo:
                 reg = {r.name: r for r in proj.template.regions_for(pno)}.get(rname)
                 if reg is None:  # 영역을 지운 칸은 그림을 자를 수 없다
                     continue
@@ -1416,7 +1416,12 @@ def scan(info, work: Path) -> ScanResult:
                                     text.replace("\n", " / "), named=t.group(1), ti=ti)
                     oc.line, oc.order, _nm = tokens_in(text)[ti]
                     oc.unique = picture(pno, rname)
-                    box = locate(img, text, ti)[0]
+                    # ②에서 확정할 때 남긴 자리(손으로 잡은 상자 포함)가 있으면 그대로 쓴다 (다시 찾지 않음)
+                    k = sum(1 for t2 in tokens[:ti] if t2.group(1) == t.group(1))
+                    saved = next((e["box"] for e in (icon_saved or []) if isinstance(e, dict)
+                                  and e.get("name") == t.group(1) and e.get("k") == k and e.get("box")), None)
+                    saved = [int(round(float(v))) for v in saved] if saved else None
+                    box = saved or locate(img, text, ti)[0]
                     if box is None:  # 줄 배치로 못 찾으면 사전 그림으로 칸 안을 찾는다
                         box = _place.match_known(info, img, t.group(1), text)
                     if box is None:
@@ -1427,7 +1432,8 @@ def scan(info, work: Path) -> ScanResult:
                     e = next((e for e in (icon_nums or []) if isinstance(e, dict) and e.get("index") == ti
                               and e.get("name") == t.group(1) and e.get("text")), None)
                     if e is not None:
-                        nb = absorb_number(img, box, e.get("side", "before"), len(str(e["text"])))
+                        # 남긴 자리는 숫자까지 잡은 상자다 (다시 넓히지 않음)
+                        nb = None if saved else absorb_number(img, box, e.get("side", "before"), len(str(e["text"])))
                         if nb is not None:
                             box = nb
                         oc.number = {"text": str(e["text"]), "side": e.get("side", "before")}

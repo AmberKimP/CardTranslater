@@ -464,11 +464,194 @@ def _apply_equal_size(rgb: np.ndarray, cut: SheetCut) -> None:
     cut.boxes = boxes
     cut.warnings = [x for x in cut.warnings if not x.startswith(("크기가 다른 카드", "카드 위치에 맞춰", "카드 사이 경계를"))]
     cut.warnings.append(f"카드 크기가 같다고 보고 카드 끝 선에 맞춰 잘랐습니다 (카드 {size[0]}×{size[1]}px)")
+    # 틈 없이 붙은 배열인데 끝 카드가 그림 끝에 걸려 작아졌으면(카드가 다 들어갈 자리가 있는데도): 경계를 잘못 잡은 것.
+    # 모든 카드가 그림 안에 들어가는 자리 중 카드 사이 경계가 가장 뚜렷한 곳으로 옮긴다 (공주와기사 5장 가로 시트:
+    # 첫 카드의 밝은 왼쪽을 여백으로 보아 모든 경계가 87px 오른쪽으로 밀렸다)
+    if not cut.gutters_found:
+        _keep_touching_inside(rgb, cut, size)
 
 
-def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0) -> SheetCut:
+def _grid_index(starts: list[int], pitch: float) -> tuple[list[int], int]:
+    """상자 시작 자리 -> 몇 번째 열(행)인가, 열(행) 수. 시작 자리가 pitch의 30%보다 가까우면 같은 열."""
+    order = sorted(set(starts))
+    lines: list[int] = []
+    for v in order:
+        if not lines or v - lines[-1] > 0.3 * pitch:
+            lines.append(v)
+    idx = [min(range(len(lines)), key=lambda i: abs(starts[k] - lines[i])) for k in range(len(starts))]
+    return idx, len(lines)
+
+
+def _seam_profile(rgb: np.ndarray, axis: int, band: tuple[int, int]) -> np.ndarray:
+    """카드 사이 경계 찾기 윤곽: axis=0이면 x마다 (세로 경계), 1이면 y마다. band: 카드가 있는 다른 축 범위."""
+    import cv2
+
+    lum = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    a, b = band
+    if axis == 0:
+        g = np.abs(np.diff(lum[a:b], axis=1)).mean(axis=0)
+    else:
+        g = np.abs(np.diff(lum[:, a:b], axis=0)).mean(axis=1)
+    return np.append(g, 0.0)
+
+
+def _best_offset(prof: np.ndarray, n: int, pitch: float, lo: int, hi: int, init: int) -> int:
+    """n장이 pitch 간격으로 붙어 있을 때 첫 카드 시작 자리 (lo~hi): 안쪽 경계 n-1곳의 윤곽 세기 합이 가장 큰 곳
+    (같으면 init에 가까운 곳)."""
+    if hi < lo:
+        return init
+    best, best_v = init if lo <= init <= hi else lo, -1.0
+    L = len(prof)
+    for s0 in sorted(range(lo, hi + 1), key=lambda v: abs(v - init)):
+        v = 0.0
+        for k in range(1, n):
+            c = int(round(s0 + k * pitch))
+            if 0 <= c < L:
+                v += float(prof[max(0, c - 2):c + 3].max())
+        if v > best_v + 1e-6:
+            best, best_v = s0, v
+    return best
+
+
+def _place_axis(rgb: np.ndarray, boxes: list, axis: int, pitch: float, inside_only: bool,
+                group_pitch: float | None = None) -> tuple[list, bool]:
+    """붙은 배열의 한 축(axis=0 가로)을 pitch 간격으로 다시 놓는다. 모든 카드가 그림 안에 들어가게 (들어갈 수 있으면).
+    inside_only: 카드가 그림 끝에 걸려 작아졌을 때만 옮긴다 (자동 자르기). 옮겼으면 True."""
+    H, W = rgb.shape[:2]
+    size_img = W if axis == 0 else H
+    a0, a1 = (0, 2) if axis == 0 else (1, 3)
+    starts = [int(b[a0]) for b in boxes]
+    idx, n = _grid_index(starts, group_pitch or pitch)  # 열 묶기는 찾은 카드 크기로 (정한 크기가 크면 열이 합쳐진다)
+    span = n * pitch
+    first = min(starts)
+    ob = (1, 3) if axis == 0 else (0, 2)
+    band = (max(0, min(int(b[ob[0]]) for b in boxes)), min(H if axis == 0 else W, max(int(b[ob[1]]) for b in boxes)))
+    # 카드를 옮겨 갈 쪽(끝이 잘린 반대쪽)이 빈 종이면, 스캔이 카드를 잘라 먹은 것이다 (카드가 정말 그림 밖까지 있다):
+    # 그림 안에 다 넣으려고 옮기지 않는다 (공주와기사 3×3 스캔: 오른쪽 열이 그림 끝에 걸리고 왼쪽은 흰 종이)
+    last = max(int(b[a1]) for b in boxes)
+    free = (0, first) if last >= size_img - 1 else (last, size_img)
+    cropped = free[1] - free[0] >= 4 and _blank_paper(rgb, axis, free, band)
+    if inside_only:
+        clipped = any(b[a1] - b[a0] < pitch * 0.985 for b in boxes)
+        if not clipped or span > size_img + 1 or cropped:
+            return boxes, False
+    if cropped:  # 그림 밖으로 걸쳐도 된다
+        lo, hi = int(-pitch), int(size_img)
+    elif span <= size_img:
+        lo, hi = 0, int(size_img - span)
+    else:  # 카드가 그림보다 크다: 넘치는 만큼 양쪽으로
+        lo, hi = int(size_img - span), 0
+    lo, hi = max(lo, int(first - pitch * 0.5)), min(hi, int(first + pitch * 0.5))
+    s0 = _best_offset(_seam_profile(rgb, axis, band), n, pitch, lo, hi, first)
+    out = []
+    for b, i in zip(boxes, idx):
+        v0 = int(round(s0 + i * pitch))
+        v1 = int(round(s0 + (i + 1) * pitch))
+        nb = list(b)
+        nb[a0], nb[a1] = max(0, v0), min(size_img, v1)
+        if nb[a1] - nb[a0] < MIN_BOX_PX:  # 그림 밖으로 나간 자리
+            continue
+        out.append(tuple(nb))
+    return out, out != list(boxes)
+
+
+BLANK_PAPER_WHITE = 0.6  # 이만큼 넘는 픽셀이 아주 밝으면(240 이상) 빈 종이 (카드 그림이 아님)
+FIT_MAX_GROW = 1.25  # 정한 카드 크기가 찾은 카드 크기의 이만큼보다 크면 받아들이지 않는다 (열이 합쳐지고 그림 밖으로 나감)
+TOUCH_GAP_PX = 2  # 이웃 카드 사이 틈이 이 이하면 붙은 배열 (정한 크기 간격으로 놓는다)
+
+
+def _blank_paper(rgb: np.ndarray, axis: int, span: tuple[int, int], band: tuple[int, int]) -> bool:
+    """그림의 한 띠(axis=0이면 x가 span, y가 band)가 빈 종이(거의 흰색)인가."""
+    a, b = band
+    strip = rgb[a:b, span[0]:span[1]] if axis == 0 else rgb[span[0]:span[1], a:b]
+    if strip.size == 0:
+        return False
+    lum = strip[..., :3].astype(np.float32).mean(axis=2)
+    return float((lum >= 240).mean()) >= BLANK_PAPER_WHITE
+
+
+def _keep_touching_inside(rgb: np.ndarray, cut: SheetCut, size: tuple[int, int]) -> None:
+    moved = False
+    for axis, pitch in ((0, size[0]), (1, size[1])):
+        cut.boxes, m = _place_axis(rgb, cut.boxes, axis, float(pitch), inside_only=True)
+        moved = moved or m
+    if moved:
+        cut.warnings.append("끝 카드가 그림 밖으로 밀려 잘리지 않게 카드 자리를 옮겼습니다 (미리 보기로 확인하세요)")
+
+
+def _fit_to_size(rgb: np.ndarray, cut: SheetCut, card_size: tuple[float, float]) -> None:
+    """자동으로 찾은 카드 자리를 사람이 정한 카드 크기(card_size px)로 다시 맞춘다.
+    - 틈 없이 붙은 배열: 그 크기 간격으로 놓고, 모든 카드가 그림 안에 들어가는 자리 중 카드 사이 경계가 가장 뚜렷한 곳.
+    - 틈이 있는 배열: 카드마다 가운데를 그대로 두고 크기만 바꾼다.
+    (축마다 가른다: 그 크기 n장이 찾은 자리를 거의 다 채우면 붙은 배열)"""
+    H, W = rgb.shape[:2]
+    cw, chh = float(card_size[0]), float(card_size[1])
+    if cw < MIN_BOX_PX or chh < MIN_BOX_PX:
+        return
+    auto = list(cut.boxes)
+    for axis, pitch in ((0, cw), (1, chh)):
+        a0, a1 = (0, 2) if axis == 0 else (1, 3)
+        lim = W if axis == 0 else H
+        found = float(np.median([b[a1] - b[a0] for b in auto]))
+        idx, n = _grid_index([int(b[a0]) for b in auto], found)
+        if pitch > found * FIT_MAX_GROW or n * pitch > lim * 1.05:
+            # 카드가 이 크기면 시트에 다 들어가지 않는다 (가로·세로를 바꿔 넣었거나 잘못 넣음): 자동으로 찾은 그대로
+            cut.boxes = auto
+            cut.warnings.append(f"정한 카드 크기({cw * 25.4 / cut.dpi:.1f}×{chh * 25.4 / cut.dpi:.1f}mm)가 시트에 비해 "
+                                "너무 커서 자동으로 찾은 자리 그대로 둡니다 (가로·세로를 바꿔 넣지 않았는지 확인하세요)")
+            return
+        span = max(b[a1] for b in auto) - min(b[a0] for b in auto)
+        # 이웃 카드 사이 틈 (찾은 자리 기준): 틈이 보이면 붙은 배열이 아니다
+        firsts = {}
+        for b, i in zip(auto, idx):
+            firsts.setdefault(i, []).append(b)
+        gaps = [min(x[a0] for x in firsts[i + 1]) - max(x[a1] for x in firsts[i]) for i in range(n - 1)
+                if i in firsts and i + 1 in firsts]
+        touching = n * pitch >= span * 0.97 and all(g <= TOUCH_GAP_PX for g in gaps)
+        if touching:  # 그 크기 n장이 찾은 자리를 거의 다 채우고 틈도 없다: 붙은 배열
+            cut.boxes, _m = _place_axis(rgb, cut.boxes, axis, pitch, inside_only=False, group_pitch=found)
+        else:  # 틈이 있다: 카드마다 가운데를 그대로 두고 크기만
+            out = []
+            for b in cut.boxes:
+                c = (b[a0] + b[a1]) / 2
+                nb = list(b)
+                nb[a0], nb[a1] = max(0, int(round(c - pitch / 2))), min(lim, int(round(c + pitch / 2)))
+                out.append(tuple(nb))
+            cut.boxes = out
+    cut.warnings = [x for x in cut.warnings if not x.startswith(("크기가 다른 카드", "카드 크기가 같다고", "끝 카드가"))]
+    cut.warnings.append(f"정한 카드 크기 {cw * 25.4 / cut.dpi:.1f}×{chh * 25.4 / cut.dpi:.1f}mm "
+                        f"({int(round(cw))}×{int(round(chh))}px)로 카드를 다시 찾았습니다")
+
+
+def cut_sheet(path: Path | str, cols: int = 1, rows: int = 1, frame: int = 0,
+              card_size: tuple[float, float] | None = None) -> SheetCut:
     """이미지 한 장(frame: 여러 쪽 TIFF의 몇 번째)을 cols×rows 카드로 자른다.
-    스캔에 카드 말고 다른 것(자·모눈종이·빈 종이)이 있으면 카드가 있는 곳만 쓰고, 카드가 없는 칸은 뺀다."""
+    스캔에 카드 말고 다른 것(자·모눈종이·빈 종이)이 있으면 카드가 있는 곳만 쓰고, 카드가 없는 칸은 뺀다.
+    card_size: 카드 크기 (가로, 세로) px — 사람이 정한 크기. 있으면 자동으로 찾은 자리를 그 크기의 카드로 다시 맞춘다."""
+    cut = _cut_sheet_auto(path, cols, rows, frame)
+    if card_size and cols * rows > 1 and cut.boxes:
+        _fit_to_size(np.asarray(load_images(path)[frame]), cut, card_size)
+    # 어떤 경우에도 뒤집히거나 너무 작은 상자는 쪽으로 만들지 않는다
+    cut.boxes = [b for b in cut.boxes if b[2] - b[0] >= MIN_BOX_PX and b[3] - b[1] >= MIN_BOX_PX]
+    return cut
+
+
+def card_mm(cut: SheetCut) -> tuple[float, float] | None:
+    """자른 카드의 크기 (가로, 세로) mm (카드 크기 중앙값, 그림 끝에 걸린 카드는 빼고). 카드가 없으면 None."""
+    if not cut.boxes:
+        return None
+    W, H = cut.size
+    inner = [b for b in cut.boxes if b[0] > 0 and b[1] > 0 and b[2] < W and b[3] < H] or cut.boxes
+    w = float(np.median([b[2] - b[0] for b in inner]))
+    h = float(np.median([b[3] - b[1] for b in inner]))
+    return round(w * 25.4 / cut.dpi, 1), round(h * 25.4 / cut.dpi, 1)
+
+
+def mm_to_px(size_mm: tuple[float, float], dpi: float) -> tuple[float, float]:
+    return float(size_mm[0]) * dpi / 25.4, float(size_mm[1]) * dpi / 25.4
+
+
+def _cut_sheet_auto(path: Path | str, cols: int, rows: int, frame: int) -> SheetCut:
     im = load_images(path)[frame]
     rgb = np.asarray(im)
     h, w = rgb.shape[:2]
@@ -843,13 +1026,14 @@ def display_png(path: Path | str, max_px: int = 1600) -> tuple[bytes, tuple[int,
     return buf.getvalue(), im.size, s
 
 
-def preview_png(path: Path | str, cols: int = 1, rows: int = 1, max_px: int = 900) -> tuple[bytes, SheetCut]:
-    """자를 자리를 빨간 상자와 번호로 표시한 미리 보기 PNG."""
+def preview_png(path: Path | str, cols: int = 1, rows: int = 1, max_px: int = 900,
+                card_mm_size: tuple[float, float] | None = None) -> tuple[bytes, SheetCut]:
+    """자를 자리를 빨간 상자와 번호로 표시한 미리 보기 PNG. card_mm_size: 사람이 정한 카드 크기 (가로, 세로) mm."""
     import io
 
     from PIL import ImageDraw
 
-    cut = cut_sheet(path, cols, rows)
+    cut = cut_sheet(path, cols, rows, card_size=mm_to_px(card_mm_size, image_dpi(path)) if card_mm_size else None)
     im = load_images(path)[0]
     s = min(1.0, max_px / max(im.size))
     if s < 1.0:
@@ -874,7 +1058,7 @@ class ImagePdfResult:
 
 
 def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, rows: int = 1,
-                  boxes: dict | None = None) -> ImagePdfResult:
+                  boxes: dict | None = None, card_mm_size: tuple[float, float] | None = None) -> ImagePdfResult:
     """이미지 여러 장 -> 카드 한 장이 한 쪽인 PDF. 이미지 순서대로, 한 이미지 안에서는 왼쪽 위부터 가로 먼저.
     boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1), …]} (있으면 cols·rows 대신 그 상자대로 자른다.
     경로는 / 와 \\ 를 가리지 않는다. 목록에 없는 이미지는 통째로 한 장, 빈 목록이면 그 이미지에서는 카드를 만들지 않는다.
@@ -898,8 +1082,9 @@ def images_to_pdf(paths: list[Path | str], out_pdf: Path | str, cols: int = 1, r
                     cut = manual_cut(p, own, frame=fi, im=im)
                     if fi and im.size != frames[0].size:
                         cut.warnings.append(f"{fi + 1}쪽은 첫 쪽과 크기가 달라 그린 자리가 맞지 않을 수 있습니다")
-            else:
-                cut = cut_sheet(p, cols, rows, frame=fi)
+            else:  # card_mm_size: 사람이 정한 카드 크기 (mm, 이미지마다 그 해상도로 px)
+                cut = cut_sheet(p, cols, rows, frame=fi,
+                                card_size=mm_to_px(card_mm_size, image_dpi(p)) if card_mm_size else None)
             sheets.append(cut)
             warnings += [f"{Path(p).name}: {w}" for w in cut.warnings]
             jpeg_src = Path(p).suffix.lower() in (".jpg", ".jpeg")

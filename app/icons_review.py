@@ -418,8 +418,37 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         fd = _ic._occ_dir(info, f)
         mark_icon_changed(fd, page, region, sorted(set(whys)))
         out.changed_cells.append((fd, page, region))
+    # 확정한 아이콘의 자리(손으로 잡은 상자 포함)를 칸에 남긴다: ②를 다시 열어 찾을 때 그 자리를 그대로 쓴다
+    # (다시 찾기는 확정된 [[이름]]의 자리를 그림으로 새로 찾으므로, 손으로 잡은 자리가 사라지거나 비슷한 아이콘 둘이
+    # 한 자리로 잡혔다 — 공주와기사 6쪽)
+    boxes: dict[tuple, list] = {}
+    for o in res.occurrences:
+        name = decision.get(o.group, o.named) if o.named else decision.get(o.group)
+        if not name or name.startswith("=") or not o.box:
+            continue
+        boxes.setdefault((o.file, o.page, o.region), []).append((o.line, o.order, name, o.box))
+    for (f, page, region), items in boxes.items():
+        save_icon_boxes(_ic._occ_dir(info, f), page, region, items)
     shutil.rmtree(work, ignore_errors=True)
     return out
+
+
+def save_icon_boxes(file_dir: Path, page: int, region: str, items: list[tuple]) -> None:
+    """칸의 확정한 아이콘 자리 [(줄, 순서, 이름, 상자)]를 원문 순서대로 icon_boxes에 적는다:
+    [{"name", "k"(그 칸에서 같은 이름의 몇 번째), "box"}]. 다시 찾기(scan)가 [[이름]]의 자리로 먼저 쓴다."""
+    seen: dict[str, int] = {}
+    entries = []
+    for _line, _order, name, box in sorted(items, key=lambda x: (x[0] or 0, x[1] or 0)):
+        k = seen.get(name, 0)
+        seen[name] = k + 1
+        entries.append({"name": name, "k": k, "box": [round(float(v), 1) for v in box]})
+    for f in _ic._extract_files(file_dir, page):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        r = rec["regions"].get(region)
+        if not r or not isinstance(r.get("source"), str):
+            continue
+        r["icon_boxes"] = entries
+        workspace._write(f, rec)
 
 
 

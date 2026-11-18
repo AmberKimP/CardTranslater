@@ -170,16 +170,24 @@ def _marked_html(units: list[str], marks: set[int]) -> str:
 
 
 def diff_html(texts: list[str], ref: int) -> list[str]:
-    """읽은 결과마다 HTML. texts[ref](정밀 읽기)와 다른 곳을 빨간 굵은 글자로. 줄바꿈은 <br>."""
+    """읽은 결과마다 HTML. texts[ref](정밀 읽기)와 다른 곳을 빨간 굵은 글자로. 줄바꿈은 <br>.
+    두 읽기를 ‘같게 읽었나’ 가르는 규칙과 같게 견준다 (service.compare_unit): 빈칸·줄바꿈, ‘、’/‘，’/‘,’·‘。’/‘．’/‘.’,
+    전각/반각(‘（’/‘(’ 등)만 다른 곳은 빨갛게 하지 않는다 — 진짜 다른 곳(글자·아이콘 수)만 보이게."""
+    from app import service
+
     units = [_units(t) for t in texts]
+    keyed = [[(i, service.compare_unit(x)) for i, x in enumerate(u)] for u in units]
+    keyed = [[(i, c) for i, c in ku if c is not None] for ku in keyed]
     marks: list[set[int]] = [set() for _ in texts]
-    for k, u in enumerate(units):
+    for k, ku in enumerate(keyed):
         if k == ref:
             continue
-        for op, i1, i2, j1, j2 in SequenceMatcher(None, u, units[ref], autojunk=False).get_opcodes():
+        ref_k = keyed[ref]
+        for op, i1, i2, j1, j2 in SequenceMatcher(None, [c for _i, c in ku], [c for _i, c in ref_k],
+                                                  autojunk=False).get_opcodes():
             if op != "equal":
-                marks[k].update(range(i1, i2))
-                marks[ref].update(range(j1, j2))
+                marks[k].update(ku[x][0] for x in range(i1, i2))
+                marks[ref].update(ref_k[x][0] for x in range(j1, j2))
     return [_marked_html(u, m) for u, m in zip(units, marks)]
 
 

@@ -27,6 +27,7 @@ WINDOW_CODES: dict[str, tuple[str, str]] = {
     "LoginDialog": ("0I", "로그인"),
     "ReleaseNotesDialog": ("0J", "릴리스 노트"),
     "LicenseDialog": ("0K", "라이선스"),
+    "CutPreviewDialog": ("0L", "자를 자리 미리 보기"),
     "QMessageBox": ("0Z", "알림·질문"),
     "ExtractDialog": ("1A", "글자 추출"),
     "IconReviewDialog": ("2A", "아이콘 정의"),

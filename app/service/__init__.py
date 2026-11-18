@@ -30,6 +30,7 @@ from app.version import VERSION  # noqa: F401 (화면이 버전을 service로 �
 from app import applog, report  # noqa: F401
 from app.claude_setup import find_claude  # noqa: F401
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid  # noqa: F401
+from app.extract import compare_unit  # noqa: F401 (③ 원문 확인의 다른 곳 표시: 두 읽기 견주기와 같은 규칙)
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file  # noqa: F401
 from app.typeset_compose import safe_name  # noqa: F401
 from app.service import _base  # noqa: F401

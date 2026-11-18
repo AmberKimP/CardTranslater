@@ -504,3 +504,32 @@ def test_recheck_agrees_when_only_punctuation_differs(tmp_path, monkeypatch):
     assert rc.agreed == 1 and rc.disagreed == 0
     out = json.loads((base / "pages" / "page-001.json").read_text(encoding="utf-8"))["regions"]["이름"]
     assert out["source"] == "攻撃，移動。" and not out["uncertain"]
+
+
+def test_punct_parens_and_spacing_follow_precise_reading():
+    """두 읽기가 ‘、’/‘，’·‘。’/‘．’·전각/반각 괄호·문장 부호 둘레 빈칸만 다르면 같게 읽은 것이고,
+    원문은 ‘，’·‘．’ 쪽, 괄호와 그 둘레 빈칸은 정밀 읽기를 따른다 (줄바꿈은 원래 읽기 그대로)."""
+    from app.extract import _agree_norm, compare_unit, prefer_punct
+
+    normal, precise = "得る . なら(最大6枚)", "得る．なら （最大6枚）"
+    assert _agree_norm(normal) == _agree_norm(precise)
+    assert prefer_punct(normal, precise) == "得る．なら （最大6枚）"
+    assert prefer_punct("A、 B (c)", "A，B（c）") == "A，B（c）"
+    assert prefer_punct("X。\nY", "X．Y") == "X．\nY"  # 줄바꿈은 그대로
+    assert prefer_punct("A，B", "A、B") == "A，B"  # 고른 ‘，’는 그대로
+    assert [compare_unit(u) for u in ("、", "，", ",", "（", " ", "\n", "[[?]]")] == [",", ",", ",", "(", None, None,
+                                                                                    "[[?]]"]
+
+
+def test_source_review_diff_marks_only_real_differences(qapp):
+    """③ 원문 확인의 빨간 글자: 문장 부호 모양·괄호 전각/반각·빈칸 차이는 표시하지 않고, 진짜 다른 곳(아이콘 하나 더)만.
+    (공주와기사 3쪽: 쉼표만 빨갛게 보여 쉼표 차이로 확인 필요가 된 것처럼 보였다)"""
+    import re
+
+    from app.qt.step_common import diff_html
+
+    a = "[[?]] [[?]] から1つを選択し、最も左の\nマーカーを、[[?]]を戻した数だけ (最大)"
+    b = "[[?]][[?]] から1つを選択し，最も左の\nマーカーを，[[?]]を戻した数だけ（最大）\n[[?]]"
+    ha, hb = diff_html([a, b], 1)
+    red = lambda h: re.findall(r"<span[^>]*>(.*?)</span>", h)  # noqa: E731
+    assert red(ha) == [] and red(hb) == ["[[?]]"]

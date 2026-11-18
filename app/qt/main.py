@@ -947,6 +947,24 @@ class ProjectPage(QWidget):
         if not chk.can:
             show_problem(self, "다시 자를 수 없습니다", chk.reason)
             return
+        # 자를 자리를 보고 카드 크기를 정한다 (예상 카드 크기를 바꾸면 그 크기의 카드로 다시 찾는다)
+        from app.qt.cut_preview import CutPreviewDialog
+
+        dlg = CutPreviewDialog(chk.image, chk.cols, chk.rows, chk.card_mm, self, ok_text="이대로 다시 자르기")
+        if not dlg.exec():
+            return
+        mm = dlg.chosen_mm()
+        if mm != chk.card_mm:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                chk = service.recut_check(d["dir"], card_mm=mm)
+            except (OSError, ValueError) as e:
+                chk = service.RecutCheck(False, str(e))
+            finally:
+                QApplication.restoreOverrideCursor()
+            if not chk.can:
+                show_problem(self, "다시 자를 수 없습니다", chk.reason)
+                return
         if not chk.changed:
             QMessageBox.information(self, "다시 자르기", f"‘{d['key']}’은(는) 지금 방식으로 잘라도 카드 자리가 같습니다 "
                                     f"(카드 {chk.cards_after}장). 다시 자를 필요가 없습니다.")

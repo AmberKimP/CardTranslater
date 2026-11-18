@@ -352,13 +352,15 @@ class ImageAddResult:
     has_regions: bool = False
 
 
-def image_preview(image: Path | str, cols: int = 1, rows: int = 1) -> tuple[bytes, dict]:
-    """자를 자리를 표시한 미리 보기 PNG와 {"cards", "gutters_found", "warnings", "size"}."""
+def image_preview(image: Path | str, cols: int = 1, rows: int = 1, card_mm: tuple[float, float] | None = None,
+                  max_px: int = 900) -> tuple[bytes, dict]:
+    """자를 자리를 표시한 미리 보기 PNG와 {"cards", "gutters_found", "warnings", "size", "card_mm"(자른 카드 크기
+    (가로, 세로) mm 또는 None), "dpi"}. card_mm: 사람이 정한 카드 크기 — 그 크기의 카드로 다시 찾는다."""
     from app import images
 
-    png, cut = images.preview_png(image, cols, rows)
+    png, cut = images.preview_png(image, cols, rows, max_px=max_px, card_mm_size=card_mm)
     return png, {"cards": len(cut.boxes), "gutters_found": cut.gutters_found, "warnings": cut.warnings,
-                 "size": cut.size}
+                 "size": cut.size, "card_mm": images.card_mm(cut), "dpi": cut.dpi}
 
 
 def image_display(image: Path | str, max_px: int = 1600) -> tuple[bytes, tuple[int, int], float]:
@@ -396,11 +398,12 @@ def pdf_sheet_images(pdf: Path | str, out_dir: Path | str) -> list[Path]:
 def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 1, rows: int = 1,
                name: str | None = None, new_group: bool = False,
                regions_from: Path | str | None = None, boxes: dict | None = None,
-               origin_pdf: Path | str | None = None) -> ImageAddResult:
+               origin_pdf: Path | str | None = None, card_mm: tuple[float, float] | None = None) -> ImageAddResult:
     """이미지 여러 장을 카드 한 장이 한 쪽인 PDF 하나로 바꿔 그룹에 넣는다 (파일 이름 name, 없으면 첫 이미지 이름).
     한 이미지에 카드가 가로 cols × 세로 rows로 놓여 있으면 잘라서 넣는다. 원본 이미지는 source/images/에 사본을 둔다.
     boxes: 수동으로 영역 지정 {이미지 경로: [(x0, y0, x1, y1) 원본 px, …]} (있으면 cols·rows 대신).
-    origin_pdf: 이미지가 PDF 쪽을 그린 것(pdf_sheet_images)이면 그 PDF. 사본을 source/images/에 함께 둔다."""
+    origin_pdf: 이미지가 PDF 쪽을 그린 것(pdf_sheet_images)이면 그 PDF. 사본을 source/images/에 함께 둔다.
+    card_mm: 사람이 정한 카드 크기 (가로, 세로) mm — 배열 자르기에서 그 크기의 카드로 찾는다 (다시 자를 때도 쓰려고 남긴다)."""
     import tempfile
 
     from app import images, workspace
@@ -413,7 +416,8 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     stem = (name or imgs[0].stem).strip()
     with tempfile.TemporaryDirectory() as td:
         pdf = Path(td) / f"{stem}.pdf"
-        res = images.images_to_pdf(imgs, pdf, cols, rows, boxes=boxes)
+        res = images.images_to_pdf(imgs, pdf, cols, rows, boxes=boxes,
+                                   card_mm_size=card_mm if boxes is None else None)
         r = workspace.add_files(info, [pdf], group, new_group=new_group, regions_from=regions_from)
     skipped += r["skipped"]
     if not r["added"]:
@@ -438,6 +442,8 @@ def add_images(project_dir: Path | str, files: list, group: str, *, cols: int = 
     settings["from_images"] = {"files": names, "cols": cols, "rows": rows,
                                **({"manual": True} if boxes is not None else {}),
                                **({"pdf": pdf_name} if pdf_name else {}),
+                               **({"card_mm": [float(card_mm[0]), float(card_mm[1])]}
+                                  if card_mm and boxes is None else {}),
                                "sheets": [c.layout() for c in res.sheets]}  # 결과를 원래 배열로 다시 합칠 때
     workspace._write(fd / "file.json", settings)
     for f, nm in zip(imgs, names):  # 원본 이미지 사본 (나중에 다시 자를 때·확인용)
@@ -461,6 +467,10 @@ class RecutCheck:
     moved_px: int = 0  # 가장 많이 움직인 카드 꼭짓점 (원본 이미지 px)
     cards_before: int = 0
     cards_after: int = 0
+    image: str = ""  # 다시 자르기 화면에서 미리 볼 원본 이미지 (첫 장)
+    cols: int = 1
+    rows: int = 1
+    card_mm: tuple[float, float] | None = None  # 이 크기의 카드로 다시 자른다 (None = 자동으로 찾음)
 
 
 def _recut_sources(fd: Path) -> tuple[dict, list[Path], Path | None]:
@@ -474,9 +484,10 @@ def _recut_sources(fd: Path) -> tuple[dict, list[Path], Path | None]:
     return fi, imgs, pdf
 
 
-def recut_check(file_dir: Path | str) -> RecutCheck:
+def recut_check(file_dir: Path | str, card_mm: tuple[float, float] | None | str = "saved") -> RecutCheck:
     """이미지 시트로 넣은 파일을 지금 자르는 방식으로 다시 자르면 카드 자리가 달라지는지 본다 (파일은 바꾸지 않는다).
-    예전 버전에서 잘못 잘린 파일을 찾을 때 쓴다 (1.21.1 붙은 시트 고침 등)."""
+    예전 버전에서 잘못 잘린 파일을 찾을 때 쓴다 (1.21.1 붙은 시트 고침 등).
+    card_mm: 카드 크기 (가로, 세로) mm로 다시 찾기. "saved"(기본)면 넣을 때 정한 크기(없으면 자동), None이면 자동."""
     from app import images
     from app.service import _translate_erase  # _translate_erase가 이 모듈을 불러 위에서 부르지 않는다
 
@@ -492,17 +503,23 @@ def recut_check(file_dir: Path | str) -> RecutCheck:
     missing = [p.name for p in imgs if not p.exists()]
     if not imgs or missing:
         return RecutCheck(False, "원본 이미지 사본이 없습니다 (source/images/): " + ", ".join(missing))
+    if card_mm == "saved":
+        card_mm = tuple(fi["card_mm"]) if fi.get("card_mm") else None
+    cols, rows = fi.get("cols", 1), fi.get("rows", 1)
+    base = {"image": str(imgs[0]), "cols": cols, "rows": rows, "card_mm": card_mm}
     old = _translate_erase.image_sheet_layouts(fd)
     new = []
     for src in imgs:
+        size = images.mm_to_px(card_mm, images.image_dpi(src)) if card_mm else None
         for frame in range(len(images.load_images(src))):
-            new.append(images.cut_sheet(src, fi.get("cols", 1), fi.get("rows", 1), frame=frame).layout())
+            new.append(images.cut_sheet(src, cols, rows, frame=frame, card_size=size).layout())
     ob = [b for s in old for b in s.get("boxes", [])]
     nb = [b for s in new for b in s.get("boxes", [])]
     if len(ob) != len(nb):
-        return RecutCheck(True, changed=True, cards_before=len(ob), cards_after=len(nb))
+        return RecutCheck(True, changed=True, cards_before=len(ob), cards_after=len(nb), **base)
     moved = max((abs(int(u) - int(v)) for a, b in zip(ob, nb) for u, v in zip(a, b)), default=0)
-    return RecutCheck(True, changed=moved > RECUT_TOL_PX, moved_px=moved, cards_before=len(ob), cards_after=len(nb))
+    return RecutCheck(True, changed=moved > RECUT_TOL_PX, moved_px=moved, cards_before=len(ob), cards_after=len(nb),
+                      **base)
 
 
 def recut_file(file_dir: Path | str, check: RecutCheck | None = None) -> ImageAddResult:
@@ -552,7 +569,7 @@ def recut_file(file_dir: Path | str, check: RecutCheck | None = None) -> ImageAd
             raise OSError(f"파일 폴더를 옮기지 못했습니다 (열려 있는 파일이 있나요?): {e}") from e
         try:
             res = add_images(info.dir, copies, group, cols=fi.get("cols", 1), rows=fi.get("rows", 1),
-                             name=fd.name, origin_pdf=pdf_copy)
+                             name=fd.name, origin_pdf=pdf_copy, card_mm=chk.card_mm)
             if res.file_dir is None:
                 raise RuntimeError("다시 넣지 못했습니다: " + "; ".join(res.skipped))
         except BaseException:

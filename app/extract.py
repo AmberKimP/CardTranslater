@@ -1150,28 +1150,79 @@ def _agree_norm(s) -> str:
     return _norm(s)
 
 
+# 문장 부호 둘레의 빈칸·전각/반각 괄호는 정밀 읽기(other)를 따른다 (두 읽기를 견줄 때는 이 차이를 보지 않는다)
+SPACING_PUNCT = set("、，,。．.()（）")
+FOLLOW_PRECISE = set("()（）[]［］:：")  # 전각/반각만 다르면 정밀 읽기를 따르는 부호
+_PUNCT_KEY = {"、": ",", "，": ",", "。": ".", "．": ".", "（": "(", "）": ")", "［": "[", "］": "]", "：": ":"}
+
+
+def compare_unit(u: str) -> str | None:
+    """③ 원문 확인의 빨간 글자(다른 곳)를 가를 때 글자 하나(또는 아이콘 토큰)를 무엇으로 보나: 빈칸·줄바꿈은 None(보지 않음),
+    ‘、’=‘，’=‘,’ · ‘。’=‘．’=‘.’ · 괄호·콜론의 전각/반각(‘（’=‘(’ 등)은 같은 글. 숫자·글자의 전각/반각은 그대로 다른 글
+    (보이게 둔다)."""
+    if not u or u.isspace():
+        return None
+    return _PUNCT_KEY.get(u, u)
+
+
 def prefer_punct(base, other):
-    """base(원문으로 쓸 읽기)에서 other와 맞서는 문장 부호를 고른 쪽으로 바꾼다: base의 ‘、’가 other에서 ‘，’면 ‘，’,
-    ‘。’가 ‘．’면 ‘．’. 나머지 글·줄바꿈·공백은 base 그대로. 태그 칸(목록)은 줄 수가 같을 때 줄마다."""
+    """base(원문으로 쓸 읽기)를 other(정밀 읽기)와 맞춰 문장 부호를 고른다 (두 읽기가 같다고 본 뒤에 부른다).
+    - ‘、’와 ‘，’가 맞서면 ‘，’, ‘。’와 ‘．’가 맞서면 ‘．’ (그 부호가 있는 쪽을 따름).
+    - 전각/반각만 다른 괄호 등(‘（’/‘(’, ‘：’/‘:’)은 other를 따른다.
+    - 문장 부호(、，,。．.()（）) 바로 앞·뒤 빈칸이 다르면 other를 따른다 (줄바꿈이 낀 자리는 base 그대로).
+    나머지 글·줄바꿈은 base 그대로. 태그 칸(목록)은 줄 수가 같을 때 줄마다."""
     if isinstance(base, list):
         if isinstance(other, list) and len(other) == len(base):
             return [prefer_punct(x, y) for x, y in zip(base, other)]
         return base
     if not isinstance(base, str) or not isinstance(other, str):
         return base
-    if not any(ch in base for ch in PUNCT_PREFER):
-        return base
     bi = [i for i, ch in enumerate(base) if not ch.isspace()]  # 공백을 뺀 글자끼리 맞춘다
-    bs = "".join(base[i] for i in bi)
-    os_ = "".join(ch for ch in other if not ch.isspace())
-    out = list(base)
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, bs, os_, autojunk=False).get_opcodes():
-        if tag != "replace" or i2 - i1 != j2 - j1:
+    oi = [j for j, ch in enumerate(other) if not ch.isspace()]
+    if not bi or not oi:
+        return base
+    bs = [base[i] for i in bi]
+    os_ = [other[j] for j in oi]
+    chars = list(bs)
+    gaps = {k: base[bi[k - 1] + 1:bi[k]] for k in range(1, len(bi))}  # k번째 글자 앞의 빈칸
+
+    def ogap(m: int) -> str | None:
+        return other[oi[m - 1] + 1:oi[m]] if 0 < m < len(oi) else None
+
+    def follow_gap(k: int, m: int) -> None:
+        if k not in gaps or ogap(m) is None:
+            return
+        g, h = gaps[k], ogap(m)
+        if g != h and "\n" not in g and "\n" not in h:
+            gaps[k] = h
+
+    key = lambda u: unicodedata.normalize("NFKC", PUNCT_PREFER.get(u, u))  # noqa: E731 (_agree_norm과 같게 맞춤)
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, [key(c) for c in bs], [key(c) for c in os_],
+                                               autojunk=False).get_opcodes():
+        if tag != "equal":
             continue
-        for k in range(i2 - i1):
-            ca, cb = bs[i1 + k], os_[j1 + k]
-            if ca in _PUNCT_SAME and cb in _PUNCT_SAME[ca]:
-                out[bi[i1 + k]] = PUNCT_PREFER[ca]
+        for d in range(i2 - i1):
+            k, m = i1 + d, j1 + d
+            ca, cb = bs[k], os_[m]
+            if ca != cb:
+                if ca in _PUNCT_SAME and cb in _PUNCT_SAME[ca]:
+                    chars[k] = PUNCT_PREFER[ca]
+                elif cb in _PUNCT_SAME and ca in _PUNCT_SAME[cb]:
+                    chars[k] = PUNCT_PREFER[cb]
+                elif ca in ",." and cb in PUNCT_PREFER.values():  # 반각 ‘,’·‘.’와 ‘，’·‘．’: 고른 ‘，’·‘．’
+                    chars[k] = cb
+                elif ca in FOLLOW_PRECISE and cb in FOLLOW_PRECISE:  # 괄호·콜론의 전각/반각: 정밀 읽기를 따름
+                    chars[k] = cb
+            if ca in SPACING_PUNCT or cb in SPACING_PUNCT:
+                follow_gap(k, m)
+                if k + 1 < len(bs) and m + 1 < len(os_):
+                    follow_gap(k + 1, m + 1)
+    out = [base[:bi[0]]]
+    for k, ch in enumerate(chars):
+        if k:
+            out.append(gaps[k])
+        out.append(ch)
+    out.append(base[bi[-1] + 1:])
     return "".join(out)
 
 

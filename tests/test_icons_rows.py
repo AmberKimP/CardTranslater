@@ -286,3 +286,23 @@ def test_suggest_sentence_marks_this_icon_only():
     o2 = Occurrence("o2", "f", "f", 3, "본문", 0, "[[crown]]を[[?]]")
     o2.ti = 1
     assert marked_context(o2) == "[[crown]]を[[THIS]]"
+
+
+def test_confirmed_boxes_are_kept_when_icons_are_found_again(tmp_path):
+    """② 확정 때 아이콘 자리(손으로 잡은 상자 포함)를 칸에 남기고, ②를 다시 열면(다시 찾기) 그 자리를 그대로 쓴다
+    (예전: 확정된 [[이름]]의 자리를 그림으로 새로 찾아, 손으로 잡은 자리가 사라졌다 — 공주와기사 6쪽)."""
+    info, fd = _confirmed(tmp_path, pages=1)
+    assert [e["name"] for e in _cell(fd)["icon_boxes"]] == ["coin"]  # 처음 확정한 자리도 남긴다
+    service.find_icons(info.dir, suggest=False)
+    (row,) = service.icon_review(info.dir)["groups"]
+    box = service.icon_place(info.dir, row["occ"])["box"]
+    mine = [box[0] - 3, box[1] - 3, box[2] + 4, box[3] + 4]
+    service.set_icon_box(info.dir, row["occ"], mine)  # 사람이 자리를 다시 잡음
+    row2 = service.icon_review(info.dir)["groups"][0]
+    assert service.confirm_icons(info.dir, [{"group": row2["group"], "name": "coin", "keep_dict": True}]).state == \
+        "confirmed"
+    saved = _cell(fd)["icon_boxes"]
+    assert saved == [{"name": "coin", "k": 0, "box": [round(float(v), 1) for v in mine]}]
+    service.find_icons(info.dir, suggest=False)  # ②를 다시 연다
+    (row3,) = service.icon_review(info.dir)["groups"]
+    assert row3["named"] == "coin" and [round(v) for v in service.icon_place(info.dir, row3["occ"])["box"]] == mine
