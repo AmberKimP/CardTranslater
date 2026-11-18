@@ -27,12 +27,14 @@ class JobSignals(QObject):
 
 class Job(QRunnable):
     """fn(*args, progress=..., cancel=..., **kwargs)를 작업 스레드에서 부른다.
-    with_progress=False면 progress·cancel 인자를 넘기지 않는다 (진행률이 없는 함수)."""
+    with_progress=False면 progress·cancel 인자를 넘기지 않는다 (진행률이 없는 함수).
+    secret_args=True면 인자를 로그에 남기지 않는다 (API 키처럼 가려야 하는 값: 형식이 틀린 키도 그대로 새지 않게)."""
 
-    def __init__(self, fn: Callable, *args, with_progress: bool = True, **kwargs):
+    def __init__(self, fn: Callable, *args, with_progress: bool = True, secret_args: bool = False, **kwargs):
         super().__init__()
         self.fn, self.args, self.kwargs = fn, args, kwargs
         self.with_progress = with_progress
+        self.secret_args = secret_args
         self.signals = JobSignals()
         self.token = service.CancelToken()
         self.setAutoDelete(False)
@@ -40,7 +42,7 @@ class Job(QRunnable):
     def run(self) -> None:
         name = getattr(self.fn, "__name__", str(self.fn))
         t0 = time.monotonic()
-        log.info("작업 시작: %s %s", name, _describe(self.args, self.kwargs))
+        log.info("작업 시작: %s %s", name, self._describe())
         last = [""]
 
         def progress(ev):
@@ -61,7 +63,7 @@ class Job(QRunnable):
             self.signals.cancelled.emit()
             return
         except Exception as e:  # noqa: BLE001 - 화면에 보여 준다
-            log.error("작업 실패: %s (%.1f초) %s", name, time.monotonic() - t0, _describe(self.args, self.kwargs),
+            log.error("작업 실패: %s (%.1f초) %s", name, time.monotonic() - t0, self._describe(),
                       exc_info=True)
             service.log_job_time(name, time.monotonic() - t0, f"실패: {type(e).__name__}")
             self.signals.failed.emit(f"{e}\n\n{traceback.format_exc(limit=3)}")
@@ -72,6 +74,11 @@ class Job(QRunnable):
 
     def cancel(self) -> None:
         self.token.cancel()
+
+    def _describe(self) -> str:
+        if self.secret_args:
+            return f"(인자 {len(self.args) + len(self.kwargs)}개 가림)"
+        return _describe(self.args, self.kwargs)
 
 
 def _state_of(result) -> str:

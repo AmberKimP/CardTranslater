@@ -82,6 +82,23 @@ def test_job_logs_start_end_and_failure(logdir):
     assert "작업 실패: bad_fn" in text and "일부러 낸 오류" in text
 
 
+def test_job_secret_args_not_logged(logdir):
+    """API 키처럼 가릴 인자는 형식이 틀린 키(applog.mask가 못 알아보는 모양)도 로그에 남지 않는다."""
+    from app.qt import worker
+
+    def save(key):
+        return False, "형식이 아닙니다"
+
+    def boom(key):
+        raise RuntimeError("실패")
+
+    worker.Job(save, "AQ.Ab8SECRETVALUE1234", with_progress=False, secret_args=True).run()
+    worker.Job(boom, "AIzaSECRETVALUE5678", with_progress=False, secret_args=True).run()
+    text = _read(logdir)
+    assert "작업 시작: save (인자 1개 가림)" in text and "작업 실패: boom" in text
+    assert "SECRETVALUE" not in text
+
+
 def test_service_export_logs(logdir, tmp_path, monkeypatch):
     from app import service
 

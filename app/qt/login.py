@@ -201,7 +201,7 @@ class LoginDialog(QDialog):
         if not key:
             QMessageBox.information(self, "API 키", "키를 붙여 넣으세요")
             return
-        job = worker.Job(service.set_api_key, key, with_progress=False)
+        job = worker.Job(service.set_api_key, key, with_progress=False, secret_args=True)
         worker.run_with_dialog(self, "API 키 확인 중", job, self._key_saved,
                                lambda m: show_failure(self, "API 키를 확인하지 못했습니다", m), cancellable=False)
 
