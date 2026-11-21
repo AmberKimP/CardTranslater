@@ -148,7 +148,7 @@ class StepActions:
     def _open_source_check(self, files: list[dict], focus, engine, scan: dict):
         from app.qt.source_check import SourceCheckDialog
 
-        mine = [str(f["dir"]) for f in files if f.get("mine", True)]
+        all_dirs = [str(f["dir"]) for f in files]  # 다른 프로젝트 파일도 그 프로젝트로 다시 지운다
         if scan.get("state") == "failed":
             show_problem(self.page, "아이콘을 찾지 못했습니다", scan.get("note") or "",
                          "원문 확인은 할 수 있습니다. 아이콘은 창의 ‘아이콘 다시 찾기’로 다시 찾을 수 있습니다.")
@@ -166,20 +166,23 @@ class StepActions:
             if focus:
                 dlg.focus_on(focus)
         else:
-            dlg = SourceCheckDialog(self.pdir, files, self.page, engine=engine, focus=focus)
+            try:
+                scope = self.page.scope()  # 목록에서 고른 그룹·파일: 처음 거르기 (전체면 모두)
+            except Exception:  # noqa: BLE001
+                scope = None
+            dlg = SourceCheckDialog(self.pdir, files, self.page, engine=engine, focus=focus, scope=scope)
         self._sc_dlg = dlg
         dlg.on_idle = None
         dlg.exec()
         self.page.refresh()
         # 원문이 바뀐 파일 중 이미 글자를 지운 파일은 다시 지운다 (이 프로젝트 파일만, 아직 확인하지 않은 칸이 있는
         # 파일은 확인한 뒤에). 다시 읽는 중이면 다 읽은 뒤에
-        mfiles = [f for f in files if f.get("mine", True)]
         pdir = Path(self.pdir)  # 다 읽은 뒤에 지울 때 그사이 다른 프로젝트를 열었으면 지우지 않는다
 
         def erase():
             if Path(self.pdir) != pdir:
                 return
-            self._erase_stale(mine, self._changed_cells(mfiles))
+            self._erase_stale(all_dirs, self._changed_cells(files))
         if dlg.reading:
             def idle():
                 dlg.on_idle = None
@@ -213,7 +216,7 @@ class StepActions:
                                     "않았습니다.\n② 원문 확인에서 그 칸을 확정하면 ⑥ 한글 넣기가 다시 지웁니다.")
         if not stale:
             return
-        job = worker.Job(service.erase_project, self.pdir, files=stale)
+        job = worker.Job(service.erase_game_files, self.pdir, stale)
         bg_erase.run_exclusive(self.page, f"원문이 바뀐 파일 {len(stale)}개 글자 다시 지우는 중", job,
                                self._erase_stale_done, _fail_as(self.page, "글자를 다시 지우지 못했습니다"))
 

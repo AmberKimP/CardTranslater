@@ -164,7 +164,7 @@ class HomePage(QWidget):
             gi.setData(0, Qt.ItemDataRole.UserRole, ("game", g))
             for p in ps:
                 try:
-                    nxt = service.project_overview(p["dir"]).get("next_step") or ""
+                    nxt = service.project_overview(p["dir"], with_source_fix=False).get("next_step") or ""
                 except Exception:  # noqa: BLE001 - 요약을 못 읽어도 목록은 보인다
                     nxt = ""
                 pi = QTreeWidgetItem([p["name"], service.STATUS_LABEL.get(p["status"], p["status"]), nxt, ""])
@@ -636,7 +636,9 @@ class ProjectPage(QWidget):
         past_extract = st in ("glossary_review", "glossary_confirmed", "translating", "translated")
         done = {
             "extract": bool(files) and all(f["included"] > 0 and f["extracted"] >= f["included"] for f in files),
-            "review": past_extract,
+            # ② 원문 확인: 용어집으로 넘어갔거나, 추출이 끝났고 ‘고칠 것’(빨강) 영역이 없을 때
+            "review": past_extract or (bool(files) and o.get("source_fix") == 0 and all(
+                f["included"] > 0 and f["extracted"] >= f["included"] for f in files)),
             "glossary": st in ("glossary_confirmed", "translating", "translated"),
             "translate": st == "translated",
             "check": self._review_done(),

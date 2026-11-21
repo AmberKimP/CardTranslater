@@ -34,7 +34,7 @@ class _FakeDlg:
     opened: list = []
     reading_after_exec: set = set()
 
-    def __init__(self, project_dir, files, parent=None, engine=None, focus=None):
+    def __init__(self, project_dir, files, parent=None, engine=None, focus=None, scope=None):
         _FakeDlg.opened.append({"files": [f["key"] for f in files], "focus": focus, "engine": engine})
         self.project_dir = project_dir
         self.reading: set = set()
@@ -136,14 +136,14 @@ def test_closing_window_reerases_stale_erased_files(qapp, tmp_path, monkeypatch,
     monkeypatch.setattr(service, "stale_erase_files", lambda dirs, cells=None: [Path(d) for d in dirs])
 
     def fake_excl(parent, title, job, on_done, on_failed=None):
-        jobs.append((job.fn, job.kwargs))
+        jobs.append((job.fn, job.args))
         on_done(service.ProjectStepResult("done", files=[{"file": "g/f", "state": "done", "pages": 1, "warnings": 0}]))
 
     monkeypatch.setattr(bg_erase, "run_exclusive", fake_excl)
     monkeypatch.setattr(steps.QMessageBox, "information", lambda *a, **k: shown.append(a))
     files = [f for g in acts.page.ov["groups"] for f in g["files"]]
     acts._open_source_check(files, None, "api", {"state": "ok"})
-    assert len(jobs) == 1 and jobs[0][0] is service.erase_project and jobs[0][1]["files"] == [Path(fd)]
+    assert len(jobs) == 1 and jobs[0][0] is service.erase_game_files and jobs[0][1][1] == [Path(fd)]
     assert len(shown) == 1
 
 
@@ -235,3 +235,38 @@ def test_switching_project_while_reading_does_not_reuse_or_erase(qapp, tmp_path,
     old.reading = {("x",)}
     acts._open_source_check(service.check_files(info2.dir), None, "api", {"state": "ok"})
     assert acts._sc_dlg is not old and len(fake_window) == 2
+
+
+def test_step_button_done_when_no_red_regions(qapp, tmp_path):
+    from app import icons
+
+    info, fd, acts = _acts(tmp_path, "done")
+    service.find_icons(info.dir, suggest=False)
+    page = acts.page
+    page.refresh()
+    assert page.ov["source_fix"] == 1 and page.step_states()["review"] != "done"
+    g = icons.load_scan(info.game_dir / "work" / "icons").occurrences[0].group
+    service.stage_icon_names(info.dir, [{"group": g, "name": "lily", "ko": "백합"}])
+    assert service.confirm_regions(info.dir, [(fd, 1, "본문")])["state"] == "confirmed"
+    page.refresh()
+    assert page.ov["source_fix"] == 0 and page.step_states()["review"] == "done"
+
+
+def test_erase_game_files_uses_each_files_own_project(tmp_path, monkeypatch):
+    """다른 프로젝트의 파일은 그 프로젝트 이름으로 지운다 (이 프로젝트로 지우면 그 파일을 찾지 못한다)."""
+    from app import workspace as ws
+    from app.service import _translate_erase
+
+    info, fd = _project(tmp_path, "pa", pages=1)
+    info2, _ = ws.create_project("pb", "G", root=tmp_path)
+    ws.add_files(info2, [next((tmp_path / "src" / "pa").glob("*.pdf"))], "카드", new_group=True)
+    fd2 = ws.file_dirs(info2)[0]
+    calls = []
+
+    def fake(project_dir, files=None, **_k):
+        calls.append((Path(project_dir).name, [Path(f).name for f in files]))
+        return _translate_erase.ProjectStepResult("done", files=[{"file": str(f), "state": "done"} for f in files])
+
+    monkeypatch.setattr(_translate_erase, "erase_project", fake)
+    r = service.erase_game_files(info.dir, [fd, fd2])
+    assert sorted(calls) == [("pa", [fd.name]), ("pb", [fd2.name])] and len(r.files) == 2

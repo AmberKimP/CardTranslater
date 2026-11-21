@@ -736,6 +736,37 @@ def add_icon_box(project_dir: Path | str, anchor_occ: str, box) -> dict:
 VERTICAL_COVER_MIN = 0.8  # 위아래 줄의 찾은 자리는 잡은 상자가 이만큼 감쌀 때만 ‘한 세트로’ 후보
 
 
+def region_icon_image(file_dir: Path | str, page: int, region: str) -> bytes:
+    """아이콘 자리를 잡는 영역 그림 PNG (icon_place의 png와 같은 좌표: 그 위에서 감싼 상자를 add_icon_box_region에 넘긴다)."""
+    import cv2
+    import pymupdf
+
+    from app import icons
+
+    fd = Path(file_dir)
+    proj = load_project(fd)
+    reg = next(r for r in proj.template.regions_for(int(page)) if r.name == region)
+    with pymupdf.open(proj.source_pdf) as doc:
+        img = icons.region_image(doc[int(page) - 1], reg)
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    if not ok:
+        raise OSError("영역 그림을 만들지 못함")
+    return buf.tobytes()
+
+
+@_locked
+def add_icon_box_region(project_dir: Path | str, file_dir: Path | str, page: int, region: str, box) -> dict:
+    """② 원문 확인 카드 보기 ‘아이콘 추가’ — 아이콘이 하나도 없는 영역에 (add_icon_box는 같은 칸의 자리가 있어야 함).
+    {"occ", "group", "line", "order", "dict"}. 상자가 너무 작거나 ‘글자만’ 영역이면 ValueError."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.add_icon_in_region(info, work, Path(file_dir), int(page), region, tuple(box))
+    log.info("아이콘 추가 (빈 영역): %s %s쪽 %s에 %s", file_dir, page, region, r.get("occ"))
+    return r
+
+
 @_locked
 def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     """사람이 잡은 자리로 아이콘 그림을 다시 자르고 묶음을 다시 정한다 (검증 엑셀도 새로 만든다).
@@ -1234,6 +1265,7 @@ def icon_dictionary(project_dir: Path | str) -> list[dict]:
     return out
 
 
+@_locked
 def update_icon_dictionary(project_dir: Path | str, rows: list[dict]) -> dict:
     """사전 고치기. rows: [{"name", "ko", "meaning", "scale", "reset"}].
     reset이면 그 아이콘을 원문에서 [[?]]로 되돌리고 사전에서 뺀다 (다시 ‘아이콘 이름’으로 정한다).

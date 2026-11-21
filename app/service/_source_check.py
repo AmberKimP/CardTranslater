@@ -33,7 +33,8 @@ def _scan(project_dir):
     return info, work, res
 
 
-def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, client=None, suggest: bool = True) -> dict:
+def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, client=None, suggest: bool = True,
+                     full_if_missing: bool = True) -> dict:
     """창을 열 때: 찾기 결과가 없으면 게임 전체를 찾고(이름 제안 포함), 있으면 원문과 달라진 칸만 다시 찾는다.
     돌려줌 {"state": "none"|"ok"|"scanned"|"synced", "regions": 다시 찾은 칸 수, "note"}. 오래 걸릴 수 있다 (작업 스레드)."""
     from app import icons, icons_stage
@@ -41,6 +42,8 @@ def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, clie
     info, work, res = _scan(project_dir)
     if not icons.token_count(info):
         return {"state": "none", "regions": 0, "note": ""}
+    if res is None and not full_if_missing:
+        return {"state": "ok", "regions": 0, "note": ""}
     if res is None:
         eng = engine or _settings.get_settings().engine
         r = _extract.find_icons(project_dir, engine=eng, client=client, suggest=suggest)
@@ -411,3 +414,57 @@ def _confirm_regions(project_dir: Path | str, keys: list[tuple], edits: dict | N
         if stale:
             icons_stage.rescan_regions(info, work, stale)
     return {"state": "confirmed", "blocking": [], "result": result, "reread": reread, "still": still, "saved": saved}
+
+
+_FIX_CACHE: dict = {}
+
+
+def source_fix_count(project_dir: Path | str) -> int | None:
+    """이 프로젝트 파일에서 ‘고칠 것’(빨강) 영역 수 (프로젝트 화면의 ② 원문 확인 끝남 표시). 추출 결과·찾기 결과·사전이
+    바뀌지 않았으면 다시 세지 않는다 (화면을 새로 고칠 때마다 부른다). 셀 수 없으면 None."""
+    from app import icons as icons_mod
+    from app import workspace
+
+    def mt(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    try:
+        info = workspace.load_project_info(project_dir)
+        fds = workspace.file_dirs(info)
+        stamp = (mt(info.game_dir / "work" / "icons" / "scan.json"), mt(icons_mod.dictionary_path(info)),
+                 mt(info.dir / "project.json"),
+                 tuple((str(fd), max([mt(p) for p in (fd / "extract").glob("**/page-*.json")] + [0.0]),
+                        mt(fd / "file.json"), max([mt(p) for p in fd.parent.parent.glob("*.json")] + [0.0]))
+                       for fd in fds))  # 그룹 폴더의 영역 파일(카드별 영역 포함)도
+        hit = _FIX_CACHE.get(str(info.dir))
+        if hit and hit[0] == stamp:
+            return hit[1]
+        cards = source_check_rows(project_dir, [{"dir": fd, "key": ""} for fd in fds])
+        n = sum(1 for c in cards for r in c["regions"] if r["status"] == "fix")
+        _FIX_CACHE[str(info.dir)] = (stamp, n)  # 프로젝트마다 (홈 목록이 여러 프로젝트를 차례로 물어도 서로 밀어내지 않게)
+        return n
+    except Exception:  # noqa: BLE001 - 못 세면 표시만 예전대로
+        return None
+
+
+def erase_game_files(project_dir: Path | str, files: list, *, progress=None, cancel=None):
+    """② 원문 확인을 닫은 뒤 원문이 바뀐 파일을 다시 지운다 — 같은 게임의 다른 프로젝트 파일도 그 프로젝트로.
+    돌려줌: 모든 프로젝트 결과를 합친 ProjectStepResult (하나라도 막히면 그 상태와 까닭)."""
+    from app import workspace
+    from app.service import _translate_erase
+
+    info = workspace.load_project_info(project_dir)
+    want = {_norm(f) for f in files}
+    out = _translate_erase.ProjectStepResult("done")
+    for p in workspace.game_projects(info):
+        mine = [fd for fd in workspace.file_dirs(p) if _norm(fd) in want]
+        if not mine:
+            continue
+        r = _translate_erase.erase_project(p.dir, files=mine, progress=progress, cancel=cancel)
+        out.files += r.files
+        if r.state != "done" and out.state == "done":
+            out.state, out.reason = r.state, r.reason
+    return out
+

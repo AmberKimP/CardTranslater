@@ -82,7 +82,8 @@ def rescan_regions(info, work: Path, keys: set[tuple]):
     res = _ic.load_scan(work) if (work / "scan.json").exists() else _ic.ScanResult()
     try:
         tres = _ic.scan(info, tmp, only=set(keys))
-        n = _max_num([o.id for o in res.occurrences], r"^o(\d+)$")  # 지울 자리 포함 (지운 번호를 다시 쓰지 않게)
+        # 지울 자리와 예전 확정에서 빠진 자리(잘라 둔 그림이 남음)의 번호도 다시 쓰지 않는다 (모양 이름 s-oNNN이 겹치지 않게)
+        n = int(_ic.next_occ_id(res, work)[1:]) - 1
         gmax = _max_num(list(res.groups), r"^g(\d+)$")
         res.occurrences = [o for o in res.occurrences if (o.file, o.page, o.region) not in keys]
         alive = {o.group for o in res.occurrences}

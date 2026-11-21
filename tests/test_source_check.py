@@ -175,3 +175,61 @@ def test_confirm_all_does_not_mark_unseen_regions_checked(tmp_path):
     assert r["state"] == "confirmed" and r["saved"] == 0 and _source(fd, 1) == "AB[[lily]]CD"
     row = _region(service.source_check_rows(info.dir, _files(fd)), 1)
     assert row["uncertain"] and row["status"] == "check"
+
+
+def test_add_icon_to_region_without_icons(tmp_path):
+    """아이콘이 하나도 없는 영역에도 그림에서 감싸 ‘아이콘 추가’를 할 수 있다 (같은 칸의 자리가 없어도)."""
+    info, fd = _project(tmp_path, "empty", pages=2)
+    f = fd / "extract" / "pages" / "page-001.json"
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    rec["regions"]["본문"]["source"] = "ABCD"  # 모델이 아이콘을 못 읽은 칸
+    f.write_text(json.dumps(rec), encoding="utf-8")
+    service.find_icons(info.dir, suggest=False)
+    box = next(o.box for o in icons.load_scan(_work(info)).occurrences if o.page == 2)  # 같은 자리에 같은 아이콘
+    png = service.region_icon_image(fd, 1, "본문")
+    assert png[:4] == b"\x89PNG"
+    r = service.add_icon_box_region(info.dir, fd, 1, "본문", box)
+    assert _source(fd, 1) == "AB[[?]]CD"
+    scan = icons.load_scan(_work(info))
+    assert any(o.id == r["occ"] and o.page == 1 and o.index == 0 for o in scan.occurrences)
+    assert icons_stage.stale_regions(info, scan) == set()
+    row = _region(service.source_check_rows(info.dir, _files(fd)), 1)
+    assert len(row["icons"]) == 1 and row["status"] == "fix"  # 이름을 적어야 한다
+
+
+def test_add_icon_without_any_scan_creates_one(tmp_path):
+    info, fd = _project(tmp_path, "noscan", pages=1)
+    f = fd / "extract" / "pages" / "page-001.json"
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    rec["regions"]["본문"]["source"] = "ABCD"
+    f.write_text(json.dumps(rec), encoding="utf-8")
+    assert service.ensure_icon_scan(info.dir)["state"] == "none"
+    w, h = __import__("PIL.Image", fromlist=["Image"]).open(
+        __import__("io").BytesIO(service.region_icon_image(fd, 1, "본문"))).size
+    service.add_icon_box_region(info.dir, fd, 1, "본문", (w * 0.45, h * 0.2, w * 0.55, h * 0.8))
+    assert "[[?]]" in _source(fd, 1) and (_work(info) / "scan.json").exists()
+
+
+def test_fix_count_cached_per_project_and_home_skips_it(tmp_path, monkeypatch):
+    from app.service import _source_check
+
+    info1, fd1 = _project(tmp_path, "c1", pages=1)
+    service.find_icons(info1.dir, suggest=False)
+    info2, _fd2 = _project(tmp_path, "c2", pages=1)
+    _source_check._FIX_CACHE.clear()
+    calls = []
+    real = _source_check.source_check_rows
+    monkeypatch.setattr(_source_check, "source_check_rows", lambda *a, **k: calls.append(1) or real(*a, **k))
+    for _ in range(2):  # 두 프로젝트를 번갈아 물어도 한 번씩만 센다
+        service.source_fix_count(info1.dir)
+        service.source_fix_count(info2.dir)
+    assert len(calls) == 2
+    assert service.project_overview(info1.dir, with_source_fix=False)["source_fix"] is None and len(calls) == 2
+
+
+def test_new_occurrence_id_skips_dropped_manual_crops(tmp_path):
+    info, fd = _project(tmp_path, "ids", pages=1)
+    service.find_icons(info.dir, suggest=False)
+    work = _work(info)
+    (work / "crops" / "o045_m1.png").write_bytes(b"x")  # 예전에 손으로 잡았다가 빠진 자리의 그림
+    assert icons.next_occ_id(icons.load_scan(work), work) == "o046"

@@ -33,7 +33,7 @@ STATUS_LABEL = {
 }
 
 
-def project_overview(project_dir: Path | str) -> dict:
+def project_overview(project_dir: Path | str, with_source_fix: bool = True) -> dict:
     """프로젝트 현황: 그룹·파일별 쪽 수·뺀 쪽·추출·지우기·한글 넣기 상태와 다음에 할 일."""
     from app import workspace
     from app.extract import load_extracted
@@ -88,7 +88,13 @@ def project_overview(project_dir: Path | str) -> dict:
             review = _review.review_progress(info.dir)
         except Exception:  # noqa: BLE001 - 검수 진행을 못 세어도 화면은 열린다
             review = None
+    source_fix = None
+    if with_source_fix and any(f["extracted"] for g in groups for f in g["files"]):
+        from app.service import _source_check
+
+        source_fix = _source_check.source_fix_count(info.dir)
     return {"name": info.name, "game": info.game, "dir": info.dir, "status": info.status,
+            "source_fix": source_fix,  # ② 원문 확인의 ‘고칠 것’ 영역 수 (None = 못 셈·아직 안 읽음)
             "status_label": STATUS_LABEL.get(info.status, info.status),
             "glossary_version": info.extra.get("glossary_version"), "groups": groups,
             "card_limit": workspace.card_limit(info),

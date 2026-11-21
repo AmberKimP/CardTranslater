@@ -78,10 +78,12 @@ class SourceCheckDialog(QDialog):
     THUMB_H = 24
 
     def __init__(self, project_dir: Path, files: list[dict], parent=None, engine: str | None = None,
-                 focus: tuple | None = None):
+                 focus: tuple | None = None, scope: tuple | None = None):
+        """scope: 프로젝트 화면 목록에서 고른 범위 (설명, 파일 폴더 목록) — 처음 파일 거르기로 쓴다 (None·전체면 모두)."""
         super().__init__(parent)
         self.project_dir = Path(project_dir)
         self.files = list(files)
+        self._scope = scope
         self.engine = engine
         self.saved = False
         self.reading: set[tuple] = set()  # 다시 읽기 대기·진행 중인 영역 (정규화한 키)
@@ -148,6 +150,16 @@ class SourceCheckDialog(QDialog):
         self.file_combo.addItem("모두", None)
         for f in self.files:
             self.file_combo.addItem(file_label(f.get("key", "")) or Path(str(f["dir"])).name, str(f["dir"]))
+        scope = self._scope
+        if scope and scope[1]:
+            want = {_nk((d,))[0] for d in scope[1]}
+            hit = [i for i in range(1, self.file_combo.count()) if _nk((self.file_combo.itemData(i),))[0] in want]
+            if len(hit) == 1:
+                self.file_combo.setCurrentIndex(hit[0])
+            elif hit:  # 그룹을 골랐다: 그 파일들만
+                self.file_combo.insertItem(1, f"고른 범위: {scope[0]} ({len(hit)}개)",
+                                           [self.file_combo.itemData(i) for i in hit])
+                self.file_combo.setCurrentIndex(1)
         self.file_combo.currentIndexChanged.connect(lambda _i: self._rebuild_tree())
         self.search = QLineEdit()
         self.search.setPlaceholderText("원문·아이콘 이름·영역 이름 찾기")
@@ -300,7 +312,8 @@ class SourceCheckDialog(QDialog):
             self.dict_layout.removeWidget(self.dict_panel)
             self.dict_panel.deleteLater()
         self.dict_save_row = None
-        self.dict_panel = IconDictionaryPanel(rows, "", self.dict_tab, allow_reset=False)
+        # ‘다시 정하기’: 저장하면 원문의 그 아이콘이 이름 없는 아이콘([[?]])이 되고, 그 칸만 다시 찾아 목록에 보인다
+        self.dict_panel = IconDictionaryPanel(rows, "", self.dict_tab, allow_reset=True)
         self.dict_layout.insertWidget(0, self.dict_panel, 1)
         if self.dict_layout.indexOf(self.dict_save) < 0:
             self.dict_layout.addWidget(self.dict_save, alignment=Qt.AlignmentFlag.AlignRight)
@@ -309,12 +322,42 @@ class SourceCheckDialog(QDialog):
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
     def save_dictionary(self) -> bool:
+        rows = self.dict_panel.rows()
+        resets = [r["name"] for r in rows if r.get("reset")]
+        if resets:
+            r = ask_choice(self, "아이콘 다시 정하기", "다시 정할 아이콘: " + ", ".join(resets),
+                           [("다시 정하기", "destructive"), ("취소", "reject")], default=1,
+                           informative="사전에서 빠지고, 원문의 그 아이콘은 이름 없는 아이콘이 됩니다 (목록에 ‘고칠 것’으로 "
+                                       "보입니다). 이름을 다시 적고 확정하세요.")
+            if r != 0:
+                return False
         try:
-            service.update_icon_dictionary(self.project_dir, self.dict_panel.rows())
+            res = service.update_icon_dictionary(self.project_dir, rows)
         except Exception as e:  # noqa: BLE001
             show_problem(self, "사전을 저장하지 못했습니다", str(e), "")
             return False
         self.saved = True
+        if res.get("reset"):  # 원문이 바뀐 칸만 다시 찾는다 (찾기 결과를 원문에 맞춤). 칸이 많으면 오래 걸려 진행 창으로
+            # 끝날 때까지 기다린다: 닫기에서 ‘저장’을 골랐을 때 다시 찾기가 창 밖에서 계속 돌며 다음에 연 창과 겹치지 않게
+            from PySide6.QtCore import QEventLoop
+
+            loop = QEventLoop(self)
+            finished = []
+
+            def after(_r=None):
+                finished.append(True)
+                self._guard(self._load_dictionary)
+                self._guard(self.refresh)
+                loop.quit()
+
+            job = worker.Job(service.ensure_icon_scan, self.project_dir, engine=self.engine, suggest=False,
+                             full_if_missing=False, with_progress=False)
+            worker.run_with_dialog(self, "다시 정한 아이콘의 칸 다시 찾는 중", job, after,
+                                   lambda m: (log.warning("다시 정한 아이콘의 칸을 다시 찾지 못함: %s", m), after()),
+                                   cancellable=False)
+            if not finished:
+                loop.exec()
+            return True
         self._load_dictionary()
         self.refresh()
         return True
@@ -405,7 +448,10 @@ class SourceCheckDialog(QDialog):
         fidx = {str(f["dir"]): i for i, f in enumerate(self.files)}
         out = []
         for c in self._cards:
-            if fdir is not None and c["file_dir"] != fdir:
+            if isinstance(fdir, list):
+                if c["file_dir"] not in fdir:
+                    continue
+            elif fdir is not None and c["file_dir"] != fdir:
                 continue
             if only_problem and not self._is_problem_card(c):
                 continue
@@ -616,8 +662,12 @@ class SourceCheckDialog(QDialog):
                     self.tree.setCurrentItem(target)
                     self.tree.scrollToItem(target, QAbstractItemView.ScrollHint.PositionAtCenter)
                     return True
-            if attempt == 0:  # 문제 있는 카드만 보는 중이라 안 보임: 전체로 바꿔 다시
+            if attempt == 0:  # 문제 있는 카드만·고른 범위만 보는 중이라 안 보임: 전체·모든 파일로 바꿔 다시
                 self.mode_all.setChecked(True)
+                if self.file_combo.currentIndex() != 0:
+                    self.file_combo.blockSignals(True)
+                    self.file_combo.setCurrentIndex(0)
+                    self.file_combo.blockSignals(False)
                 self._rebuild_tree()
         return False
 

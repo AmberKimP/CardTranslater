@@ -234,3 +234,57 @@ def test_close_while_reading_keeps_going(qapp, tmp_path, monkeypatch):
     dlg.reject()
     started[0].run()  # 닫은 뒤에도 끝까지, 오류 없이
     assert not dlg.reading and dlg._closed
+
+
+def test_project_selection_is_initial_file_filter(qapp, tmp_path):
+    import shutil
+
+    from app import workspace
+    from app.qt.source_check import SourceCheckDialog
+    from tests.test_icons import _project
+
+    info, fd = _project(tmp_path, "scope", pages=1)
+    pdf2 = tmp_path / "src" / "scope" / "cards2.pdf"
+    shutil.copy(next((tmp_path / "src" / "scope").glob("cards.pdf")), pdf2)
+    workspace.add_files(info, [pdf2], "카드", new_group=False)
+    fd2 = next(d for d in workspace.file_dirs(info) if d != fd)
+    service.find_icons(info.dir, suggest=False)
+    files = [{"dir": fd, "key": "카드/cards"}, {"dir": fd2, "key": "카드/cards2"}]
+    one = SourceCheckDialog(info.dir, files, scope=("파일 ‘카드/cards’", [fd]))
+    assert one.file_combo.currentData() == str(fd)
+    grp = SourceCheckDialog(info.dir, files, scope=("그룹 ‘카드’", [fd, fd2]))
+    assert isinstance(grp.file_combo.currentData(), list) and len(grp.file_combo.currentData()) == 2
+    allf = SourceCheckDialog(info.dir, files, scope=("전체", None))
+    assert allf.file_combo.currentData() is None
+    for d in (one, grp, allf):
+        d.close()
+
+
+def test_dictionary_reset_reopens_icon_and_resyncs_scan(qapp, tmp_path, monkeypatch):
+    from app import icons, icons_stage
+    from app.qt import source_check
+    from app.qt.source_check import SourceCheckDialog
+    from tests.test_icons import _project, _source
+
+    info, fd = _project(tmp_path, "reset", pages=1)
+    service.find_icons(info.dir, suggest=False)
+    g = icons.load_scan(info.game_dir / "work" / "icons").occurrences[0].group
+    service.stage_icon_names(info.dir, [{"group": g, "name": "lily", "ko": "백합"}])
+    assert service.confirm_regions(info.dir, [(fd, 1, "본문")])["state"] == "confirmed"
+    assert _source(fd, 1) == "AB[[lily]]CD"
+    dlg = SourceCheckDialog(info.dir, [{"dir": fd, "key": "카드/cards"}])
+    monkeypatch.setattr(source_check, "ask_choice", lambda *a, **k: 0)
+
+    def run_now(parent, title, job, on_done, on_failed=None, **_k):
+        assert job.kwargs.get("full_if_missing") is False  # 사전 저장에서 게임 전체를 다시 찾지 않는다
+        on_done(job.fn(*job.args, **job.kwargs))
+    monkeypatch.setattr(source_check.worker, "run_with_dialog", run_now)
+    monkeypatch.setattr(dlg.dict_panel, "rows", lambda: [{"name": "lily", "ko": "백합", "meaning": "", "scale": 1.1,
+                                                          "reset": True}])
+    assert dlg.save_dictionary()
+    assert _source(fd, 1) == "AB[[?]]CD"
+    scan = icons.load_scan(info.game_dir / "work" / "icons")
+    assert icons_stage.stale_regions(info, scan) == set()
+    r = next(r for c in dlg._cards for r in c["regions"] if r["page"] == 1)
+    assert r["status"] == "fix"
+    dlg.close()

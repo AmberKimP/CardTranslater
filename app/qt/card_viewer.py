@@ -726,10 +726,13 @@ class CardViewer(QDialog):
             self.view.set_data(pm, self._place.get("box"), self._place.get("guess"), marks)
             self._run_host = (self._place.get("run_host") or [None])[0]
         else:
-            try:
-                pm.loadFromData(service.region_crop(reg["file_dir"], reg["page"], reg["region"]), "PNG")
+            try:  # 아이콘 자리를 잡는 그림과 같은 좌표 (빈 영역에 ‘아이콘 추가’할 때 감싼 상자를 그대로 넘긴다)
+                pm.loadFromData(service.region_icon_image(reg["file_dir"], reg["page"], reg["region"]), "PNG")
             except Exception:  # noqa: BLE001 - 그림만 못 보인다
-                pm = QPixmap()
+                try:
+                    pm.loadFromData(service.region_crop(reg["file_dir"], reg["page"], reg["region"]), "PNG")
+                except Exception:  # noqa: BLE001
+                    pm = QPixmap()
             self.view.set_data(pm, None, None, [])
         try:
             self._region_mode = service.region_keep_mode(reg["file_dir"], int(reg["page"]), reg["region"])
@@ -817,7 +820,10 @@ class CardViewer(QDialog):
         has_new = self.view.new is not None
         cur = self._cur_entry()
         self.save_btn.setEnabled(has_new and cur is not None)
-        self.add_btn.setEnabled(has_new and bool(self._entries))
+        reg = self._region()
+        can_add = bool(self._entries) or (reg is not None and reg.get("kind") == "text"
+                                           and isinstance(reg.get("source"), str))
+        self.add_btn.setEnabled(has_new and can_add)
         self.del_btn.setEnabled(any(e["state"] not in ("not_icon", "absorbed") for e in sel))
         host, others = self._merge_plan()
         self.merge_btn.setEnabled(bool(host and others))
@@ -1114,12 +1120,17 @@ class CardViewer(QDialog):
     @busy
     def _add_box(self) -> None:
         box = self.view.new
-        if not box or not self._entries or not self._guard():
+        reg = self._region()
+        if not box or reg is None or not self._guard():
             return
         try:
-            r = service.add_icon_box(self.project_dir, self._cur_occ or self._entries[0]["occ"], box)
+            if self._entries:
+                r = service.add_icon_box(self.project_dir, self._cur_occ or self._entries[0]["occ"], box)
+            else:  # 아이콘이 하나도 없던 영역
+                r = service.add_icon_box_region(self.project_dir, reg["file_dir"], reg["page"], reg["region"], box)
         except ValueError as ex:
-            show_problem(self, "아이콘을 넣지 못했습니다", str(ex), "아이콘을 조금 더 크게 감싸 주세요.")
+            show_problem(self, "아이콘을 넣지 못했습니다", str(ex),
+                         "" if "글자만" in str(ex) else "아이콘을 조금 더 크게 감싸 주세요.")
             return
         except Exception as ex:  # noqa: BLE001
             show_error(self, "아이콘을 넣지 못했습니다", ex)

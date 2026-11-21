@@ -92,7 +92,7 @@ from app.service._settings import (  # noqa: F401
 )
 from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, resettle_icon_cells, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
-    icon_review, icons_pending, icon_place, card_regions, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
+    icon_review, icons_pending, icon_place, card_regions, add_icon_box_region, region_icon_image, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
     suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons, keep_sentence_original, sentence_kept, region_keep_mode,
 )
@@ -113,7 +113,7 @@ from app.service._test_runs import (  # noqa: F401
 )
 from app.service._source_check import (  # noqa: F401
     STATUS_ORDER, STATUS_LABEL, check_files, ensure_icon_scan, rescan_icons, region_status, preview_source, source_check_rows, icon_kinds,
-    stage_icon_names, confirm_regions,
+    stage_icon_names, confirm_regions, source_fix_count, erase_game_files,
 )
 from app.service._manage import (  # noqa: F401
     self_check, license_text, release_notes, _to_trash, delete_project, delete_game, RESET_WHAT, reset_files,

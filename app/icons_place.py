@@ -17,6 +17,15 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------- 사람이 아이콘 자리 잡기 (카드 보기)
+def next_occ_id(res: "ScanResult", work: Path | None = None) -> str:
+    """새 자리 id: 지금 자리와 잘라 둔 그림(o012.png·o012_m1.png — 빠진 자리 포함)의 번호보다 큰 수
+    (빠진 자리 번호를 다시 쓰면 모양 이름 s-oNNN이 다른 줄과 겹친다)."""
+    nums = [int(m.group(1)) for x in res.occurrences if (m := re.match(r"^o(\d+)$", x.id))]
+    if work is not None and (Path(work) / "crops").exists():
+        nums += [int(m.group(1)) for p in (Path(work) / "crops").glob("o*.png") if (m := re.match(r"^o(\d+)", p.stem))]
+    return f"o{max(nums, default=0) + 1:03d}"
+
+
 def _occ_region(info, o: Occurrence) -> tuple[Path, np.ndarray, str]:
     """그 자리의 (파일 폴더, 영역 이미지, 지금 원문)."""
     import pymupdf
@@ -611,8 +620,7 @@ def split_icon(info, work: Path, occ_id: str, part_box) -> dict:
     if o.index >= len(ph):
         raise ValueError("원문의 [[?]] 자리가 바뀌었습니다: ② 원문 확인을 다시 눌러 찾은 뒤 하세요")
     new_src, new_ti, new_idx = _insert_token(info, res, o, src, ph[o.index].end(), "카드 보기에서 아이콘 하나를 둘로 나눔")
-    nums = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
-    new_id = f"o{max(nums, default=0) + 1:03d}"
+    new_id = next_occ_id(res, work)
     g = f"위치 못 찾음 {new_id}"
     line, order, _nm = _ic.tokens_in(new_src)[new_ti]
     res.occurrences.insert(res.occurrences.index(o) + 1, _ic.Occurrence(
@@ -741,6 +749,34 @@ def add_icon(info, work: Path, anchor_occ: str, box) -> dict:
     work = Path(work)
     res = _ic.load_scan(work)
     a = next(x for x in res.occurrences if x.id == anchor_occ)
+    return _add_icon_at(info, work, res, a, box)
+
+
+def add_icon_in_region(info, work: Path, file_dir: Path, page: int, region: str, box) -> dict:
+    """아이콘이 하나도 없는 칸(영역)에 ‘아이콘 추가’: add_icon과 같지만 같은 칸의 자리 대신 칸(파일·쪽·영역)으로 정한다.
+    찾기 결과(scan)가 아직 없으면 새로 만든다. ‘글자만’ 영역·원문이 없는 칸이면 ValueError."""
+    from app.workspace import data_root, game_file_key
+
+    work = Path(work)
+    if (work / "scan.json").exists():
+        res = _ic.load_scan(work)
+    else:
+        (work / "crops").mkdir(parents=True, exist_ok=True)
+        res = _ic.ScanResult()
+    fd = Path(file_dir)
+    if _ic.text_only_cells(fd)(int(page), region):
+        raise ValueError("‘글자만’ 영역에는 아이콘을 넣지 않습니다")
+    try:
+        rel = str(fd.relative_to(data_root(info)))
+    except ValueError:
+        rel = str(fd.relative_to(info.dir))
+    a = _ic.Occurrence("", rel, game_file_key(fd), int(page), region, -1, "")
+    a.unique = _ic.PictureCells(fd)(int(page), region)
+    return _add_icon_at(info, work, res, a, box)
+
+
+def _add_icon_at(info, work: Path, res: "ScanResult", a: "Occurrence", box) -> dict:
+    """add_icon·add_icon_in_region의 몸통: a = 그 칸을 가리키는 자리 (파일·쪽·영역·그림 배경 여부만 쓴다)."""
     _fd, img, src = _occ_region(info, a)
     H, W = img.shape[:2]
     x0, y0, x1, y1 = (int(round(v)) for v in box)
@@ -765,11 +801,13 @@ def add_icon(info, work: Path, anchor_occ: str, box) -> dict:
         pass
     at = insert_at(src, (x0, y0, x1, y1), token_boxes, (W, H), bands, span)
     new_src, new_ti, new_idx = _insert_token(info, res, a, src, at, "카드 보기에서 원문에 없던 아이콘을 넣음")
-    nums = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
-    new_id = f"o{max(nums, default=0) + 1:03d}"
+    new_id = next_occ_id(res, work)
     g = f"위치 못 찾음 {new_id}"
     line, order, _nm = _ic.tokens_in(new_src)[new_ti]
     same = [k for k, x in enumerate(res.occurrences) if (x.file, x.page, x.region) == (a.file, a.page, a.region)]
+    if not same:  # 아이콘이 없던 칸: 같은 카드(쪽)의 다른 칸 뒤에, 없으면 맨 뒤에
+        same = [k for k, x in enumerate(res.occurrences) if (x.file, x.page) == (a.file, a.page)] or [
+            len(res.occurrences) - 1]
     res.occurrences.insert(max(same) + 1, _ic.Occurrence(
         new_id, a.file, a.file_key, a.page, a.region, new_idx, new_src.replace("\n", " / "),
         group=g, line=line, order=order, reason="카드 보기에서 새로 넣은 자리", unique=a.unique, ti=new_ti, added=True))
