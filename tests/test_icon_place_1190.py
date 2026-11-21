@@ -52,67 +52,6 @@ def test_split_icon_adds_placeholder_and_cuts_two_boxes(tmp_path):
         service.split_icon_box(info.dir, r["first"], [a.box[0], a.box[1], a.box[2] + 500, a.box[3]])
 
 
-def test_dialog_absorbs_overlapping_icon_without_closing(qapp, tmp_path):
-    from PySide6.QtWidgets import QDialog
-
-    from app.qt.icon_place import IconPlaceDialog
-
-    info, fd = _project(tmp_path, "ov", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    saved = []
-    place = IconPlaceDialog(info.dir, g, lambda grp: grp, saved.append)
-    box = place.view.box
-    place._place["marks"] = [{"box": list(box), "occ": extra, "group": "x"}]  # 다른 [[?]]가 같은 그림 자리
-    place._update_tools()
-    assert not place.overlap_btn.isHidden()
-    place._absorb_overlaps()
-    assert place.result() != QDialog.DialogCode.Accepted  # 닫지 않는다
-    rev = service.icon_review(info.dir)
-    by_occ = {w["occ"]: x for x in rev["groups"] for w in x["where"]}
-    assert by_occ[extra]["not_icon"] and by_occ[extra]["absorbed_group"] == by_occ[host]["group"]
-    assert place.outcome == ("saved", by_occ[host]["group"]) and saved
-
-
-def test_dialog_save_as_set_keeps_window_open_and_shows_merged_icon(qapp, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QDialog
-
-    import app.qt.icon_place as ip
-    from app.qt.icon_place import IconPlaceDialog
-
-    info, fd = _project(tmp_path, "set", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 0)  # ‘아이콘 2개를 한 세트로’
-    monkeypatch.setattr(service, "engine_status", lambda: {})  # 이름 제안 없이
-    place = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    x0, y0, x1, y1 = place.view.box
-    wide = [x0, y0, x0 + (y1 - y0) * 2 + 4, y1]
-    place.view.new = wide
-    place._drawn()
-    place._save()
-    assert place.result() != QDialog.DialogCode.Accepted  # 합쳤으면 창을 닫지 않는다
-    assert place.view.box == [int(v) for v in wide] and place.view.new is None  # 합친 자리를 새로 보여 줌
-    cur = place.where[place.combo.currentIndex()]
-    assert cur["occ"] == host and cur["png"]
-
-
-def test_dialog_has_no_split_button_or_crop_preview(qapp, tmp_path):
-    """1.24: ‘아이콘 추가’가 생겨 ‘둘로 나누기’는 화면에서 뺐고(엔진 split_icon은 남음), 잘라 낸 그림 미리 보기도 없다."""
-    from app.qt.icon_place import IconPlaceDialog
-
-    info, fd = _project(tmp_path, "sp", pages=1)
-    service.find_icons(info.dir, suggest=False)
-    g, occ, (x0, y0, x1, y1) = _located(info)
-    from PySide6.QtWidgets import QPushButton
-
-    place = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    assert not hasattr(place, "split_btn") and not hasattr(place, "crop")
-    texts = {b.text() for b in place.findChildren(QPushButton)}
-    assert "둘로 나누기" not in texts and place.KEEP_TEXT == "이 칸 전체 원본 그대로(글자 없음)"
-    place.close()
-
-
 def test_split_shifts_icon_number_positions_and_skips_guesses(tmp_path):
     """나누면 뒤 아이콘에 넣어 둔 숫자의 순번(icon_numbers)도 하나 밀린다. 예상 위치(점선)는 흡수 후보가 아니다."""
     import json

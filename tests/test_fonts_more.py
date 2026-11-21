@@ -190,7 +190,7 @@ def _hook(monkeypatch, plans, dialog_result):
     monkeypatch.setattr(worker, "run_with_dialog", fake_run)
     monkeypatch.setattr(fonts_dialog, "FontPlanDialog", Dlg)
     monkeypatch.setattr(service, "save_font_choices", lambda *a: log["saved"].append(a))
-    monkeypatch.setattr(service, "files_needing_erase", lambda *a, **k: [])  # 모두 지움 (⑦이 먼저 지울 것 없음)
+    monkeypatch.setattr(service, "files_needing_erase", lambda *a, **k: [])  # 모두 지움 (⑥이 먼저 지울 것 없음)
     return results.OutputActions, log
 
 

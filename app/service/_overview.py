@@ -139,7 +139,7 @@ def _translated_files(info) -> dict[str, bool]:
 def _next_key(info, groups: list[dict], review: dict | None = None) -> str:
     """다음에 누를 단계 버튼 키 (화면의 ‘다음 할 일’ 버튼). _next_step 문장과 같은 순서로 판단한다.
     add | regions | extract | glossary | translate | check | compose | results
-    (④ 용어집은 후보 만들기와 확정을 한 버튼으로, 글자 지우기는 ⑦ 한글 넣기가 먼저 한다)"""
+    (③ 용어집은 후보 만들기와 확정을 한 버튼으로, 글자 지우기는 ⑥ 한글 넣기가 먼저 한다)"""
     if not groups or not any(g["files"] for g in groups):
         return "add"
     if any(not g["has_regions"] for g in groups):
@@ -173,9 +173,9 @@ def _next_step(info, groups: list[dict], review: dict | None = None) -> str:
         return f"카드마다 영역을 지정하세요 (남은 카드: {', '.join(missing)})"
     left = [f["key"] for g in groups for f in g["files"] if f["extracted"] < f["included"]]
     if info.status == "extracting":
-        return f"글자를 추출하세요 ({len(left)}개 파일 남음)" if left else "‘④ 용어집’으로 용어집을 만드세요"
+        return f"글자를 추출하세요 ({len(left)}개 파일 남음)" if left else "‘③ 용어집’으로 용어집을 만드세요"
     if info.status == "glossary_review":
-        return "‘④ 용어집’에서 용어 번역을 확인하고 확정하세요"
+        return "‘③ 용어집’에서 용어 번역을 확인하고 확정하세요"
     if info.status in ("glossary_confirmed", "translating"):
         return "번역을 시작하세요"
     files = [f for g in groups for f in g["files"]]

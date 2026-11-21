@@ -30,7 +30,7 @@ def test_sentence_split_keeps_tags_icons_and_quotes():
 
 
 def test_wrap_sentence_fonts_balanced_per_line_and_crossing_tags():
-    t = "첫 문단이다.\n둘째는 <b>굵게\n이어진다.</b>\n셋째."  # 문단: ③에서 정한 나눔 (1.24: 문장 끝으로는 안 나눔)
+    t = "첫 문단이다.\n둘째는 <b>굵게\n이어진다.</b>\n셋째."  # 문단: ②에서 정한 나눔 (1.24: 문장 끝으로는 안 나눔)
     w, keys = wrap_sentence_fonts(t, {1: GAEGU, "2": GAEGU}, [1, 3])
     assert keys == {"f1": GAEGU}  # 같은 글꼴은 태그 하나로
     assert w.count("<f1>") == 3 and w.count("</f1>") == 3
@@ -435,7 +435,7 @@ def test_ref_card_is_the_one_with_most_sentences(tmp_path, monkeypatch):
 
 def test_paragraphs_follow_card_text_structure():
     """문단 (기본 규칙): 줄이 바뀌어도 같은 문단, ‘공포: 1’ 머리 줄·빈 줄·‘——이름’에서만 나뉜다.
-    1.24: 문장 끝(. ! 。 등)으로 끝난 줄로는 나누지 않는다 (문단은 사람이 ③의 [====]로 정한다)."""
+    1.24: 문장 끝(. ! 。 등)으로 끝난 줄로는 나누지 않는다 (문단은 사람이 ②의 [====]로 정한다)."""
     from app.typeset_layout import paragraph_spans, paragraphs
 
     t10 = ("공포: 1\n누군가 『탐험가』 「앞면」을 플레이했을 때 [[gold]]1\n을 획득한다.\n"

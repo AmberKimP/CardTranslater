@@ -225,7 +225,7 @@ def _review_ready(tmp_path):
 
 
 def test_glossary_rows_confirm_in_app_without_excel(tmp_path):
-    """④ 용어집 확정 (화면 표): 엑셀 없이 같은 검사로 확정하고, 고친 값은 검증 엑셀에도 남는다."""
+    """③ 용어집 확정 (화면 표): 엑셀 없이 같은 검사로 확정하고, 고친 값은 검증 엑셀에도 남는다."""
     info = _review_ready(tmp_path)
     rows = service.glossary_review_rows(info.dir)
     by = {r["원문 용어"]: r for r in rows}

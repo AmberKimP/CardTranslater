@@ -213,7 +213,7 @@ def compose_page(page: pymupdf.Page, src_page: pymupdf.Page, meta: dict, card: d
 
         # ---- 이름·본문
         text = entry.get("ko")
-        # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역만, 번역문 줄 번호. extract.with_paragraph_breaks가 붙임)
+        # ②에서 정한 문단 나눔 (문단마다 다른 글꼴 영역만, 번역문 줄 번호. extract.with_paragraph_breaks가 붙임)
         para_breaks = entry.get("paragraph_breaks") if style_d.get("font_mode") == "sentence" else None
         if not isinstance(para_breaks, list):
             para_breaks = None
@@ -963,7 +963,7 @@ def _gray(page: pymupdf.Page, clip) -> np.ndarray:
 def sentence_blocks(src: list[dict], kos: list[str], all_lines: list[dict] | None = None,
                     starts: set | None = None) -> dict[int, dict]:
     """줄을 문장으로 묶는다 (번역 줄이 ‘다’·마침표·닫는 괄호로 끝나면 문장 끝, 아이콘만 남긴 줄도 끝).
-    starts: 사람이 ③에서 정한 문단 나눔이 있는 칸 — 새 묶음이 시작하는 줄(id(줄)). 주면 문장 끝으로 나누지 않고 그 줄에서만
+    starts: 사람이 ②에서 정한 문단 나눔이 있는 칸 — 새 묶음이 시작하는 줄(id(줄)). 주면 문장 끝으로 나누지 않고 그 줄에서만
     나눈다 (서식이 다른 줄·아이콘만 남긴 줄에서는 그대로 나눈다).
     두 줄 이상인 문장마다 {"x0", "x1", "align"}: 왼쪽 시작점(왼쪽 정렬이면 줄 시작점의 가운데 값, 아니면 가장 왼쪽)·
     가장 오른쪽, 그리고 원문 줄들이 맞춰진 쪽 (왼쪽 끝·오른쪽 끝·가운데 중 가장 고르게 맞는 것. 줄에 지우기가 본
@@ -1115,7 +1115,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
     - 왼쪽 정렬 글이 원문보다 짧으면 글 덩어리를 원문 글 칸 가운데 쪽으로 옮긴다 (block_center_shift,
       영역 서식 "block_center": false면 안 옮김)
     src_page: 원본 쪽. 주면 줄 앞 아이콘이 지워지지 않고 남았는지 지운 쪽과 견줘 본다 (남았으면 다시 그리지 않음).
-    para_breaks: ③에서 정한 문단 나눔 (번역문의 빈 줄 뺀 줄 번호). 주면 줄 정렬 묶음(sentence_blocks)을 그 문단으로 나눈다.
+    para_breaks: ②에서 정한 문단 나눔 (번역문의 빈 줄 뺀 줄 번호). 주면 줄 정렬 묶음(sentence_blocks)을 그 문단으로 나눈다.
     """
     rect = pymupdf.Rect(rect)
     # 잡음 줄(테두리 조각 등 아주 낮은 줄)은 빼고, 남는 줄이 없으면 None (영역 전체 배치로)
@@ -1549,7 +1549,7 @@ def run_compose(project_dir: Path, erase_run: Path, pages_spec: str | None, run_
         return source_of(project, _ext["x"], pno, rname)[0]
 
     cards, edit_notes = card_edits.apply(project.root, cards, _src)
-    # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역): 칸의 번역문 줄 번호로 붙인다 (없으면 기본 규칙)
+    # ②에서 정한 문단 나눔 (문단마다 다른 글꼴 영역): 칸의 번역문 줄 번호로 붙인다 (없으면 기본 규칙)
     from app.extract import with_paragraph_breaks
 
     try:

@@ -54,7 +54,7 @@ def test_icon_only_cell_is_neither_erased_nor_composed(tmp_path):
 
 
 def test_keep_original_cell_skips_translation_erase_and_shows_in_results(tmp_path):
-    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 번역 원문에서 빠지고, 지우지도 넣지도 않으며, 결과 보기에 표시된다."""
+    """② 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 번역 원문에서 빠지고, 지우지도 넣지도 않으며, 결과 보기에 표시된다."""
     proj = make_project(tmp_path, pages=2)
     _write_sources(proj, {1: "HELLO WORLD", 2: "AB CD"})
     service.set_keep_original(proj, 2, "이름", True)

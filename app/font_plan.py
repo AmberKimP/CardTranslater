@@ -132,7 +132,7 @@ def _ko_text(entry) -> str | None:
 
 
 def _ko_breaks(entry) -> list[int] | None:
-    """칸 번역문의 문단 나눔 (③에서 정한 [====], extract.with_paragraph_breaks가 붙임). 없으면 None (기본 규칙)."""
+    """칸 번역문의 문단 나눔 (②에서 정한 [====], extract.with_paragraph_breaks가 붙임). 없으면 None (기본 규칙)."""
     b = entry.get("paragraph_breaks") if isinstance(entry, dict) else None
     return b if isinstance(b, list) else None
 
@@ -344,7 +344,7 @@ def _raw_cards(file_dir: Path) -> dict:
     from app import card_edits
 
     cards, _notes = card_edits.apply(fd, cards)  # 결과 보기에서 고친 번역
-    try:  # ③에서 정한 문단 나눔 (문단마다 다른 글꼴 영역)
+    try:  # ②에서 정한 문단 나눔 (문단마다 다른 글꼴 영역)
         from app.extract import load_extracted, with_paragraph_breaks
 
         cards = with_paragraph_breaks(cards, load_extracted(fd))
@@ -391,7 +391,7 @@ def _visible_len(s: str) -> int:
 def paragraph_rects(source: str, lines: list[dict], breaks: list[int] | None = None) -> list[list[float]] | None:
     """원문(source)의 문단마다 원본 쪽 위 사각형 [x0, y0, x1, y1] (pt). 원문 줄과 지우기가 찾은 줄(lines)의 수가
     같을 때만 (아니면 None). 한 줄을 다른 문단과 나눠 쓰는 문단은 글자 수 비율로 그 줄의 가로 구간을 어림하고,
-    그 조각이 MIN_PART_CHARS보다 짧으면 줄 전체를 쓴다. breaks: ③에서 정한 문단 나눔 (paragraph_spans)."""
+    그 조각이 MIN_PART_CHARS보다 짧으면 줄 전체를 쓴다. breaks: ②에서 정한 문단 나눔 (paragraph_spans)."""
     from app.typeset_layout import paragraph_spans
 
     source = source or ""
@@ -827,7 +827,7 @@ def build(file_dir: Path, client=None, model: str = "claude-sonnet-5-5", refresh
                     "selected": ((data.get("cards") or {}).get(str(pg)) or {}).get(name), "sentences": []}
             if mode == "sentence":
                 chosen = sentences_for_page(data, pg).get(name, {})
-                br = _ko_breaks((_raw_cards(fd).get(pg) or {}).get(name))  # ③에서 정한 문단 나눔
+                br = _ko_breaks((_raw_cards(fd).get(pg) or {}).get(name))  # ②에서 정한 문단 나눔
                 card["sentences"] = [{"idx": i, "text": t, "selected": chosen.get(i)}
                                      for i, t in enumerate(split_sentences(raw.get(pg, {}).get(name, ""), br))]
             cards.append(card)

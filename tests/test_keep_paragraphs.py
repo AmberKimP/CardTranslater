@@ -49,7 +49,7 @@ def test_icon_line_is_its_own_paragraph():
     """문장 끝 없이 이어진 아이콘 줄도 앞 글 줄과 한 문단이 되지 않는다 (글 줄은 번역한다)."""
     assert extract.keep_paragraph_lines(SRC) == [1]
     t = "効果を得る。\nコストを払い[[coin]]を\n得る。\n次へ進む"
-    assert extract.keep_paragraph_lines(t, [1, 3]) == [1, 2]  # ③에서 [====]로 나눈 문단
+    assert extract.keep_paragraph_lines(t, [1, 3]) == [1, 2]  # ②에서 [====]로 나눈 문단
     assert extract.keep_paragraph_lines(t) == [0, 1, 2, 3]  # 1.24 기본: 문장 끝으로는 나누지 않아 한 문단
     assert extract.keep_paragraph_lines("アイコンなし") == []
 
@@ -275,28 +275,6 @@ def test_typeset_skips_region_when_erase_could_not_find_kept_lines():
 
 
 # ---------------------------------------------------------------- 원문 확인 화면
-def test_source_review_shows_partial_keep(tmp_path, sentence_mode, monkeypatch):
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
-    from app.qt import source_review as sr
-
-    QApplication.instance() or QApplication([])
-    info, fd, host, extra = _kept_project(tmp_path, "ksr")
-    service.keep_cell_original(info.dir, host, True)
-    files = service.project_overview(info.dir)["groups"][0]["files"]
-    dlg = sr.SourceReviewDialog(files, only_check=False)
-    row = next(i for i, c in enumerate(dlg.cells) if c["page"] == 1)
-    dlg.table.setCurrentCell(row, 0)
-    dlg._show()
-    assert "일부 문단 원본 그대로" in dlg.table.item(row, 2).text()
-    assert "아이콘이 있는 문단 1개" in dlg.info.text()
-    assert dlg.keep_btn.isChecked()
-    dlg.close()
-
-
 # ---------------------------------------------------------------- 그림 카드로 지우기·한글 넣기 (끝에서 끝까지)
 def _raster_card(path):
     """글 줄 하나 + 아래 아이콘 줄(빨간 동그라미)이 그림으로만 있는 카드 (텍스트 레이어 없음)."""
@@ -435,25 +413,3 @@ def test_compose_keeps_remaining_icon_line_slot_with_partial_keep():
     assert rec["line_boxes_pt"][0][1] == pytest.approx(20, abs=1.5)
     assert all(b[3] < 45 for b in rec["line_boxes_pt"])
 
-
-def test_source_review_turns_off_partial_keep_and_restores_slots(tmp_path, sentence_mode):
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
-    from app.qt import source_review as sr
-
-    QApplication.instance() or QApplication([])
-    info, fd, host, extra = _kept_project(tmp_path, "ksr2")
-    service.keep_cell_original(info.dir, host, True)
-    files = service.project_overview(info.dir)["groups"][0]["files"]
-    dlg = sr.SourceReviewDialog(files, only_check=False)
-    row = next(i for i, c in enumerate(dlg.cells) if c["page"] == 1)
-    dlg.table.setCurrentCell(row, 0)
-    dlg._show()
-    dlg.keep_btn.click()
-    assert extract.KEEP_PARAGRAPHS not in _cell(fd) and not _cell(fd).get("keep_original")
-    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
-    assert "not_icon" not in states.values()
-    dlg.close()

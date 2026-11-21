@@ -278,7 +278,7 @@ def test_erase_records_source_and_detects_changed_cards(tmp_path):
     assert service.stale_erased_pages(fd) == [] and service.files_needing_erase(info.dir) == []
     meta = json.loads((fd / "cleared" / "meta" / "page-001.json").read_text(encoding="utf-8"))
     assert meta["erase_sig"]
-    _write_extract(fd, 2, "HELLO WORLD")  # ③ 원문 확인에서 고침
+    _write_extract(fd, 2, "HELLO WORLD")  # ② 원문 확인에서 고침
     assert service.stale_erased_pages(fd) == [2] and service.files_needing_erase(info.dir) == [fd]
     r = service.erase_project(info.dir)  # 바뀐 파일은 다시 지운다
     assert r.files[0]["state"] == "done" and service.stale_erased_pages(fd) == []
@@ -286,7 +286,7 @@ def test_erase_records_source_and_detects_changed_cards(tmp_path):
 
 
 def test_keep_original_cell_left_out_of_sources(tmp_path):
-    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’ 칸은 용어집·번역 원문에서 빠진다."""
+    """② 원문 확인 ‘전체가 아이콘 — 번역 안 함’ 칸은 용어집·번역 원문에서 빠진다."""
     info, fd = _project(tmp_path)
     _write_extract(fd, 1, "金貨")
     _write_extract(fd, 2, "HELLO")

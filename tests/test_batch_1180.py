@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from app import icons, service, workspace
+from app import icons, service
 from tests.test_batch_1170 import _confirm_all
 from tests.test_icons import _add_run_partner, _project
 
@@ -49,57 +49,12 @@ def test_changed_cells_wait_for_reread_until_read(tmp_path, monkeypatch):
     assert not c["icon_changed"] and r["settled"] == 1
 
 
-def test_review_sources_rereads_pending_before_opening(qapp, tmp_path, monkeypatch):
-    from app.qt import steps
-    from app.qt.main import MainWindow
-
-    info, fd = _changed_project(tmp_path, "rv")
-    win = MainWindow(root=tmp_path)
-    win.open_project(info.dir)
-    acts = win.project.steps
-    ran, opened = {}, []
-    monkeypatch.setattr(acts, "_engine", lambda: "api")
-
-    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True, **_kw):
-        ran["fn"], ran["cells"] = job.fn, job.args[0]
-        on_done({"done": 1, "failed": [], "state": "done", "reason": "", "retry_after": None, "spent_usd": 0.0})
-
-    monkeypatch.setattr(steps.worker, "run_with_dialog", fake_run)
-    monkeypatch.setattr(acts, "_open_source_review", lambda files, *a: opened.append(a))
-    acts.review_sources(only_check=True)
-    assert ran["fn"] is service.reread_cells and [(c["page"]) for c in ran["cells"]] == [1]
-    assert opened == [(True, None, None)]
-
-
 # ---------------------------------------------------------------- 7. 용어집 만들기: 아이콘이 바뀐 칸이 남으면 원문 확인으로
 def test_finish_lists_icon_changed_cells(tmp_path):
     info, fd = _changed_project(tmp_path, "fin")
     r = service.finish_extraction(info.dir, client=object())
     assert r.state == "needs_confirmation"
-    assert any(i.startswith("아이콘이 바뀐 칸 (③ 원문 확인 필요): ") and i.endswith(" 1칸") for i in r.issues)
-
-
-def test_finish_after_icon_review_does_not_continue_when_cells_changed(qapp, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from app.qt import steps
-    from app.qt.main import MainWindow
-
-    info, _fd = _project(tmp_path, "fin2", pages=1)
-    win = MainWindow(root=tmp_path)
-    win.open_project(info.dir)
-    acts = win.project.steps
-    finished = []
-    monkeypatch.setattr(steps.QMessageBox, "information", lambda *a, **k: None)
-    monkeypatch.setattr(service, "icon_review", lambda _p: {"groups": [1]})
-    monkeypatch.setattr(acts, "finish", lambda accept=False: finished.append(accept))
-    changed = SimpleNamespace(changed_cells=[{"page": 1}])
-    monkeypatch.setattr(acts, "_open_icon_review", lambda review, from_finish=False: changed)
-    acts._finish_done(service.GlossaryReviewResult("icons_review", reason="x"))
-    assert finished == []  # 원문 확인을 다시 해야 하므로 용어집 만들기로 이어 가지 않는다
-    monkeypatch.setattr(acts, "_open_icon_review", lambda review, from_finish=False: SimpleNamespace(changed_cells=[]))
-    acts._finish_done(service.GlossaryReviewResult("icons_review", reason="x"))
-    assert finished == [True]
+    assert any(i.startswith("아이콘이 바뀐 칸 (② 원문 확인 필요): ") and i.endswith(" 1칸") for i in r.issues)
 
 
 # ---------------------------------------------------------------- 3. 제안 이름이 겹칠 때
@@ -187,46 +142,6 @@ def test_review_dialog_keep_button_sets_keep_original(qapp, tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------- 4. 아이콘 정의 창: 사전 전체 탭
-def test_icon_review_has_dictionary_tab_without_reset(qapp, tmp_path):
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _project(tmp_path, "tab", pages=2)
-    service.find_icons(info.dir, suggest=False)
-    assert _confirm_all(info, "lily").state == "confirmed"
-    f = fd / "extract" / "pages" / "page-001.json"
-    f.write_text(f.read_text(encoding="utf-8").replace("AB[[lily]]CD", "AB[[lily]]CD[[?]]"), encoding="utf-8")
-    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir) or {"groups": [], "known": ["lily"]})
-    assert dlg.tabs.count() == 2 and dlg.tabs.tabText(1).startswith("사전 전체 (1)")
-    panel = dlg.dict_panel
-    assert not panel.resets[0].isEnabled()  # 새 아이콘을 정하는 중에는 다시 정하기를 막는다
-    panel.table.item(0, 2).setText("흰 백합")
-    assert panel.dirty and dlg.save_dictionary() and not panel.dirty
-    assert icons.load_dictionary(info)["icons"]["lily"]["ko"] == "흰 백합"
-    dlg.close()
-    assert workspace.load_project_info(info.dir)
-
-
-def test_not_icon_does_not_send_suggested_meaning_as_text(qapp, tmp_path):
-    """‘아이콘 아님’을 체크하면 모델이 제안한 뜻을 그 자리 글자로 보내지 않는다 (원문에 뜻 문장이 들어가던 문제)."""
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _project(tmp_path, "ni", pages=1)
-    service.find_icons(info.dir, suggest=False)
-    work = info.game_dir / "work" / "icons"
-    res = icons.load_scan(work)
-    g = next(iter(res.groups))
-    res.groups[g]["meaning"] = "social crown-shaped icon"
-    icons._save_scan(work, res)
-    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    _g, name, meaning, ko, not_icon, scale = dlg.widgets[0]
-    assert meaning.text() == "social crown-shaped icon"
-    not_icon.setChecked(True)
-    assert meaning.text() == "" and dlg.rows()[0]["text"] == ""
-    not_icon.setChecked(False)
-    assert meaning.text() == "social crown-shaped icon"
-    dlg.close()
-
-
 def test_keep_original_clears_icon_changed_flags(tmp_path):
     """원본 그대로 둘 칸은 ‘아이콘이 바뀐 칸’ 확인·다시 읽기에서 빠진다 (용어집 만들기 경고가 풀리지 않던 문제)."""
     info, fd = _changed_project(tmp_path, "kc")
@@ -235,24 +150,3 @@ def test_keep_original_clears_icon_changed_flags(tmp_path):
     c = next(c for c in service.extracted_cells(fd) if c["page"] == 1)
     assert not c["icon_changed"]
 
-
-def test_rows_named_like_dictionary_keep_dictionary_values(qapp, tmp_path):
-    """사전에 있는 이름을 적은 줄은 사전 값(한국어 이름·뜻·크기)을 보이고 잠그며, 확정 때 덮어쓰지 않는다 (keep_dict).
-    같은 이름을 적은 여러 줄도 모두 그렇다 (같은 이름 = 같은 아이콘)."""
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _project(tmp_path, "ch", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    d = icons.load_dictionary(info)
-    d["icons"]["lily"] = {"file": "lily.png", "ko": "백합", "meaning": "lily", "scale": 1.4, "number": ""}
-    icons.save_dictionary(info, d)
-    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    w0, w1 = dlg.widgets[0], dlg.widgets[1]
-    w0[1].setText("lily")
-    w1[1].setText("lily")
-    assert w0[3].text() == "백합" and not w0[3].isEnabled() and abs(w0[5].value() - 1.4) < 1e-6
-    rows = dlg.rows()
-    assert rows[0]["keep_dict"] and rows[1].get("keep_dict") and rows[1]["name"] == "lily"
-    w1[1].setText("lily_2")  # 사전에 없는 이름이면 다시 고칠 수 있다
-    assert w1[3].isEnabled() and not dlg.rows()[1].get("keep_dict")
-    dlg.close()

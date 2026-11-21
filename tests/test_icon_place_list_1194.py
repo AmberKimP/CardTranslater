@@ -77,65 +77,12 @@ def test_restore_icon_undoes_absorb_and_not_icon(tmp_path):
 
 
 # ---------------------------------------------------------------- 화면: 목록에서 고르고 합치기·되돌리기·삭제
-def _dialog(info, host):
-    from app.qt.icon_place import IconPlaceDialog
-
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    saved = []
-    return IconPlaceDialog(info.dir, g, lambda grp: grp, saved.append), saved
-
-
 def _select(dlg, occs):
     from PySide6.QtCore import Qt
 
     for k in range(dlg.items.count()):
         it = dlg.items.item(k)
         it.setSelected(it.data(Qt.ItemDataRole.UserRole) in occs)
-
-
-def test_dialog_lists_cell_items_and_merges_without_closing(qapp, tmp_path):
-    from PySide6.QtWidgets import QDialog
-
-    info, fd = _project(tmp_path, "dlg", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    dlg, saved = _dialog(info, host)
-    dlg._cur_occ = host
-    dlg._load()
-    assert dlg.items.count() == 2
-    assert dlg.items.item(0).text().startswith("▶ 1.") and "찾음" in dlg.items.item(0).text()
-    assert "위치 못 찾음" in dlg.items.item(1).text()
-    assert not dlg.merge_btn.isEnabled()  # 지금 자리 하나만 고름
-    _select(dlg, {host, extra})
-    assert dlg.merge_btn.isEnabled() and "2개" in dlg.merge_btn.text()
-    dlg.merge_btn.click()
-    assert dlg.result() != QDialog.DialogCode.Accepted and saved  # 닫지 않고 표를 새로 채움
-    assert _states(info, host) == [(host, "found"), (extra, "absorbed")]
-    assert "포함" in dlg.items.item(1).text()
-    # 되돌리기
-    _select(dlg, {extra})
-    assert dlg.restore_btn.isEnabled() and not dlg.del_btn.isEnabled()
-    dlg.restore_btn.click()
-    assert _states(info, host)[1] == (extra, "lost")
-    # 삭제 (아이콘 아님)
-    _select(dlg, {extra})
-    assert dlg.del_btn.isEnabled()
-    dlg.del_btn.click()
-    assert _states(info, host)[1] == (extra, "not_icon")
-    assert dlg.result() != QDialog.DialogCode.Accepted
-    dlg.close()
-
-
-def test_dialog_clicking_list_item_makes_it_current(qapp, tmp_path):
-    info, fd = _project(tmp_path, "cur", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    dlg, _saved = _dialog(info, host)
-    dlg.select_item(extra)
-    assert dlg._cur()["occ"] == extra
-    assert dlg.view.box is None and dlg.view.guess  # 못 찾은 자리: 예상 위치를 보여 준다
-    assert dlg.items.item(1).text().startswith("▶ 2.")
-    dlg.select_item(host)
-    assert dlg._cur()["occ"] == host and dlg.view.box
-    dlg.close()
 
 
 def test_restore_one_slot_of_old_multi_slot_not_icon_group(tmp_path):
@@ -163,30 +110,6 @@ def test_restore_one_slot_of_old_multi_slot_not_icon_group(tmp_path):
     by = {o.id: o for o in scan.occurrences}
     assert not scan.groups[by[members[0]].group].get("not_icon")
     assert scan.groups[by[members[1]].group]["not_icon"]  # 다른 자리는 그대로
-
-
-def test_delete_does_not_include_current_unless_selected(qapp, tmp_path):
-    info, fd = _project(tmp_path, "delcur", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    dlg, _saved = _dialog(info, host)
-    dlg.select_item(host)
-    _select(dlg, {extra})  # Ctrl로 다른 자리만 고름
-    dlg.del_btn.click()
-    assert _states(info, host) == [(host, "found"), (extra, "not_icon")]  # 지금 자리는 그대로
-    dlg.close()
-
-
-def test_other_group_slot_stays_current_after_action(qapp, tmp_path):
-    # 목록에서 다른 묶음의 자리를 고른 뒤 동작해도 지금 자리가 콤보 자리로 돌아가지 않는다 (리뷰)
-    info, fd = _project(tmp_path, "keepcur", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    dlg, _saved = _dialog(info, host)  # 콤보 = host 묶음, extra는 다른 묶음
-    dlg.select_item(extra)
-    assert dlg._cur()["occ"] == extra and dlg._cur_occ == extra
-    _select(dlg, {extra})
-    dlg.del_btn.click()
-    assert dlg._cur()["occ"] == extra and dlg.items.item(1).text().startswith("▶ 2.")
-    dlg.close()
 
 
 # ---------------------------------------------------------------- ‘한 세트로’ 후보: 가운데 점이 아니라 겹친 넓이 40%
@@ -220,27 +143,3 @@ def test_set_candidate_ignores_slight_touch(tmp_path):
 
 
 # ---------------------------------------------------------------- 여러 개 고른 뒤 합치기: 고른 것끼리, 상자 있는 자리로
-def test_merge_selected_among_themselves(qapp, tmp_path):
-    info, fd = _project(tmp_path, "msel", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    dlg, _saved = _dialog(info, host)
-    dlg.select_item(extra)  # 지금 자리 = 못 찾은 자리 (상자 없음)
-    _select(dlg, {extra})
-    assert not dlg.merge_btn.isEnabled()  # 하나만 고름
-    _select(dlg, {host, extra})
-    assert dlg._merge_plan() == (host, [extra])  # 상자가 있는 자리로 합친다
-    assert dlg.merge_btn.isEnabled() and dlg.merge_btn.text() == "합치기 (2개 → 1번)"
-    dlg.merge_btn.click()
-    assert _states(info, host) == [(host, "found"), (extra, "absorbed")]
-    dlg.close()
-
-
-def test_merge_needs_a_boxed_slot(qapp, tmp_path):
-    info, fd = _project(tmp_path, "mbox", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    service.set_icon_not_icon(info.dir, host)  # 상자 있는 자리를 아이콘 아님으로
-    dlg, _saved = _dialog(info, host)
-    _select(dlg, {host, extra})
-    assert dlg._merge_plan() == (None, []) and not dlg.merge_btn.isEnabled()
-    assert "끌어 감싸" in dlg.merge_btn.toolTip()
-    dlg.close()

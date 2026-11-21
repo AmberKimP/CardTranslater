@@ -1,4 +1,4 @@
-"""⑤ 번역, 검수 엑셀, 프로젝트 단위 지우기·⑦ 합성, 이미지 시트, 고친 PDF 가져오기."""
+"""④ 번역, 검수 엑셀, 프로젝트 단위 지우기·⑥ 합성, 이미지 시트, 고친 PDF 가져오기."""
 
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     out = ProjectStepResult("done")
     for fd in _extract.scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
-        set_erase_paused(fd, False)  # 지우기를 하면(⑦ 한글 넣기·‘글자 지우기…’·뒤에서) 초기화로 멈춰 둔 것이 풀린다
+        set_erase_paused(fd, False)  # 지우기를 하면(⑥ 한글 넣기·‘글자 지우기…’·뒤에서) 초기화로 멈춰 둔 것이 풀린다
         pages = workspace.included_pages(fd)
         if ((fd / "cleared" / "cleared.pdf").exists() and not redo and set(pages) <= _cleared_pages(fd)
                 and not (stale and stale_erased_pages(fd))):
@@ -292,7 +292,7 @@ def icon_only_regions(sources: dict | None, kept=()) -> list[str]:
 
 
 def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool = True) -> None:
-    """③ 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 그 칸은 번역·용어집에서 빼고, 글자 지우기·한글 넣기도 하지 않고
+    """② 원문 확인 ‘전체가 아이콘 — 번역 안 함’: 그 칸은 번역·용어집에서 빼고, 글자 지우기·한글 넣기도 하지 않고
     원본 그대로 둔다 (원문은 그대로 남긴다). keep=False면 되돌린다. 사람이 확인한 칸이 된다."""
     from app.extract import page_file
 
@@ -310,7 +310,7 @@ def set_keep_original(file_dir: Path | str, page: int, region: str, keep: bool =
         r.pop(KEEP_PARAGRAPHS, None)  # 칸 전체로 정하거나 풀면 아이콘 문단만 남기기도 끝난다
         if keep:
             r["keep_original"] = True
-            r.pop("icon_changed", None)  # 원본 그대로 둘 칸: ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다
+            r.pop("icon_changed", None)  # 원본 그대로 둘 칸: ② 원문 확인 뒤 확인·다시 읽기도 필요 없다
             r.pop("icon_reread", None)
             r["uncertain"] = False
             r["checked_by"] = "사람"
@@ -344,7 +344,7 @@ def set_keep_paragraphs(file_dir: Path | str, page: int, region: str, lines: lis
         r[KEEP_PARAGRAPHS] = {"lines": keep, "n": len(rows),
                               "rows": [keep_row_print(rows[i]) if 0 <= i < len(rows) else "" for i in keep],
                               **({"boxes_pt": [list(b) for b in boxes_pt]} if boxes_pt else {})}
-        # 아이콘이 든 줄을 모두 남기면 ② 아이콘 정의 뒤 확인·다시 읽기도 필요 없다. 아이콘 줄이 남은 문장(번역하는 쪽)에도
+        # 아이콘이 든 줄을 모두 남기면 ② 원문 확인 뒤 확인·다시 읽기도 필요 없다. 아이콘 줄이 남은 문장(번역하는 쪽)에도
         # 있으면 그 문장은 아이콘 자리가 바뀐 채 번역되므로 표시를 두어 다시 읽게 한다
         from app.icons import TOKEN_RE
 
@@ -357,7 +357,7 @@ def set_keep_paragraphs(file_dir: Path | str, page: int, region: str, lines: lis
 
 
 def stale_erased_pages(file_dir: Path | str) -> list[int]:
-    """지운 뒤 원문(③ 원문 확인·② 아이콘 정의)이나 영역·카드별 지우기 방식이 바뀌어 다시 지워야 하는 쪽.
+    """지운 뒤 원문(② 원문 확인)이나 영역·카드별 지우기 방식이 바뀌어 다시 지워야 하는 쪽.
     예전 버전으로 지운 쪽(기록 없음)은 모르니 넣지 않는다."""
     from app.extract import load_extracted
     from app.workspace import file_settings
@@ -407,8 +407,8 @@ def files_needing_erase(project_dir: Path | str, files: list | None = None, *,
             load_project(fd)
         except FileNotFoundError:
             continue  # 영역이 아직 없는 그룹
-        if erase_paused(fd) and not include_paused:  # 초기화한 파일: ⑦ 한글 넣기·‘글자 지우기…’를 누를 때까지 뒤에서 지우지 않는다
-            # (include_paused: ⑦ 한글 넣기·‘글자 지우기…’를 누른 경우 — 초기화한 파일도 지울 차례다)
+        if erase_paused(fd) and not include_paused:  # 초기화한 파일: ⑥ 한글 넣기·‘글자 지우기…’를 누를 때까지 뒤에서 지우지 않는다
+            # (include_paused: ⑥ 한글 넣기·‘글자 지우기…’를 누른 경우 — 초기화한 파일도 지울 차례다)
             continue
         done = (fd / "cleared" / "cleared.pdf").exists() and set(pages) <= _cleared_pages(fd)
         if not done or stale_erased_pages(fd):
@@ -442,10 +442,10 @@ def set_erase_paused(file_dir: Path | str, paused: bool) -> None:
 
 def stale_erase_files(file_dirs, cells: list[dict] | None = None) -> list[Path]:
     """이미 글자를 지운(cleared/cleared.pdf가 있는) 파일 중 그 뒤 원문·설정이 바뀌어 다시 지울 쪽이 있는 파일.
-    ② 아이콘 정의에서 바뀐 칸을 ③ 원문 확인에서 다시 읽은 뒤 묻지 않고 다시 지울 때 (아직 안 지운 파일은 넣지 않는다).
+    ② 원문 확인에서 아이콘이 바뀐 칸을 다시 읽은 뒤 묻지 않고 다시 지울 때 (아직 안 지운 파일은 넣지 않는다).
     cells([{"file_dir", "page", "region"}], ② 뒤 바뀐 칸)를 주면 그 칸이 모두 확인된 파일만: 두 번 읽어 같았거나 사람이
     저장해 icon_changed가 풀린 칸. 다시 읽기를 취소·실패해 아직 ‘확인 필요’인 칸이 있는 파일은 확인 전 원문으로 무거운
-    지우기를 하지 않는다 (확인한 뒤 ⑦ 한글 넣기나 뒤에서 지우기가 한다)."""
+    지우기를 하지 않는다 (확인한 뒤 ⑥ 한글 넣기나 뒤에서 지우기가 한다)."""
     from app.extract import load_extracted
 
     unsure: set[str] = set()
@@ -500,7 +500,7 @@ def compose_project(project_dir: Path | str, group: str | None = None, *, accept
     for fd in _extract.scoped_file_dirs(info, group, files):
         key = workspace.file_key(fd)
         if not (fd / "cleared").exists():
-            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (⑦ 한글 넣기를 누르면 먼저 지웁니다)"})
+            out.files.append({"file": key, "state": "blocked", "reason": "지운 결과 없음 (⑥ 한글 넣기를 누르면 먼저 지웁니다)"})
             out.state, out.reason = "blocked", f"{key}: 지운 결과가 없습니다"
             continue
         xlsx = review_xlsx_for(fd)
@@ -650,7 +650,7 @@ def import_edited_pdf(file_dir: Path | str, pdf: Path | str, progress: _base.Pro
     pdf = Path(pdf)
     t = fd / "translated"
     if not ((t / "translated.pdf").exists() and (t / "report.json").exists()):
-        raise ValueError("이 파일은 아직 한글 넣기 결과가 없습니다. 먼저 ⑦ 한글 넣기를 하세요.")
+        raise ValueError("이 파일은 아직 한글 넣기 결과가 없습니다. 먼저 ⑥ 한글 넣기를 하세요.")
     owner, members = sheet_family(fd)
     layouts = image_sheet_layouts(owner) if owner else []
     if not layouts:

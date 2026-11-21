@@ -20,7 +20,7 @@ READER_NAMES = {"sonnet": "보통 읽기", "opus": "정밀 읽기", "haiku": "�
 LABEL_TEXT = {"결론 못 냄": "다시 봐야 함"}
 JA_FONTS = ["Yu Gothic UI", "Meiryo"]  # 원문(일본어) 칸 글꼴: 차례로, 없으면 기본 글꼴
 ENGINE_LABELS = [("claude-code", "Claude 구독 (Claude Code)"), ("api", "API 키 (사용한 만큼 요금)")]  # 로그인 창과 같은 말
-ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"  # app.extract.ICON_REVIEW_LABEL과 같은 상태 (② 아이콘 정의 뒤 다시 읽어 결론 못 냄)
+ICON_REVIEW_LABEL = "아이콘 고침 · 확인 필요"  # app.extract.ICON_REVIEW_LABEL과 같은 상태 (② 원문 확인 뒤 다시 읽어 결론 못 냄)
 # 아이콘을 고친 뒤 두 번 읽어 같음 (app.extract.ICON_SETTLED_LABEL): 알림만 — 보라 아님, 확인할 칸 아님
 ICON_SETTLED_LABEL = "아이콘 고침"
 LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽지 않음": "#EEEEEE", "사람이 고침": "#CFE2F3",
@@ -29,7 +29,7 @@ LABEL_COLORS = {"결론 못 냄": "#F4B183", "두 번 확인": "#D9EAD3", "읽�
 
 STATE_LABEL = {"done": "끝남", "skipped": "건너뜀", "blocked": "할 수 없음", "failed": "실패",
                "paused": "사용 한도로 멈춤", "needs_confirmation": "확인 필요", "cancelled": "취소함",
-               "icons_review": "아이콘 정의 필요", "waiting_batch": "처리 기다리는 중"}
+               "icons_review": "아이콘 이름 정하기 필요", "waiting_batch": "처리 기다리는 중"}
 
 
 def state_label(s: str) -> str:
@@ -89,7 +89,7 @@ def fill_icon_names(reading: str, source: str, known=None, removed: bool | None 
 
     모델이 읽은 결과에는 아이콘 이름을 정하기 전의 [[?]]가 남아 있고, 이름을 정하면 원문만 [[이름]]이 된다.
     두 글을 맞춰 보아 같은 자리의 아이콘만 바꾼다. known이 있으면 그 안의 이름(사전에서 정한 것)만.
-    removed: ② 아이콘 정의에서 이 칸의 [[?]]를 ‘아이콘 아님’으로 뺀 적이 있음 (칸의 icon_removed).
+    removed: ② 원문 확인에서 이 칸의 [[?]]를 ‘아이콘 아님’으로 뺀 적이 있음 (칸의 icon_removed).
     None이면 원문에 이름을 정한 아이콘이 있을 때 그렇다고 본다 (icon_removed를 적기 전에 정한 칸).
     그런 칸에서 원문의 아이콘을 모두 정했는데(원문에 [[?]]가 없음) 읽은 결과의 아이콘이 더 많으면, 남는 [[?]]는
     뺀 자리다: 그 자리는 원문 글자를 따른다 (그대로 두면 저장할 때 [[?]]가 되살아난다).

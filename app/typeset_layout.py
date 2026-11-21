@@ -201,7 +201,7 @@ def nonblank_count(text) -> int:
 def paragraph_spans(text: str, breaks: list[int] | None = None) -> list[tuple[int, int]]:
     """‘문단마다 다른 글꼴’ 영역의 글(원문·번역문, 태그·아이콘 포함)을 문단으로 나눈 (시작, 끝) 위치 (끝은 포함하지 않음).
 
-    breaks: 사람이 ③ 원문 확인에서 [====]로 정한 문단 나눔 (칸의 paragraph_breaks, extract.breaks_for_text로 이 글의
+    breaks: 사람이 ② 원문 확인에서 [====]로 정한 문단 나눔 (칸의 paragraph_breaks, extract.breaks_for_text로 이 글의
     번호에 맞춘 것) — 새 문단이 시작하는 줄 번호 (빈 줄을 뺀 줄 번호, 0부터; 0은 늘 시작이라 적지 않음). 주면 그 줄에서만
     나눈다 (빈 줄·머리 줄·‘——’로도 나누지 않음, 빈 목록이면 한 문단). 이 글 줄 수에 맞지 않는 번호는 버린다.
     breaks가 없으면(None) 기본 규칙: 빈 줄, 짧은 머리 줄(‘공포: 1’), ‘——이름’(말한 사람) 앞에서만 나눈다.

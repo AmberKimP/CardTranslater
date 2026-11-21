@@ -103,17 +103,16 @@ Apple HIG 기반 가이드(모바일·웹용)를 검토해 **그대로 쓰는 �
 | 0I | 로그인 | `LoginDialog` |
 | 0J | 릴리스 노트 | `ReleaseNotesDialog` |
 | 0K | 라이선스 | `LicenseDialog` |
+| 0L | 자를 자리 미리 보기 | `CutPreviewDialog` |
 | 0Z | 알림·질문 | `QMessageBox` |
 | 1A | 글자 추출 | `ExtractDialog` |
-| 2A | 아이콘 정의 | `IconReviewDialog` |
-| 2B | 카드 보기 · 아이콘 자리 잡기 | `IconPlaceDialog` |
-| 2C | 아이콘 사전 | `IconDictionaryDialog` |
-| 3A | 원문 확인 | `SourceReviewDialog` |
-| 5A | 용어집 확정 | `GlossaryReviewDialog` |
-| 5B | 바뀐 용어 반영 | `TermChangesDialog` |
-| 6A | 번역 검수 | `TranslationReviewDialog` |
-| 8A | 한글 글꼴 고르기 | `FontPlanDialog` |
-| 8B | 글꼴 추가 | `AddFontDialog` |
+| 2A | 원문 확인 (아이콘 포함, 영역 목록) | `SourceCheckDialog` |
+| 2B | 카드 보기 (영역 단위로 고치기) | `CardViewer` |
+| 3A | 용어집 | `GlossaryReviewDialog` |
+| 3B | 바뀐 용어 반영 | `TermChangesDialog` |
+| 5A | 번역 검수 | `TranslationReviewDialog` |
+| 6A | 한글 글꼴 고르기 | `FontPlanDialog` |
+| 6B | 글꼴 추가 | `AddFontDialog` |
 | 9A | 결과 보기 | `ResultViewer` |
 | 9B | 그룹 고르기 | `GroupPickDialog` |
 | 9C | 시험 기록 | `TestHistoryDialog` |

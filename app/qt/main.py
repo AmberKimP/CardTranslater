@@ -38,19 +38,18 @@ STEP_QSS = (
 # 단계 버튼: (키, 글자, 하는 일, 아직 못 쓸 때 이유)
 STEP_INFO = {
     "extract": ("① 글자 추출", "카드 이미지에서 원문 글자를 읽습니다", "먼저 파일을 넣고 영역을 지정하세요"),
-    "icons": ("② 아이콘 정의", "원문 속 아이콘에 이름을 붙입니다 (원문 확인에서 아이콘이 이름으로 보이게 먼저)",
-              "먼저 ① 글자 추출을 하세요"),
-    "review": ("③ 원문 확인", "읽은 원문을 카드 그림과 비교해 고칩니다", "먼저 ① 글자 추출을 하세요"),
-    "glossary": ("④ 용어집", "용어 후보를 모아(없거나 다시 만들 때) 번역을 확인·고쳐 확정합니다 "
+    "review": ("② 원문 확인", "읽은 원문과 아이콘을 카드 그림과 비교해 고치고 영역마다 확정합니다 (아이콘 이름 정하기 포함)",
+               "먼저 ① 글자 추출을 하세요"),
+    "glossary": ("③ 용어집", "용어 후보를 모아(없거나 다시 만들 때) 번역을 확인·고쳐 확정합니다 "
                  "(엑셀로 내보내기·가져오기, 후보 다시 만들기도 이 창에서)", "먼저 ① 글자 추출을 하세요"),
-    "translate": ("⑤ 전체 번역", "확정한 용어집으로 번역합니다",
-                  "먼저 ④ 용어집을 확정하세요"),
-    "check": ("⑥ 번역 검수", "번역을 칸마다 원문과 비교해 고치고 확인합니다", "먼저 ⑤ 전체 번역을 하세요"),
-    "compose": ("⑦ 한글 넣기", "번역한 한글을 카드에 넣습니다 (원문 글자를 아직 지우지 않은 파일은 먼저 지웁니다)",
-                "먼저 ⑤ 전체 번역을 하세요"),
-    "results": ("결과 보기", "한글을 넣은 카드를 원본과 나란히 봅니다", "아직 한글을 넣은 파일이 없습니다 (⑦ 한글 넣기)"),
+    "translate": ("④ 전체 번역", "확정한 용어집으로 번역합니다",
+                  "먼저 ③ 용어집을 확정하세요"),
+    "check": ("⑤ 번역 검수", "번역을 칸마다 원문과 비교해 고치고 확인합니다", "먼저 ④ 전체 번역을 하세요"),
+    "compose": ("⑥ 한글 넣기", "번역한 한글을 카드에 넣습니다 (원문 글자를 아직 지우지 않은 파일은 먼저 지웁니다)",
+                "먼저 ④ 전체 번역을 하세요"),
+    "results": ("결과 보기", "한글을 넣은 카드를 원본과 나란히 봅니다", "아직 한글을 넣은 파일이 없습니다 (⑥ 한글 넣기)"),
     "test": ("시험 실행 (몇 쪽만)", "고른 쪽만 따로 지우고 한글을 넣어 봅니다 (프로젝트 결과는 그대로)",
-             "⑤ 전체 번역을 끝낸 뒤 쓸 수 있습니다"),
+             "④ 전체 번역을 끝낸 뒤 쓸 수 있습니다"),
 }
 # ‘다음 할 일’ 큰 버튼 글자 (service.project_overview의 next_key)
 NEXT_TEXT = {"add": "파일 넣기", "regions": "영역 지정", **{k: v[0] for k, v in STEP_INFO.items()}}
@@ -305,7 +304,7 @@ class ProjectPage(QWidget):
         self.ov: dict = {}
         from app.qt.bg_erase import BackgroundEraser
 
-        self.bg = BackgroundEraser(self)  # 원문이 확정되면(④부터) 뒤에서 글자 지우기
+        self.bg = BackgroundEraser(self)  # 원문이 확정되면(③부터) 뒤에서 글자 지우기
         self.bg.file_done.connect(self.refresh)
         self.title = page_title("", 17)
         self.sub = subtitle("")
@@ -412,8 +411,7 @@ class ProjectPage(QWidget):
         self.step_fns = {}
         for i, (key, fn) in enumerate((
                 ("extract", self.steps.extract),
-                ("icons", self.steps.icons),
-                ("review", self.steps.review_sources),
+                ("review", self.steps.source_check),
                 ("glossary", self.steps.glossary),
                 ("translate", self.steps.translate),
                 ("check", self.steps.review_translation))):
@@ -441,11 +439,10 @@ class ProjectPage(QWidget):
         self.scope_label = QLabel("작업 대상: 전체")
         self.scope_label.setStyleSheet("color: #0071E3; font-weight: bold")
         self.scope_label.setToolTip("아래 목록에서 고른 항목.\n"
-                                    "① 글자 추출 · ⑤ 전체 번역: 보통 전체에 합니다 "
+                                    "① 글자 추출 · ④ 전체 번역: 보통 전체에 합니다 "
                                     "(그룹·파일을 고른 채 누르면 전체/고른 항목만을 묻습니다).\n"
-                                    "③ 원문 확인: 고른 범위만 보여 줍니다.\n"
-                                    "⑦ 한글 넣기 · 결과 보기 · 시험 실행: 그룹마다 합니다 (전체를 고른 채 누르면 그룹을 고릅니다).\n"
-                                    "② 아이콘 정의 · ④ 용어집: 늘 프로젝트(게임) 전체에 합니다.")
+                                    "⑥ 한글 넣기 · 결과 보기 · 시험 실행: 그룹마다 합니다 (전체를 고른 채 누르면 그룹을 고릅니다).\n"
+                                    "② 원문 확인 · ③ 용어집: 늘 게임 전체에 합니다 (원문 확인 창에서 파일로 거를 수 있습니다).")
         self.scope_hint = QLabel()
         self.scope_hint.setStyleSheet("color: #6E6E73")
         scope_row = QHBoxLayout()
@@ -523,7 +520,7 @@ class ProjectPage(QWidget):
 
     def erase_selected(self):
         """오른쪽 클릭 ‘글자 지우기…’: 고른 범위의 원문 글자를 지금 지운다 (이미 지웠으면 ‘그래도 다시 지우기’를 묻는다).
-        보통은 뒤에서 지우기와 ⑦ 한글 넣기가 알아서 지우므로, 미리 지워 두거나 처음부터 다시 지울 때 쓴다."""
+        보통은 뒤에서 지우기와 ⑥ 한글 넣기가 알아서 지우므로, 미리 지워 두거나 처음부터 다시 지울 때 쓴다."""
         self.out.erase()
 
     def _context_menu(self, pos):
@@ -629,7 +626,7 @@ class ProjectPage(QWidget):
         self.body.setCurrentWidget(self.tree if o["groups"] else self.empty)
         self._sync_buttons()
         self._sync_steps()
-        self.bg.kick()  # 지워야 할 파일이 있으면 뒤에서 지운다 (④ 용어집부터, 원문이 바뀐 카드도)
+        self.bg.kick()  # 지워야 할 파일이 있으면 뒤에서 지운다 (③ 용어집부터, 원문이 바뀐 카드도)
 
     def step_states(self) -> dict[str, str]:
         """단계 버튼마다 ‘done’(끝남) · ‘now’(다음에 할 일) · ‘todo’. overview 값으로만 판단한다."""
@@ -639,7 +636,7 @@ class ProjectPage(QWidget):
         past_extract = st in ("glossary_review", "glossary_confirmed", "translating", "translated")
         done = {
             "extract": bool(files) and all(f["included"] > 0 and f["extracted"] >= f["included"] for f in files),
-            "review": past_extract, "icons": past_extract,
+            "review": past_extract,
             "glossary": st in ("glossary_confirmed", "translating", "translated"),
             "translate": st == "translated",
             "check": self._review_done(),
@@ -681,7 +678,7 @@ class ProjectPage(QWidget):
         extracted = any(f["extracted"] for f in files)
         st = o["status"]
         on = {
-            "extract": ready, "review": extracted, "icons": extracted,
+            "extract": ready, "review": extracted,
             # 후보 만들기(추출 중)·확정(검증 중)·확정 뒤 고치기 (바뀐 용어가 든 칸만 다시 번역됨)
             "glossary": extracted and st in ("extracting", "glossary_review", "glossary_confirmed", "translating",
                                              "translated"),
@@ -795,7 +792,7 @@ class ProjectPage(QWidget):
         elif key == "regions":
             why = "카드에서 번역할 글자가 있는 곳을 영역으로 지정합니다"
         elif key == "results":
-            why = "모든 카드에 한글을 넣었습니다. 번역을 고치려면 ‘⑥ 번역 검수’에서 고친 뒤 ‘⑦ 한글 넣기’를 다시 누르세요."
+            why = "모든 카드에 한글을 넣었습니다. 번역을 고치려면 ‘⑤ 번역 검수’에서 고친 뒤 ‘⑥ 한글 넣기’를 다시 누르세요."
         elif key in STEP_INFO:
             why = STEP_INFO[key][1] + " · 대상: " + self.scope()[0]
         else:
@@ -816,9 +813,9 @@ class ProjectPage(QWidget):
         if hasattr(self, "scope_label"):
             label = self.scope()[0]
             self.scope_label.setText(f"작업 대상: {label}")
-            self.scope_hint.setText(" — 추출·번역은 전체에, ⑦ 한글 넣기부터는 그룹마다 합니다 (목록에서 그룹을 고르면 그 그룹만)"
+            self.scope_hint.setText(" — 추출·번역은 전체에, ⑥ 한글 넣기부터는 그룹마다 합니다 (목록에서 그룹을 고르면 그 그룹만)"
                                     if label == "전체"
-                                    else " — ⑦ 한글 넣기·결과 보기는 이 범위에, 추출·번역은 누를 때 전체/이것만을 묻습니다")
+                                    else " — ⑥ 한글 넣기·결과 보기는 이 범위에, 추출·번역은 누를 때 전체/이것만을 묻습니다")
         self.b_pages.setEnabled(bool(sel and sel[0] == "file"))
         self.b_regions.setEnabled(self._group_of_selection() is not None)
 
@@ -883,7 +880,7 @@ class ProjectPage(QWidget):
             self.refresh()
             return
         self.win.statusBar().showMessage(f"{label}: 결과 {len(res['moved'])}개를 휴지통으로 옮겼습니다 "
-                                         "(⑦ 한글 넣기나 오른쪽 클릭 ‘글자 지우기…’를 누를 때까지 뒤에서 다시 지우지 않습니다)")
+                                         "(⑥ 한글 넣기나 오른쪽 클릭 ‘글자 지우기…’를 누를 때까지 뒤에서 다시 지우지 않습니다)")
         self.refresh()
 
     def rename_group(self):

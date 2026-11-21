@@ -1,6 +1,6 @@
 """영역 설정 ‘아이콘: 글자만 (아이콘 없음)’ (style.icons == "none").
 
-① 추출 요청에 아이콘 없음을 알리고 응답의 [[?]]를 빼며, ② 아이콘 정의는 그 칸을 찾지도 세지도 않고,
+① 추출 요청에 아이콘 없음을 알리고 응답의 [[?]]를 빼며, ② 원문 확인은 그 칸을 찾지도 세지도 않고,
 글자 지우기는 그 칸에서 아이콘 자리를 찾지 않는다. 기본(키 없음)은 예전과 같다."""
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def test_claude_code_prompt_uses_hint():
     assert extract.region_hint(Region("본문", RatioRect(0, 0, 1, 1))) == ""
 
 
-# ---------------------------------------------------------------- ② 아이콘 정의
+# ---------------------------------------------------------------- ② 원문 확인
 def test_icon_scan_skips_text_only(tmp_path, monkeypatch):
     info, _g, _fd = _setup(tmp_path)
     assert icons.pending_count(info) == 1 and icons.token_count(info) == 1  # ‘이름’ 칸의 [[?]]는 세지 않는다

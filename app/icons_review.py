@@ -189,7 +189,7 @@ class IconImport:
     removed: int = 0
     replaced: int = 0
     # 아이콘 자리가 바뀐 칸 [(파일 폴더, 쪽, 칸)]: 손으로 다시 잡음·세트로 합침·아이콘 아님·위치 못 찾음.
-    # 모델이 그 자리를 잘못 읽었을 수 있어 ③ 원문 확인에서 다시 읽고 확인해야 한다 (확인 필요로 표시해 둔다)
+    # 모델이 그 자리를 잘못 읽었을 수 있어 ② 원문 확인에서 다시 읽고 확인해야 한다 (확인 필요로 표시해 둔다)
     changed_cells: list = field(default_factory=list)
     # 알릴 것 (막지는 않음): 같은 이름 줄들의 한국어 이름·뜻이 서로 다름 등
     notes: list[str] = field(default_factory=list)
@@ -246,13 +246,15 @@ def import_review(info, xlsx: Path, work: Path) -> IconImport:
     return import_rows(info, rows, work)
 
 
-def import_rows(info, rows: list[dict], work: Path) -> IconImport:
+def import_rows(info, rows: list[dict], work: Path, partial: bool = False) -> IconImport:
     """검증 행(엑셀이나 화면): {"묶음", "이름", "뜻(원문)", "한국어 이름", "처리", "표시 크기"} — 한 행 = 카드의 아이콘 하나.
     같은 이름을 적은 행들은 한 아이콘(사전 한 항목)이다. 사전에 이미 있는 이름이면 사전 값(그림·한국어 이름·뜻·크기)을
     그대로 쓰고 빈 칸만 채운다. 새 이름이면 그 이름 행 중 첫 행(그림이 있는)의 그림으로 넣고, 한국어 이름·뜻·크기는
     적힌 첫 값을 쓴다 (행마다 다르면 notes로 알린다).
     이미 이름이 있던 아이콘(named)의 행은 이름을 그대로 두면 원문을 바꾸지 않고, 이름을 바꾸거나 ‘아이콘 아님’이면
-    그 토큰을 [[?]]로 열어(open_named) 다른 행과 같은 방법으로 바꾼다."""
+    그 토큰을 [[?]]로 열어(open_named) 다른 행과 같은 방법으로 바꾼다.
+    partial: 넘긴 행만 확정한다 (② 원문 확인의 ‘이 영역 확정’). 행이 없는 이름 없는 자리는 [[?]]로 남고, 찾기 결과(scan)는
+    지우지 않고 확정한 자리만 이름 있는 자리로 고쳐 둔다 (다른 칸에서 손으로 잡은 자리·적어 둔 이름이 남게)."""
     res = _ic.load_scan(work)
     d = _ic.load_dictionary(info)
     out = IconImport()
@@ -304,13 +306,19 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
                 out.blocking.append(f"{g}: 표시 크기가 숫자가 아님 ({row['표시 크기']})")
         if res.groups[g].get("rep"):
             first_rep.setdefault(name, g)
+    occ_group = {o.id: o.group for o in res.occurrences}
     for g, gi in res.groups.items():
         if g in decision or any(g in b for b in out.blocking):
             continue
+        host = occ_group.get(gi["absorbed"]) if gi.get("absorbed") else None
+        if partial and gi.get("absorbed") and host not in decision and not named_of.get(host or ""):
+            continue  # 세트를 감싼 자리를 이번에 확정하지 않음: 세트의 나머지 자리도 그대로 둔다
         if gi.get("absorbed"):  # 세트에 포함된 자리는 표·엑셀에 없어도 원문에서 뺀다
             decision[g] = ""
         elif named_of.get(g):  # 행이 없는 확정 아이콘 (예전 엑셀 등): 그대로 둔다
             decision[g] = named_of[g]
+        elif partial:  # 이번에 확정하지 않는 자리: [[?]]로 남긴다
+            continue
         else:
             out.blocking.append(f"{g}: 엑셀에 행이 없음")
     by_id = {o.id: o for o in res.occurrences}
@@ -372,7 +380,7 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
             toks = list(_ic.TOKEN_RE.finditer(src if isinstance(src, str) else ""))
             if not (0 <= o.ti < len(toks)) or toks[o.ti].group(1) != o.named:
                 out.blocking.append(f"{o.group}: 원문에서 [[{o.named}]]을 찾지 못했습니다 "
-                                    "(원문이 바뀌었으면 ② 아이콘 정의를 다시 누르세요)")
+                                    "(원문이 바뀌었으면 ② 원문 확인을 다시 누르세요)")
     if out.blocking:
         return out
     _ic.save_dictionary(info, d)
@@ -396,6 +404,8 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
     for o in res.occurrences:
         if o.named:  # 그대로 둔 확정 아이콘
             continue
+        if partial and o.group not in decision:  # 이번에 확정하지 않는 자리
+            continue
         key = (o.file, o.page, o.region)
         name = decision[o.group]
         gi = res.groups.get(o.group, {})
@@ -410,8 +420,17 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         e = d["icons"].get(name) if name and not name.startswith("=") else None
         if e is not None and o.number and not o.manual and _ic.entry_number(e) == o.num:
             strips.setdefault(key, {})[o.index] = o.number
+    old_src: dict[tuple, str] = {}
+    new_src: dict[tuple, str] = {}
     for (f, page, region), mapping in per_region.items():
-        _ic.apply_region(_ic._occ_dir(info, f), page, region, mapping, strips.get((f, page, region)))
+        if partial:
+            from app.extract import load_extracted as _le
+
+            v = (_le(_ic._occ_dir(info, f)).get(page, {}).get(region) or {}).get("source")
+            old_src[(f, page, region)] = v if isinstance(v, str) else ""
+        new = _ic.apply_region(_ic._occ_dir(info, f), page, region, mapping, strips.get((f, page, region)))
+        if partial and new is not None:
+            new_src[(f, page, region)] = new
         out.removed += sum(1 for v in mapping.values() if v == "")
         out.replaced += sum(1 for v in mapping.values() if v)
     for (f, page, region), whys in changed.items():
@@ -426,11 +445,67 @@ def import_rows(info, rows: list[dict], work: Path) -> IconImport:
         name = decision.get(o.group, o.named) if o.named else decision.get(o.group)
         if not name or name.startswith("=") or not o.box:
             continue
+        if partial and (o.file, o.page, o.region) not in per_region:  # 부분 확정: 이번에 바꾼 칸만 적는다
+            continue
         boxes.setdefault((o.file, o.page, o.region), []).append((o.line, o.order, name, o.box))
     for (f, page, region), items in boxes.items():
         save_icon_boxes(_ic._occ_dir(info, f), page, region, items)
+    if partial:
+        _settle_partial(res, decision, per_region, old_src, new_src)
+        _ic._save_scan(work, res)
+        return out
     shutil.rmtree(work, ignore_errors=True)
     return out
+
+
+def _settle_partial(res, decision: dict, per_region: dict, old_src: dict, new_src: dict | None = None) -> None:
+    """부분 확정 뒤 찾기 결과(scan)를 원문에 맞춘다: 확정한 자리는 이름 있는 자리(named, ti)로, 뺀 자리는 지우고,
+    남은 [[?]] 자리의 순번(index)·토큰 번호(ti)는 바뀐 원문에 맞게 당긴다. 원문 토큰 수는 뺀 자리만큼만 줄어든다."""
+    drop: set[str] = set()
+    for key, mapping in per_region.items():
+        src = old_src.get(key, "")
+        toks = list(_ic.TOKEN_RE.finditer(src))
+        ph = [ti for ti, t in enumerate(toks) if t.group(1) == "?"]
+        removed = {ph[i] for i, v in mapping.items() if i < len(ph) and (not v or v.startswith("="))}
+
+        def newpos(p: int) -> int:
+            return p - sum(1 for r in removed if r < p)
+        cell = [o for o in res.occurrences if (o.file, o.page, o.region) == key]
+        if new_src and key in new_src:
+            for o in cell:
+                o.context = new_src[key].replace("\n", " / ")
+        left_ph: list[tuple[int, object]] = []  # (예전 토큰 번호, 남은 [[?]] 자리)
+        for o in cell:
+            if o.named:
+                o.ti = newpos(o.ti) if o.ti >= 0 else o.ti
+                continue
+            if not (0 <= o.index < len(ph)):
+                continue
+            p = ph[o.index]
+            v = mapping.get(o.index)
+            if v is None:  # 이번에 확정하지 않은 자리
+                left_ph.append((p, o))
+                continue
+            if not v or v.startswith("="):  # 아이콘 아님·세트에 포함·글자로 바꿈: 원문에서 빠졌다
+                drop.add(o.id)
+                continue
+            o.named, o.ti, o.index, o.prev = v, newpos(p), -1, ""
+            gi = res.groups.get(o.group)
+            if gi is not None:
+                gi.update(named=v, dict=v, dict_how="named")
+                for k in ("staged", "not_icon"):
+                    gi.pop(k, None)
+        new_toks = list(_ic.TOKEN_RE.finditer(new_src[key])) if new_src and key in new_src else None
+        for k, (p, o) in enumerate(sorted(left_ph, key=lambda x: x[0])):
+            o.ti = newpos(p)
+            # 순번 = 새 원문에서 그 토큰 앞의 [[?]] 수 (자리 없는 [[?]]가 있어도 맞게)
+            o.index = (sum(1 for t in new_toks[:o.ti] if t.group(1) == "?")
+                       if new_toks is not None and 0 <= o.ti < len(new_toks) else k)
+    if drop:
+        res.occurrences = [o for o in res.occurrences if o.id not in drop]
+    alive = {o.group for o in res.occurrences}
+    for g in [g for g in res.groups if g not in alive]:
+        del res.groups[g]
 
 
 def save_icon_boxes(file_dir: Path, page: int, region: str, items: list[tuple]) -> None:
@@ -453,11 +528,11 @@ def save_icon_boxes(file_dir: Path, page: int, region: str, items: list[tuple]) 
 
 
 
-ICON_CHANGED_NOTE = "② 아이콘 정의에서 아이콘 자리가 바뀜"
+ICON_CHANGED_NOTE = "② 원문 확인에서 아이콘 자리가 바뀜"
 
 
 def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -> None:
-    """아이콘 자리가 바뀐 칸을 ‘확인 필요’로 표시한다 (③ 원문 확인이 그 칸을 보여 주고, 다시 읽어 비교하게).
+    """아이콘 자리가 바뀐 칸을 ‘확인 필요’로 표시한다 (② 원문 확인이 그 칸을 보여 주고, 다시 읽어 비교하게).
     사람이 원문 확인에서 저장하면 풀린다."""
     for f in _ic._extract_files(file_dir, page):
         rec = json.loads(f.read_text(encoding="utf-8"))
@@ -466,7 +541,7 @@ def mark_icon_changed(file_dir: Path, page: int, region: str, whys: list[str]) -
             continue
         r["uncertain"] = True
         r["icon_changed"] = whys
-        r["icon_reread"] = True  # 아직 다시 읽지 않음: ③ 원문 확인을 열 때 먼저 다시 읽는다 (다시 읽으면 풀림)
+        r["icon_reread"] = True  # 아직 다시 읽지 않음: ② 원문 확인을 열 때 먼저 다시 읽는다 (다시 읽으면 풀림)
         note = f"{ICON_CHANGED_NOTE}: {', '.join(whys)} — 다시 읽어 확인하세요"
         # 예전 ‘아이콘 자리가 바뀜’ 메모만 새것으로 바꾸고, 그 앞의 메모(사람이 고친 기록 등)는 남긴다
         kept = [s for s in (r.get("note") or "").split(" / ") if s and not s.startswith(ICON_CHANGED_NOTE)]

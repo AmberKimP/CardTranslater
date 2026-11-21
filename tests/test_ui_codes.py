@@ -63,9 +63,9 @@ def test_title_gets_code_and_keeps_it_after_retitle(ui):
     d = TermChangesDialog()
     d.setWindowTitle("바뀐 용어 반영")
     d.show()
-    assert d.windowTitle() == "[4B] 바뀐 용어 반영"
+    assert d.windowTitle() == "[3B] 바뀐 용어 반영"
     d.setWindowTitle("바뀐 용어 반영 *")  # 화면이 제목을 다시 써도 번호가 남는다
-    assert d.windowTitle() == "[4B] 바뀐 용어 반영 *"
+    assert d.windowTitle() == "[3B] 바뀐 용어 반영 *"
     d.close()
 
 
@@ -75,10 +75,10 @@ def test_ctrl_d_shows_codes_copies_and_blocks_clicks(ui):
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout
 
-    class SourceReviewDialog(QDialog):
+    class SourceCheckDialog(QDialog):
         pass
 
-    d = SourceReviewDialog()
+    d = SourceCheckDialog()
     lay = QVBoxLayout(d)
     a, b = QPushButton("저장"), QPushButton("다음 칸")
     clicks = []
@@ -87,9 +87,9 @@ def test_ctrl_d_shows_codes_copies_and_blocks_clicks(ui):
     lay.addWidget(b)
     d.show()
     _key_ctrl_d(d)
-    assert ui.debug and a.text() == "3A-01" and b.text() == "3A-02"
+    assert ui.debug and a.text() == "2A-01" and b.text() == "2A-02"
     QTest.mouseClick(b, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
-    assert clicks == [] and QGuiApplication.clipboard().text() == "3A-02"
+    assert clicks == [] and QGuiApplication.clipboard().text() == "2A-02"
     _key_ctrl_d(d)
     assert not ui.debug and a.text() == "저장" and b.text() == "다음 칸"
     QTest.mouseClick(b, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))

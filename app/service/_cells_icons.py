@@ -1,4 +1,4 @@
-"""③ 원문 확인 칸(읽은 결과·다시 읽기)과 ② 아이콘 정의 창의 동작."""
+"""② 원문 확인의 칸(읽은 결과·다시 읽기)과 아이콘 동작."""
 
 from __future__ import annotations
 
@@ -20,6 +20,18 @@ log = logging.getLogger("cardtranslater.icons")  # 카드 보기 조작 기록 (
 
 
 # ---------------------------------------------------------------- 화면용: 원문 확인 (2차)
+
+
+def _locked(fn):
+    """추출 결과(쪽 파일)를 고치는 조작을 workspace.EXTRACT_LOCK 안에서 (뒤에서 다시 읽는 스레드와 섞이지 않게)."""
+    import functools
+
+    @functools.wraps(fn)
+    def run(*a, **k):
+        with workspace.EXTRACT_LOCK:
+            return fn(*a, **k)
+    return run
+
 
 def extracted_cells(file_dir: Path | str) -> list[dict]:
     """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
@@ -83,20 +95,20 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 # 바뀌어 맞출 수 없음 — 칸 전체를 원본 그대로 둔다)
                 "keep_mode": keep_state(r)[0],
                 "keep_lines": keep_state(r)[1],  # partial일 때 원본 그대로 둘 원문 줄 번호 (빈 줄 포함, 0부터)
-                "icon_changed": list((r or {}).get("icon_changed") or []),  # ② 아이콘 정의에서 자리가 바뀜
-                # ② 아이콘 정의에서 ‘아이콘 아님’으로 뺀 [[?]] 수 (None = 그 기록 전에 정한 칸·정한 적 없음)
+                "icon_changed": list((r or {}).get("icon_changed") or []),  # ② 원문 확인에서 자리가 바뀜
+                # ② 원문 확인에서 ‘아이콘 아님’으로 뺀 [[?]] 수 (None = 그 기록 전에 정한 칸·정한 적 없음)
                 "icon_removed": None if (r or {}).get("icon_removed") is None else int(r["icon_removed"]),
                 # 문단마다 다른 글꼴 영역 (글 칸): 원문 편집 칸에 문단 나눔을 [====] 줄로 보이고 고칠 수 있다
                 "paragraph_mode": para_mode(reg),
-                # ③에서 정한 문단 나눔 (원문의 빈 줄 뺀 줄 번호), 정한 적이 없거나 맞출 수 없으면 None (기본 규칙)
+                # ②에서 정한 문단 나눔 (원문의 빈 줄 뺀 줄 번호), 정한 적이 없거나 맞출 수 없으면 None (기본 규칙)
                 "paragraph_breaks": breaks_for_text(r, (r or {}).get("source")) if r else None,
             })
     return out
 
 
 def icon_reread_pending(file_dirs) -> list[dict]:
-    """② 아이콘 정의에서 아이콘 자리가 바뀌었는데 아직 다시 읽지 않은 칸 [{"file_dir", "page", "region"}].
-    ‘나중에 (원문 확인에서)’를 고르면 ③ 원문 확인을 열 때 이 칸들을 먼저 다시 읽는다."""
+    """② 원문 확인에서 아이콘 자리가 바뀌었는데 아직 다시 읽지 않은 칸 [{"file_dir", "page", "region"}].
+    ‘나중에 (원문 확인에서)’를 고르면 ② 원문 확인을 열 때 이 칸들을 먼저 다시 읽는다."""
     from app import workspace
     from app.extract import keep_state, load_extracted
 
@@ -156,7 +168,7 @@ def region_crop(file_dir: Path | str, page: int, region: str) -> bytes:
 def save_source(file_dir: Path | str, page: int, region: str, source, paragraph_breaks: list[int] | None = None) -> None:
     """사람이 고친 원문을 추출 결과에 저장한다 (확인 필요를 지우고, 모델이 읽은 값은 note에 남긴다).
     source: 글자 칸은 문자열, 태그 칸은 목록. 그 칸의 번역은 다음 번역 때 새 원문으로 다시 한다.
-    paragraph_breaks: ③의 [====]로 정한 문단 나눔 (문단마다 다른 글꼴 영역, 빈 줄 뺀 줄 번호; None이면 그대로 둔다).
+    paragraph_breaks: ②의 [====]로 정한 문단 나눔 (문단마다 다른 글꼴 영역, 빈 줄 뺀 줄 번호; None이면 그대로 둔다).
     기본 규칙과 같고 아직 정한 적이 없으면 적지 않는다 (나중에 규칙이 나아지면 따르게)."""
     from app.extract import PARAGRAPH_BREAKS, page_file
     from app.service._review import paragraph_starts
@@ -168,6 +180,14 @@ def save_source(file_dir: Path | str, page: int, region: str, source, paragraph_
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps({"page": page, "model": "사람", "regions": {}}, ensure_ascii=False), encoding="utf-8")
         files = [f]
+    with workspace.EXTRACT_LOCK:
+        _save_source_files(files, region, source, paragraph_breaks)
+
+
+def _save_source_files(files, region: str, source, paragraph_breaks) -> None:
+    from app.extract import PARAGRAPH_BREAKS
+    from app.service._review import paragraph_starts
+
     for f in files:
         rec = json.loads(f.read_text(encoding="utf-8"))
         r = rec.setdefault("regions", {}).setdefault(region, {"source": None, "uncertain": False, "note": ""})
@@ -241,7 +261,7 @@ CELL_BLOCKED = ("다시 읽지 못했습니다", "응답에 이 칸의 결과가
 
 def reread_cells(cells: list[dict], *, model: str | None = None, engine: str | None = None, client=None,
                  progress: _base.ProgressFn | None = None, cancel: _base.CancelToken | None = None) -> dict:
-    """② 아이콘 정의에서 아이콘 자리가 바뀐 칸을 차례로 다시 읽는다. cells: [{"file_dir", "page", "region"}].
+    """② 원문 확인에서 아이콘 자리가 바뀐 칸을 차례로 다시 읽는다. cells: [{"file_dir", "page", "region"}].
     model=None(기본): 원문 추출의 꼼꼼히 모드와 같은 두 모델(보통·정밀 읽기)로 모두 읽어, 두 결과가 같고 지금 원문과도
     같으면 확인을 끝내고(icon_changed가 풀림) 아니면 ‘아이콘 고침 · 확인 필요’로 둔다 (비용은 한 번 읽기의 약 두 배).
     model을 주면 그 모델로 한 번만 읽어 rereads에 덧붙인다 (예전 동작, 원문·상태는 그대로).
@@ -283,7 +303,7 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
                   engine: str | None = None, client=None, double: bool = False) -> RereadResult:
     """원문 확인 화면에서 고른 칸 하나만 다시 읽는다. 결과는 그 칸의 rereads에 덧붙이고, 원문(source)·
     readings(두 번 읽기 결과)·확인 필요는 바꾸지 않는다 — 칸 상태는 사람이 보고 저장할 때 바뀐다.
-    double=True: ② 아이콘 정의에서 아이콘 자리가 바뀐 칸 — 보통·정밀 읽기(원문 추출 꼼꼼히 모드의 두 모델)로 모두 읽어
+    double=True: ② 원문 확인에서 아이콘 자리가 바뀐 칸 — 보통·정밀 읽기(원문 추출 꼼꼼히 모드의 두 모델)로 모두 읽어
     readings에 둘을 남긴다 (_settle_icon_cell). model은 쓰지 않는다.
     시험 모드·뺀 쪽이어도 읽는다(사람이 고른 칸).
     한도·로그인 문제는 state="paused"·"blocked"로 돌려준다 (예외 아님)."""
@@ -330,7 +350,7 @@ def reread_region(file_dir: Path | str, page: int, region: str, *, model: str = 
     # 이미 읽은 칸에만 덧붙인다 (아직 읽지 않은 칸은 편집 칸에 넣어 주고, 저장할 때 원문이 생긴다)
     def add(cell: dict):
         cell.setdefault("rereads", []).append(entries[0])
-        cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
+        cell.pop("icon_reread", None)  # ② 원문 확인 뒤 다시 읽기를 마침
     _update_cell(fd, page, region, add)
     log.info("칸 다시 읽음: %d쪽 %s (%s)", page, region, model_ids[0])
     e0 = entries[0]
@@ -368,6 +388,13 @@ def _read_cell(client, proj, page: int, reg, model_id: str, base: Path):
 
 def _update_cell(fd: Path, page: int, region: str, fn):
     """그 쪽의 추출 결과 파일들에서 칸 하나를 fn(cell)로 고쳐 저장한다 (이미 읽은 칸만). 마지막 fn의 반환값."""
+    from app.extract import cell_rereads, model_readings, page_file
+
+    with workspace.EXTRACT_LOCK:
+        return _update_cell_locked(fd, page, region, fn)
+
+
+def _update_cell_locked(fd: Path, page: int, region: str, fn):
     from app.extract import cell_rereads, model_readings, page_file
 
     base = fd / "extract"
@@ -432,8 +459,8 @@ MARK = "\x00"  # 견줄 때 아이콘 하나 (글자로 나올 일이 없는 표
 def _settle_icon_cell(cell: dict, a: dict, b: dict) -> bool:
     """아이콘이 바뀐 칸을 보통 읽기(a)·정밀 읽기(b)로 읽은 결과를 칸에 적는다. 확인이 끝났으면 True.
     - 두 결과가 같고(추출의 두 번 읽기와 같은 비교) 둘 다 확실하고, 지금 원문과도 (아이콘 말고) 같으면: 확인 끝 —
-      icon_changed·확인 필요를 지운다. 원문은 그대로 둔다 (② 아이콘 정의에서 정한 [[이름]]을 지키려고).
-    - 아니면 ‘아이콘 고침 · 확인 필요’(icon_changed 남김)로 두고 ③ 원문 확인에서 사람이 고른다. 원문은 그대로.
+      icon_changed·확인 필요를 지운다. 원문은 그대로 둔다 (② 원문 확인에서 정한 [[이름]]을 지키려고).
+    - 아니면 ‘아이콘 고침 · 확인 필요’(icon_changed 남김)로 두고 ② 원문 확인에서 사람이 고른다. 원문은 그대로.
     두 결과는 readings에 둔다 (원문 확인이 두 번 읽은 칸처럼 나란히 보인다). 예전 readings·rereads는 아이콘을 고치기 전
     결과라 before_icon_reread에 기록만 남긴다."""
     from app.extract import _agree_norm, prefer_punct
@@ -453,7 +480,7 @@ def _settle_icon_cell(cell: dict, a: dict, b: dict) -> bool:
         cell.setdefault("before_icon_reread", []).append({**prev, "at": b["at"]})
     cell.pop("rereads", None)
     cell["readings"] = [a, b]
-    cell.pop("icon_reread", None)  # ② 아이콘 정의 뒤 다시 읽기를 마침
+    cell.pop("icon_reread", None)  # ② 원문 확인 뒤 다시 읽기를 마침
     notes = [s for s in (cell.get("note") or "").split(" / ") if s]
     if settled:
         cell.pop("icon_changed", None)
@@ -532,14 +559,14 @@ ICON_HOW_LABEL = {"named": "확정됨", "same": "사전과 모양 같음", "lega
 
 
 def icons_pending(project_dir: Path | str) -> int:
-    """게임 원문(모든 프로젝트, 뺀 쪽 제외)에 남은 이름 없는 아이콘 [[?]] 수. ③ 원문 확인이 ② 아이콘 정의를 먼저 할지 본다."""
+    """게임 원문(모든 프로젝트, 뺀 쪽 제외)에 남은 이름 없는 아이콘 [[?]] 수. ③ 용어집이 멈출지 본다."""
     from app import icons, workspace
 
     return icons.pending_count(workspace.load_project_info(project_dir))
 
 
 def icon_review(project_dir: Path | str) -> dict | None:
-    """find_icons 뒤 ② 아이콘 정의 표: 카드의 아이콘 하나 = 한 줄 (세트에 포함된 자리는 빼고).
+    """find_icons 뒤 ② 원문 확인 표: 카드의 아이콘 하나 = 한 줄 (세트에 포함된 자리는 빼고).
     {"groups": [{"group", "occ", "image", "dict_image", "suggest"(이름 칸에 처음 보일 이름), "meaning", "ko", "scale",
     "named"(원문에 이미 있는 이름), "dict", "dict_how", "how_label", "shape", "shape_count"(같은 모양 줄 수), "count"(1),
     "card": (파일 폴더, 쪽), "card_label", "region", "line", "order", "examples", "where": [자리 하나], "not_icon",
@@ -640,6 +667,24 @@ def icon_place(project_dir: Path | str, occ_id: str) -> dict:
 CARD_OVERVIEW_DPI = 60
 
 
+def card_regions(file_dir: Path | str, page: int, dpi: int = CARD_OVERVIEW_DPI) -> dict:
+    """② 원문 확인 카드 보기의 카드 전체 그림과 영역 자리: {"png": bytes, "size": (w, h), "regions": {이름: (x0, y0, x1, y1)}}
+    (좌표는 그 그림의 px). 영역은 그 쪽의 영역 (카드별 영역이 있으면 그것)."""
+    import pymupdf
+
+    from app.regions import ratio_to_pt
+
+    proj = load_project(Path(file_dir))
+    with pymupdf.open(proj.source_pdf) as doc:
+        pg = doc[int(page) - 1]
+        pm = pg.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+        png, pr = pm.tobytes("png"), tuple(pg.rect)
+    k = dpi / 72
+    regs = {r.name: tuple(int(round((v - o) * k)) for v, o in zip(ratio_to_pt(r.rect, pr), (pr[0], pr[1], pr[0], pr[1])))
+            for r in proj.template.regions_for(int(page))}
+    return {"png": png, "size": (pm.width, pm.height), "regions": regs}
+
+
 def _card_overview_png(info, work: Path, occ_id: str) -> bytes:
     """카드 보기 옆에 보일 카드 전체 그림 (PNG): 그 자리의 영역은 굵은 파랑, 그 카드의 다른 아이콘 영역은 옅은 회색 테두리."""
     import cv2
@@ -670,6 +715,7 @@ def _card_overview_png(info, work: Path, occ_id: str) -> bytes:
     return buf.tobytes() if ok else b""
 
 
+@_locked
 def add_icon_box(project_dir: Path | str, anchor_occ: str, box) -> dict:
     """카드 보기 ‘아이콘 추가’: 원문에 없던 아이콘을 그림에서 감싼 자리에 넣는다. 그 칸 원문에 [[?]]가 하나 늘고
     (그 줄에서 상자 가로 위치에 맞는 글자 사이 — icons.insert_at) 표에 새 줄이 생긴다.
@@ -690,6 +736,7 @@ def add_icon_box(project_dir: Path | str, anchor_occ: str, box) -> dict:
 VERTICAL_COVER_MIN = 0.8  # 위아래 줄의 찾은 자리는 잡은 상자가 이만큼 감쌀 때만 ‘한 세트로’ 후보
 
 
+@_locked
 def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     """사람이 잡은 자리로 아이콘 그림을 다시 자르고 묶음을 다시 정한다 (검증 엑셀도 새로 만든다).
     {"group", "old", "old_gone", "new_group", "dict"}. 자리가 너무 작으면 ValueError."""
@@ -718,6 +765,7 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     return r
 
 
+@_locked
 def absorb_icon_run(project_dir: Path | str, host_occ: str, occ_ids: list[str]) -> dict:
     """붙어 있는 [[?]] 자리들을 host 자리의 아이콘 하나에 포함한다 (상자 하나로 문양 여러 개를 감싼 경우).
     그 자리들은 ‘아이콘 아님’으로 옮겨 확정할 때 원문에서 빠진다. {"groups": [옮긴 묶음]}"""
@@ -742,6 +790,7 @@ def overlapping_icons(marks: list[dict], box, exclude: str = "", row: int | None
     return icons.overlapping_occ(marks, box, exclude, row)
 
 
+@_locked
 def split_icon_box(project_dir: Path | str, occ_id: str, part_box) -> dict:
     """한 자리 상자에 아이콘이 둘이면 둘로: part_box(그중 하나)와 나머지. 원문에 [[?]]가 하나 늘어난다.
     {"first", "second", "groups"}. 나눌 수 없으면 ValueError."""
@@ -758,6 +807,7 @@ def split_icon_box(project_dir: Path | str, occ_id: str, part_box) -> dict:
     return r
 
 
+@_locked
 def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
     """한 자리만 ‘아이콘 아님’: 그 자리를 ‘아이콘 아님’으로 표시한 혼자인 묶음으로 옮긴다 (검증 엑셀도 새로).
     {"group", "old", "old_gone", "new_group"}. 그 줄의 ‘뜻’ 칸에 글자를 적으면 [[?]]를 그 글자로, 비우면 뺀다."""
@@ -774,6 +824,7 @@ def set_icon_not_icon(project_dir: Path | str, occ_id: str) -> dict:
     return r
 
 
+@_locked
 def reopen_icon(project_dir: Path | str, anchor_occ: str, ti: int) -> dict:
     """카드 보기: 이름을 정한 아이콘(그 칸 ti번째 토큰)을 다시 고칠 수 있게 [[?]] 자리로 연다. {"occ", "group"}."""
     from app import icons, workspace
@@ -800,6 +851,7 @@ def icon_box_problem(project_dir: Path | str, occ_id: str, box) -> str:
     return icons.tall_box_problem(img, text, box)
 
 
+@_locked
 def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True, whole: bool = False) -> dict:
     """카드 보기 ‘이 칸 원본 그대로’: 그 자리가 있는 칸을 한글화하지 않는다.
     whole=True(카드 보기 ‘이 칸 전체 원본 그대로’): 영역 설정과 상관없이 칸 전체 (set_keep_original).
@@ -825,7 +877,7 @@ def keep_cell_original(project_dir: Path | str, occ_id: str, keep: bool = True, 
     cell0 = load_extracted(fd).get(o.page, {}).get(o.region) or {}
     src = cell0.get("source")
     if keep and not whole and region_keep_mode(fd, o.page, o.region) == "sentence" and isinstance(src, str):
-        kept_lines = keep_paragraph_lines(src, breaks_for_text(cell0, src))  # ③에서 정한 문단 나눔
+        kept_lines = keep_paragraph_lines(src, breaks_for_text(cell0, src))  # ②에서 정한 문단 나눔
         rows = src.split("\n")
         if kept_lines and any(t.strip() and i not in kept_lines for i, t in enumerate(rows)):
             mode = "partial"  # 아이콘 문단 밖에 글 줄이 남는다: 그 줄만 한글화
@@ -953,6 +1005,7 @@ def _sentence_rows(src: str, tis) -> set[int]:
     return {src[:toks[int(t)].start()].count("\n") for t in tis if 0 <= int(t) < len(toks)}
 
 
+@_locked
 def keep_sentence_original(project_dir: Path | str, anchor_occ: str, tis: list[int], keep: bool = True) -> dict:
     """카드 보기 ‘이 문장만 원본 그대로’: 그 칸에서 고른 아이콘(그 칸 토큰 순번 tis)이 든 문장(문단)만 원본 그대로 둔다
     (지우기·번역·한글 넣기 안 함, set_keep_paragraphs). 다른 문장은 그대로 한글화한다. 이미 남긴 문장에 더한다.
@@ -975,7 +1028,7 @@ def keep_sentence_original(project_dir: Path | str, anchor_occ: str, tis: list[i
         raise ValueError("이 칸의 원문을 찾지 못했습니다")
     picked = _sentence_rows(src, tis)
     if not picked:
-        raise ValueError("고른 아이콘을 원문에서 찾지 못했습니다 (원문이 바뀌었으면 ② 아이콘 정의를 다시 누르세요)")
+        raise ValueError("고른 아이콘을 원문에서 찾지 못했습니다 (원문이 바뀌었으면 ② 원문 확인을 다시 누르세요)")
     from app.extract import breaks_for_text
 
     changed = sorted({i for u in sentence_units(src, breaks_for_text(r, src)) if picked & set(u) for i in u})
@@ -1056,6 +1109,7 @@ def _restore_keep_slots(info, work: Path, file: str, page: int, region: str) -> 
     return restored, left
 
 
+@_locked
 def set_cell_keep_original(file_dir: Path | str, page: int, region: str, keep: bool) -> dict:
     """결과 보기·원문 확인의 ‘원본 그대로’ 단추: 켜면 칸 전체를 원본 그대로 (set_keep_original). 끄면 칸 전체든 아이콘
     문단만이든 풀고, 원본 그대로 때문에 ‘아이콘 아님’이 된 그 칸의 자리도 다시 아이콘 자리로 되돌린다
@@ -1113,6 +1167,7 @@ def cell_keep_mode(project_dir: Path | str, occ_id: str) -> str:
     return keep_state(r)[0]
 
 
+@_locked
 def restore_icon(project_dir: Path | str, occ_id: str) -> dict:
     """카드 보기: ‘아이콘 아님’·옆 아이콘에 포함으로 정한 자리를 다시 아이콘 자리로 (검증 엑셀도 새로). {"group"}.
     되돌릴 것이 없으면 ValueError."""
@@ -1205,9 +1260,11 @@ def update_icon_dictionary(project_dir: Path | str, rows: list[dict]) -> dict:
     return out
 
 
-def confirm_icons(project_dir: Path | str, rows: list[dict]) -> _extract.IconImportResult:
+@_locked
+def confirm_icons(project_dir: Path | str, rows: list[dict], partial: bool = False) -> _extract.IconImportResult:
     """화면에서 정한 아이콘 이름을 사전에 넣고 원문을 바꾼다.
-    rows: [{"group", "name", "meaning", "ko", "scale", "not_icon"}]."""
+    rows: [{"group", "name", "meaning", "ko", "scale", "not_icon"}].
+    partial: 넘긴 줄만 확정하고 찾기 결과를 남긴다 (② 원문 확인의 영역 확정, icons_review.import_rows)."""
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
@@ -1219,7 +1276,7 @@ def confirm_icons(project_dir: Path | str, rows: list[dict]) -> _extract.IconImp
            "글자": r.get("text", ""),
            # keep_dict: 사전에 있는 아이콘과 같다고 고른 줄 — 사전의 한국어 이름·뜻·크기를 덮어쓰지 않는다
            "표시 크기": "" if r.get("keep_dict") else (r.get("scale") or icons.DEFAULT_SCALE)} for r in rows]
-    r = icons.import_rows(info, xl, work)
+    r = icons.import_rows(info, xl, work, partial=partial)
     if r.blocking:
         return _extract.IconImportResult("blocked", blocking=r.blocking)
     return _extract.IconImportResult("confirmed", r.added, r.reused, r.replaced, r.removed,

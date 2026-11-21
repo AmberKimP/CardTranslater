@@ -97,7 +97,7 @@ def test_apply_writes_card_edits_keeps_excel_updates_cache_and_restores_status(t
     edits = card_edits.load(fd_p)
     assert edits[1]["이름"] == {"ko": "골드 1개를 얻는다", "base": "금화 1개를 얻는다"}
     assert edits[2]["이름"] == {"ko": "골드를 지불한다", "base": "금화를 낸다"}  # base는 엑셀 값 그대로
-    # 초벌 번역 캐시도 새 용어로 (⑤ 전체 번역이 다시 번역하지 않음)
+    # 초벌 번역 캐시도 새 용어로 (④ 전체 번역이 다시 번역하지 않음)
     terms = glossary.load_glossary(p).get("terms", [])
     cache_p = load_cache(p.dir)
     assert cache_p["Goldを得る"]["ko"] == "골드를 얻는다" and cache_p["Goldを得る"]["terms_used"]["Gold"] == "골드"
@@ -356,7 +356,7 @@ def test_josa_pairs_and_closing_tag():
 
 
 def test_manual_cache_entries_stay_stale_and_block_restore(tmp_path):
-    """직접 고칠 칸·일부만 바꿀 수 있는 항목은 캐시를 건드리지 않아 ⑤가 다시 번역하고, 상태도 되돌리지 않는다."""
+    """직접 고칠 칸·일부만 바꿀 수 있는 항목은 캐시를 건드리지 않아 ④가 다시 번역하고, 상태도 되돌리지 않는다."""
     gold = {"source": "Gold", "ko": "금", "category": "기타"}
     p, fd = _add_project(tmp_path, "p", ["Goldを得る", "SwordとShield"], {
         "Goldを得る": _entry("금에는 금을 얻는다", {"Gold": "금"}),

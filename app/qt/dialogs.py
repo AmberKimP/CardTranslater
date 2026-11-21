@@ -507,7 +507,7 @@ class AddFilesDialog(QDialog):
         form.addRow("새 그룹 영역", self.copy_from)
 
         # ---- 이미지일 때
-        self.img_box = QGroupBox("③ 한 장(이미지 한 장·PDF 한 쪽)에 카드가 몇 장인가요?")
+        self.img_box = QGroupBox("② 한 장(이미지 한 장·PDF 한 쪽)에 카드가 몇 장인가요?")
         self.r_single = QRadioButton("한 장에 카드 한 장")
         self.r_grid = QRadioButton("한 장에 카드 여러 장 (배열)")
         self.r_manual = QRadioButton("수동으로 영역 지정")

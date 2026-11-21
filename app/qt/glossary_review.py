@@ -1,4 +1,4 @@
-"""④ 용어집 창: 모은 용어 후보의 번역을 프로그램 안에서 확인·고쳐 확정한다 (‘용어 후보 다시 만들기…’로 후보를 새로 모은다).
+"""③ 용어집 창: 모은 용어 후보의 번역을 프로그램 안에서 확인·고쳐 확정한다 (‘용어 후보 다시 만들기…’로 후보를 새로 모은다).
 
 엑셀(용어집_검증.xlsx)은 따로 둔다: ‘엑셀로 내보내기’로 표 내용을 엑셀에 쓰고, ‘엑셀에서 가져오기’로 엑셀에서 고친
 것을 그대로 확정할 수 있다 (예전 흐름). 화면에서 고친 값은 닫을 때 검증 엑셀에 저장해 다음에 이어 볼 수 있다."""
@@ -43,7 +43,7 @@ class GlossaryReviewDialog(QDialog):
         self.rebuild = False  # ‘용어 후보 다시 만들기…’를 눌러 닫았나 (부른 쪽이 후보를 다시 만든다)
         self._dirty = False  # 표를 고쳤는가 (고친 것이 있을 때만 닫으면서 검증 엑셀에 쓴다)
         self._from_excel = False  # 엑셀에서 가져오기를 해 봤는가 (그 뒤에는 표로 엑셀을 덮어쓰지 않는다)
-        self.setWindowTitle("④ 용어집")
+        self.setWindowTitle("③ 용어집")
         fit_to_screen(self, 1400, 760, maximize_below=0)
         self.guide = hint_bar("", "info")
         self.search = QLineEdit()
@@ -102,7 +102,7 @@ class GlossaryReviewDialog(QDialog):
         bottom.addWidget(close)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
-        lay.addWidget(page_title("④ 용어집", 14))
+        lay.addWidget(page_title("③ 용어집", 14))
         lay.addWidget(self.guide)
         lay.addLayout(top)
         lay.addWidget(self.table, 1)

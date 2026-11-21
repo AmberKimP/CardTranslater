@@ -17,8 +17,13 @@ from app.qt import worker
 from app.qt.dialogs import ask_choice, show_error, show_problem
 from app.qt.step_common import _ask_list, _fail_as, state_label
 from app.qt.extract_dialog import ExtractDialog
-from app.qt.source_review import SourceReviewDialog
-from app.qt.icon_review import IconDictionaryDialog, IconReviewDialog
+
+def _needs_attention(c: dict) -> bool:
+    """사람이 보고 판단할 칸 (아직 읽지 않은 칸은 뺀다): 확실하지 않음·결론 못 냄·아이콘 고침 확인 필요."""
+    from app.qt.step_common import ICON_REVIEW_LABEL
+
+    return c["label"] != "읽지 않음" and (c["uncertain"] or c["label"] in ("결론 못 냄", ICON_REVIEW_LABEL))
+
 
 # ================================================================ 흐름 (프로젝트 화면의 버튼)
 class StepActions:
@@ -92,9 +97,9 @@ class StepActions:
                  for f in r.files]
         if r.state == "done":
             n_check = sum(1 for g in self.page.ov["groups"] for f in g["files"]
-                          for c in service.extracted_cells(f["dir"]) if SourceReviewDialog.needs_attention(c))
+                          for c in service.extracted_cells(f["dir"]) if _needs_attention(c))
             QMessageBox.information(self.page, "추출 끝", "\n".join(lines)
-                                    + (f"\n\n확인할 칸 {n_check}개 — ‘원문 확인’에서 이미지와 비교해 고치세요."
+                                    + (f"\n\n확인할 칸 {n_check}개 — ‘② 원문 확인’에서 이미지와 비교해 고치세요."
                                        if n_check else "\n\n확인할 칸이 없습니다."))
             return
         if r.state == "paused" and r.retry_after:
@@ -116,76 +121,88 @@ class StepActions:
         show_problem(self.page, f"글자 추출을 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
                      retry_after=r.retry_after, detail="\n".join(lines))
 
-    # ---- 원문 확인
-    def review_sources(self, only_check: bool = True, focus_key: str | None = None, focus_label: str | None = None,
-                       icons_first: bool = True):
-        """③ 원문 확인. icons_first: 게임 원문에 이름 없는 아이콘([[?]])이 남았으면 ② 아이콘 정의를 먼저 하고,
-        그 창을 닫으면(확정하든 안 하든, 찾기가 실패해도) 이어서 원문 확인을 연다 (원문 확인에서 아이콘이 이름으로 보이게).
-        ②를 먼저 하는 것은 프로젝트마다 앱을 켠 동안 한 번만: 일부러 남겨 두었으면 다음부터는 바로 ③을 연다."""
-        auto_done = self.__dict__.setdefault("_icons_auto_done", set())
-        if icons_first and str(self.pdir) not in auto_done and service.icons_pending(self.pdir):
-            auto_done.add(str(self.pdir))
-            self._then_review = (only_check, focus_key, focus_label)
-            self.icons()
+    # ---- ② 원문 확인 (아이콘 정의 + 원문 확인 한 창)
+    def source_check(self, focus_key: str | None = None, focus_label: str | None = None):
+        """② 원문 확인. 창을 열기 전에 아이콘 찾기 결과를 원문에 맞춘다 (없으면 게임 전체를 찾고, 있으면 원문이 바뀐
+        칸만 다시 찾는다). 찾지 못해도 창은 연다. 범위는 늘 이 프로젝트의 모든 파일 (목록 창에서 파일로 거른다).
+        focus_key: 처음 보일 파일 키 (용어집 만들기에서 남은 항목을 고치러 왔을 때). focus_label은 예전 이름 (안 씀)."""
+        mine = [f for g in self.page.ov.get("groups", []) for f in g["files"]]
+        if not mine:
             return
-        files = self.page.scoped_files()  # 그리드에서 고른 범위
-        if focus_key and not any(f["key"] == focus_key for f in files):  # 고칠 파일이 범위 밖이면 그 파일도 넣는다
-            allf = [f for g in self.page.ov["groups"] for f in g["files"]]
-            files = files + [f for f in allf if f["key"] == focus_key]
-        if not files:
-            return
-        # ② 아이콘 정의에서 아이콘 자리가 바뀐 칸: 원문 확인을 열기 전에 모아서 다시 읽는다 (보통·정밀 두 번 읽기).
-        # 그리드에서 고른 범위와 상관없이 이 프로젝트의 모든 파일 (② 확정은 게임 전체에 하므로 빠뜨리지 않게)
-        all_dirs = [f["dir"] for g in self.page.ov.get("groups", []) for f in g["files"]] or [f["dir"] for f in files]
-        try:  # 예전 규칙으로 ‘확인 필요’가 남은 칸을 지금 규칙으로 다시 견준다 (다시 읽지 않음)
-            service.resettle_icon_cells(all_dirs)
-        except Exception:  # noqa: BLE001 - 못 해도 원문 확인은 연다
-            pass
-        pending = service.icon_reread_pending(all_dirs)
-        # 이미 글자를 지운 파일: 원문 확인이 끝나면 바뀐 쪽을 다시 지운다 (B3)
-        # (그 칸이 모두 확인된 파일만: 다시 읽기를 취소·실패해 ‘확인 필요’가 남은 파일은 확인 전 원문으로 지우지 않는다)
-        self._erase_after = sorted({str(c["file_dir"]) for c in pending})
-        self._erase_cells = list(pending)
-        if pending:
-            eng = self._engine()
-            if eng is not None:
-                args = (only_check, focus_key, focus_label)
-                job = worker.Job(service.reread_cells, pending, engine=eng)
-                worker.run_with_dialog(self.page, f"아이콘이 바뀐 칸 {len(pending)}개 다시 읽는 중", job,
-                                       lambda r: self._pending_reread_done(r, files, args),
-                                       _fail_as(self.page, "다시 읽지 못했습니다"), cancellable=True,
-                                       on_cancelled=lambda: self._pending_reread_cancelled(pending, files, args))
-                return
-        self._open_source_review(files, only_check, focus_key, focus_label)
-
-    def _pending_reread_done(self, r: dict, files: list[dict], args: tuple):
-        if r["state"] != "done" or r["failed"]:
-            show_problem(self.page, "아이콘이 바뀐 칸을 다 읽지 못했습니다", r["reason"] or "",
-                         f"{r['done']}칸을 다시 읽었습니다. 남은 칸은 원문 확인에서 ‘이 칸 다시 읽기’로 읽을 수 있습니다.",
-                         items=[f"{k}: {why}" for k, why in r["failed"]], retry_after=r.get("retry_after"))
-        self._open_source_review(files, *args)
-
-    def _pending_reread_cancelled(self, pending: list[dict], files: list[dict], args: tuple):
-        # 취소: 남은 칸은 다음에 또 자동으로 읽지 않는다 (‘확인 필요’로 남아 ‘이 칸 다시 읽기’로 읽을 수 있다)
-        service.skip_icon_reread(pending)
-        self._open_source_review(files, *args)
-
-    def _open_source_review(self, files, only_check, focus_key, focus_label):
-        # ‘이 칸 다시 읽기’: 이번에 ① 글자 추출에서 고른 로그인 방식 (아직 안 했으면 설정에 저장된 방식)
+        try:  # 같은 게임의 다른 프로젝트 파일도 보인다 (아이콘·용어집은 게임 단위)
+            files = service.check_files(self.pdir)
+        except Exception:  # noqa: BLE001 - 못 읽으면 이 프로젝트 파일만
+            files = [{"dir": f["dir"], "key": f["key"], "mine": True} for f in mine]
+        focus = None
+        if focus_key:
+            f = next((f for f in mine if f["key"] == focus_key), None)
+            focus = (str(f["dir"]), None) if f else None
         eng = self.extract_engine or service.get_settings().engine
-        dlg = SourceReviewDialog(files, self.page, only_check, engine=eng, focus_key=focus_key, focus_label=focus_label)
+        ok = bool(service.engine_status().get(eng))
+        job = worker.Job(service.ensure_icon_scan, self.pdir, engine=eng, suggest=ok, with_progress=False)
+        worker.run_with_dialog(self.page, "아이콘 찾는 중", job,
+                               lambda r: self._open_source_check(files, focus, eng, r),
+                               lambda m: self._open_source_check(files, focus, eng, {"state": "failed", "note": m}),
+                               cancellable=False)
+
+    def _open_source_check(self, files: list[dict], focus, engine, scan: dict):
+        from app.qt.source_check import SourceCheckDialog
+
+        mine = [str(f["dir"]) for f in files if f.get("mine", True)]
+        if scan.get("state") == "failed":
+            show_problem(self.page, "아이콘을 찾지 못했습니다", scan.get("note") or "",
+                         "원문 확인은 할 수 있습니다. 아이콘은 창의 ‘아이콘 다시 찾기’로 다시 찾을 수 있습니다.")
+        elif scan.get("note"):
+            self.page.win.statusBar().showMessage(scan["note"], 8000)
+        # 지난번 창이 아직 뒤에서 다시 읽는 중이면 그 창을 다시 연다 (읽는 중 표시·줄이 이어지게)
+        old = getattr(self, "_sc_dlg", None)
+        try:
+            reuse = old is not None and bool(old.reading) and Path(old.project_dir) == Path(self.pdir)
+        except RuntimeError:  # 지워진 창
+            reuse = False
+        if reuse:
+            dlg = old
+            dlg.refresh()
+            if focus:
+                dlg.focus_on(focus)
+        else:
+            dlg = SourceCheckDialog(self.pdir, files, self.page, engine=engine, focus=focus)
+        self._sc_dlg = dlg
+        dlg.on_idle = None
         dlg.exec()
-        if dlg.saved:
-            self.page.refresh()
-        dirs, self._erase_after = getattr(self, "_erase_after", None) or [], []
-        cells, self._erase_cells = getattr(self, "_erase_cells", None) or [], []
-        if dirs:
-            self._erase_stale(dirs, cells)
+        self.page.refresh()
+        # 원문이 바뀐 파일 중 이미 글자를 지운 파일은 다시 지운다 (이 프로젝트 파일만, 아직 확인하지 않은 칸이 있는
+        # 파일은 확인한 뒤에). 다시 읽는 중이면 다 읽은 뒤에
+        mfiles = [f for f in files if f.get("mine", True)]
+        pdir = Path(self.pdir)  # 다 읽은 뒤에 지울 때 그사이 다른 프로젝트를 열었으면 지우지 않는다
+
+        def erase():
+            if Path(self.pdir) != pdir:
+                return
+            self._erase_stale(mine, self._changed_cells(mfiles))
+        if dlg.reading:
+            def idle():
+                dlg.on_idle = None
+                if Path(self.pdir) == pdir:
+                    self.page.refresh()
+                erase()
+            dlg.on_idle = idle
+        else:
+            erase()
+
+    @staticmethod
+    def _changed_cells(files: list[dict]) -> list[dict]:
+        """아이콘이 바뀌어 아직 확인(다시 읽기·사람이 확정)이 남은 칸."""
+        out = []
+        for f in files:
+            out += [{"file_dir": f["dir"], "page": c["page"], "region": c["region"]}
+                    for c in service.extracted_cells(f["dir"]) if c.get("icon_changed")]
+        return out
 
     def _erase_stale(self, dirs: list[str], cells: list[dict] | None = None):
-        """② 아이콘 정의에서 바뀐 칸을 ③에서 다시 읽은 뒤: 이미 글자를 지운 파일 중 원문이 바뀐 쪽이 있고 바뀐 칸이
-        모두 확인된(두 번 읽어 같음·사람이 저장) 파일을 묻지 않고 다시 지운다 (지운 결과가 예전 원문 기준이면 한글 넣기가
-        어긋난다). 확인이 남은 파일은 지우지 않고 알린다. 판정은 service.stale_erase_files."""
+        """② 원문 확인을 닫은 뒤: 이미 글자를 지운 파일 중 원문이 바뀐 쪽이 있고 바뀐 칸이 모두 확인된(두 번 읽어 같음·
+        사람이 확인) 파일을 묻지 않고 다시 지운다 (지운 결과가 예전 원문 기준이면 한글 넣기가 어긋난다). 확인이 남은
+        파일은 지우지 않고 알린다. 판정은 service.stale_erase_files."""
         from app.qt import bg_erase
 
         stale = service.stale_erase_files(dirs, cells or [])
@@ -193,11 +210,11 @@ class StepActions:
         if waiting:
             QMessageBox.information(self.page, "글자 다시 지우기",
                                     f"아이콘이 바뀐 칸 중 아직 확인하지 않은 칸이 있어 파일 {len(waiting)}개는 다시 지우지 "
-                                    "않았습니다.\n③ 원문 확인에서 그 칸을 확인(저장)하면 ⑦ 한글 넣기가 다시 지웁니다.")
+                                    "않았습니다.\n② 원문 확인에서 그 칸을 확정하면 ⑥ 한글 넣기가 다시 지웁니다.")
         if not stale:
             return
         job = worker.Job(service.erase_project, self.pdir, files=stale)
-        bg_erase.run_exclusive(self.page, f"아이콘이 바뀐 파일 {len(stale)}개 글자 다시 지우는 중", job,
+        bg_erase.run_exclusive(self.page, f"원문이 바뀐 파일 {len(stale)}개 글자 다시 지우는 중", job,
                                self._erase_stale_done, _fail_as(self.page, "글자를 다시 지우지 못했습니다"))
 
     def _erase_stale_done(self, r):
@@ -206,101 +223,14 @@ class StepActions:
                                                              f" — {f.get('reason', '')}") for f in r.files]
         if r.state in ("done", "skipped"):
             QMessageBox.information(self.page, "글자 다시 지우기",
-                                    "② 아이콘 정의에서 바뀐 칸이 있어, 이미 지웠던 파일을 다시 지웠습니다.\n\n" + "\n".join(lines))
+                                    "② 원문 확인에서 바뀐 칸이 있어, 이미 지웠던 파일을 다시 지웠습니다.\n\n" + "\n".join(lines))
         else:
             show_problem(self.page, f"글자를 다시 지우지 못했습니다 ({state_label(r.state)})", r.reason or "",
-                         "⑦ 한글 넣기를 누르면 다시 지웁니다.", detail="\n".join(lines))
+                         "⑥ 한글 넣기를 누르면 다시 지웁니다.", detail="\n".join(lines))
 
-    # ---- 아이콘
-    def icons(self):
-        """누를 때마다 다시 찾는다 (원문을 고쳤거나 찾기 방식이 나아졌을 수 있으므로 예전 결과를 쓰지 않음)."""
-        eng = self._engine()
-        if eng is None:
-            self._continue_review()  # ③에서 왔으면 Claude 없이도 원문 확인은 연다
-            return
-        job = worker.Job(service.find_icons, self.pdir, engine=eng, with_progress=False)
-        fail = _fail_as(self.page, "아이콘을 찾지 못했습니다")
-
-        def failed(m):
-            fail(m)
-            self._continue_review()  # ③에서 왔으면 아이콘을 못 찾아도 원문 확인은 연다
-        worker.run_with_dialog(self.page, "아이콘 찾는 중 (이름 제안 포함)", job, self._icons_found, failed,
-                               cancellable=False)
-
-    def _continue_review(self):
-        """③ 원문 확인을 누른 뒤 ② 아이콘 정의를 먼저 했으면: 이어서 원문 확인을 연다."""
-        args, self._then_review = getattr(self, "_then_review", None), None
-        if args is not None:
-            self.review_sources(*args, icons_first=False)
-
-    def _icons_found(self, r):
-        self._icons_again = False
-        try:
-            self._icons_found_inner(r)
-        finally:
-            if self._icons_again:  # 안에서 다시 찾기를 시작했다: ③은 그 찾기가 끝난 뒤에 (그때의 _icons_found)
-                self._icons_again = False
-            else:
-                self._continue_review()
-
-    def _icons_found_inner(self, r):
-        msg = ("사전과 같아 바로 바꿈: " + ", ".join(f"[[{n}]] {c}곳" for n, c in r.auto.items())) if r.auto else ""
-        if r.state == "done":
-            # 찾은 표(스캔)가 있으면 늘 아이콘 정의 표를 연다 (모두 확정됐어도 고칠 수 있게. 사전은 그 창의 사전 탭)
-            review = service.icon_review(self.pdir)
-            if review and review.get("groups"):
-                self._open_icon_review(review)
-                return
-            # 아이콘이 하나도 없을 때만: 게임 사전이 있으면 사전 창, 없으면 안내
-            rows = service.icon_dictionary(self.pdir)
-            if not rows:
-                QMessageBox.information(self.page, "아이콘", (msg + "\n" if msg else "") + "원문에 아이콘이 없습니다.")
-                return
-            dlg = IconDictionaryDialog(rows, (msg + "\n" if msg else "") + "새로 이름을 정할 아이콘은 없습니다. "
-                                       "아래는 이 게임의 아이콘 사전입니다.", self.page)
-            if dlg.exec():
-                res = service.update_icon_dictionary(self.pdir, dlg.rows())
-                if res["reset"]:
-                    if QMessageBox.question(
-                            self.page, "아이콘 다시 정하기",
-                            "되돌린 아이콘: " + ", ".join(f"[[{n}]] {c}곳" for n, c in res["reset"].items())
-                            + "\n지금 다시 찾아 이름을 정할까요?") == QMessageBox.StandardButton.Yes:
-                        self.icons()
-                        self._icons_again = True
-                self.page.refresh()
-            return
-        self._open_icon_review(service.icon_review(self.pdir))
-
-    def _open_icon_review(self, review, from_finish: bool = False):
-        """확정하면 결과(IconImportResult), 닫으면 None. from_finish: ④ 용어집(후보 만들기)에서 왔음 —
-        아이콘 자리가 바뀐 칸이 있으면 용어집으로 이어 가지 않고 ③ 원문 확인으로 안내한다."""
-        dlg = IconReviewDialog(self.pdir, review, self.page)
-        self._icons_from_finish = from_finish
-        if dlg.exec() and dlg.result:
-            r = dlg.result
-            notes = getattr(r, "notes", None) or []
-            QMessageBox.information(self.page, "아이콘 확정", self.confirm_text(r, notes, from_finish))
-            self.page.refresh()
-            return r
-        return None
-
-    @staticmethod
-    def confirm_text(r, notes: list[str], from_finish: bool = False) -> str:
-        """② 확정 결과 알림. 아이콘 자리가 바뀐 칸은 묻지 않는다: ③ 원문 확인을 열 때 모아서 다시 읽는다 (1.24 B2)."""
-        text = (f"새로 넣음: {', '.join(r.added) or '-'}\n사전에 있던 것: {', '.join(r.reused) or '-'}\n"
-                f"원문에서 바꿈 {r.replaced}곳, 뺌 {r.removed}곳"
-                + ("\n\n알림:\n" + "\n".join(f"• {n}" for n in notes) if notes else ""))
-        n = len(getattr(r, "changed_cells", None) or [])
-        if n:
-            text += (f"\n\n아이콘 자리가 바뀐 칸 {n}개는 ‘③ 원문 확인’을 열 때 보통·정밀 읽기로 다시 읽습니다 "
-                     "(두 결과가 같으면 ‘아이콘 고침’ 표시만, 다르면 확인할 칸으로 나옵니다).")
-            if from_finish:
-                text += "\n용어 후보 만들기는 멈췄습니다. ③ 원문 확인을 한 뒤 ‘④ 용어집’을 다시 누르세요."
-        return text
-
-    # ---- ④ 용어집: 후보가 없으면 만들고, 있으면 확정 창
+    # ---- ③ 용어집: 후보가 없으면 만들고, 있으면 확정 창
     def glossary(self):
-        """④ 용어집. 용어 후보가 없으면(추출 중이거나 아직 안 만듦) 만들고(끝나면 확정 창), 있으면 바로 확정 창.
+        """③ 용어집. 용어 후보가 없으면(추출 중이거나 아직 안 만듦) 만들고(끝나면 확정 창), 있으면 바로 확정 창.
         후보를 다시 만들려면 확정 창의 ‘용어 후보 다시 만들기…’."""
         if self.page.ov.get("status") == "extracting" or service.glossary_review_rows(self.pdir) is None:
             self.finish()
@@ -313,7 +243,7 @@ class StepActions:
             r = ask_choice(self.page, "용어집 다시 만들기",
                            f"용어집이 이미 확정되었습니다{f' ({ver}번째 확정본)' if ver else ''}.",
                            [("다시 만들기", "destructive"), ("취소", "reject")], default=1,
-                           informative="다시 만들면 상태가 ‘용어집 검증 중’으로 돌아가고, ‘④ 용어집’ 창에서 다시 확정해야 "
+                           informative="다시 만들면 상태가 ‘용어집 검증 중’으로 돌아가고, ‘③ 용어집’ 창에서 다시 확정해야 "
                                        "번역·한글 넣기를 할 수 있습니다.\n확정된 용어는 그대로 남고 새 용어만 후보로 나옵니다.")
             if r != 0:
                 return
@@ -334,11 +264,9 @@ class StepActions:
                 self._fix_finish_issues(r.issues)
             return
         if r.state == "icons_review":
-            QMessageBox.information(self.page, "아이콘 먼저", f"먼저 ‘② 아이콘 정의’를 해야 합니다: {r.reason}")
-            review = service.icon_review(self.pdir)
-            r2 = self._open_icon_review(review, from_finish=True) if review else None
-            if r2 is not None and not r2.changed_cells:  # 원문이 그대로면 용어집 만들기를 이어 간다
-                self.finish(accept=True)
+            QMessageBox.information(self.page, "아이콘 먼저", f"먼저 ‘② 원문 확인’에서 아이콘을 정해야 합니다: {r.reason}\n"
+                                    "확정한 뒤 ‘③ 용어집’을 다시 누르세요.")
+            self.source_check()
             return
         if r.state in ("blocked", "paused"):
             show_problem(self.page, f"용어 후보를 만들지 못했습니다 ({state_label(r.state)})", r.reason or "",
@@ -347,7 +275,7 @@ class StepActions:
         self.review_glossary()  # 바로 프로그램 안에서 번역을 확인·확정 (엑셀은 그 창에서 따로 내보내기·가져오기)
 
     def _fix_finish_issues(self, issues: list[str]):
-        """용어집 만들기에서 남은 항목을 고치는 곳으로 간다: ‘결론 못 냄’ → ③ 원문 확인(그 파일의 첫 칸을 골라),
+        """용어집 만들기에서 남은 항목을 고치는 곳으로 간다: ‘결론 못 냄’ → ② 원문 확인(그 파일의 첫 칸을 골라),
         영역 템플릿 없음 → 영역 지정, 일부만 읽음·실패한 카드 → ① 글자 추출 (이어서 읽기)."""
         # 항목의 파일 이름은 게임 단위 키 ‘프로젝트/그룹/파일’ (같은 게임의 다른 프로젝트 것일 수도 있다).
         # 원문 확인은 이 프로젝트의 ‘그룹/파일’로 찾으므로 이 프로젝트 것만 고른다
@@ -356,20 +284,20 @@ class StepActions:
         other = None
         for it in issues:
             m = (re.match(r"‘결론 못 냄’ 칸 \(원문이 틀렸을 수 있음\): (.+) \d+칸$", it)
-                 or re.match(r"아이콘이 바뀐 칸 \(③ 원문 확인 필요\): (.+) \d+칸$", it))
+                 or re.match(r"아이콘이 바뀐 칸 \(② 원문 확인 필요\): (.+) \d+칸$", it))
             if not m:
                 continue
             key = m.group(1)
             key = key[len(prefix):] if key.startswith(prefix) else key
             if key in mine:
                 label = "결론 못 냄" if it.startswith("‘결론") else None
-                self.review_sources(only_check=True, focus_key=key, focus_label=label)
+                self.source_check(focus_key=key, focus_label=label)
                 return
             other = other or (m.group(1), "‘결론 못 냄’" if it.startswith("‘결론") else "아이콘이 바뀐")
         if other:  # 같은 게임의 다른 프로젝트에 있는 칸: 그 프로젝트를 열어 고쳐야 한다
             QMessageBox.information(self.page, "다른 프로젝트의 칸",
                                     f"{other[1]} 칸이 같은 게임의 다른 프로젝트에 있습니다: {other[0]}\n"
-                                    "그 프로젝트를 열어 ‘③ 원문 확인’에서 고치세요.")
+                                    "그 프로젝트를 열어 ‘② 원문 확인’에서 고치세요.")
             return
         if any(it.startswith("영역 템플릿이 없어") for it in issues):
             g = next((g for g in self.page.ov["groups"] if g["files"] and not g["has_regions"]), None)
@@ -410,7 +338,7 @@ class StepActions:
         r = service.import_glossary(self.pdir, path, accept_issues=accept)
         if r.state == "blocked":
             show_problem(self.page, "용어집을 가져오지 못했습니다", "", items=r.blocking + r.issues, todo=
-                         "엑셀에서 이 내용을 고치고 저장한 뒤 ‘④ 용어집’ 창의 ‘엑셀에서 가져오기’를 다시 누르세요.")
+                         "엑셀에서 이 내용을 고치고 저장한 뒤 ‘③ 용어집’ 창의 ‘엑셀에서 가져오기’를 다시 누르세요.")
             return
         if r.state == "needs_confirmation":
             if _ask_list(self.page, "용어집 확인", "아래 항목을 확인하세요.", r.issues, "이대로 확정할까요?"):
@@ -465,7 +393,7 @@ class StepActions:
         eng = self._engine()
         if eng is None:
             return
-        if self.ask_scope("⑤ 전체 번역") is False:  # 그룹·파일을 고른 채 누르면 전체/고른 항목을 묻는다 (기본 전체)
+        if self.ask_scope("④ 전체 번역") is False:  # 그룹·파일을 고른 채 누르면 전체/고른 항목을 묻는다 (기본 전체)
             return
         label, dirs = self.page.scope()
         where = "모든 파일" if dirs is None else label
@@ -488,7 +416,7 @@ class StepActions:
         self.page.refresh()
         if r.state == "cancelled":
             QMessageBox.information(self.page, "번역을 멈췄습니다",
-                                    "번역한 칸은 저장했습니다. ‘⑤ 전체 번역’을 다시 누르면 남은 칸부터 이어서 합니다.")
+                                    "번역한 칸은 저장했습니다. ‘④ 전체 번역’을 다시 누르면 남은 칸부터 이어서 합니다.")
             return
         if r.state != "done":
             show_problem(self.page, f"번역을 끝내지 못했습니다 ({state_label(r.state)})", r.reason or "",
@@ -505,8 +433,8 @@ class StepActions:
                    f"이미 번역됨 {r.cached}." + ("\n확인: " + ", ".join(issues) if issues else "")
                    + (f"\n{r.excel_note}" if getattr(r, "excel_note", "") else ""))
         box = QMessageBox(self.page)
-        box.setWindowTitle("⑤ 전체 번역")
-        box.setText(summary + "\n\n번역을 마쳤습니다. ‘⑥ 번역 검수’에서 칸마다 확인하세요. "
+        box.setWindowTitle("④ 전체 번역")
+        box.setText(summary + "\n\n번역을 마쳤습니다. ‘⑤ 번역 검수’에서 칸마다 확인하세요. "
                     "엑셀은 다른 사람에게 검수를 맡길 때 씁니다.")
         openb = box.addButton("번역 검수 열기", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
@@ -514,7 +442,7 @@ class StepActions:
         if box.clickedButton() is openb:
             self.review_translation()
 
-    # ---- ⑥ 번역 검수
+    # ---- ⑤ 번역 검수
     def review_translation(self):
         """번역 검수 창. 목록에서 고른 그룹·파일이 있으면 범위를 그것으로 미리 고른다."""
         from app.qt.review import TranslationReviewDialog

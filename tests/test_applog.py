@@ -161,14 +161,14 @@ def test_cli_log_times_reads_a_sent_log(tmp_path, capsys):
     from app import cli
 
     f = tmp_path / "sent.log"
-    f.write_text("2026-11-11 10:00:00,000 INFO    [Dummy-1] cardtranslater.time: [시간] ⑦ 글자 지우기 [엘프] 16.0초 | 쪽 20\n"
+    f.write_text("2026-11-11 10:00:00,000 INFO    [Dummy-1] cardtranslater.time: [시간] ⑥ 글자 지우기 [엘프] 16.0초 | 쪽 20\n"
                  "2026-11-11 10:00:01,000 INFO    [Dummy-1] cardtranslater.job: 작업 끝: erase_project\n"
-                 "2026-11-11 10:00:01,000 INFO    [Dummy-1] cardtranslater.time: [시간] 작업 ⑦ 글자 지우기 (erase_project) 16.2초 끝\n",
+                 "2026-11-11 10:00:01,000 INFO    [Dummy-1] cardtranslater.time: [시간] 작업 ⑥ 글자 지우기 (erase_project) 16.2초 끝\n",
                  encoding="utf-8")
     assert cli.main(["log-times", "--file", str(f)]) == 0
     out = capsys.readouterr().out
-    assert "2026-11-11 10:00:00      ⑦ 글자 지우기 [엘프] 16.0초 | 쪽 20" in out
-    assert "2026-11-11 10:00:01  작업 ⑦ 글자 지우기 (erase_project) 16.2초 끝" in out and "작업 끝: erase" not in out
+    assert "2026-11-11 10:00:00      ⑥ 글자 지우기 [엘프] 16.0초 | 쪽 20" in out
+    assert "2026-11-11 10:00:01  작업 ⑥ 글자 지우기 (erase_project) 16.2초 끝" in out and "작업 끝: erase" not in out
 
 
 def test_log_summary_errors_never_fail_the_job(logdir):
@@ -177,7 +177,7 @@ def test_log_summary_errors_never_fail_the_job(logdir):
     applog.safe(runlog.log_compose, "p", [{"page": 1, "regions": {"이름": {"status": ["넘침"], "errors": ("x",),
                                                                           "warnings": ["y"]}}}], 1.0, 1)
     applog.safe(runlog.log_erase, "p", [{"source_page": 1, "regions": [{"erase": "이상한 값"}]}], 1.0, 1)  # 오류는 로그로만
-    assert "로그 요약을 적지 못함" in _read(logdir) or "[시간] ⑦ 글자 지우기" in _read(logdir)
+    assert "로그 요약을 적지 못함" in _read(logdir) or "[시간] ⑥ 글자 지우기" in _read(logdir)
     two = "2026-11-11 10:00:00,000 I t: [시간] 첫줄\n2026-11-11 10:00:01,000 I t: [시간] 둘째줄"
     assert "첫줄" in applog.timing_report(two, last=0) and "둘째줄" in applog.timing_report(two, last=0)  # 0 = 전부
     one = applog.timing_report(two, last=1)

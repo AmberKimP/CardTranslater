@@ -1,9 +1,9 @@
-"""뒤에서 글자 지우기: 원문이 확정되면(④ 용어집부터) 지워야 할 파일을 한 파일씩 낮은 우선순위로 지운다.
+"""뒤에서 글자 지우기: 원문이 확정되면(③ 용어집부터) 지워야 할 파일을 한 파일씩 낮은 우선순위로 지운다.
 
 - 지워야 할 파일 = 아직 안 지운 파일 + 지운 뒤 원문·영역·카드별 지우기 방식이 바뀐 파일 (service.files_needing_erase).
 - 목록 오른쪽 클릭 ‘글자 지우기…’를 누르면 우선순위를 높인다 (boost).
 - 프로젝트를 바꾸거나 앱을 닫으면 멈춘다. 다음에 프로젝트를 열면 남은 파일부터 이어 한다.
-- cleared/를 쓰거나 읽는 화면 작업(글자 지우기, ⑦ 한글 넣기, 시험 실행, 결과 보기에서 다시 넣기)은
+- cleared/를 쓰거나 읽는 화면 작업(글자 지우기, ⑥ 한글 넣기, 시험 실행, 결과 보기에서 다시 넣기)은
   run_exclusive로 돌린다: 뒤에서 지우기를 멈추고, 지우던 스레드가 정말 끝난 뒤에 시작하며, 끝나면 다시 이어 한다
   (같은 파일을 두 스레드가 함께 쓰지 않게).
 """
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QProgressDialog
 from app import service
 from app.qt import worker
 
-BG_STATUSES = ("glossary_review", "glossary_confirmed", "translating", "translated")  # ④ 용어집부터
+BG_STATUSES = ("glossary_review", "glossary_confirmed", "translating", "translated")  # ③ 용어집부터
 
 _CURRENT: "BackgroundEraser | None" = None  # 지금 프로젝트 화면의 뒤에서 지우기 (결과 보기 창 등에서 찾는다)
 

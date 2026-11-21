@@ -74,7 +74,7 @@ class ExtractDialog(QDialog):
         lay.setContentsMargins(20, 16, 20, 14)
         lay.setSpacing(10)
         lay.addWidget(page_title("① 글자 추출", 14))
-        lay.addWidget(subtitle("카드 그림에서 원문 글자를 읽습니다. 끝나면 ‘③ 원문 확인’에서 읽은 글을 확인합니다."))
+        lay.addWidget(subtitle("카드 그림에서 원문 글자를 읽습니다. 끝나면 ‘② 원문 확인’에서 읽은 글을 확인합니다."))
         lay.addWidget(self.summary)
         lay.addWidget(card(form))
         lay.addWidget(note)

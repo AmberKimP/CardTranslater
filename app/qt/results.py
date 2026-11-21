@@ -218,7 +218,7 @@ class ResultViewer(QDialog):
         self.redo_btn.clicked.connect(self.save_edit)
         self.keep_btn = QPushButton(KEEP_LABEL)
         self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
-                                 "다시 누르면 되돌립니다 (③ 원문 확인의 같은 버튼과 같음).")
+                                 "다시 누르면 되돌립니다 (② 원문 확인의 같은 버튼과 같음).")
         self.keep_btn.setAutoDefault(False)
         self.keep_btn.clicked.connect(self.toggle_keep_original)
         erow = QHBoxLayout()
@@ -1008,7 +1008,7 @@ class GroupPickDialog(QDialog):
 
 
 class OutputActions:
-    """프로젝트 화면의 ⑦ 한글 넣기(안 지운 파일은 먼저 지우기) · 결과 보기 · 시험 실행 · 오른쪽 클릭 ‘글자 지우기…’."""
+    """프로젝트 화면의 ⑥ 한글 넣기(안 지운 파일은 먼저 지우기) · 결과 보기 · 시험 실행 · 오른쪽 클릭 ‘글자 지우기…’."""
 
     def __init__(self, page):
         self.page = page
@@ -1024,7 +1024,7 @@ class OutputActions:
     # ---- 지우기
     def erase(self):
         """목록 오른쪽 클릭 ‘글자 지우기…’: 오른쪽 클릭한 줄(전체·그룹·파일)을 지금 지운다 (묻지 않고 그 범위만).
-        보통은 뒤에서 지우기와 ⑦ 한글 넣기가 지운다."""
+        보통은 뒤에서 지우기와 ⑥ 한글 넣기가 지운다."""
         files = self.page.scoped_files()
         if not files:
             QMessageBox.information(self.page, "글자 지우기", "지울 파일이 없습니다.")
@@ -1079,14 +1079,14 @@ class OutputActions:
         return [f"{f['file']}: {state_label(f['state'])}" + (f" — {f['pages']}쪽, 경고 {f['warnings']}" if "pages" in f
                                                          else f" — {f.get('reason', '')}") for f in r.files]
 
-    # ---- ⑦ 한글 넣기
+    # ---- ⑥ 한글 넣기
     def compose(self, accept: bool = False):
-        """⑦ 한글 넣기. 고른 범위에 아직 지우지 않은 파일(초기화로 멈춘 파일 포함)이 있으면 먼저 지우고,
+        """⑥ 한글 넣기. 고른 범위에 아직 지우지 않은 파일(초기화로 멈춘 파일 포함)이 있으면 먼저 지우고,
         글꼴 고르기 창을 띄운 뒤 넣는다 (엑셀 확인 뒤 다시 부를 때는 묻지 않음)."""
         if accept:
             self._run_compose(True)
             return
-        if not self._pick_group("⑦ 한글 넣기", self._can_compose):
+        if not self._pick_group("⑥ 한글 넣기", self._can_compose):
             return
         if not self._review_left_ok():
             return
@@ -1099,7 +1099,7 @@ class OutputActions:
         self._ask_fonts()
 
     def _erased_for_compose(self, r):
-        """⑦ 한글 넣기 앞의 글자 지우기가 끝남: 다 지웠으면 글꼴 고르기로, 아니면 멈추고 알린다."""
+        """⑥ 한글 넣기 앞의 글자 지우기가 끝남: 다 지웠으면 글꼴 고르기로, 아니면 멈추고 알린다."""
         from app.qt.step_common import state_label
 
         self.page.refresh()
@@ -1186,7 +1186,7 @@ class OutputActions:
         if not files:
             return False, "파일 없음"
         if not all(f.get("translated") for f in files):
-            return False, "아직 못 함: 먼저 ⑤ 전체 번역"
+            return False, "아직 못 함: 먼저 ④ 전체 번역"
         done = sum(1 for f in files if f["composed"])
         return True, f"파일 {n}개 · 한글 {done}/{n}" + (" 완료" if done == n else "")
 
@@ -1198,7 +1198,7 @@ class OutputActions:
     @staticmethod
     def _can_test(g: dict) -> tuple[bool, str]:
         if not g["files"] or not all(f.get("translated") for f in g["files"]):
-            return False, "아직 못 함: 먼저 ⑤ 전체 번역"
+            return False, "아직 못 함: 먼저 ④ 전체 번역"
         return True, f"카드 {_group_cards(g)}장"
 
     def _pick_group(self, title: str, check) -> bool:

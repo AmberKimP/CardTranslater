@@ -327,7 +327,7 @@ class IconImportResult:
     replaced: int = 0
     removed: int = 0
     blocking: list[str] = field(default_factory=list)
-    # 아이콘 자리가 바뀌어 ③ 원문 확인에서 다시 읽어 확인할 칸 [{"file_dir", "page", "region"}]
+    # 아이콘 자리가 바뀌어 ② 원문 확인에서 다시 읽어 확인할 칸 [{"file_dir", "page", "region"}]
     changed_cells: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # 알릴 것 (같은 이름 줄의 한국어 이름·뜻이 서로 다름 등)
 

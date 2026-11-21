@@ -156,7 +156,7 @@ def reset_files(project_dir: Path | str, files: list | None = None, what: str = 
     from app.service import _translate_erase
 
     for fd in fds:
-        _translate_erase.set_erase_paused(fd, True)  # 비운 뒤 뒤에서 지우기가 바로 다시 지우지 않게 (⑦ 한글 넣기·‘글자 지우기…’를 누르면 풀림)
+        _translate_erase.set_erase_paused(fd, True)  # 비운 뒤 뒤에서 지우기가 바로 다시 지우지 않게 (⑥ 한글 넣기·‘글자 지우기…’를 누르면 풀림)
         for sub in RESET_WHAT[what]:
             d = fd / sub
             if d.exists():

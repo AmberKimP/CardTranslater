@@ -293,7 +293,7 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.f_icons.addItem("글자만 (아이콘 없음)", "none")
         self.f_icons.setToolTip("이 영역에 문장 속 아이콘(그림 기호)이 있는지 정합니다.\n"
                                 "섞여 있음: 글자 사이에 아이콘이 있을 수 있음 (기본)\n"
-                                "글자만 (아이콘 없음): 글자를 읽을 때 아이콘을 찾지 않고, 아이콘 정의·글자 지우기·한글 넣기에서도\n"
+                                "글자만 (아이콘 없음): 글자를 읽을 때 아이콘을 찾지 않고, ② 원문 확인의 아이콘·글자 지우기·한글 넣기에서도\n"
                                 "이 영역은 아이콘을 찾지 않습니다. 카드 이름처럼 글자만 있는 칸에 쓰면 잘못 찾은 아이콘이 줄어듭니다.\n"
                                 "글자 영역에서만 고를 수 있습니다.")
         self.f_ocr_exclude = QCheckBox("글자를 읽을 때도 건너뛰기")

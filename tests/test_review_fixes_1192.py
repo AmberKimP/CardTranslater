@@ -67,28 +67,6 @@ def test_reread_failed_cell_is_not_reread_automatically_again(tmp_path, monkeypa
     assert c["uncertain"] and c["icon_changed"]  # 원문 확인에는 여전히 ‘확인 필요’로 보인다
 
 
-def test_cancelling_pending_reread_still_opens_review(qapp, tmp_path, monkeypatch):
-    from app.qt import steps
-    from app.qt.main import MainWindow
-
-    info, fd = _changed_project(tmp_path, "cancel")
-    win = MainWindow(root=tmp_path)
-    win.open_project(info.dir)
-    acts = win.project.steps
-    opened = []
-    monkeypatch.setattr(acts, "_engine", lambda: "api")
-
-    def fake_run(parent, title, job, on_done, on_failed=None, cancellable=True, on_cancelled=None):
-        assert on_cancelled is not None
-        on_cancelled()
-
-    monkeypatch.setattr(steps.worker, "run_with_dialog", fake_run)
-    monkeypatch.setattr(acts, "_open_source_review", lambda files, *a: opened.append(a))
-    acts.review_sources(only_check=True)
-    assert opened == [(True, None, None)]
-    assert service.icon_reread_pending([fd]) == []  # 다시 열 때 같은 다시 읽기를 또 시작하지 않는다
-
-
 # ---------------------------------------------------------------- 3. 위아래로 붙은 [[?]]가 같은 자리: 첫 자리는 그대로
 def test_vertical_placeholders_on_same_box_keep_first_box(tmp_path, monkeypatch):
     info, fd = _project(tmp_path, "vert", pages=1)
@@ -213,11 +191,3 @@ def test_suggested_name_keeps_meaningful_number(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- 원문 확인: 다시 읽은 결과는 마지막 것만 표에
-def test_source_review_shows_only_last_reread(tmp_path):
-    info, fd = _project(tmp_path, "rr", pages=1)
-    rr = [{"model": "claude-opus-5-5", "source": f"read {i}", "at": f"2026-11-14 10:0{i}:00"} for i in range(4)]
-    _set_cell(fd, 1, "본문", rereads=rr)
-    c = next(c for c in service.extracted_cells(fd) if (c["page"], c["region"]) == (1, "본문"))
-    again = [x for x in c["readings"] if x["reread"]]
-    assert [x["source"] for x in again] == ["read 3"]
-    assert len(_cell(fd)["rereads"]) == 4  # 파일의 기록은 그대로

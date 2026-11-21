@@ -1,4 +1,4 @@
-"""④ 용어집(후보 만들기·확정)과 확정한 용어 바꾸기를 칸마다 적용하기."""
+"""③ 용어집(후보 만들기·확정)과 확정한 용어 바꾸기를 칸마다 적용하기."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
         if s["failed"]:
             issues.append(f"실패한 카드 (용어 후보에서 빠짐): {s['file']} {len(s['failed'])}장")
         if s.get("icon_changed"):
-            issues.append(f"아이콘이 바뀐 칸 (③ 원문 확인 필요): {s['file']} {s['icon_changed']}칸")
+            issues.append(f"아이콘이 바뀐 칸 (② 원문 확인 필요): {s['file']} {s['icon_changed']}칸")
         if s["no_verdict"]:
             issues.append(f"‘결론 못 냄’ 칸 (원문이 틀렸을 수 있음): {s['file']} {s['no_verdict']}칸")
     if issues and not accept_issues:
@@ -58,6 +58,11 @@ def finish_extraction(project_dir: Path | str, *, accept_issues: bool = False, e
     from app import icons as _icons
 
     n_unnamed = _icons.pending_count(info)
+    if n_unnamed and (info.game_dir / "work" / "icons" / "scan.json").exists():
+        # 찾기 결과가 있으면 다시 찾지 않는다: 그 결과에 ② 원문 확인의 확정 전 이름·손으로 잡은 자리가 있다
+        where = ", ".join(f"{k} {n}곳" for k, n in _icons.pending_by_file(info).items())
+        return GlossaryReviewResult("icons_review", issues=issues,
+                                    reason=f"이름 없는 아이콘 {n_unnamed}곳" + (f" ({where})" if where else ""))
     ic = _extract.find_icons(info.dir, engine=engine, client=client) if n_unnamed else None
     if ic is not None and ic.state == "icons_review":
         return GlossaryReviewResult("icons_review", review_xlsx=ic.review_xlsx, issues=issues,
@@ -136,7 +141,7 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
 
 
 def glossary_review_rows(project_dir: Path | str) -> list[dict] | None:
-    """④ 용어집의 후보 만들기로 만든 용어 후보 (화면 표용). 없으면 None. 행마다 엑셀과 같은 열 이름:
+    """③ 용어집의 후보 만들기로 만든 용어 후보 (화면 표용). 없으면 None. 행마다 엑셀과 같은 열 이름:
     {"원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형", "메모",
     "confirmed": 이미 확정된 용어, "verdict_keys"}."""
     from app import glossary, workspace
@@ -184,7 +189,7 @@ def save_glossary_rows(project_dir: Path | str, rows: list[dict]) -> Path:
 
 def confirm_glossary_rows(project_dir: Path | str, rows: list[dict], *,
                           accept_issues: bool = False) -> GlossaryConfirmResult:
-    """화면 표(④ 용어집 창)의 용어를 검사하고, 문제가 없거나 확인하면 게임 용어집으로 확정한다.
+    """화면 표(③ 용어집 창)의 용어를 검사하고, 문제가 없거나 확인하면 게임 용어집으로 확정한다.
     엑셀 가져오기(import_glossary)와 같은 검사·확정. 고친 값은 검증 엑셀에도 남긴다."""
     from app import glossary, workspace
 
@@ -454,8 +459,8 @@ def apply_term_changes(project_dir: Path | str, picks: list[dict], changes: list
                        prev_status: str | dict | None = None) -> TermApplyResult:
     """고른 바뀜 후보(picks: term_change_candidates의 칸)에 새 용어 번역을 넣는다.
     검수 엑셀은 건드리지 않고(그림이 빠지므로) 고친 번역(card_edits)으로 둔다. 초벌 번역 캐시도 새 용어로 고쳐
-    ⑤ 전체 번역이 그 칸을 다시 번역하지 않게 한다 (고르지 않은 칸은 지금 번역 그대로, 안전하게 바꿀 수 없는
-    캐시 항목은 그대로 두어 ⑤가 다시 번역한다).
+    ④ 전체 번역이 그 칸을 다시 번역하지 않게 한다 (고르지 않은 칸은 지금 번역 그대로, 안전하게 바꿀 수 없는
+    캐시 항목은 그대로 두어 ④가 다시 번역한다).
     prev_status: 가져오기 전 상태 — 글(이 프로젝트) 또는 {프로젝트 폴더: 상태} (GlossaryConfirmResult.prev_statuses).
     바뀐 용어가 든 번역이 모두 새 용어를 쓰게 된 프로젝트는 그 상태(번역 중·번역 완료)로 되돌린다."""
     from app import card_edits, font_plan, glossary, workspace
@@ -491,7 +496,7 @@ def apply_term_changes(project_dir: Path | str, picks: list[dict], changes: list
                 continue  # 고르지 않은 칸의 번역은 그대로
             plan = _term_plan(entry["ko"], s, changes, terms)
             if not plan["auto"]:
-                continue  # 용어가 없거나 빠짐없이 바꿀 수 없음 (⑤가 다시 번역하게 그대로 둔다)
+                continue  # 용어가 없거나 빠짐없이 바꿀 수 없음 (④가 다시 번역하게 그대로 둔다)
             ko = plan["proposed"]
             used = dict(entry.get("terms_used") or {})
             for src_ in plan["swapped"]:  # 이 항목에서 실제로 바꾼 용어만 새 번역을 쓴 것으로 적는다

@@ -252,8 +252,8 @@ def open_named(info, res: "ScanResult", o: "Occurrence") -> None:
     src = src if isinstance(src, str) else ""
     toks = list(_ic.TOKEN_RE.finditer(src))
     if not (0 <= o.ti < len(toks)) or toks[o.ti].group(1) != o.named:
-        raise ValueError(f"원문에서 [[{o.named}]]을 찾지 못했습니다 (원문이 바뀌었으면 ② 아이콘 정의를 다시 누르세요)")
-    new_src, rep = _reopen_token(fd, o.page, o.region, src, o.ti, "② 아이콘 정의에서 고치려고 열었음")
+        raise ValueError(f"원문에서 [[{o.named}]]을 찾지 못했습니다 (원문이 바뀌었으면 ② 원문 확인을 다시 누르세요)")
+    new_src, rep = _reopen_token(fd, o.page, o.region, src, o.ti, "② 원문 확인에서 고치려고 열었음")
     t = toks[o.ti]
     at = t.start() + rep.index(_ic.PLACEHOLDER)
     idx = sum(1 for m in _ic.TOKEN_RE.finditer(new_src) if m.group(1) == "?" and m.start() < at)
@@ -431,7 +431,7 @@ def reopen_icon(info, work: Path, anchor_occ: str, ti: int) -> dict:
     fd, img, src = _occ_region(info, a)
     toks = list(_ic.TOKEN_RE.finditer(src))
     if not (0 <= ti < len(toks)) or toks[ti].group(1) == "?":
-        raise ValueError("다시 열 아이콘을 원문에서 찾지 못했습니다 (원문이 바뀌었으면 ② 아이콘 정의를 다시 누르세요)")
+        raise ValueError("다시 열 아이콘을 원문에서 찾지 못했습니다 (원문이 바뀌었으면 ② 원문 확인을 다시 누르세요)")
     mine = cell_occurrences(res, a, src).get(ti)
     if mine is not None and mine.named:  # 그 토큰의 자리가 이미 있다 (2A의 한 줄): 그 자리를 연다
         open_named(info, res, mine)
@@ -574,7 +574,7 @@ def split_icon(info, work: Path, occ_id: str, part_box) -> dict:
     res = _ic.load_scan(work)
     o = next((x for x in res.occurrences if x.id == occ_id), None)
     if o is None:
-        raise ValueError("그 아이콘 자리를 찾지 못했습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
+        raise ValueError("그 아이콘 자리를 찾지 못했습니다: ② 원문 확인을 다시 눌러 찾은 뒤 하세요")
     if not o.box:
         raise ValueError("이 아이콘은 아직 자리가 없습니다: 먼저 아이콘 둘을 함께 감싸 ‘이 자리로 저장’을 하세요")
     bx0, by0, bx1, by1 = o.box
@@ -609,7 +609,7 @@ def split_icon(info, work: Path, occ_id: str, part_box) -> dict:
         raise ValueError("이 칸의 원문을 찾지 못했습니다")
     ph = [t for t in _ic.TOKEN_RE.finditer(src) if t.group(1) == "?"]
     if o.index >= len(ph):
-        raise ValueError("원문의 [[?]] 자리가 바뀌었습니다: ② 아이콘 정의를 다시 눌러 찾은 뒤 하세요")
+        raise ValueError("원문의 [[?]] 자리가 바뀌었습니다: ② 원문 확인을 다시 눌러 찾은 뒤 하세요")
     new_src, new_ti, new_idx = _insert_token(info, res, o, src, ph[o.index].end(), "카드 보기에서 아이콘 하나를 둘로 나눔")
     nums = [int(x.id[1:]) for x in res.occurrences if re.fullmatch(r"o\d+", x.id)]
     new_id = f"o{max(nums, default=0) + 1:03d}"
@@ -668,7 +668,7 @@ def insert_at(text: str, box, token_boxes: dict, size: tuple[int, int], bands: l
     2) 줄 안 자리: 새 상자 왼쪽의 가장 가까운 토큰(없으면 줄 왼쪽 끝 span[0])과 오른쪽의 가장 가까운 토큰(없으면 줄 오른쪽
        끝 span[1]) 사이의 글자들에, 상자 가운데의 가로 비율만큼 들어간 글자 경계 (글자 폭: 전각 1, 반각 0.5, 토큰 1).
        토큰 안에는 넣지 않는다. 예: ‘AB●CD’에서 CD 오른쪽을 감싸면 ‘AB[[?]]CD[[?]]’.
-    글자 사이의 자리는 짐작이다: 그 칸은 확정한 뒤 ③ 원문 확인에서 다시 읽어 확인한다 (‘아이콘을 추가함’).
+    글자 사이의 자리는 짐작이다: 그 칸은 확정한 뒤 ② 원문 확인에서 다시 읽어 확인한다 (‘아이콘을 추가함’).
     token_boxes: {토큰 순번 ti: 상자}, size: (그림 폭, 높이), span: 그 줄 잉크의 (왼쪽, 오른쪽) x (없으면 그림 폭 전체)."""
     toks = list(_ic.TOKEN_RE.finditer(text))
     x0, y0, x1, y1 = (float(v) for v in box)

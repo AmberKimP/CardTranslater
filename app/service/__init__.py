@@ -30,7 +30,7 @@ from app.version import VERSION  # noqa: F401 (화면이 버전을 service로 �
 from app import applog, report  # noqa: F401
 from app.claude_setup import find_claude  # noqa: F401
 from app.erase import erase_page, find_background_image, load_image_rgb, render_on_image_grid  # noqa: F401
-from app.extract import compare_unit  # noqa: F401 (③ 원문 확인의 다른 곳 표시: 두 읽기 견주기와 같은 규칙)
+from app.extract import compare_unit  # noqa: F401 (② 원문 확인의 다른 곳 표시: 두 읽기 견주기와 같은 규칙)
 from app.project import ensure_not_source, load_project, parse_page_spec, sha256_file  # noqa: F401
 from app.typeset_compose import safe_name  # noqa: F401
 from app.service import _base  # noqa: F401
@@ -46,6 +46,7 @@ from app.service import _cells_icons  # noqa: F401
 from app.service import _review  # noqa: F401
 from app.service import _test_runs  # noqa: F401
 from app.service import _manage  # noqa: F401
+from app.service import _source_check  # noqa: F401
 from app.service._base import (  # noqa: F401
     SCHEMA, ProgressEvent, ProgressFn, Cancelled, CancelToken, _noop,
 )
@@ -91,7 +92,7 @@ from app.service._settings import (  # noqa: F401
 )
 from app.service._cells_icons import (  # noqa: F401
     extracted_cells, icon_reread_pending, resettle_icon_cells, skip_icon_reread, known_icon_names, region_crop, save_source, RereadResult, reread_cells, reread_region,
-    icon_review, icons_pending, icon_place, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
+    icon_review, icons_pending, icon_place, card_regions, set_icon_box, absorb_icon_run, overlapping_icons, split_icon_box, add_icon_box, set_icon_not_icon, restore_icon, reopen_icon, icon_box_problem, keep_cell_original, set_cell_keep_original, cell_kept, cell_keep_mode, has_text_besides_icons,
     suggest_icon_name, icon_dictionary,
     update_icon_dictionary, confirm_icons, keep_sentence_original, sentence_kept, region_keep_mode,
 )
@@ -109,6 +110,10 @@ from app.service._test_runs import (  # noqa: F401
     _test_group_dir, _test_file_dir, _align_checks, _test_summary, _test_runs_root, _remove_test_dir,
     _read_test_history, _record_test, test_history, _test_entry, rerun_test, _test_cards, compare_tests,
     remember_project, last_project,
+)
+from app.service._source_check import (  # noqa: F401
+    STATUS_ORDER, STATUS_LABEL, check_files, ensure_icon_scan, rescan_icons, region_status, preview_source, source_check_rows, icon_kinds,
+    stage_icon_names, confirm_regions,
 )
 from app.service._manage import (  # noqa: F401
     self_check, license_text, release_notes, _to_trash, delete_project, delete_game, RESET_WHAT, reset_files,
@@ -134,5 +139,5 @@ class _ServiceModule(types.ModuleType):
 
 _MISSING = object()
 _SUBMODULES = (_base, _erase_compose, _extract, _glossary, _translate_erase, _overview, _fonts, _regions, _settings,
-               _cells_icons, _review, _test_runs, _manage)
+               _cells_icons, _review, _test_runs, _manage, _source_check)
 sys.modules[__name__].__class__ = _ServiceModule

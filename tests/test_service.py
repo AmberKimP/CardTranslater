@@ -145,7 +145,7 @@ def test_erase_and_compose_log_page_times_and_problem_cells(tmp_path, caplog):
     assert res.state == "done"
     rep = _json.loads((proj / "translated" / "report.json").read_text(encoding="utf-8"))
     assert "compose_s" in rep["pages_detail"][0]["timing"]
-    assert any("[시간] ⑦ 한글 넣기" in m for m in caplog.messages)
+    assert any("[시간] ⑥ 한글 넣기" in m for m in caplog.messages)
     from app.runlog import COMPOSE_PROBLEMS
 
     bad = {k for s, keys in rep["status_summary"].items() if s in COMPOSE_PROBLEMS for k in keys}

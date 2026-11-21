@@ -1,4 +1,4 @@
-"""결과 쪽·카드별 지우기 방식·카드 고치기와 ⑥ 번역 검수 표."""
+"""결과 쪽·카드별 지우기 방식·카드 고치기와 ⑤ 번역 검수 표."""
 
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ def card_edit_info(file_dir: Path | str, page: int, region: str) -> dict:
 def split_paragraphs(text: str, file_dir: Path | str | None = None, page: int | None = None,
                      region: str | None = None, breaks: list[int] | None = None) -> list[str]:
     """글을 문단으로 (결과 보기·글꼴 창의 문단 목록용, 한글 넣기와 같은 규칙). breaks를 주면 그 나눔(결과 보기의
-    [====])으로, 칸(file_dir·page·region)을 주면 ③에서 정한 문단 나눔을 이 글의 줄에 맞춰 쓴다 (맞출 수 없으면 기본 규칙)."""
+    [====])으로, 칸(file_dir·page·region)을 주면 ②에서 정한 문단 나눔을 이 글의 줄에 맞춰 쓴다 (맞출 수 없으면 기본 규칙)."""
     from app.typeset_layout import paragraphs
 
     if breaks is not None:
@@ -194,7 +194,7 @@ def split_paragraphs(text: str, file_dir: Path | str | None = None, page: int | 
     return paragraphs(text or "", breaks)
 
 
-# ---------------------------------------------------------------- ③ 원문 확인: 문단 나눔 [====] (1.24 B4)
+# ---------------------------------------------------------------- ② 원문 확인: 문단 나눔 [====] (1.24 B4)
 # ‘문단마다 다른 글꼴’ 영역의 문단은 사람이 정한다: 원문 편집 칸에 문단이 시작하는 줄 앞마다 [====] 줄을 보이고,
 # 저장하면 그 자리를 칸의 paragraph_breaks(extract.PARAGRAPH_BREAKS: 빈 줄 뺀 줄 번호)로 적는다. 원문 글은 바꾸지 않는다
 # (빈 줄을 넣지 않음). 나눔을 정한 적이 없는 칸은 기본 규칙(빈 줄·머리 줄·‘——이름’, 문장 끝으로는 나누지 않음)으로 보인다.
@@ -321,7 +321,7 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
     text: 고친 번역 (None이면 그대로, 엑셀·초벌 번역과 같으면 고친 것을 지움). 태그 칸은 줄마다 태그 하나.
     paragraph_breaks: 문단마다 다른 글꼴 영역에서 번역 칸의 [====]로 정한 번역문 문단 나눔 (빈 줄 뺀 줄 번호).
     card_edits에 번역과 함께 두어 한글 넣기가 이 카드에 그대로 쓴다. 번역 줄 수가 원문과 같으면(아이콘 문단만 원본
-    그대로인 칸이 아닐 때) 원문 칸의 paragraph_breaks도 같게 고친다 (③ 원문 확인의 [====]가 같게 보이도록).
+    그대로인 칸이 아닐 때) 원문 칸의 paragraph_breaks도 같게 고친다 (② 원문 확인의 [====]가 같게 보이도록).
     set_font=True면 font(None·''이면 영역 글꼴을 따름)를 이 카드의 이 영역 글꼴로.
     set_size·set_align: 이 카드만의 글자 크기 배율·정렬 (None·''이면 글꼴 창의 영역 설정).
     paragraph_fonts: {문단 번호: 글꼴 | None} — 이 카드의 문단마다 글꼴 (주면 그것으로 바꾼다)."""
@@ -357,7 +357,7 @@ def save_card_edit(file_dir: Path | str, page: int, region: str, *, text: str | 
 
 
 def _sync_source_breaks(fd: Path, page: int, region: str, ko: str, breaks: list[int]) -> None:
-    """결과 보기에서 정한 번역문 문단 나눔을 원문 칸에도 (③ 원문 확인이 같은 [====]를 보이게). 번역과 원문의 줄 수
+    """결과 보기에서 정한 번역문 문단 나눔을 원문 칸에도 (② 원문 확인이 같은 [====]를 보이게). 번역과 원문의 줄 수
     (빈 줄 뺌)가 같고, 아이콘 문단만 원본 그대로인 칸이 아닐 때만 (줄을 맞출 수 없으면 원문 쪽은 그대로)."""
     from app import workspace
     from app.extract import PARAGRAPH_BREAKS, keep_state, page_file

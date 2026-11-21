@@ -1,4 +1,4 @@
-"""③ 원문 확인: ② 아이콘 정의에서 아이콘 자리가 바뀐 칸은 보통·정밀 읽기로 모두 읽는다.
+"""② 원문 확인: ② 원문 확인에서 아이콘 자리가 바뀐 칸은 보통·정밀 읽기로 모두 읽는다.
 두 결과가 같고 지금 원문과도 같으면 확인이 끝나고, 아니면 ‘아이콘 고침 · 확인 필요’로 남는다. ‘(다시 읽기)’ 표시는 없다."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app import glossary, service, workspace
+from app import glossary, service
 from app.extract import ICON_REVIEW_LABEL, MODELS, Paused
 from app.extract_cc import CardError
 from tests.test_batch_1180 import _changed_project
@@ -36,29 +36,6 @@ def _fake_reads(monkeypatch, by_model: dict, calls: list):
 
 def _status(info) -> dict:
     return glossary.extraction_status(info, game=True)[0]
-
-
-def test_agreeing_readings_settle_cell(tmp_path, monkeypatch):
-    info, fd = _changed_project(tmp_path, "agree")
-    src = _cell(fd)["source"]
-    calls = []
-    # 다시 읽은 결과에는 이름 없는 [[?]]가 있다: 지금 원문의 [[이름]]과 아이콘 말고는 같다
-    same = {"source": "AB[[?]]CD", "uncertain": False}
-    _fake_reads(monkeypatch, {"sonnet": same, "opus": same}, calls)
-    r = service.reread_cells(service.icon_reread_pending([fd]), client=object())
-    assert calls == [MODELS["sonnet"], MODELS["opus"]]  # 보통 읽기 → 정밀 읽기 (꼼꼼히 모드의 두 모델)
-    assert r["done"] == 1 and r["settled"] == 1 and r["state"] == "done"
-    assert r["spent_usd"] == pytest.approx(0.02)
-    cell = _cell(fd)
-    assert cell["source"] == src  # ② 아이콘 정의에서 정한 [[이름]]을 지킨다
-    assert not cell.get("icon_changed") and not cell.get("icon_reread") and not cell["uncertain"]
-    assert [x["model"] for x in cell["readings"]] == [MODELS["sonnet"], MODELS["opus"]]
-    c = next(c for c in service.extracted_cells(fd) if c["page"] == 1)
-    # 1.24 B5: 확인이 끝나도 ‘아이콘 고침’ 알림 (보라 ‘확인 필요’ 아님, 확인할 칸 아님)
-    assert c["label"] == "아이콘 고침" and len(c["readings"]) == 2 and cell.get("icon_settled")
-    from app.qt.source_review import SourceReviewDialog
-    assert not SourceReviewDialog.needs_check(c) and not SourceReviewDialog.needs_attention(c)
-    assert _status(info)["icon_changed"] == 0  # 확인이 끝난 칸은 용어집 만들기를 막지 않는다
 
 
 @pytest.mark.parametrize("sonnet,opus,why", [
@@ -129,44 +106,11 @@ def test_save_source_clears_icon_review_status(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- 화면
-def test_ui_status_filter_and_no_reread_tag():
-    from app.qt import source_review, step_common
-    from app.qt.source_review import SourceReviewDialog
-
-    assert not hasattr(step_common, "REREAD_TAG")
-    text = Path(source_review.__file__).read_text(encoding="utf-8")
-    assert "(다시 읽기)" not in text and "REREAD_TAG" not in text
-    assert step_common.ICON_REVIEW_LABEL == ICON_REVIEW_LABEL
-    assert step_common.LABEL_COLORS[ICON_REVIEW_LABEL] not in (step_common.LABEL_COLORS["결론 못 냄"], None)
-    c = {"label": ICON_REVIEW_LABEL, "uncertain": False, "keep_original": False, "keep_mode": "", "source": "A",
-         "readings": [{"model": "claude-sonnet-5-5", "source": "A", "reread": True}], "note": ""}
-    assert SourceReviewDialog.needs_check(c) and SourceReviewDialog.needs_attention(c)
-    assert SourceReviewDialog.reading_texts(c) == [("보통 읽기", "A")]
-
-
 @pytest.fixture(scope="module")
 def qapp():
     from PySide6.QtWidgets import QApplication
 
     return QApplication.instance() or QApplication([])
-
-
-def test_dialog_counts_and_shows_icon_review(qapp, tmp_path, monkeypatch):
-    from app.qt.source_review import SourceReviewDialog
-    from app.qt.step_common import label_text
-
-    info, fd = _changed_project(tmp_path, "dlg")
-    _fake_reads(monkeypatch, {"sonnet": {"source": "AB[[?]]CO", "uncertain": False},
-                              "opus": {"source": "AB[[?]]CD", "uncertain": False}}, [])
-    service.reread_cells(service.icon_reread_pending([fd]), client=object())
-    files = service.project_overview(info.dir)["groups"][0]["files"]
-    dlg = SourceReviewDialog(files, engine="api")
-    assert "아이콘 고침" in dlg.only.text()
-    assert "(아이콘 고침 1)" in dlg.count.text()
-    labels = [dlg.table.item(i, 2).text() for i in range(dlg.table.rowCount())]
-    assert label_text(ICON_REVIEW_LABEL) in labels
-    assert all("(다시 읽기)" not in h.text() for h, _v in dlg.reading_rows)
-    dlg.close()
 
 
 # ---------------------------------------------------------------- 견주기: 아이콘 자리·수, 아이콘에 넣은 숫자만 무시

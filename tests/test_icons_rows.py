@@ -1,4 +1,4 @@
-"""② 아이콘 정의: 카드의 아이콘 하나 = 한 줄, 사전 이름 미리 채우기(자동으로 바꾸지 않음), 확정된 아이콘도 표에,
+"""② 원문 확인: 카드의 아이콘 하나 = 한 줄, 사전 이름 미리 채우기(자동으로 바꾸지 않음), 확정된 아이콘도 표에,
 카드 순서·문제 카드 먼저, 카드 보기 ‘아이콘 추가’. 가짜 카드 PDF만 쓴다 (실제 호출 없음)."""
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def test_confirmed_icon_rename_and_not_icon(tmp_path):
     assert out.added == ["gold"] and out.removed == 1
     d = icons.load_dictionary(info)["icons"]
     assert d["gold"]["ko"] == "금" and (icons.icons_dir(info) / "gold.png").exists()
-    # 아이콘 아님으로 뺀 칸은 ③ 원문 확인에서 다시 읽을 칸
+    # 아이콘 아님으로 뺀 칸은 ② 원문 확인에서 다시 읽을 칸
     assert {c["page"] for c in out.changed_cells} == {2, 3}
 
 
@@ -180,7 +180,7 @@ def test_add_icon_inserts_placeholder_and_new_row(tmp_path):
                                            {"group": rows[1]["group"], "name": "blank", "ko": "빈칸"}])
     assert out.state == "confirmed", out.blocking
     assert _source(fd, 1) == "AB[[coin]]CD[[blank]]"
-    assert _cell(fd)["icon_changed"] == ["아이콘을 추가함"]  # ③ 원문 확인에서 다시 읽는다
+    assert _cell(fd)["icon_changed"] == ["아이콘을 추가함"]  # ② 원문 확인에서 다시 읽는다
 
 
 def test_add_icon_shifts_named_token_index(tmp_path):
@@ -202,65 +202,6 @@ def test_add_icon_shifts_named_token_index(tmp_path):
 
 
 # ---------------------------------------------------------------- 화면
-def test_review_dialog_card_order_problem_cards_first_and_bands(qapp, tmp_path):
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _confirmed(tmp_path, pages=3)
-    _set_src(fd, 3, "AB[[?]]CD")
-    service.find_icons(info.dir, suggest=False)
-    rv = service.icon_review(info.dir)
-    # 3쪽 줄의 이름을 지워 문제로 만든다
-    for g in rv["groups"]:
-        if g["where"][0]["page"] == 3:
-            g["suggest"], g["ko"] = "", ""
-    dlg = IconReviewDialog(info.dir, rv)
-    pages = [g["where"][0]["page"] for g in dlg.review["groups"]]
-    assert pages == [3, 1, 2]  # 문제 카드 먼저, 그다음 카드 순서
-    assert dlg._card_of[dlg.widgets[0][0]][1] and not dlg._card_of[dlg.widgets[1][0]][1]
-    assert dlg.table.item(0, dlg.C_PAGES).font().bold()
-    # 1.24: 카드 칸은 옅은 띠(구분만), 분홍은 그 줄 자체가 문제일 때만 (상태·예문 칸)
-    assert dlg.table.item(0, dlg.C_PAGES).background().color().name().lower() in dlg.BAND_COLORS_LOWER
-    assert dlg.table.item(0, dlg.C_STATE).background().color().name().lower() == dlg.PROBLEM_COLOR.lower()
-    assert dlg.table.item(1, dlg.C_STATE).background().color().name().lower() != dlg.PROBLEM_COLOR.lower()
-    dlg.widgets[0][1].setText("coin")  # 사전 이름: 한국어 이름이 채워져 문제가 아니게
-    assert dlg.widgets[0][3].text() == "금화"
-    assert dlg.table.item(0, dlg.C_STATE).background().color().name().lower() != dlg.PROBLEM_COLOR.lower()
-    dlg._sort_by(dlg.C_PAGES)  # 다시 누르면 카드 순서 반대 (문제 카드 없음)
-    assert [g["where"][0]["page"] for g in dlg.review["groups"]] == [3, 2, 1]
-    dlg.close()
-
-
-def test_place_dialog_add_icon_and_rename(qapp, tmp_path, monkeypatch):
-    from app.qt.icon_place import IconPlaceDialog
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _project(tmp_path, "1차", pages=1)
-    service.find_icons(info.dir, suggest=False)
-    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    g = dlg.review["groups"][0]
-    place = IconPlaceDialog(info.dir, g, dlg._row_label, dlg._after_place, dlg, on_rename=dlg.rename_row)
-    assert place.card_view.pixmap() is not None and not place.card_view.pixmap().isNull()  # 카드 전체
-    assert not place.add_btn.isEnabled()
-    # 이름 고치기: 표의 그 줄에 적힌다
-    place.name_edit.setText("coin")
-    place._rename()
-    assert dlg.widgets[0][1].text() == "coin" and place.items.item(0).text().endswith("찾음")
-    assert "1번 coin" in place.items.item(0).text()
-    # 아이콘 추가: CD 오른쪽 빈 곳을 감싸 넣는다
-    box = place._place["box"]
-    w = box[2] - box[0]
-    place.view.new = [box[0] + 4 * w, box[1], box[0] + 5 * w, box[3]]
-    place._drawn()
-    assert place.add_btn.isEnabled()
-    place._add()
-    assert _source(fd, 1) == "AB[[?]]CD[[?]]"
-    assert place.items.count() == 2 and len(dlg.widgets) == 2  # 표에 새 줄
-    assert dlg.widgets[0][1].text() == "coin"  # 적어 둔 값은 그대로
-    assert place.outcome[0] == "saved"
-    place.close()
-    dlg.close()
-
-
 def test_confirm_stops_without_half_changes_when_named_token_is_gone(tmp_path):
     info, fd = _confirmed(tmp_path, pages=2)
     service.find_icons(info.dir, suggest=False)

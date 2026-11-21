@@ -1044,6 +1044,12 @@ def apply_icons(text: str, mapping: dict[int, str], strip: dict[int, dict] | Non
 def apply_region(file_dir: Path, page: int, region: str, mapping: dict[int, str],
                  strip: dict[int, dict] | None = None, note: str = "") -> str | None:
     """추출 결과 칸에 apply_icons를 적용해 저장한다. 돌려줌: 바뀐 원문(pages/ 파일 기준, 없으면 None)."""
+    with workspace.EXTRACT_LOCK:
+        return _apply_region_locked(file_dir, page, region, mapping, strip, note)
+
+
+def _apply_region_locked(file_dir: Path, page: int, region: str, mapping: dict[int, str],
+                         strip: dict[int, dict] | None, note: str) -> str | None:
     got = None
     for f in _extract_files(file_dir, page):
         rec = json.loads(f.read_text(encoding="utf-8"))
@@ -1213,7 +1219,7 @@ def _occ_dir(info, f: str) -> Path:
 
 
 def text_only_cells(fd: Path):
-    """(쪽, 영역 이름) -> ‘글자만’ 영역인가. ② 아이콘 정의는 이 칸의 토큰을 찾지도 세지도 않는다
+    """(쪽, 영역 이름) -> ‘글자만’ 영역인가. ② 원문 확인은 이 칸의 토큰을 찾지도 세지도 않는다
     (세기만 하고 찾지 않으면 남은 [[?]] 때문에 ‘추출 완료’가 아이콘 검증에서 멈춘다). 영역 파일은 처음 물을 때 읽는다."""
     tpl: list = []
 
@@ -1247,9 +1253,25 @@ def pending_count(info) -> int:
     return n
 
 
+def pending_by_file(info) -> dict[str, int]:
+    """게임 원문에 남은 ``[[?]]`` 수를 파일마다 {‘프로젝트/그룹/파일’: 수} (0인 파일은 뺀다)."""
+    from app.extract import load_extracted
+    from app.workspace import game_file_dirs, game_file_key, included_pages
+
+    out: dict[str, int] = {}
+    for fd in game_file_dirs(info):
+        inc = set(included_pages(fd))
+        skip = text_only_cells(fd)
+        n = sum(len(PLACEHOLDER_RE.findall(r["source"])) for pno, regs in load_extracted(fd).items() if pno in inc
+                for name, r in regs.items() if isinstance(r.get("source"), str) and not skip(pno, name))
+        if n:
+            out[game_file_key(fd)] = n
+    return out
+
+
 def token_count(info) -> int:
     """게임의 모든 프로젝트(뺀 쪽 제외) 원문에 있는 아이콘 토큰 수 ([[?]]와 이름이 있는 [[이름]] 모두).
-    ② 아이콘 정의는 확정된 아이콘도 표에 보여 고칠 수 있게 하므로, 하나라도 있으면 찾는다."""
+    ② 원문 확인은 확정된 아이콘도 표에 보여 고칠 수 있게 하므로, 하나라도 있으면 찾는다."""
     from app.extract import load_extracted
     from app.workspace import game_file_dirs, included_pages
 
@@ -1297,10 +1319,11 @@ class PictureCells:
         return mode == "auto" and self._used(page, region) == "picture"
 
 
-def scan(info, work: Path) -> ScanResult:
+def scan(info, work: Path, only: set | None = None) -> ScanResult:
     """원문의 아이콘 토큰을 모두 찾아 자리마다 위치·그림을 만든다 (카드의 아이콘 하나 = 한 줄).
     [[?]]는 사전과 모양이 같으면 그 이름을 줄에 미리 채워 두기만 하고 원문은 바꾸지 않는다 (사람이 확정할 때 바꾼다).
-    이미 이름이 있는 [[이름]]도 줄로 만든다 (named): 이름을 그대로 두면 확정해도 원문은 그대로다."""
+    이미 이름이 있는 [[이름]]도 줄로 만든다 (named): 이름을 그대로 두면 확정해도 원문은 그대로다.
+    only: {(파일 상대 경로, 쪽, 영역)} — 그 칸만 찾는다 (icons_stage.rescan_regions가 임시 폴더에 찾아 합친다)."""
     import pymupdf
 
     from app.extract import load_extracted
@@ -1319,7 +1342,8 @@ def scan(info, work: Path) -> ScanResult:
         inc = set(included_pages(fd))
         ext = load_extracted(fd)
         todo = [(p, r, v["source"], v.get("icon_numbers"), v.get("icon_boxes")) for p, regs in sorted(ext.items())
-                if p in inc for r, v in regs.items() if isinstance(v.get("source"), str) and TOKEN_RE.search(v["source"])]
+                if p in inc for r, v in regs.items() if isinstance(v.get("source"), str) and TOKEN_RE.search(v["source"])
+                and (only is None or (str(fd.relative_to(root)), p, r) in only)]
         if not todo:
             continue
         proj = load_project(fd)

@@ -29,7 +29,7 @@ STATUSES = ["번역 없음", "일본어 남음", "아이콘 불일치", "원문 
 CONFLICT = "엑셀과 앱이 다름"
 HELP = "Ctrl+S 저장 · Alt+↑/↓ 칸 이동 · Ctrl+F 찾기"
 GUIDE = "주황 칸부터 고치세요. 번역이 맞으면 고치지 않고 Ctrl+Enter = 확인하고 다음 칸."
-NO_PREVIEW_ERASED = "글자를 지운 뒤에 한글 넣은 모습을 볼 수 있습니다 (뒤에서 지우는 중이거나 ⑦ 한글 넣기가 지웁니다)"
+NO_PREVIEW_ERASED = "글자를 지운 뒤에 한글 넣은 모습을 볼 수 있습니다 (뒤에서 지우는 중이거나 ⑥ 한글 넣기가 지웁니다)"
 CHECK_MS, PREVIEW_MS, SEARCH_MS = 150, 600, 250
 
 
@@ -50,7 +50,7 @@ class TranslationReviewDialog(QDialog):
 
     def __init__(self, project_dir: Path | str, parent=None, preset: tuple | None = None):
         super().__init__(parent)
-        self.setWindowTitle("⑥ 번역 검수")
+        self.setWindowTitle("⑤ 번역 검수")
         fit_to_screen(self, 1400, 900)
         self.pdir = Path(project_dir)
         self.rows: list[dict] = []
@@ -171,7 +171,7 @@ class TranslationReviewDialog(QDialog):
         self.source.setReadOnly(True)
         self.source.setFont(self._text_font)
         self.source.setFixedHeight(54)
-        self.source_note = grey_note("원문이 틀렸으면 ③ 원문 확인에서 고치세요 (고치면 그 칸은 다시 번역해야 합니다)")
+        self.source_note = grey_note("원문이 틀렸으면 ② 원문 확인에서 고치세요 (고치면 그 칸은 다시 번역해야 합니다)")
         self.base_name = self._line_title("초벌")
         self.base_text = QLabel()
         self.base_text.setWordWrap(True)
@@ -221,7 +221,7 @@ class TranslationReviewDialog(QDialog):
         self.preview_btn.clicked.connect(self.request_preview)
         self.keep_btn = QPushButton(KEEP_LABEL)
         self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
-                                 "이 목록에서 빠지며, 되돌리려면 ③ 원문 확인이나 결과 보기의 같은 버튼을 누르세요.")
+                                 "이 목록에서 빠지며, 되돌리려면 ② 원문 확인이나 결과 보기의 같은 버튼을 누르세요.")
         self.keep_btn.clicked.connect(self.keep_original)
         btns = QHBoxLayout()
         btns.addWidget(self.next_btn)
@@ -756,7 +756,7 @@ class TranslationReviewDialog(QDialog):
                 return False
         else:
             chk = self._fresh_check(r) if changed else _chk_of(r)
-            # 이 창에서 고칠 수 있는 것만 묻는다 (‘원문 결론 못 냄’은 ③ 원문 확인에서 고칠 일이라 칸마다 묻지 않음)
+            # 이 창에서 고칠 수 있는 것만 묻는다 (‘원문 결론 못 냄’은 ② 원문 확인에서 고칠 일이라 칸마다 묻지 않음)
             musts = [s for s in chk["status"] if s in MUST_STATUS and s != "원문 결론 못 냄"]
             if musts:
                 c = ask_choice(self, "확인 전에", f"아직 ‘{', '.join(musts)}’이(가) 있습니다. 이대로 확인할까요?",
@@ -938,8 +938,8 @@ class TranslationReviewDialog(QDialog):
         n = len(self.saved_ids)
         if not n:
             return ""
-        return f"고친 칸 {n}개는 다음 ⑦ 한글 넣기부터 들어갑니다" if not self.saved_composed else \
-            f"고친 칸 {n}개는 ⑦ 한글 넣기를 다시 하세요 (이미 한글을 넣은 파일이 있습니다)"
+        return f"고친 칸 {n}개는 다음 ⑥ 한글 넣기부터 들어갑니다" if not self.saved_composed else \
+            f"고친 칸 {n}개는 ⑥ 한글 넣기를 다시 하세요 (이미 한글을 넣은 파일이 있습니다)"
 
     def done(self, r):
         if not self._confirm_leave():

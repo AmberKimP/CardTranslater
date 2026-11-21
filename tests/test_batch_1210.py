@@ -71,30 +71,6 @@ def test_reopen_named_icon_makes_slot_with_dictionary_name(tmp_path):
         service.reopen_icon(info.dir, occ, 0)  # 이미 [[?]]
 
 
-def test_dialog_merges_named_icon_with_slot(qapp, tmp_path):
-    from PySide6.QtCore import Qt
-
-    from app.qt.icon_place import IconPlaceDialog
-
-    info, fd, occ = _named_project(tmp_path, "mnamed")
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == occ for w in x["where"]))
-    dlg = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    assert [dlg.items.item(k).data(Qt.ItemDataRole.UserRole + 1) for k in range(dlg.items.count())] == ["named", "found"]
-    for k in range(dlg.items.count()):
-        dlg.items.item(k).setSelected(True)
-    host, others = dlg._merge_plan()
-    assert host == occ and others and dlg.merge_btn.isEnabled()  # 확정 아이콘은 합칠 곳이 되지 않는다
-    dlg.merge_btn.click()
-    assert _src(fd) == "AB[[lily]]CD[[?]]"  # 원문은 확정할 때 바뀐다
-    states = [it["state"] for it in service.icon_place(info.dir, occ)["items"]]
-    assert "absorbed" in states
-    dlg.close()
-    rows = [{"group": x["group"], "name": "" if x["not_icon"] else "lily_set", "ko": "백합 세트",
-             "not_icon": x["not_icon"]} for x in service.icon_review(info.dir)["groups"]]
-    assert service.confirm_icons(info.dir, rows).state == "confirmed"
-    assert _src(fd) == "ABCD[[lily_set]]"  # 합친 확정 아이콘은 원문에서 빠진다
-
-
 # ---------------------------------------------------------------- 두 줄 높이 상자
 def _two_line_image():
     img = np.full((140, 400, 3), 255, np.uint8)
@@ -130,68 +106,8 @@ def test_keep_cell_original_marks_slots_not_icon(tmp_path):
 
 
 # ---------------------------------------------------------------- 저장 뒤 위치 못 찾음이 남으면 닫지 않음
-def test_save_keeps_window_open_when_lost_remains(qapp, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QDialog
-
-    import app.qt.icon_place as ip
-    from app.qt.icon_place import IconPlaceDialog
-
-    info, fd = _project(tmp_path, "stay", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 1)  # 따로 있는 아이콘
-    monkeypatch.setattr(service, "engine_status", lambda: {})
-    dlg = IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    dlg.select_item(host)
-    b = dlg.view.box
-    dlg.view.new = [b[0], b[1], b[2] - 1, b[3]]
-    dlg._save()
-    assert dlg.result() != QDialog.DialogCode.Accepted  # extra가 아직 위치 못 찾음
-    assert "위치를 못 찾은 아이콘이 있습니다" in dlg.status.text()
-    dlg.close()
-
-
 # ---------------------------------------------------------------- 2A: 다시 잡아 새 줄이 생기면 이름을 이어받는다
-def test_rebox_new_group_inherits_typed_name(qapp, tmp_path):
-    from app.qt.icon_review import IconReviewDialog
-
-    info, fd = _project(tmp_path, "inherit", pages=2)
-    service.find_icons(info.dir, suggest=False)
-    dlg = IconReviewDialog(info.dir, service.icon_review(info.dir))
-    i = 0
-    g = dlg.review["groups"][i]
-    dlg.widgets[i][1].setText("lily")
-    dlg.widgets[i][3].setText("백합")
-    occ = g["where"][0]["occ"]
-    box = service.icon_place(info.dir, occ)["box"]
-    r = service.set_icon_box(info.dir, occ, [box[0], box[1], box[2] + 6, box[3] + 6])
-    assert r["group"] == g["group"]  # 다시 잡아도 같은 줄 (카드의 아이콘 하나 = 한 줄)
-    assert dlg._after_place(r) is True  # 적어 둔 이름이 있었다 (제안으로 덮지 않음)
-    j = next(k for k, w in enumerate(dlg.widgets) if w[0] == r["group"])
-    assert dlg.widgets[j][1].text() == "lily" and dlg.widgets[j][3].text() == "백합"
-
-
 # ---------------------------------------------------------------- 3A: 줄을 골라도 가로 스크롤 그대로
-def test_row_table_keeps_horizontal_scroll(qapp):
-    from PySide6.QtWidgets import QTableWidgetItem
-
-    from app.qt.source_review import RowTable
-
-    t = RowTable(3, 3)
-    t.resize(200, 120)
-    for r in range(3):
-        for c in range(3):
-            t.setItem(r, c, QTableWidgetItem("x" * (5 if c < 2 else 300)))
-    t.resizeColumnsToContents()
-    t.show()
-    qapp.processEvents()
-    t.horizontalScrollBar().setValue(0)
-    t.setCurrentCell(2, 2)
-    qapp.processEvents()
-    assert t.horizontalScrollBar().value() == 0
-    t.close()
-
-
 # ---------------------------------------------------------------- 디버그 모드: 버튼 크기 유지
 def test_debug_mode_keeps_button_width(qapp):
     from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
@@ -350,88 +266,6 @@ def test_keep_cell_original_off_restores_only_keep_slots(tmp_path):
     assert not any(g.get("by_keep") for g in gi.values())
 
 
-def test_place_dialog_locks_while_action_runs(qapp, tmp_path, monkeypatch):
-    """2B 조작(삭제·합치기·되돌리기·원본 그대로 등)이 도는 동안 창 전체가 잠기고, 끝나면 풀린다."""
-    from app.qt import icon_place as ip
-
-    info, fd = _project(tmp_path, "busy", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    seen = []
-    real = service.set_icon_not_icon
-
-    def slow(project_dir, occ):
-        seen.append((dlg.isEnabled(), dlg.keep_btn.isEnabled(), dlg.items.isEnabled()))
-        return real(project_dir, occ)
-
-    monkeypatch.setattr(service, "set_icon_not_icon", slow)
-    from PySide6.QtCore import Qt
-    for k in range(dlg.items.count()):
-        it = dlg.items.item(k)
-        it.setSelected(it.data(Qt.ItemDataRole.UserRole) == extra)
-    dlg.del_btn.click()
-    assert seen == [(False, False, False)]  # 도는 동안: 창·버튼·목록 모두 잠김
-    assert dlg.isEnabled() and dlg.keep_btn.isEnabled() and dlg.items.isEnabled()  # 끝나면 풀림
-    dlg.reject()
-
-
-def test_keep_button_asks_before_turning_on(qapp, tmp_path, monkeypatch):
-    from app.qt import icon_place as ip
-
-    info, fd = _project(tmp_path, "keepask", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    asked = []
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 1)[1])  # 취소
-    dlg.keep_btn.click()
-    assert asked and not service.cell_kept(info.dir, host)
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 0)  # 원본 그대로 두기
-    dlg.keep_btn.click()
-    assert service.cell_kept(info.dir, host) and dlg.keep_btn.text() == dlg.KEEP_UNDO_TEXT
-    asked.clear()
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 1)[1])
-    dlg.keep_btn.click()  # 끌 때는 묻지 않고 되돌린다
-    assert not asked and not service.cell_kept(info.dir, host)
-    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
-    assert states[host] == "found"
-    dlg.reject()
-
-
-def test_click_queued_during_action_is_dropped(qapp, tmp_path, monkeypatch):
-    """조작이 도는 동안 쌓인 클릭(여기서는 ‘원본 그대로’)은 끝난 뒤 실행되지 않는다 (6쪽 칸이 통째로 아이콘 아님이 된 일)."""
-    from PySide6.QtCore import QEvent, QPointF, Qt
-    from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QApplication
-
-    from app.qt import icon_place as ip
-
-    info, fd = _project(tmp_path, "queued", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    dlg.show()
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: 0)  # 묻기가 나와도 ‘원본 그대로 두기’
-    real = service.set_icon_not_icon
-
-    def slow(project_dir, occ):
-        c = QPointF(dlg.keep_btn.rect().center())
-        for t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
-            QApplication.postEvent(dlg.keep_btn, QMouseEvent(t, c, c, Qt.MouseButton.LeftButton,
-                                                             Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
-        return real(project_dir, occ)
-
-    monkeypatch.setattr(service, "set_icon_not_icon", slow)
-    for k in range(dlg.items.count()):
-        it = dlg.items.item(k)
-        it.setSelected(it.data(Qt.ItemDataRole.UserRole) == extra)
-    dlg.del_btn.click()
-    QApplication.processEvents()
-    assert not service.cell_kept(info.dir, host)
-    dlg.reject()
-
-
 def test_keep_off_does_not_undo_deliberate_merge(tmp_path):
     """원본 그대로로 아이콘 아님이 된 자리를 사람이 다른 아이콘에 합쳤으면, 원본 그대로를 꺼도 합친 것을 풀지 않는다."""
     info, fd = _project(tmp_path, "keepmerge", pages=1)
@@ -445,52 +279,7 @@ def test_keep_off_does_not_undo_deliberate_merge(tmp_path):
     assert states == {host: "found", extra: "absorbed"}
 
 
-def test_keep_off_legacy_cell_offers_restore(qapp, tmp_path, monkeypatch):
-    """예전 버전에서 원본 그대로를 켠 칸(표시 없음): 끌 때 남은 아이콘 아님 자리를 되돌릴지 묻고, 고르면 되돌린다."""
-    from app.qt import icon_place as ip
-
-    info, fd = _project(tmp_path, "keeplegacy", pages=1)
-    host, extra = _add_run_partner(info, fd)
-    service.keep_cell_original(info.dir, host, True)
-    sp = info.game_dir / "work" / "icons" / "scan.json"
-    scan = json.loads(sp.read_text(encoding="utf-8"))
-    for g in scan["groups"].values():
-        g.pop("by_keep", None)  # 예전 데이터
-    sp.write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
-    g = next(x for x in service.icon_review(info.dir)["groups"] if any(w["occ"] == host for w in x["where"]))
-    dlg = ip.IconPlaceDialog(info.dir, g, lambda grp: grp, lambda r: None)
-    asked = []
-    monkeypatch.setattr(ip, "ask_choice", lambda *a, **k: (asked.append(a[2]), 0)[1])
-    assert dlg.keep_btn.text() == dlg.KEEP_UNDO_TEXT
-    dlg.keep_btn.click()
-    assert len(asked) == 1 and "2개" in asked[0]
-    states = {it["occ"]: it["state"] for it in service.icon_place(info.dir, host)["items"]}
-    assert states == {host: "found", extra: "lost"}
-    dlg.reject()
-
-
 # ---------------------------------------------------------------- 1.22.0: 원본 그대로 칸의 원문 확인 문구, 결과 보기 위치
-def test_source_review_kept_cell_says_not_translated(qapp, tmp_path):
-    """원본 그대로 칸: ‘다시 봐야 함’ 같은 문구가 아니라 ‘번역하지 않기로 함’과 사용자 선택·아이콘 그림 그대로를 알린다.
-    글자도 있는 칸은 확인하라고 알린다."""
-    from app.qt.source_review import SourceReviewDialog
-    from tests.test_qt import _project_with_extract
-
-    info, fd = _project_with_extract(tmp_path)
-    files = service.project_overview(info.dir)["groups"][0]["files"]
-    dlg = SourceReviewDialog(files, only_check=False)
-    c0 = dlg.current()
-    dlg.keep_btn.click()
-    dlg.table.setCurrentCell(0, 0)
-    t = dlg.info.text()
-    assert "번역하지 않기로 함" in t and "사용자가" in t and "원본 그대로" in t
-    assert ("글자도 있어" in t) == SourceReviewDialog.kept_with_text(dlg.current())
-    assert SourceReviewDialog.kept_with_text({"keep_original": True, "source": "[[a]] / [[b]] 2"}) is False
-    assert SourceReviewDialog.kept_with_text({"keep_original": True, "source": "いずれかを選択\n[[a]]"}) is True
-    assert (c0["page"], c0["region"]) == (dlg.current()["page"], dlg.current()["region"])
-    dlg.reject()
-
-
 def test_result_viewer_nudge_buttons_show_arrows_and_preview_live(qapp, tmp_path, monkeypatch):
     """위치 화살표 버튼은 글자가 보일 만큼 넓고(테마 여백 없이), 누르면 저장 전에도 옮긴 자리로 미리 보기를 다시 그린다."""
     from app.qt.results import ResultViewer

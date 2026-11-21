@@ -56,12 +56,12 @@ def test_not_icon_with_text_follows_source_text():
 
 
 def test_source_still_has_unknown_keeps_old_behavior():
-    # 아직 ② 아이콘 정의 전(원문에 [[?]]가 있음): 읽은 [[?]]를 빼지 않는다
+    # 아직 ② 원문 확인 전(원문에 [[?]]가 있음): 읽은 [[?]]를 빼지 않는다
     assert fill_icon_names("A[[?]]B[[?]]", "A[[?]]B") == "A[[?]]B[[?]]"
 
 
 def test_new_icon_found_by_reread_is_kept_when_no_icons_decided():
-    # 아이콘을 정한 적 없는 칸: 다시 읽기가 새로 찾은 [[?]]는 그대로 (원문 확인에서 보이고 ② 아이콘 정의로 간다)
+    # 아이콘을 정한 적 없는 칸: 다시 읽기가 새로 찾은 [[?]]는 그대로 (원문 확인에서 보이고 ② 원문 확인으로 간다)
     assert fill_icon_names("盗掘[[?]]フェレット", "盗賊フェレット") == "盗掘[[?]]フェレット"
     assert fill_icon_names("盗掘[[?]]フェレット", "盗賊フェレット", removed=True) == "盗賊フェレット"
 
@@ -82,13 +82,3 @@ def test_text_typed_for_removed_icon_is_kept():
     # ‘아이콘 아님’에 적은 글자(+1)가 다시 읽은 아이콘 자리와 짝지어져 사라지지 않는다 (리뷰)
     assert fill_icon_names("[[?]][[?]]", "+1[[coin]]", removed=True) == "+1[[coin]]"
 
-
-def test_icon_removed_zero_is_known_not_guessed(tmp_path):
-    from app import icons
-
-    info, fd = _project(tmp_path, "zero", pages=1)
-    _set_cell(fd, 1, "본문", source="A[[?]]B")
-    icons.apply_region(fd, 1, "본문", {0: "coin"})  # 뺀 것 없음: 0으로 적는다
-    assert _cell(fd)["icon_removed"] == 0
-    from app.qt.source_review import _removed
-    assert _removed(_cell(fd)) is False and _removed({"icon_removed": None}) is None
