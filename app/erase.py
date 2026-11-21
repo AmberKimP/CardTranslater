@@ -508,17 +508,46 @@ def _inline_icons(found: list, lay: dict, tm) -> list:
     return out
 
 
+def _confirmed_icons(found: list, confirmed: list, src: str, to_px, origin: tuple) -> list:
+    """찾은 글 속 아이콘 자리 found [(이름, sub px 상자, 아이콘만 있는 줄인가)]에 사람이 확정한 자리를 넣는다.
+    confirmed [(이름, 같은 이름의 몇째, 원본 쪽 pt 상자)]: 확정한 자리가 있는 이름은 찾은 자리를 버리고 확정한 자리를 쓴다
+    (찾기가 못 찾았거나 엉뚱한 곳을 잡은 아이콘). ‘아이콘만 있는 줄’은 원문 줄로 정한다. 크기로 거르지 않는다."""
+    from app.erase_text import is_icon_line
+    from app.icons import TOKEN_RE
+
+    only_of: dict[tuple, bool] = {}
+    seen: dict[str, int] = {}
+    for line in src.splitlines():
+        for t in TOKEN_RE.finditer(line):
+            k = seen.get(t.group(1), 0)
+            seen[t.group(1)] = k + 1
+            only_of[(t.group(1), k)] = is_icon_line(line)
+    ox, oy = origin
+    conf = {}
+    for nm, k, bpt in confirmed:
+        if (nm, k) not in only_of:
+            continue  # 원문에 없는 아이콘 (원문이 바뀜)
+        x0, y0, x1, y1 = to_px(tuple(bpt))
+        conf[(nm, k)] = ((int(round(x0)) - ox, int(round(y0)) - oy, int(round(x1)) - ox, int(round(y1)) - oy),
+                         only_of[(nm, k)])
+    names = {nm for nm, _k in conf}
+    # 확정한 자리는 4번째 값 True (부른 쪽이 지울 자리를 조금 넓힌 뒤 떼어 낸다)
+    return [f_ for f_ in found if f_[0] not in names] + [(nm, bx, only, True) for (nm, _k), (bx, only) in conf.items()]
+
+
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
                params: CleanParams | None = None, modes: dict | None = None,
                sources: dict | None = None, icon_templates: dict | None = None,
-               keep_lines: dict | None = None) -> PageErase:
+               keep_lines: dict | None = None, icon_boxes: dict | None = None) -> PageErase:
     """page(결과 문서 쪽의 페이지 사본)에서 영역 글자를 지운다. page는 바뀐다.
     modes: 이 카드만 다르게 지울 영역 {영역 이름: 방식} (영역 설정 erase.mode보다 우선).
     sources: 읽은 원문 {영역 이름: 글}. 그림 카드에서 지울 줄을 원문 줄에 맞춘다.
     keep_lines: {영역 이름: {"lines": 지우지 않을 원문 줄 번호(빈 줄 뺀 기준), "boxes_pt": 그 칸 아이콘 자리}} —
     아이콘 문단만 원본 그대로 둘 칸 (글자 모양만 지우는 영역에서만 쓴다. 아이콘 자리는 지키고, 남길 줄을 찾지 못하면 그
     영역은 하나도 지우지 않는다: erase_text.match_source_lines).
-    icon_templates: 게임 아이콘 사전 그림 {이름: RGBA} (icons.templates_for). 글 속 아이콘 자리를 다시 확인한다."""
+    icon_templates: 게임 아이콘 사전 그림 {이름: RGBA} (icons.templates_for). 글 속 아이콘 자리를 다시 확인한다.
+    icon_boxes: ② 원문 확인에서 사람이 확정한 아이콘 자리 {영역 이름: [(이름, 같은 이름의 몇째, 원본 쪽 pt 상자)]}.
+    찾기 결과보다 먼저 쓴다 (찾기가 그 아이콘을 못 찾아 지우지 않고 남기던 것: 4·6쪽 human, 8쪽 house)."""
     import pymupdf
 
     warnings: list[str] = []
@@ -853,9 +882,23 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             lim = INLINE_ICON_SCALE_RANGE[1] * pic.glyph_px
             found = [f_ for f_ in found
                      if f_[2] or inline_icon_box_ok(f_[1], 1.5 * lim, (icon_templates or {}).get(f_[0]))]
+        confirmed_px: set = set()
+        if (icon_boxes or {}).get(name) and isinstance(src, str):  # 사람이 확정한 자리 (pt라 돌린 영역도 그대로)
+            found = _confirmed_icons(found, icon_boxes[name], src, to_px, (ox0, oy0))
+            confirmed_px = {tuple(f_[1]) for f_ in found if len(f_) > 3}
+            found = [f_[:3] for f_ in found]
         if lay.get("keep_failed"):
-            found = []  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
+            found, confirmed_px = [], set()  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
         icons_found = _inline_icons(found, lay, tm)
+        if confirmed_px:
+            # 사람이 잡은 상자는 아이콘에 딱 맞아 흐린 가장자리(그림자·번짐)가 밖에 남는다 (6쪽 human): 지울 자리만 조금 넓힌다.
+            # 다시 그릴 크기(icons_found의 상자)는 그대로
+            H_, W_ = tm.mask.shape
+            for _n, bx, _sc in icons_found:
+                if tuple(bx) not in confirmed_px:
+                    continue
+                mx, my = max(3, int(0.06 * (bx[2] - bx[0]))), max(3, int(0.06 * (bx[3] - bx[1])))
+                tm.mask[max(0, bx[1] - my):min(H_, bx[3] + my), max(0, bx[0] - mx):min(W_, bx[2] + mx)] = True
         if keep_px.get(name):  # 원본 그대로 둘 아이콘 자리는 글 속 아이콘으로 지우지도, 다시 그리지도 않는다
             kb = [(b_[0] - ox0, b_[1] - oy0, b_[2] - ox0, b_[3] - oy0) for b_ in keep_px[name]]
             for b_ in kb:

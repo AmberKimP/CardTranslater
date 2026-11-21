@@ -49,7 +49,9 @@ GAP_DIFF = 20.0  # 그 빈 곳에서 배경과 이만큼 다르면 글자로 본
 GAP_COLOR_TOL = 45.0  # 그리고 그 줄 글자색과 이만큼 안이어야 한다
 TRIM_KEEP = 0.8  # 끝 조각을 빼면 줄 폭이 원문 길이(글자 수 × 글자 높이)의 이만큼보다 짧아지면 빼지 않는다
 COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
-BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자
+BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자 (줄 하나만 있을 때)
+BOLD_UNIFORM = 0.15  # 굵기가 고른 여러 줄: 가운데 값이 이 이상이어야 모두 굵은 글자 (기울인 작은 보통 글씨가 0.12~0.14)
+BOLD_SPREAD = 0.2  # 줄 굵기의 (최대-최소)/가운데 값이 이보다 작으면 같은 굵기의 줄들로 본다
 
 
 def _disk(r: int) -> np.ndarray:
@@ -707,7 +709,27 @@ def text_layout(img: np.ndarray, tm: TextMask, box: tuple[int, int, int, int]) -
         else:
             ln["align"] = "left"
     _center_widest(lines, x0, x1, cuts)
+    _even_bold(lines)
     return {"lines": lines, "dividers": divs, "box_x": [x0, x1], "cuts": cuts}
+
+
+def _even_bold(lines: list[dict]) -> None:
+    """줄마다 잰 굵기는 작은 글씨에서 흔들린다 (0.12~0.14): 같은 글씨인 줄 몇 개만 굵은 글자로 잡혀 한글이 줄마다
+    굵었다 가늘었다 했다 (1·3·4·5·7·8·9쪽 본문3, 기울인 작은 글씨). 테두리 없는 글 줄끼리 견준다:
+    - 굵기가 고르면(차이 BOLD_SPREAD 미만) 모두 같게: 가운데 값이 BOLD_UNIFORM 이상일 때만 굵은 글자.
+    - 고르지 않으면 예전처럼 줄마다 (BOLD_WEIGHT): 크기가 다른 줄이 섞인 영역 (작은 글씨는 굵기를 크게 잰다).
+      굵은 글씨 영역(기본판 캐릭터 4쪽 0.137~0.19)이 가늘게 바뀌지 않게.
+    테두리 글자(이름표 띠)는 따로 둔다."""
+    body = [ln for ln in lines if not ln.get("stroke_color") and ln.get("weight") is not None]
+    if len(body) < 2:
+        return
+    ws = sorted(float(ln["weight"]) for ln in body)
+    med = ws[len(ws) // 2] if len(ws) % 2 else (ws[len(ws) // 2 - 1] + ws[len(ws) // 2]) / 2
+    if med <= 0:
+        return
+    if (ws[-1] - ws[0]) / med < BOLD_SPREAD:
+        for ln in body:
+            ln["bold"] = med >= BOLD_UNIFORM
 
 
 def _center_widest(lines: list[dict], x0: float, x1: float, cuts: list) -> None:

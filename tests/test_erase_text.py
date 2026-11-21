@@ -312,3 +312,21 @@ def test_gap_fill_runs_after_trim_and_respects_allowed_area():
     tm2 = _tm(m2)
     erase_text.fill_line_gaps(tm2, img2, {"bbox": [10, 12, 380, 28], "glyph_h": 16, "color": "#828282"}, allowed=ok)
     assert tm2.mask[12:28, 40:100].any() and not tm2.mask[12:28, 100:200].any()
+
+
+def test_even_bold_small_text_lines_share_one_weight():
+    from app.erase_text import _even_bold
+
+    ln = lambda w, stroke=None: {"weight": w, "bold": w >= 0.13, "stroke_color": stroke}  # noqa: E731
+    lines = [ln(0.138), ln(0.138), ln(0.13), ln(0.131), ln(0.121)]  # 1쪽 본문3: 기울인 작은 글씨
+    _even_bold(lines)
+    assert not any(x["bold"] for x in lines)
+    lines = [ln(0.17), ln(0.09), ln(0.095), ln(0.2, "#ffffff")]  # 굵은 제목 줄 + 보통 줄 (+ 이름표 띠는 그대로)
+    _even_bold(lines)
+    assert [x["bold"] for x in lines] == [True, False, False, True]
+    lines = [ln(0.16), ln(0.137), ln(0.193), ln(0.19)]  # 기본판 캐릭터 4쪽: 크기가 다른 굵은 줄들 -> 줄마다 (모두 굵게)
+    _even_bold(lines)
+    assert all(x["bold"] for x in lines)
+    lines = [ln(0.155), ln(0.16), ln(0.158)]  # 고르게 굵은 글씨
+    _even_bold(lines)
+    assert all(x["bold"] for x in lines)

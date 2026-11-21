@@ -663,6 +663,45 @@ def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_
     return None
 
 
+def number_in_box(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_chars: int) -> bool:
+    """사람이 잡은 상자가 옆 숫자까지 감쌌는가 (‘2 [[?]]’의 2를 상자 안에 넣음).
+    상자 안의 가장 큰 잉크 덩어리를 아이콘 몸통으로 보고, 몸통 옆(side)에 붙은 숫자를 scan처럼 찾아(absorb_number)
+    그 숫자가 상자 안에 반 넘게 들었으면 True. 숫자가 상자 밖이거나 찾지 못하면 False (숫자는 원문에 남는다)."""
+    import cv2
+
+    bx0, by0, bx1, by1 = (int(v) for v in box)
+    h = max(1, by1 - by0)
+    ink = _ink(img, h).astype(np.uint8)
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    best, best_a = None, 0
+    for i in range(1, n):
+        x, y, w, hh, a = (int(v) for v in st[i])
+        ox = max(0, min(x + w, bx1) - max(x, bx0))
+        oy = max(0, min(y + hh, by1) - max(y, by0))
+        if a < 6 or ox * oy < 0.8 * w * hh:  # 상자 안에 든 덩어리만
+            continue
+        if w * hh > best_a:
+            best, best_a = (x, y, x + w, y + hh), w * hh
+    if best is None:
+        return False
+    nb = absorb_number(img, best, side, n_chars)
+    if nb is None or tuple(nb) == best:
+        return False
+    # 숫자 글자 자체의 폭으로 잰다 (숫자와 아이콘 사이 빈 곳은 빼고: 빈 곳만 감싸도 숫자를 감싼 것으로 보지 않게)
+    g0, g1 = (nb[0], best[0]) if side == "before" else (best[2], nb[2])
+    xs = []
+    for i in range(1, n):
+        x, y, w, hh, a = (int(v) for v in st[i])
+        if a >= 6 and x >= g0 - 1 and x + w <= g1 + 1 and y + hh > nb[1] and y < nb[3]:
+            xs.append((x, x + w))
+    if not xs:
+        return False
+    d0, d1 = min(u for u, _ in xs), max(v for _, v in xs)
+    if d1 <= d0:
+        return False
+    return (max(0, min(d1, bx1) - max(d0, bx0)) / (d1 - d0)) >= 0.5
+
+
 def strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
     """text에서 (시작, 끝) 구간들을 뺀다 (아이콘에 넣은 숫자). 남는 겹 공백은 하나로."""
     for s, e in sorted(spans, reverse=True):
@@ -1208,9 +1247,15 @@ class Occurrence:
     added: bool = False  # 사람이 카드 보기에서 새로 그려 넣은 자리 (원문에 없던 아이콘)
 
     @property
+    def num_in_image(self) -> bool:
+        """옆 숫자가 아이콘 그림에 들어 있다 (확정할 때 원문에서 뺀다). 손으로 잡은 자리는 숫자를 원문에 남기지만,
+        잡은 상자가 그 숫자까지 감쌌으면(number["boxed"]) 그림에 든 것으로 본다 (예: ‘2 [[?]]’의 2가 아이콘 그림 안)."""
+        return bool(self.number) and (not self.manual or bool(self.number.get("boxed")))
+
+    @property
     def num(self) -> str:
-        """묶기·사전 비교에 쓰는 숫자: 손으로 잡은 자리는 숫자를 원문에 남기므로 ""."""
-        return "" if self.manual else num_key((self.number or {}).get("text"))
+        """묶기·사전 비교에 쓰는 숫자: 그림에 들지 않은 숫자(손으로 잡은 자리가 감싸지 않음)는 ""."""
+        return num_key((self.number or {}).get("text")) if self.num_in_image else ""
 
 
 @dataclass
@@ -1594,7 +1639,7 @@ def load_scan(work: Path) -> ScanResult:
     for o in data["occurrences"]:
         oc = Occurrence(**{k: v for k, v in o.items() if k in keys})
         if isinstance(oc.number, dict):  # 1.12.0 scan.json의 start·end는 쓰지 않는다
-            oc.number = {k: oc.number[k] for k in ("text", "side") if k in oc.number}
+            oc.number = {k: oc.number[k] for k in ("text", "side", "boxed") if k in oc.number}
         else:
             oc.number = {}
         occ.append(oc)

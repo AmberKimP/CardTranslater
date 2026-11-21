@@ -213,7 +213,8 @@ def erase_project(project_dir: Path | str, group: str | None = None, *, redo: bo
     return out
 
 
-def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=(), keep_lines: dict | None = None) -> str:
+def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=(), keep_lines: dict | None = None,
+              icon_boxes: dict | None = None) -> str:
     """지운 결과가 무엇으로 만들어졌나 (원문·그 쪽 영역 설정·카드별 지우기 방식·‘번역 안 함’ 칸·아이콘 문단만 남길 칸).
     바뀌면 다시 지워야 한다."""
     import hashlib
@@ -228,6 +229,10 @@ def erase_sig(project, page: int, sources: dict, modes: dict | None, kept=(), ke
         d["icon_only"] = skip
     if keep_lines:  # 아이콘 문단만 원본 그대로 둘 칸 (없으면 서명이 예전 그대로: 이미 지운 쪽을 괜히 다시 지우지 않는다)
         d["keep_lines"] = keep_lines
+    if icon_boxes:  # 사람이 확정한 아이콘 자리 (1.29.0부터 지우기에 쓴다: 있는 쪽은 다시 지운다). 정수 pt로
+        # (쪽 크기를 메타에서 읽어 다시 셀 때 소수점 끝자리가 달라져도 서명이 같게)
+        d["icon_boxes"] = {rn: [[nm, k, [round(float(c)) for c in b]] for nm, k, b in v]
+                           for rn, v in sorted(icon_boxes.items())}
     blob = json.dumps(d, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -384,7 +389,13 @@ def stale_erased_pages(file_dir: Path | str) -> list[int]:
             continue
         srcs, kept = erase_sources(extracted.get(pno))
         try:
-            now = erase_sig(project, pno, srcs, modes.get(str(pno)), kept, erase_keep_lines(extracted.get(pno)))
+            conf = {}
+            if m.get("page_rect_pt"):
+                import pymupdf
+
+                conf = erase_icon_boxes(extracted.get(pno), pymupdf.Rect(m["page_rect_pt"]),
+                                        project.template.regions_for(pno))
+            now = erase_sig(project, pno, srcs, modes.get(str(pno)), kept, erase_keep_lines(extracted.get(pno)), conf)
         except Exception:  # noqa: BLE001 - 그 쪽 영역이 없어짐 등
             continue
         if now != sig:
@@ -730,3 +741,49 @@ def _compose_with_cards(fd: Path, cards: dict, progress, cancel) -> _erase_compo
                         reused_pages=rep.get("reused_pages", []), composed_pages=rep.get("composed_pages", []))
     _attach_sheet_images(fd, final_dir, res, progress or _base._noop)
     return res
+
+
+def erase_icon_boxes(regions: dict | None, page_rect, template_regions) -> dict[str, list]:
+    """쪽의 추출 결과 -> 지우기에 넘길 사람이 확정한 아이콘 자리 {칸: [(이름, 같은 이름의 몇째, 원본 쪽 pt 상자)]}.
+    ② 원문 확인에서 확정한 자리(icon_boxes, 영역 그림 px)를 pt로 바꾼다. 상자 순서가 원문 순서와 어긋난 칸(위아래
+    아이콘을 엇갈려 잡음)의 그 자리들은 넘기지 않는다: 그대로 쓰면 엉뚱한 아이콘을 지운다 (② 원문 확인이 ‘볼 것’으로 알린다)."""
+    from app.icons import TOKEN_RE, region_box_to_pt
+
+    by_name = {r.name: r for r in template_regions}
+    out: dict[str, list] = {}
+    for name, v in (regions or {}).items():
+        src, boxes, reg = (v or {}).get("source"), (v or {}).get("icon_boxes"), by_name.get(name)
+        if not isinstance(src, str) or not boxes or reg is None:
+            continue
+        pos: dict[tuple, tuple] = {}  # (이름, 몇째) -> (원문 줄, 그 줄의 몇째)
+        seen: dict[str, int] = {}
+        for li, line in enumerate(x for x in src.splitlines() if x.strip()):
+            for oi, t in enumerate(TOKEN_RE.finditer(line)):
+                k = seen.get(t.group(1), 0)
+                seen[t.group(1)] = k + 1
+                pos[(t.group(1), k)] = (li, oi)
+        items = [(e["name"], int(e.get("k", 0)), e["box"]) for e in boxes
+                 if isinstance(e, dict) and (e.get("name"), int(e.get("k", 0))) in pos and len(e.get("box") or []) == 4]
+        bad = _out_of_order(items, pos)
+        items = [it for it in items if (it[0], it[1]) not in bad]  # 엇갈린 자리만 빼고 (8쪽 house는 쓴다)
+        if not items:
+            continue
+        conv = [(nm, k, region_box_to_pt(page_rect, reg, box)) for nm, k, box in items]
+        conv = [(nm, k, b) for nm, k, b in conv if b is not None]
+        if conv:
+            out[name] = conv
+    return out
+
+
+def _out_of_order(items: list, pos: dict, tol: float = 2.0) -> set:
+    """확정한 상자 순서가 원문 순서와 어긋나는 자리들 {(이름, 몇째)} (원문 앞 줄 아이콘이 뒤 줄 아이콘보다 완전히 아래,
+    같은 줄 앞 아이콘이 완전히 오른쪽이면 두 자리 모두 — icons.order_conflicts와 같은 규칙)."""
+    bad: set = set()
+    for i, (na, ka, ba) in enumerate(items):
+        for nb, kb, bb in items[i + 1:]:
+            (a, ab), (b, bbx) = sorted([(pos[(na, ka)], ba), (pos[(nb, kb)], bb)])
+            if a == b:
+                continue
+            if (ab[1] >= bbx[3] - tol) if a[0] != b[0] else (ab[0] >= bbx[2] - tol):
+                bad |= {(na, ka), (nb, kb)}
+    return bad

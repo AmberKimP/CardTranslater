@@ -33,11 +33,12 @@ def test_first_opus_hidden_when_opus_reread(tmp_path):
 
 
 def test_first_opus_kept_when_only_sonnet_reread(tmp_path):
+    # 보통 읽기로 다시 읽으면 처음 보통 읽기는 숨긴다 (1.29.0: 표에 ‘보통 읽기’가 두 번 보였다). 처음 정밀 읽기는 남는다
     info, fd = _project(tmp_path, "keep", pages=1)
     _set_cell(fd, 1, "본문", readings=[{"model": "claude-sonnet-5-5", "source": "S"},
                                       {"model": "claude-opus-5-5", "source": "O1"}],
               rereads=[{"model": "claude-sonnet-5-5", "source": "S2"}])
-    assert [r["source"] for r in _cell(fd)["readings"]] == ["S", "O1", "S2"]
+    assert [r["source"] for r in _cell(fd)["readings"]] == ["O1", "S2"]
 
 
 # ---------------------------------------------------------------- ‘아이콘 아님’으로 뺀 자리는 [[?]]로 되살아나지 않는다

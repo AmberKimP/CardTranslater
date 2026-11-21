@@ -45,11 +45,9 @@ def _region(info, files, page, region="본문"):
                 for r in c["regions"] if r["region"] == region)
 
 
-def _type_name(qapp, v, name, ko=""):
+def _type_name(qapp, v, name):
     row = v.icon_list.itemWidget(v.icon_list.item(0))
     row.name.setText(name)
-    if ko:
-        row.ko.setText(ko)
     QTest.keyClick(row.name, Qt.Key.Key_Return)
     QTest.qWait(30)  # 줄 다시 그리기는 이벤트 루프에서
 
@@ -104,7 +102,7 @@ def test_confirm_writes_source_emits_and_moves_to_next_problem(qapp, tmp_path):
     v.same_shape.setChecked(False)
     got = []
     v.confirmed.connect(got.append)
-    _type_name(qapp, v, "lily", ko="백합")
+    _type_name(qapp, v, "lily")  # 한국어 이름 칸은 없다
     v.confirm_btn.click()
     assert _source(fd, 1) == "AB[[lily]]CD"
     assert len(got) == 1 and got[0]["state"] == "confirmed"
@@ -384,7 +382,7 @@ def test_reread_with_only_icon_layout_difference_keeps_source(qapp, tmp_path, mo
     service.set_icon_box(info.dir, o["occ"], occ.box)  # 사람이 자리를 잡은 영역
     v._fetch()
     v._show_region(v.key)
-    _type_name(qapp, v, "lily", "백합")
+    _type_name(qapp, v, "lily")
     before = v.edit.toPlainText()
     monkeypatch.setattr(service, "engine_status", lambda: {"api": True, "claude-code": True, "message": ""})
 
@@ -450,4 +448,125 @@ def test_background_reread_does_not_wipe_a_drawn_box(qapp, tmp_path):
     v.view.new = None
     v._refresh_when_idle()
     assert calls == [1]
+    v.close()
+
+
+def _view_with_marks(qapp):
+    from PySide6.QtGui import QColor
+    from app.qt.icon_place import IconPlaceView
+
+    view = IconPlaceView()
+    view.resize(400, 300)
+    pm = QPixmap(200, 150)
+    pm.fill(QColor("white"))
+    marks = [([10, 10, 40, 40], "[[a]]", False, False, False, "o1"),
+             ([120, 60, 160, 100], "[[b]]", False, False, False, "o2")]
+    view.set_data(pm, [60, 60, 100, 100], None, marks)
+    view.show()
+    return view
+
+
+def _at(view, x, y):
+    """그림 좌표 -> 화면 점."""
+    s, ox, oy = view._geom()
+    return QPointF(ox + x * s, oy + y * s).toPoint()
+
+
+def test_drawing_new_box_hides_other_boxes(qapp):
+    view = _view_with_marks(qapp)
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=_at(view, 5, 110))
+    QTest.mouseMove(view, _at(view, 50, 140))
+    assert view.drawing() and view.new is not None  # 끄는 동안: 새 상자만 그린다 (paintEvent가 drawing()으로 가린다)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=_at(view, 50, 140))
+    assert not view.drawing() and view.new is not None
+    view.close()
+
+
+def test_drag_box_edge_resizes_into_new_box(qapp):
+    view = _view_with_marks(qapp)
+    got = []
+    view.drawn.connect(lambda: got.append(1))
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=_at(view, 100, 80))  # 지금 자리의 오른쪽 변
+    QTest.mouseMove(view, _at(view, 115, 80))
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=_at(view, 115, 80))
+    assert view.new is not None and abs(view.new[2] - 115) < 2 and abs(view.new[0] - 60) < 1
+    assert got  # 화면이 ‘이 자리로 저장’을 켠다
+    view.close()
+
+
+def test_click_on_other_icon_box_picks_it(qapp):
+    view = _view_with_marks(qapp)
+    got = []
+    view.picked.connect(got.append)
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_at(view, 140, 80))
+    assert got == ["o2"] and view.new is None
+    view.close()
+
+
+def test_wheel_zoom_and_fit(qapp):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QWheelEvent
+
+    view = _view_with_marks(qapp)
+    p = _at(view, 80, 80)
+    ev = QWheelEvent(QPointF(p), QPointF(view.mapToGlobal(p)), QPoint(0, 0), QPoint(0, 120),
+                     Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(view, ev)
+    assert view.zoom > 1.0
+    assert abs(view._to_img_raw(QPointF(p))[0] - 80) < 1  # 마우스 자리의 그림 점은 그대로
+    view.fit()
+    assert view.zoom == 1.0 and view._pan == [0.0, 0.0]
+    view.close()
+
+
+def test_moving_to_another_region_fits_the_picture(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path)
+    v.view.zoom_by(2.0)
+    assert v.view.zoom > 1.0 and v.zoom_label.text() == "200%"
+    v._reload()  # 같은 영역을 다시 그리면 확대 그대로
+    assert v.view.zoom > 1.0
+    v._go("next_card")
+    assert v.view.zoom == 1.0 and v.zoom_label.text() == "100%"
+    v.close()
+
+
+def test_icon_row_has_no_korean_name_field(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path)
+    row = v.icon_list.itemWidget(v.icon_list.item(0))
+    assert not hasattr(row, "ko")
+    v.close()
+
+
+def test_cursor_left_in_name_field_does_not_block_background_refresh(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path, name="idle")
+    v.show()
+    QTest.qWaitForWindowExposed(v)
+    row = v.icon_list.itemWidget(v.icon_list.item(0))
+    row.name.setFocus()
+    QTest.qWait(20)
+    assert v._idle()  # 커서만 있음: 다시 그려도 된다
+    QTest.keyClicks(row.name, "x")
+    assert not v._idle()  # 적는 중
+    v.close()
+
+
+def test_reread_rows_are_labelled_and_replace_the_same_reader(qapp, tmp_path):
+    import json
+
+    from app.extract import page_file
+
+    info, fd, files, v = _viewer(qapp, tmp_path, name="lbl")
+    f = page_file(fd / "extract", 1)
+    f = f if f.exists() else fd / "extract" / "page-001.json"
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    cell = rec["regions"]["본문"]
+    cell["readings"] = [{"model": "claude-sonnet-5-5", "source": "AB[[?]]CD"},
+                        {"model": "claude-opus-5-5", "source": "AB[[?]]CD"}]
+    cell["rereads"] = [{"model": "claude-sonnet-5-5", "source": "AB[[?]]C"}]
+    f.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    reg = _region(info, files, 1)
+    assert [(r["model"], r["reread"]) for r in reg["readings"]] == [("Opus", False), ("Sonnet", True)]
+    v._reload()
+    names = [h.text() for h, _v in v.readings._rows]
+    assert names == ["정밀 읽기", "보통 읽기 · 다시 읽음"]
     v.close()

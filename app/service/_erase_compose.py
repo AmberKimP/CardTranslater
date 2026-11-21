@@ -198,7 +198,11 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         tpl = project.template.for_page(pno)
         skip = _translate_erase.icon_only_regions(srcs, kept)
         keep_lines = _translate_erase.erase_keep_lines(extracted.get(pno))
-        sig = _translate_erase.erase_sig(project, pno, srcs, card_modes.get(str(pno)), kept, keep_lines)
+        try:  # ② 원문 확인에서 확정한 아이콘 자리 (찾기가 못 찾은 아이콘도 지운다)
+            conf_boxes = _translate_erase.erase_icon_boxes(extracted.get(pno), out_doc[i].rect, tpl.regions)
+        except Exception:  # noqa: BLE001 - 없어도 지우기는 한다 (예전처럼 찾기만)
+            conf_boxes = {}
+        sig = _translate_erase.erase_sig(project, pno, srcs, card_modes.get(str(pno)), kept, keep_lines, conf_boxes)
         whole: list[str] = []
         if keep_lines:
             # 아이콘 문단만 남길 칸은 글자 모양만 지우는 방식에서만 줄을 골라 남길 수 있다. 영역을 통째로 지우는 방식
@@ -217,7 +221,7 @@ def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[l
         with applog.context(프로젝트=project.root.name, 쪽=pno):
             r = erase_page(out_doc[i], tpl, project.samples.get(pno), seed=pno,
                            modes=card_modes.get(str(pno)), sources=srcs, icon_templates=templates,
-                           keep_lines=keep_lines)
+                           keep_lines=keep_lines, icon_boxes=conf_boxes)
         if skip:
             r.meta["icon_only_regions"] = skip
         if whole:  # 결과 보기에서 알린다 (아이콘 문단만 남기려 했는데 칸 전체가 원본 그대로)

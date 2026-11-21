@@ -146,7 +146,8 @@ class CardMap(QWidget):
 
 # ================================================================ 아이콘 목록의 한 줄
 class IconRow(QFrame):
-    """아이콘 한 줄: 그림 · 이름 칸 · 한국어 이름 · 상태. 이름·한국어 이름은 Enter·포커스를 옮길 때 edited(자리 id, 이름, 한국어 이름)."""
+    """아이콘 한 줄: 그림 · 이름 칸 · 상태. 이름은 Enter·포커스를 옮길 때 edited(자리 id, 이름, 한국어 이름).
+    한국어 이름은 카드 보기에서 적지 않는다 (사용자 요청): 있던 값을 그대로 넘긴다."""
 
     edited = Signal(str, str, str)
     focused = Signal(str)
@@ -178,11 +179,6 @@ class IconRow(QFrame):
         comp = QCompleter(names, self.name)
         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.name.setCompleter(comp)
-        self.ko = QLineEdit(e["ko"])
-        self.ko.setPlaceholderText("한국어 이름")
-        self.ko.setEnabled(editable)
-        self.ko.setMinimumWidth(80)
-        self.ko.setMinimumHeight(28)
         tag = ENTRY_TEXT.get(e["state"], e["state"]) + (" · 확정 전" if e["pending"] else "")
         self.tag = QLabel(tag)
         self.tag.setStyleSheet("color: #6E6E73;")
@@ -192,13 +188,10 @@ class IconRow(QFrame):
         lay.setVerticalSpacing(4)
         lay.addWidget(self.img, 0, 0, 2, 1)
         lay.addWidget(self.name, 0, 1)
-        lay.addWidget(self.ko, 0, 2)
-        lay.addWidget(self.tag, 1, 1, 1, 2)
-        lay.setColumnStretch(1, 3)
-        lay.setColumnStretch(2, 2)
-        for w in (self.name, self.ko):
-            w.editingFinished.connect(self._done)
-            w.installEventFilter(self)
+        lay.addWidget(self.tag, 1, 1)
+        lay.setColumnStretch(1, 1)
+        self.name.editingFinished.connect(self._done)
+        self.name.installEventFilter(self)
 
     def set_current(self, on: bool) -> None:
         self.setStyleSheet(f"QFrame#iconrow {{ background: {self._bg}; border-radius: 6px;"
@@ -210,7 +203,8 @@ class IconRow(QFrame):
         return super().eventFilter(obj, ev)
 
     def _done(self) -> None:
-        self.edited.emit(self.occ, self.name.text().strip(), self.ko.text().strip())
+        self.name.setModified(False)  # 적기를 마침 (카드 보기가 ‘이름을 적는 중’으로 보지 않게)
+        self.edited.emit(self.occ, self.name.text().strip(), "")
 
 
 # ================================================================ 읽은 결과 표
@@ -300,6 +294,7 @@ class CardViewer(QDialog):
         self._run_host: str | None = None
         self._region_mode = "cell"
         self._pending_reload = False
+        self._shown_key: tuple | None = None
         self._build()
         self._fetch()
         self._show_region(self._initial_key(start))
@@ -346,19 +341,44 @@ class CardViewer(QDialog):
         # 영역 그림
         self.view = IconPlaceView()
         self.view.drawn.connect(self._drawn)
+        self.view.picked.connect(self._pick_icon)
+        self.view.zoomed.connect(self._zoomed)
         self.view_hint = QLabel('<span style="color:#2E8B57">■</span> 찾은 아이콘 &nbsp; '
                                 '<span style="color:#1F6FEB">■</span> 고른 아이콘 &nbsp; '
                                 '<span style="color:#E67E22">■</span> 예상 위치 &nbsp; '
                                 '<span style="color:#D62828">■</span> 새로 잡은 자리 &nbsp; '
-                                '<span style="color:#8A8A8A">■</span> 아이콘 아님·포함 &nbsp;&nbsp; '
-                                '아이콘을 끌어 감싸면 새 자리가 됩니다')
+                                '<span style="color:#8A8A8A">■</span> 아이콘 아님·포함')
         self.view_hint.setStyleSheet("color: #6E6E73;")
+        self.view_hint.setToolTip("빈 곳을 끌어 감싸면 새 자리 · 상자 테두리·모서리를 끌면 크기 바꾸기 · 아이콘 상자를 누르면 그 아이콘 고르기\n"
+                                  "휠: 확대·축소 · 확대한 뒤 오른쪽(가운데) 단추로 끌면 옮기기")
+        self.zoom_out_btn = QPushButton("－")
+        self.zoom_in_btn = QPushButton("＋")
+        self.fit_btn = QPushButton("화면 맞춤")
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setStyleSheet("color: #6E6E73;")
+        self.zoom_label.setMinimumWidth(44)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.zoom_out_btn.setToolTip("축소 (휠을 아래로)")
+        self.zoom_in_btn.setToolTip("확대 (휠을 위로: 마우스가 있는 곳을 크게)")
+        self.fit_btn.setToolTip("그림 전체가 보이게 (영역을 옮기면 늘 화면 맞춤으로 엽니다)")
+        for b in (self.zoom_out_btn, self.zoom_in_btn):
+            b.setFixedWidth(30)
+        self.zoom_out_btn.clicked.connect(lambda: self.view.zoom_by(0.8))
+        self.zoom_in_btn.clicked.connect(lambda: self.view.zoom_by(1.25))
+        self.fit_btn.clicked.connect(self.view.fit)
+        view_tools = QHBoxLayout()
+        view_tools.setSpacing(4)
+        view_tools.addWidget(self.view_hint, 1)
+        view_tools.addWidget(self.zoom_label)
+        view_tools.addWidget(self.zoom_out_btn)
+        view_tools.addWidget(self.zoom_in_btn)
+        view_tools.addWidget(self.fit_btn)
         view_box = QWidget()
         vl = QVBoxLayout(view_box)
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(4)
         vl.addWidget(self.view, 1)
-        vl.addWidget(self.view_hint)
+        vl.addLayout(view_tools)
         # 아이콘 칸
         self.icon_list = QListWidget()
         self.icon_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -527,7 +547,7 @@ class CardViewer(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(body)
         for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn,
-                  self.absorb_btn, self.overlap_btn):
+                  self.absorb_btn, self.overlap_btn, self.zoom_in_btn, self.zoom_out_btn, self.fit_btn):
             b.setAutoDefault(False)
         for keys, fn in (("Ctrl+Return", self._confirm_next), ("Ctrl+Enter", self._confirm_next),
                          ("Alt+Down", lambda: self._go("next")), ("Alt+Up", lambda: self._go("prev"))):
@@ -606,6 +626,9 @@ class CardViewer(QDialog):
             self.card_map.set_data(QPixmap(), {}, {}, "")
             self._update_buttons()
             return
+        if self._shown_key is None or _nk(key) != self._shown_key:  # 다른 영역: 그림은 화면 맞춤으로 연다
+            self._shown_key = _nk(key)
+            self.view.fit()
         fd, page = card["file_dir"], card["page"]
         self.setWindowTitle(f"카드 보기 — {file_label(card['file_key'])} · {page}쪽")
         self.title.setText(f"{file_label(card['file_key'])} · {page}쪽")
@@ -750,7 +773,8 @@ class CardViewer(QDialog):
         src = as_text(c["source"])
         removed = c.get("icon_removed")
         known = set(self._known)
-        texts = [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known,
+        # ‘이 영역 다시 읽기’ 결과는 같은 방식의 처음 결과와 이름이 겹치지 않게 ‘· 다시 읽음’을 붙인다
+        texts = [(reader_name(rd["model"]) + (" · 다시 읽음" if rd.get("reread") else ""), fill_icon_names(as_text(rd["source"]), src, known,
                                                             None if removed is None else bool(removed)))
                  for rd in c["readings"]]
         pi = precise_index(c["readings"])
@@ -920,6 +944,23 @@ class CardViewer(QDialog):
 
     def _drawn(self) -> None:
         self._icon_tools()
+        if self.view.new is not None and self.save_btn.isEnabled():
+            self._flash("새 자리를 잡았습니다. ‘이 자리로 저장’을 누르면 저장됩니다"
+                        + (" (원문에 빠진 아이콘이면 ‘아이콘 추가’)" if self.add_btn.isEnabled() else ""))
+
+    def _pick_icon(self, occ: str) -> None:
+        """그림에서 다른 아이콘 상자를 눌렀다: 목록에서 그 아이콘을 고른다 (그 상자의 테두리를 끌어 크기를 바꿀 수 있게)."""
+        for i in range(self.icon_list.count()):
+            it = self.icon_list.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) == occ:
+                self.icon_list.clearSelection()
+                it.setSelected(True)
+                self.icon_list.setCurrentItem(it)
+                self.icon_list.scrollToItem(it)
+                return
+
+    def _zoomed(self, z: float) -> None:
+        self.zoom_label.setText(f"{round(z * 100)}%")
 
     def _guard(self) -> bool:
         """원문 칸을 고쳐 둔 채 아이콘을 바꾸면 원문 칸을 새로 채우므로 먼저 묻는다."""
@@ -954,6 +995,8 @@ class CardViewer(QDialog):
                 v = {"group": x["group"], "name": name}
                 if ko:
                     v["ko"] = ko
+                elif name not in self._known:
+                    v["ko"] = ""  # 새 이름: 예전 이름의 한국어 이름을 끌고 가지 않는다 (카드 보기에는 한국어 이름 칸이 없다)
                 rows.append(v)
         try:
             service.stage_icon_names(self.project_dir, rows)
@@ -1004,10 +1047,11 @@ class CardViewer(QDialog):
         from PySide6.QtWidgets import QApplication, QLineEdit
 
         fw = QApplication.focusWidget()
-        typing = isinstance(fw, QLineEdit) and self.icon_list.isAncestorOf(fw)
+        # 이름 칸에 커서만 있는 것은 적는 중이 아니다 (Enter 뒤에도 커서가 남아 다시 그리기가 끝없이 미뤄졌다)
+        typing = isinstance(fw, QLineEdit) and self.icon_list.isAncestorOf(fw) and fw.isModified()
         editing = self.edit.hasFocus() and self._dirty()  # 원문 칸을 고치는 중 (다시 그리면 커서가 맨 앞으로 간다)
-        return not (self._busy_depth or self._rereading or self._loading or self.view.new is not None or typing
-                    or editing)
+        return not (self._busy_depth or self._rereading or self._loading or self.view.new is not None
+                    or self.view.drawing() or typing or editing)
 
     def _refresh_when_idle(self) -> None:
         try:
@@ -1015,6 +1059,7 @@ class CardViewer(QDialog):
                 return
             if self._idle():
                 self.refresh()
+                self._flash("뒤에서 다시 읽기가 끝나 읽은 결과를 새로 보입니다")
             else:
                 QTimer.singleShot(1500, self, self._refresh_when_idle)
         except RuntimeError:  # 창이 지워짐
@@ -1173,7 +1218,33 @@ class CardViewer(QDialog):
                     service.absorb_icon_run(self.project_dir, e["occ"], r["run_unfound"])
                 except Exception as ex:  # noqa: BLE001
                     show_error(self, "아이콘을 합치지 못했습니다", ex)
-        self._suggest_then(e["occ"], "자리를 저장했습니다. 확정하면 이 영역을 다시 읽습니다")
+        msg = "자리를 저장했습니다. 확정하면 이 영역을 다시 읽습니다"
+        if r.get("order_conflict"):
+            msg = self._ask_swap(e, r["order_conflict"][0]) or msg
+        if r.get("boxed_number"):
+            msg += f" (상자 안의 숫자 ‘{r['boxed_number']}’는 아이콘 그림이라 원문에서 뺍니다)"
+        self._suggest_then(e["occ"], msg)
+
+    def _ask_swap(self, e: dict, other: str) -> str:
+        """방금 잡은 상자가 원문 순서와 어긋난다 (원문에서 앞 아이콘인데 상자가 뒤 줄·오른쪽): 두 자리를 바꿀지 묻는다.
+        바꿨으면 알림 글, 아니면 ""."""
+        x = next((y for y in self._entries if y["occ"] == other), None)
+        nm = lambda y: f"[[{y['name']}]]" if y and y.get("name") else "다른 아이콘"  # noqa: E731
+        c = ask_choice(self, "아이콘 순서 확인",
+                       f"방금 잡은 자리와 {nm(x)}의 자리가 원문 순서와 반대입니다.\n"
+                       "원문에서 앞(위 줄·왼쪽)에 있는 아이콘의 상자가 뒤쪽 아이콘의 상자보다 아래(오른쪽)에 있습니다.\n"
+                       "두 아이콘의 자리(그림)를 서로 바꿀까요?",
+                       [("자리 바꾸기", "accept"), ("그대로 두기", "reject")], default=0,
+                       informative="바꾸지 않으면 한글 넣기에서 아이콘 그림이 서로 엇갈려 들어갈 수 있습니다. "
+                                   "확정 전 이름도 그림을 따라 바뀝니다.")
+        if c != 0:
+            return ""
+        try:
+            service.swap_icon_boxes(self.project_dir, e["occ"], other)
+        except Exception as ex:  # noqa: BLE001
+            show_error(self, "자리를 바꾸지 못했습니다", ex)
+            return ""
+        return "두 아이콘의 자리를 원문 순서대로 바꿨습니다. 이름이 그림과 맞는지 확인하세요"
 
     def _suggest_then(self, occ: str, msg: str) -> None:
         """손으로 잡은 자리에 이름이 없으면 Claude에게 이름·한국어 이름을 제안 받아 이름 칸에 채운 뒤 다시 그린다

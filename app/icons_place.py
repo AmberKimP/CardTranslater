@@ -218,6 +218,8 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     _ic.save_png(rgba, png)
     had_picture = bool(o.png)
     o.png, o.box, o.manual, o.reason = str(png), [x0, y0, x1, y1], True, ""
+    o.number = _boxed_number(img, _text, o, (x0, y0, x1, y1)) or {k: v for k, v in (o.number or {}).items()
+                                                                  if k != "boxed"}
     o.set_of, o.set_name = "", ""  # 사람이 따로 잡았으면 이 자리는 더는 다른 아이콘의 세트 조각이 아니다
     for x in res.occurrences:  # 이 자리를 다시 잡으면 합친 세트를 푼다 (합칠지는 저장할 때 다시 묻는다)
         if x.set_of == o.id:
@@ -247,7 +249,88 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
         gi.pop("dict_how", None)
     _ic._save_scan(work, res)
     return {"group": g, "old": g, "old_gone": False, "new_group": not had_picture, "dict": match,
-            "box": [x0, y0, x1, y1]}
+            "order_conflict": order_conflicts(res, o),
+            "box": [x0, y0, x1, y1],
+            # 상자가 감싼 옆 숫자 (확정할 때 원문에서 뺀다): 화면이 알린다
+            "boxed_number": (o.number or {}).get("text", "") if (o.number or {}).get("boxed") else ""}
+
+
+ORDER_TOL = 2  # 상자 순서를 볼 때 겹침으로 봐 주는 px
+
+
+def order_conflicts(res: "ScanResult", o: "Occurrence") -> list[str]:
+    """같은 칸의 다른 자리 중 o와 상자 순서가 원문 순서와 어긋나는 자리 id들.
+    원문에서 o가 앞 줄인데 상자는 그 자리보다 완전히 아래(또는 같은 줄에서 앞인데 완전히 오른쪽)면 어긋남.
+    위아래로 붙은 두 아이콘을 따로 잡을 때 줄을 바꿔 골라 그림과 이름이 엇갈리던 것 (5쪽 톱니·코인)."""
+    if not o.box or len(o.box) != 4 or not o.line:
+        return []
+    out = []
+    for x in res.occurrences:
+        if x is o or (x.file, x.page, x.region) != (o.file, o.page, o.region) or not x.box or len(x.box) != 4:
+            continue
+        gi = res.groups.get(x.group, {})
+        if not x.line or x.set_of or gi.get("not_icon") or gi.get("absorbed"):
+            continue
+        a, b = (o, x) if (o.line, o.order) < (x.line, x.order) else (x, o)  # a가 원문에서 앞
+        if (a.line, a.order) == (b.line, b.order):
+            continue
+        if a.line != b.line:
+            bad = a.box[1] >= b.box[3] - ORDER_TOL  # 앞 줄 아이콘의 상자가 뒤 줄 아이콘의 상자보다 완전히 아래
+        else:
+            bad = a.box[0] >= b.box[2] - ORDER_TOL  # 같은 줄: 앞 아이콘의 상자가 완전히 오른쪽
+        if bad:
+            out.append(x.id)
+    return out
+
+
+def swap_boxes(info, work: Path, a_id: str, b_id: str) -> dict:
+    """같은 칸의 두 자리의 상자(그림)를 서로 바꾼다. 확정 전 이름(staged)도 그림을 따라 바꾼다 (이름은 그림의 이름이다).
+    돌려줌 {"a": set_manual_box 결과, "b": 결과}."""
+    work = Path(work)
+    res = _ic.load_scan(work)
+    a = next(x for x in res.occurrences if x.id == a_id)
+    b = next(x for x in res.occurrences if x.id == b_id)
+    if (a.file, a.page, a.region) != (b.file, b.page, b.region):
+        raise ValueError("같은 영역의 아이콘끼리만 자리를 바꿀 수 있습니다")
+    if not a.box or not b.box:
+        raise ValueError("두 아이콘 모두 자리가 있어야 바꿀 수 있습니다")
+    box_a, box_b = list(a.box), list(b.box)
+    st_a = (res.groups.get(a.group) or {}).get("staged")
+    st_b = (res.groups.get(b.group) or {}).get("staged")
+    ra = set_manual_box(info, work, a_id, box_b)
+    rb = set_manual_box(info, work, b_id, box_a)
+    res = _ic.load_scan(work)
+    ga = next(x for x in res.occurrences if x.id == a_id).group
+    gb = next(x for x in res.occurrences if x.id == b_id).group
+    for g, st in ((ga, st_b), (gb, st_a)):
+        gi = res.groups.setdefault(g, {"count": 1})
+        if st:
+            gi["staged"] = st
+        else:
+            gi.pop("staged", None)
+    _ic._save_scan(work, res)
+    return {"a": ra, "b": rb}
+
+
+def _boxed_number(img: np.ndarray, text: str, o: "Occurrence", box) -> dict | None:
+    """손으로 잡은 상자가 토큰 옆 숫자까지 감쌌으면 {"text", "side", "boxed": True} (확정할 때 원문에서 뺀다), 아니면 None.
+    예: 원문 ‘2 [[?]]’에서 2가 아이콘 그림 안에 인쇄돼 있어 사람이 2까지 감쌈."""
+    toks = list(_ic.TOKEN_RE.finditer(text or ""))
+    # 이름 없는 자리는 index(몇째 [[?]])가 기준이다 (_insert_token도 index로 ti를 다시 정한다). 없으면 ti
+    ph = [m for m in toks if m.group(1) == "?"]
+    t = ph[o.index] if 0 <= o.index < len(ph) else None
+    if t is None and 0 <= o.ti < len(toks) and toks[o.ti].group(1) == "?":
+        t = toks[o.ti]
+    if t is None:
+        return None
+    num = _ic.number_near(text, t.start(), t.end())
+    if num is None:
+        return None
+    try:
+        inside = _ic.number_in_box(img, tuple(int(v) for v in box), num[0], num[2] - num[1])
+    except Exception:  # noqa: BLE001 - 검사를 못 하면 숫자는 원문에 남긴다
+        return None
+    return {"text": text[num[1]:num[2]], "side": num[0], "boxed": True} if inside else None
 
 
 def open_named(info, res: "ScanResult", o: "Occurrence") -> None:

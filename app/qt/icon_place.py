@@ -1,10 +1,10 @@
-"""② 원문 확인 카드 보기가 쓰는 아이콘 자리 그림(IconPlaceView)과 조작 중 창 잠금(busy)."""
+"""② 원문 확인 카드 보기가 쓰는 아이콘 자리 그림(IconPlaceView: 확대·크기 바꾸기)과 조작 중 창 잠금(busy)."""
 
 from __future__ import annotations
 
 import functools
 import inspect
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -46,44 +46,101 @@ def busy(fn):
     return run
 
 
-# ================================================================ 아이콘 이름
+# ================================================================ 아이콘 자리 그림
+EDGE_PX = 7  # 상자 테두리를 잡는 너비 (화면 px)
+MAX_ZOOM = 12.0
+
+
 class IconPlaceView(QWidget):
     """카드 영역 그림 위에 아이콘 자리를 보여 주고, 마우스로 끌어 새 자리를 잡는다.
 
     초록 = 같은 칸에서 이미 찾은 아이콘, 파랑 = 이 아이콘의 지금 자리, 주황 점선 = 예상 위치(못 찾았을 때),
-    빨강 = 사람이 새로 잡은 자리. 좌표는 모두 그림 px."""
+    빨강 = 사람이 새로 잡은 자리. 좌표는 모두 그림 px.
+    - 빈 곳에서 끌면 새 자리. 끄는 동안은 다른 상자를 숨긴다 (새 상자가 가려지지 않게).
+    - 지금 자리(파랑)·새 자리(빨강)의 테두리·모서리를 끌면 크기를 바꾼다 (결과는 새 자리).
+    - 다른 아이콘 상자를 누르면(끌지 않고) picked(자리 id).
+    - 휠: 마우스 자리를 중심으로 확대·축소. 가운데·오른쪽 단추로 끌면 옮긴다. 처음은 화면 맞춤 (fit)."""
 
     drawn = Signal()
+    picked = Signal(str)
+    zoomed = Signal(float)
 
     def __init__(self):
         super().__init__()
         self._pm = QPixmap()
-        self.marks: list[tuple[list, str]] = []
+        self.marks: list[tuple] = []
         self.box = self.guess = self.new = None
-        self._drag = None
+        self._drag = None  # ("new", 시작점) | ("resize", 잡은 변들, 처음 상자) | ("pan", 시작 화면점, 처음 이동)
+        self._drag_btn = None  # 끌기를 시작한 단추 (다른 단추를 떼어도 끝나지 않게)
+        self._press = None  # 누른 화면 자리 (끌지 않고 뗐는지 보려고)
+        self.zoom = 1.0
+        self._pan = [0.0, 0.0]
         self.setMinimumSize(300, 200)
         self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setMouseTracking(False)
+        self.setMouseTracking(True)
 
-    def set_data(self, pm: QPixmap, box, guess, marks: list[tuple[list, str]]):
+    def set_data(self, pm: QPixmap, box, guess, marks: list[tuple]):
+        resized = pm.size() != self._pm.size()
+        if resized:  # 다른 그림: 화면 맞춤으로
+            self.zoom, self._pan = 1.0, [0.0, 0.0]
         self._pm, self.box, self.guess, self.marks, self.new, self._drag = pm, box, guess, marks, None, None
+        self._drag_btn = None
         self.update()
+        if resized:
+            self.zoomed.emit(self.zoom)
+
+    # ------------------------------------------------------------ 확대
+    def fit(self) -> None:
+        """화면 맞춤 (확대 1배·가운데)."""
+        self.zoom, self._pan = 1.0, [0.0, 0.0]
+        self.update()
+        self.zoomed.emit(self.zoom)
+
+    def zoom_by(self, f: float, at=None) -> None:
+        """f배 확대·축소. at(화면 점)의 그림 자리가 그대로 있게 (없으면 가운데)."""
+        if self._pm.isNull():
+            return
+        at = at if at is not None else QPointF(self.width() / 2, self.height() / 2)
+        ix, iy = self._to_img_raw(at)
+        z = min(MAX_ZOOM, max(1.0, self.zoom * f))
+        if z == self.zoom:
+            return
+        self.zoom = z
+        if z == 1.0:
+            self._pan = [0.0, 0.0]
+        else:
+            s = self._base() * z
+            w, h = self._pm.width(), self._pm.height()
+            self._pan = [at.x() - ix * s - (self.width() - w * s) / 2, at.y() - iy * s - (self.height() - h * s) / 2]
+        self.update()
+        self.zoomed.emit(self.zoom)
+
+    def _base(self) -> float:
+        w, h = self._pm.width(), self._pm.height()
+        if not w or not h:
+            return 1.0
+        return max(1e-3, min((self.width() - 16) / w, (self.height() - 16) / h, 3.0))
 
     def _geom(self):
         w, h = self._pm.width(), self._pm.height()
         if not w or not h:
             return 1.0, 0.0, 0.0
-        s = min((self.width() - 16) / w, (self.height() - 16) / h, 3.0)
-        return s, (self.width() - w * s) / 2, (self.height() - h * s) / 2
+        s = self._base() * self.zoom
+        return s, (self.width() - w * s) / 2 + self._pan[0], (self.height() - h * s) / 2 + self._pan[1]
+
+    def _to_img_raw(self, p) -> tuple[float, float]:
+        s, ox, oy = self._geom()
+        return (p.x() - ox) / s, (p.y() - oy) / s
 
     def _to_img(self, p) -> tuple[float, float]:
-        s, ox, oy = self._geom()
-        return (min(max((p.x() - ox) / s, 0), self._pm.width()), min(max((p.y() - oy) / s, 0), self._pm.height()))
+        x, y = self._to_img_raw(p)
+        return min(max(x, 0), self._pm.width()), min(max(y, 0), self._pm.height())
 
     def _rect(self, b) -> QRectF:
         s, ox, oy = self._geom()
         return QRectF(ox + b[0] * s, oy + b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s)
 
+    # ------------------------------------------------------------ 그리기
     def paintEvent(self, _e):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#FAFAFA"))
@@ -96,7 +153,7 @@ class IconPlaceView(QWidget):
         f.setBold(True)
         p.setFont(f)
 
-        def frame(b, color, label="", dash=False, width=2):
+        def frame(b, color, label="", dash=False, width=2, handles=False):
             r = self._rect(b)
             pen = QPen(QColor(color), width)
             if dash:
@@ -104,6 +161,13 @@ class IconPlaceView(QWidget):
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(r)
+            if handles:  # 모서리 손잡이: 끌어 크기를 바꾼다
+                p.setPen(QPen(QColor(color), 1))
+                p.setBrush(QColor("white"))
+                for cx, cy in ((r.left(), r.top()), (r.right(), r.top()), (r.left(), r.bottom()),
+                               (r.right(), r.bottom())):
+                    p.drawRect(QRectF(cx - 4, cy - 4, 8, 8))
+                p.setBrush(Qt.BrushStyle.NoBrush)
             if label:
                 fm = p.fontMetrics()
                 tw, th = fm.horizontalAdvance(label) + 8, fm.height() + 2
@@ -112,41 +176,157 @@ class IconPlaceView(QWidget):
                 p.setPen(QColor("white"))
                 p.drawText(QRectF(r.left(), ty, tw, th), Qt.AlignmentFlag.AlignCenter, label)
 
-        for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가[, 아이콘 아님·합침으로 정했나[, 목록에서 고름]]])
-            if len(rest) > 2 and rest[2]:  # 목록에서 고른 자리: 보라 굵은 테두리
-                frame(b, "#7B2CBF", label, dash=bool(rest[0] or rest[1]), width=3)
-            elif len(rest) > 1 and rest[1]:  # 아이콘 아님·옆에 합친 자리: 정해진 것이라 회색 점선 (어디였는지만)
-                frame(b, "#8A8A8A", label, dash=True, width=1)
-            elif rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
-                frame(b, "#9A6A00", label, dash=True)
-            else:
-                frame(b, "#2E8B57", label)
-        if self.guess and not self.new:
-            frame(self.guess, "#E67E22", "예상 위치", dash=True)
-        if self.box:
-            frame(self.box, "#1F6FEB", "지금 자리", width=3 if not self.new else 2)
+        drawing = self.drawing()
+        if not drawing:  # 새 자리를 그리거나 크기를 바꾸는 동안은 그 상자만 (다른 상자에 가려지지 않게)
+            for b, label, *rest in self.marks:  # (상자, 이름[, 예상 위치인가[, 정해진 자리인가[, 목록에서 고름]]])
+                if len(rest) > 2 and rest[2]:  # 목록에서 고른 자리: 보라 굵은 테두리
+                    frame(b, "#7B2CBF", label, dash=bool(rest[0] or rest[1]), width=3)
+                elif len(rest) > 1 and rest[1]:  # 아이콘 아님·옆에 합친 자리: 정해진 것이라 회색 점선 (어디였는지만)
+                    frame(b, "#8A8A8A", label, dash=True, width=1)
+                elif rest and rest[0]:  # 위치를 못 찾은 다른 아이콘: 예상 자리에 점선
+                    frame(b, "#9A6A00", label, dash=True)
+                else:
+                    frame(b, "#2E8B57", label)
+            if self.guess and not self.new:
+                frame(self.guess, "#E67E22", "예상 위치", dash=True)
+            if self.box:
+                frame(self.box, "#1F6FEB", "지금 자리", width=3 if not self.new else 2, handles=not self.new)
         if self.new:
-            frame(self.new, "#D62828", "새 자리", width=3)
+            frame(self.new, "#D62828", "새 자리", width=3, handles=True)
         p.end()
 
+    def drawing(self) -> bool:
+        """새 자리를 그리거나 상자 크기를 바꾸는 중 (실제로 끌기 시작한 뒤)."""
+        return self._drag is not None and self._drag[0] in ("new", "resize") and self.new is not None
+
+    # ------------------------------------------------------------ 마우스
+    def _active_box(self):
+        """테두리를 끌어 크기를 바꿀 상자: 새 자리가 있으면 그것, 없으면 지금 자리."""
+        return self.new or self.box
+
+    def _edges_at(self, pos) -> str:
+        """pos(화면 점)가 크기를 바꿀 상자의 어느 변 위인가: "l"·"r"과 "t"·"b"의 조합 ("" = 아님)."""
+        b = self._active_box()
+        if not b or self._pm.isNull():
+            return ""
+        r = self._rect(b)
+        x, y = pos.x(), pos.y()
+        tx = max(2.0, min(EDGE_PX, r.width() / 3))  # 작은 상자: 안쪽은 새 상자를 그릴 수 있게 테두리 폭을 줄인다
+        ty = max(2.0, min(EDGE_PX, r.height() / 3))
+        if not (r.left() - tx <= x <= r.right() + tx and r.top() - ty <= y <= r.bottom() + ty):
+            return ""
+        e = ""
+        dl, dr = abs(x - r.left()), abs(x - r.right())
+        if min(dl, dr) <= tx:
+            e += "l" if dl <= dr else "r"
+        dt, db = abs(y - r.top()), abs(y - r.bottom())
+        if min(dt, db) <= ty:
+            e += "t" if dt <= db else "b"
+        return e
+
+    def _mark_at(self, pos) -> str:
+        """pos에 있는 다른 아이콘 상자의 자리 id (여럿이면 가장 작은 상자, 없으면 "")."""
+        x, y = self._to_img_raw(pos)
+        hits = [((m[0][2] - m[0][0]) * (m[0][3] - m[0][1]), m[5]) for m in self.marks
+                if len(m) > 5 and m[5] and m[0][0] <= x <= m[0][2] and m[0][1] <= y <= m[0][3]]
+        return min(hits)[1] if hits else ""
+
+    @staticmethod
+    def _cursor_for(edges: str) -> Qt.CursorShape:
+        if edges in ("lt", "rb"):
+            return Qt.CursorShape.SizeFDiagCursor
+        if edges in ("rt", "lb"):
+            return Qt.CursorShape.SizeBDiagCursor
+        if edges in ("l", "r"):
+            return Qt.CursorShape.SizeHorCursor
+        if edges in ("t", "b"):
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.CrossCursor
+
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and not self._pm.isNull():
-            self._drag = self._to_img(e.position())
-            self.new = None
-            self.update()
+        if self._pm.isNull() or self._drag is not None:  # 끄는 중 다른 단추는 무시
+            return
+        pos = e.position()
+        if e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            if self.zoom > 1.0:
+                self._drag, self._drag_btn = ("pan", (pos.x(), pos.y()), list(self._pan)), e.button()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drag_btn = e.button()
+        self._press = (pos.x(), pos.y())
+        edges = self._edges_at(pos)
+        if edges:
+            self._drag = ("resize", edges, list(self._active_box()))
+        else:
+            self._drag = ("new", self._to_img(pos))
 
     def mouseMoveEvent(self, e):
-        if self._drag is not None:
-            x, y = self._to_img(e.position())
-            x0, y0 = self._drag
-            self.new = [min(x0, x), min(y0, y), max(x0, x), max(y0, y)]
+        pos = e.position()
+        d = self._drag
+        if d is None:
+            self.setCursor(self._cursor_for(self._edges_at(pos)))
+            return
+        if d[0] == "pan":
+            s = self._base() * self.zoom
+            w, h = self._pm.width() * s, self._pm.height() * s
+            lim_x, lim_y = (w + self.width()) / 2 - 40, (h + self.height()) / 2 - 40  # 그림이 조금은 보이게
+            self._pan = [max(-lim_x, min(lim_x, d[2][0] + pos.x() - d[1][0])),
+                         max(-lim_y, min(lim_y, d[2][1] + pos.y() - d[1][1]))]
             self.update()
+            return
+        if self._press is None or abs(pos.x() - self._press[0]) + abs(pos.y() - self._press[1]) < 3:
+            return  # 아직 끌지 않음 (누르기만 한 것과 가린다)
+        x, y = self._to_img(pos)
+        if d[0] == "new":
+            x0, y0 = d[1]
+            self.new = [min(x0, x), min(y0, y), max(x0, x), max(y0, y)]
+        else:
+            b = list(d[2])
+            if "l" in d[1]:
+                b[0] = x
+            if "r" in d[1]:
+                b[2] = x
+            if "t" in d[1]:
+                b[1] = y
+            if "b" in d[1]:
+                b[3] = y
+            self.new = [min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])]
+        self.update()
 
     def mouseReleaseEvent(self, e):
-        if self._drag is None:
+        if self._drag is None or e.button() != self._drag_btn:
             return
-        self._drag = None
+        d, self._drag, self._drag_btn = self._drag, None, None
+        pos = e.position()
+        if d[0] == "pan":
+            self.setCursor(self._cursor_for(self._edges_at(pos)))
+            return
+        clicked = self._press is None or abs(pos.x() - self._press[0]) + abs(pos.y() - self._press[1]) < 3
+        self._press = None
+        if clicked:
+            if d[0] == "resize":  # 테두리를 누르기만 함: 상자는 그대로 (바로 옆 다른 아이콘 상자를 눌렀으면 그것을 고른다)
+                self.update()
+                occ = self._mark_at(pos)
+                if occ:
+                    self.picked.emit(occ)
+                return
+            self.new = None  # 빈 곳·다른 아이콘을 누름: 새 자리를 지운다
+            self.update()
+            occ = self._mark_at(pos)
+            if occ:
+                self.picked.emit(occ)
+            self.drawn.emit()
+            return
         if self.new and (self.new[2] - self.new[0] < 4 or self.new[3] - self.new[1] < 4):
-            self.new = None  # 그냥 누른 것
+            self.new = None  # 너무 작음
         self.update()
         self.drawn.emit()
+
+    def wheelEvent(self, e):
+        dy = e.angleDelta().y()
+        if not dy or self._pm.isNull():
+            return
+        self.zoom_by(1.25 if dy > 0 else 0.8, e.position())
+        e.accept()

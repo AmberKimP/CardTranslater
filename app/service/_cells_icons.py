@@ -33,6 +33,12 @@ def _locked(fn):
     return run
 
 
+def _reader_kind(model: str) -> str:
+    """읽은 방식: opus(정밀 읽기) | sonnet(보통 읽기) | haiku | "" (모르는 이름·‘지금 원문’)."""
+    low = (model or "").lower()
+    return next((k for k in ("opus", "sonnet", "haiku") if k in low), "")
+
+
 def extracted_cells(file_dir: Path | str) -> list[dict]:
     """파일의 추출 결과를 칸마다: {"page", "region", "kind", "source", "label", "uncertain", "note",
     "readings", "edited"}. 뺀 쪽은 빠지고, 아직 읽지 않은 쪽은 source=None.
@@ -75,9 +81,10 @@ def extracted_cells(file_dir: Path | str) -> list[dict]:
                 opus = [x for x in all_re[:-1] if "opus" in (x.get("model") or "").lower()]
                 keep = opus[-1:] + keep
             rereads = [row(x, reread=True) for x in keep]
-            if any("opus" in (x.get("model") or "").lower() for x in keep):
-                # 정밀 읽기로 다시 읽었으면 처음의 정밀 읽기는 보이지 않는다 (같은 모델의 예전 결과라 헷갈림. 기록은 파일에)
-                readings = [x for x in readings if "opus" not in x["model"].lower()]  # 표시 이름 Opus·모델 id 모두
+            # 같은 방식(보통·정밀)으로 다시 읽었으면 처음의 그 결과는 보이지 않는다 (같은 모델의 예전 결과라 헷갈리고,
+            # 표에 ‘보통 읽기’가 두 번 보였다. 기록은 파일에). 표시 이름 Sonnet·Opus와 모델 id 모두
+            again = {_reader_kind(x["model"]) for x in rereads} - {""}
+            readings = [x for x in readings if _reader_kind(x["model"]) not in again]
             if rereads and not readings and r is not None and r.get("source") is not None:
                 first = "지금 원문" if r.get("edited_by") else (r.get("read_by") or "처음 읽은 결과")
                 readings = [row({"model": first, "source": r["source"]}, original=True)]
@@ -770,7 +777,9 @@ def add_icon_box_region(project_dir: Path | str, file_dir: Path | str, page: int
 @_locked
 def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     """사람이 잡은 자리로 아이콘 그림을 다시 자르고 묶음을 다시 정한다 (검증 엑셀도 새로 만든다).
-    {"group", "old", "old_gone", "new_group", "dict"}. 자리가 너무 작으면 ValueError."""
+    {"group", "old", "old_gone", "new_group", "dict", "boxed_number"(상자가 감싼 옆 숫자, 확정할 때 원문에서 뺌),
+    "order_conflict"(같은 영역에서 상자 순서가 원문 순서와 어긋나는 다른 자리 id들)}.
+    자리가 너무 작으면 ValueError."""
     from app import icons, workspace
 
     info = workspace.load_project_info(project_dir)
@@ -792,6 +801,23 @@ def set_icon_box(project_dir: Path | str, occ_id: str, box) -> dict:
     try:
         icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
     except OSError:  # 엑셀이 열려 있으면 못 쓴다: 화면 확정에는 필요 없다
+        pass
+    return r
+
+
+@_locked
+def swap_icon_boxes(project_dir: Path | str, occ_a: str, occ_b: str) -> dict:
+    """같은 영역 두 아이콘의 자리(그림)를 서로 바꾼다 (원문 순서와 상자 순서가 어긋났을 때: set_icon_box의
+    order_conflict). 확정 전 이름도 그림을 따라 바꾼다. {"a", "b"}."""
+    from app import icons, workspace
+
+    info = workspace.load_project_info(project_dir)
+    work = info.game_dir / "work" / "icons"
+    r = icons.swap_boxes(info, work, occ_a, occ_b)
+    log.info("자리 바꾸기: %s ↔ %s", occ_a, occ_b)
+    try:
+        icons.export_review(info, icons.load_scan(work), info.game_dir / "아이콘_검증.xlsx")
+    except OSError:
         pass
     return r
 

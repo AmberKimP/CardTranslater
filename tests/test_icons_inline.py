@@ -310,9 +310,12 @@ def test_scan_keeps_number_until_confirm_and_splits_groups_by_number(tmp_path, m
         by_num.setdefault(o.number["text"], set()).add(res.groups[o.group]["shape"])
     assert len(by_num["2"]) == len(by_num["5"]) == 1 and by_num["2"] != by_num["5"]  # 숫자가 다르면 다른 모양
     row = {o.page: o.group for o in res.occurrences}
-    # 4쪽은 손으로 다시 잡는다 -> 숫자는 원문에 남기고, 숫자 없는 모양이 된다 (줄은 그대로)
+    # 4쪽은 손으로 다시 잡는다 (동그라미만, 숫자는 빼고) -> 숫자는 원문에 남기고, 숫자 없는 모양이 된다 (줄은 그대로).
+    # 1.29.0: 숫자까지 감싸 잡으면 숫자는 아이콘 그림으로 본다 (tests/test_icon_boxed_number.py)
     o4 = next(o for o in res.occurrences if o.page == 4)
-    r = service.set_icon_box(info.dir, o4.id, o4.box)
+    x1, y0, y1 = o4.box[2], o4.box[1], o4.box[3]
+    r = service.set_icon_box(info.dir, o4.id, [x1 - (y1 - y0), y0, x1, y1])
+    assert not r["boxed_number"]
     assert r["group"] == row[4] and not r["new_group"]
     shapes = {g["group"]: g["shape"] for g in service.icon_review(info.dir)["groups"]}
     assert shapes[row[4]] not in (shapes[row[1]], shapes[row[2]])

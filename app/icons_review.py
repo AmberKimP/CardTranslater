@@ -198,7 +198,7 @@ class IconImport:
 def _group_num(res: ScanResult, by_id: dict, g: str) -> str:
     """묶음 대표 자리의 옆 숫자 (사전 항목 number로 적는 그대로의 글자, 손으로 잡은 자리는 "")."""
     o = by_id.get(res.groups.get(g, {}).get("rep") or "")
-    return "" if o is None or o.manual else (o.number or {}).get("text", "")
+    return "" if o is None or not o.num_in_image else (o.number or {}).get("text", "")
 
 
 def _number_conflicts(res: ScanResult, by_id: dict, decision: dict[str, str], d: dict) -> list[str]:
@@ -418,7 +418,7 @@ def import_rows(info, rows: list[dict], work: Path, partial: bool = False) -> Ic
             changed.setdefault(key, []).append(why)
         per_region.setdefault(key, {})[o.index] = name
         e = d["icons"].get(name) if name and not name.startswith("=") else None
-        if e is not None and o.number and not o.manual and _ic.entry_number(e) == o.num:
+        if e is not None and o.num_in_image and _ic.entry_number(e) == o.num:
             strips.setdefault(key, {})[o.index] = o.number
     old_src: dict[tuple, str] = {}
     new_src: dict[tuple, str] = {}

@@ -130,8 +130,11 @@ def _icon_entries(info, res, dic: dict) -> dict[tuple, list[dict]]:
             "pending": state in ("named", "not_icon", "absorbed") and not (o.named and name == o.named and not not_icon),
             "blocking": state in ("lost", "unnamed"), "reason": o.reason if rep is None else "",
             "line": o.line, "order": order[o.id], "index": o.index, "ti": o.ti,
-            # 확정할 때 원문에서 빼는 옆 숫자 (import_rows와 같은 규칙: 손으로 잡지 않았고 사전 그림의 숫자와 같을 때)
-            "strip": dict(o.number) if (o.number and not o.manual and state == "named"
+            # 같은 영역의 다른 아이콘과 상자 순서가 원문 순서와 반대 (위아래 아이콘을 엇갈려 잡음: 그림이 엇갈려 들어간다)
+            "order_conflict": bool(o.box and icons.order_conflicts(res, o)),
+            # 확정할 때 원문에서 빼는 옆 숫자 (import_rows와 같은 규칙: 숫자가 그림에 들었고 사전 그림의 숫자와 같을 때.
+            # 손으로 잡은 자리는 상자가 숫자까지 감쌌을 때만)
+            "strip": dict(o.number) if (o.num_in_image and state == "named"
                                         and (name not in dic or icons.entry_number(dic[name]) == o.num)) else None})
     for v in out.values():
         v.sort(key=lambda x: (x["line"] or 0, x["order"]))
@@ -218,6 +221,9 @@ def region_status(cell: dict, icons_: list[dict]) -> tuple[str, list[str]]:
         fix = True
     if fix:
         return "fix", reasons
+    if any(i.get("order_conflict") for i in icons_):
+        # 확인한 영역이어도 다시 본다: 이대로면 한글 넣기에서 아이콘 그림이 서로 엇갈린다
+        return "check", reasons + ["아이콘 순서가 원문과 다름 (아이콘을 골라 ‘이 자리로 저장’하면 자리를 바꿀 수 있음)"]
     if cell.get("keep_mode") == "whole":
         if _cells_icons.has_text_besides_icons(text):
             return "check", ["원본 그대로인데 글자도 있음"]
