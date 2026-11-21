@@ -288,3 +288,29 @@ def test_dictionary_reset_reopens_icon_and_resyncs_scan(qapp, tmp_path, monkeypa
     r = next(r for c in dlg._cards for r in c["regions"] if r["page"] == 1)
     assert r["status"] == "fix"
     dlg.close()
+
+
+def test_finished_reread_refreshes_open_card_viewer(qapp, tmp_path, monkeypatch):
+    """뒤에서 다시 읽기가 끝나면 열린 카드 보기도 새로 그린다 (‘읽는 중’이 풀리고 보통·정밀 읽기 결과가 바뀐다)."""
+    from app.qt import source_check
+
+    info, fd, dlg = _open(tmp_path, "vref", pages=1)
+    monkeypatch.setattr(service, "reread_cells", lambda cells, **k: {
+        "state": "done", "done": len(cells), "failed": [], "reason": "", "retry_after": None, "settled": 0})
+    monkeypatch.setattr(source_check.worker, "start", lambda job: job.run())
+
+    class FakeViewer:
+        refreshed = 0
+
+        def isVisible(self):
+            return True
+
+        def background_done(self, cells):  # 카드 보기가 지금 카드인지·조작 중인지 보고 다시 그린다
+            assert [(c["page"], c["region"]) for c in cells] == [(1, "본문")]
+            FakeViewer.refreshed += 1
+
+    dlg._viewer = FakeViewer()
+    dlg.enqueue_reread([{"file_dir": fd, "page": 1, "region": "본문"}])
+    assert FakeViewer.refreshed == 1 and not dlg.reading
+    dlg._viewer = None
+    dlg.close()

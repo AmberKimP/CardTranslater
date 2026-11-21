@@ -284,6 +284,7 @@ class CardViewer(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         fit_to_screen(self, 1400, 880, maximize_below=0)
         self._busy_depth = 0
+        self._refresh_pending = False  # 뒤에서 다시 읽기가 이 카드를 바꿨는데 사람이 조작 중이라 아직 다시 그리지 않음
         self._rereading = False
         self._loading = False
         self._card_cache: dict[tuple, dict] = {}
@@ -433,11 +434,15 @@ class CardViewer(QDialog):
         self.keep_btn.setToolTip("이 영역은 글자 없이 아이콘(그림)만 있습니다.\n번역·글자 지우기·한글 넣기를 하지 않고 원본 그대로 둡니다 "
                                  "(다시 누르면 풀림).")
         self.keep_btn.clicked.connect(self._toggle_keep)
+        # 문단 나눔 [====]: ‘문단마다 다른 글꼴’ 영역에서 커서가 있는 줄 위에 나눔 줄을 넣는다 (지우려면 그 줄을 지움)
+        self.para_btn = QPushButton("[====] 문단 나눔 넣기")
+        self.para_btn.clicked.connect(self._insert_paragraph_mark)
         tools = QHBoxLayout()
         tools.setSpacing(8)
         tools.addWidget(self.reread_btn)
         tools.addWidget(self.reread_model, 1)
         tools.addStretch(1)
+        tools.addWidget(self.para_btn)
         src_body = QWidget()
         sl = QVBoxLayout(src_body)
         sl.setContentsMargins(0, 0, 0, 0)
@@ -530,6 +535,7 @@ class CardViewer(QDialog):
 
     # ------------------------------------------------------------ 데이터
     def _fetch(self) -> None:
+        self._refresh_pending = False
         try:
             self.cards = list(self.rows_fn() or [])
         except Exception as e:  # noqa: BLE001 - 목록을 못 받으면 창은 빈 채로
@@ -788,6 +794,17 @@ class CardViewer(QDialog):
             self.pick_row.insertWidget(1 + i, b)
             self.pick_buttons.append(b)
 
+    def _insert_paragraph_mark(self) -> None:
+        """커서가 있는 줄 앞에 문단 나눔 줄 [====]를 넣는다 (문단마다 다른 글꼴 영역만)."""
+        reg = self._region()
+        if reg is None or not reg.get("paragraph_mode"):
+            return
+        cur = self.edit.textCursor()
+        cur.movePosition(cur.MoveOperation.StartOfBlock)
+        cur.insertText(service.PARAGRAPH_MARK + "\n")
+        self.edit.setTextCursor(cur)
+        self.edit.setFocus()
+
     def _use_reading(self, text: str) -> None:
         reg = self._region() or {}
         self.edit.setPlainText(source_text.for_edit(reg, text))
@@ -800,6 +817,12 @@ class CardViewer(QDialog):
         self.confirm_btn.setEnabled(ok)
         self.reread_btn.setEnabled(ok)
         self.keep_btn.setEnabled(ok and reg["source"] is not None)
+        para = reg is not None and bool(reg.get("paragraph_mode")) and isinstance(reg.get("source"), str)
+        self.para_btn.setEnabled(ok and para)
+        self.para_btn.setToolTip(
+            "커서가 있는 줄 앞에 문단 나눔 줄 [====]를 넣습니다. 나눈 문단마다 한글 글꼴·서식을 따로 정합니다 (지우려면 그 줄을 지움)."
+            if para else "이 영역은 ‘문단마다 다른 글꼴’이 아니라 문단 나눔을 쓰지 않습니다.\n"
+                         "‘영역 지정’에서 이 영역의 글꼴 단위를 ‘문단마다 다른 글꼴’로 바꾸면 쓸 수 있습니다.")
         self.edit.setReadOnly(reading)
         self.confirm_btn.setToolTip("뒤에서 다시 읽는 중인 영역입니다" if reading else
                                     "확정 전 아이콘 이름을 원문에 넣고, 원문을 ‘사람이 확인’으로 저장합니다 (Ctrl+Enter)")
@@ -962,6 +985,41 @@ class CardViewer(QDialog):
         self._fetch()
         self._show_region(self.key, prefill=text, keep_occ=keep_occ or self._cur_occ)
 
+    def background_done(self, cells: list[dict]) -> None:
+        """뒤에서 다시 읽기가 끝났다 (목록 창이 부른다). 지금 카드의 영역이면 다시 그리되, 사람이 상자를 그리거나 이름을
+        적는 중이면 끝날 때까지 미룬다 (그린 상자·적던 이름이 사라지지 않게). 다른 카드면 ‘읽는 중’ 표시만 고친다."""
+        card = self._card()
+        mine = card is not None and any(_nk((c["file_dir"], c["page"])) == _nk(card["key"]) for c in cells)
+        if not mine:
+            try:
+                self._reading = {_nk(k) for k in (self.reading_fn() if self.reading_fn else set())}
+            except Exception:  # noqa: BLE001
+                pass
+            self._update_buttons()
+            return
+        self._refresh_pending = True
+        self._refresh_when_idle()
+
+    def _idle(self) -> bool:
+        from PySide6.QtWidgets import QApplication, QLineEdit
+
+        fw = QApplication.focusWidget()
+        typing = isinstance(fw, QLineEdit) and self.icon_list.isAncestorOf(fw)
+        editing = self.edit.hasFocus() and self._dirty()  # 원문 칸을 고치는 중 (다시 그리면 커서가 맨 앞으로 간다)
+        return not (self._busy_depth or self._rereading or self._loading or self.view.new is not None or typing
+                    or editing)
+
+    def _refresh_when_idle(self) -> None:
+        try:
+            if not self._refresh_pending or not self.isVisible():
+                return
+            if self._idle():
+                self.refresh()
+            else:
+                QTimer.singleShot(1500, self, self._refresh_when_idle)
+        except RuntimeError:  # 창이 지워짐
+            return
+
     def refresh(self) -> None:
         """목록 창이 바뀐 뒤 (뒤에서 다시 읽기 끝남 등) 다시 그린다."""
         self._card_cache.clear()
@@ -1115,7 +1173,35 @@ class CardViewer(QDialog):
                     service.absorb_icon_run(self.project_dir, e["occ"], r["run_unfound"])
                 except Exception as ex:  # noqa: BLE001
                     show_error(self, "아이콘을 합치지 못했습니다", ex)
-        self._after_op(e["occ"], "자리를 저장했습니다. 확정하면 이 영역을 다시 읽습니다")
+        self._suggest_then(e["occ"], "자리를 저장했습니다. 확정하면 이 영역을 다시 읽습니다")
+
+    def _suggest_then(self, occ: str, msg: str) -> None:
+        """손으로 잡은 자리에 이름이 없으면 Claude에게 이름·한국어 이름을 제안 받아 이름 칸에 채운 뒤 다시 그린다
+        (사전과 모양이 같아 이름이 정해졌거나 연결할 수 없으면 바로). 제안은 ‘확정 전’ 값이 아니라 줄의 제안으로 남는다."""
+        def after(note: str = ""):
+            try:
+                self._after_op(occ, msg + (f" — {note}" if note else ""))
+            except RuntimeError:  # 제안을 받는 동안 창이 지워짐
+                return
+        # 자리를 저장한 뒤의 줄(새 줄로 옮겨졌을 수 있다)의 이름으로 정한다: 이름이 있으면(사전·확정·적어 둔 값) 묻지 않는다
+        self._fetch()
+        reg = self._region() or {}
+        entry = next((x for x in reg.get("icons") or [] if x["occ"] == occ), None)
+        group = entry["group"] if entry else None
+        if entry is None or entry.get("name") or entry["state"] in ("not_icon", "absorbed"):
+            after()
+            return
+        eng = self.engine or service.get_settings().engine
+        if not service.engine_status().get(eng):
+            after("이름을 적으세요 (Claude에 연결할 수 없어 이름 제안 없음)")
+            return
+
+        def done(res):
+            res = res or {}
+            after(f"이름 제안: {res['suggest']}" if res.get("suggest") else (res.get("note") or "이름을 적으세요"))
+        job = worker.Job(service.suggest_icon_name, self.project_dir, group, engine=eng, with_progress=False)
+        worker.run_with_dialog(self, "아이콘 이름 제안 받는 중", job, done, lambda _m: after("이름을 적으세요"),
+                               cancellable=False)
 
     @busy
     def _add_box(self) -> None:
@@ -1135,7 +1221,7 @@ class CardViewer(QDialog):
         except Exception as ex:  # noqa: BLE001
             show_error(self, "아이콘을 넣지 못했습니다", ex)
             return
-        self._after_op(r["occ"], f"원문 {r['line']}줄에 아이콘을 넣었습니다 — 이름을 적으세요")
+        self._suggest_then(r["occ"], f"원문 {r['line']}줄에 아이콘을 넣었습니다")
 
     # ------------------------------------------------------------ 원문 칸 조작
     def _edit_value(self, reg: dict) -> tuple:
@@ -1209,6 +1295,19 @@ class CardViewer(QDialog):
             removed = reg.get("icon_removed")
             text = fill_icon_names(as_text(r.source), as_text(reg["source"]), set(self._known),
                                    None if removed is None else bool(removed))
+            current = service.preview_source(reg)
+            human = bool(reg.get("set_members")) or any(
+                e.get("manual") or e["state"] == "absorbed" or (e["state"] == "not_icon" and e.get("staged"))
+                for e in reg.get("icons") or [])
+            if source_text.same_but_icon_layout(text, current, human):
+                # 글은 같고 아이콘 자리·합친 아이콘 수만 다르다: 카드 보기에서 정한 아이콘(자리·합치기)을 따른다
+                self._show_region(key)
+                n_r, n_c = text.count("[["), current.count("[[")
+                self._flash("다시 읽은 글이 지금 원문과 같습니다. 아이콘 자리·합친 아이콘은 카드 보기에서 정한 대로 둡니다"
+                            + (f" (다시 읽은 아이콘 {n_r}개 · 원문 {n_c}개)" if n_r != n_c else "")
+                            + ". 다르게 쓰려면 위 ‘이것 쓰기’"
+                            + (" (다시 읽은 결과도 확실하지 않다고 했습니다)" if r.uncertain else ""), "info")
+                return
             self._show_region(key, prefill=source_text.for_edit(reg, text))
             msg = "다시 읽은 결과를 원문 칸에 넣었습니다. 맞으면 확정하세요."
             if UNKNOWN_ICON in text:

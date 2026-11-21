@@ -124,6 +124,7 @@ def _icon_entries(info, res, dic: dict) -> dict[tuple, list[dict]]:
             "meaning": str(st.get("meaning") or e.get("meaning") or gi.get("meaning") or ""),
             "scale": float(st.get("scale") or e.get("scale") or icons.DEFAULT_SCALE),
             "text": str(st.get("text") or ""), "not_icon": not_icon, "in_dict": name in dic,
+            "manual": bool(o.manual or o.added),  # 사람이 카드 보기에서 잡거나 넣은 자리
             "image": (rep.png if rep is not None and rep.png else None) or dimg,
             "state": state, "staged": bool(st),
             "pending": state in ("named", "not_icon", "absorbed") and not (o.named and name == o.named and not not_icon),

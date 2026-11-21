@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
 from app import service
-from app.qt.step_common import ICON_REVIEW_LABEL, as_text, plain_note
+from app.qt.step_common import ICON_REVIEW_LABEL, ICON_TOKEN_RE, as_text, plain_note
 
 UNREAD = "읽지 않음"
 
@@ -55,3 +57,26 @@ def reason_text(c: dict, differ: bool) -> tuple[str, str]:
     else:
         base, memo = "읽은 결과가 확실하지 않다고 했습니다. 그림과 비교해 주세요.", note
     return base, plain_note(memo)
+
+
+def _icon_runs(text: str) -> int:
+    """아이콘 덩어리 수: 빈칸만 사이에 둔 아이콘들은 하나로 센다 (세트·합친 아이콘을 모델은 따로 읽는다)."""
+    return len(re.findall(r"(?:\[\[[^\]]*\]\][ 	　]*)+", text or ""))
+
+
+def same_but_icon_layout(reading: str, current: str, human: bool = True) -> bool:
+    """다시 읽은 글이 지금 원문과 글자는 같고 아이콘의 자리·줄바꿈·합친 아이콘 수만 다른가.
+    이럴 때는 카드 보기에서 사람이 정한 아이콘(손으로 잡은 자리·합치기)이 맞다고 본다
+    (예: 위아래 두 아이콘을 모델이 한 줄에 붙여 읽음, 합친 아이콘 넷을 [[?]] 넷으로 읽음)."""
+    if not human or not reading or not current or reading == current:
+        return False  # 사람이 아이콘을 손대지 않은 영역은 모델이 고친 아이콘 자리도 보여 준다
+    if not (ICON_TOKEN_RE.search(reading) or ICON_TOKEN_RE.search(current)):
+        return False  # 아이콘이 없는 글: 줄바꿈·빈칸 차이도 보여 준다
+
+    def bare(t: str) -> str:
+        return re.sub(r"\s+", "", ICON_TOKEN_RE.sub("", t))
+    if bare(reading) != bare(current):
+        return False
+    n_r, n_c = len(ICON_TOKEN_RE.findall(reading)), len(ICON_TOKEN_RE.findall(current))
+    return n_r == n_c or _icon_runs(reading) == _icon_runs(current) or (n_r > n_c and _icon_runs(reading) <= n_c)
+

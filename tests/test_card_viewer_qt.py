@@ -348,3 +348,106 @@ def test_repeated_open_close_has_no_deleted_object_errors(qapp, tmp_path, capfd)
         v.deleteLater()
         QApplication.processEvents()
     assert "already deleted" not in capfd.readouterr().err
+
+
+# ---------------------------------------------------------------- 1.28.2: 카드 보기 고친 점
+def test_same_but_icon_layout_keeps_card_view_icons():
+    from app.qt.source_text import same_but_icon_layout
+
+    # 위아래 두 아이콘을 모델이 한 줄에 붙여 읽음 (5쪽 본문2)
+    assert same_but_icon_layout("ジャンク[[?]][[?]]タグを得るたび を得る", "ジャンク[[gear]]タグを得るたび\n[[coin]]を得る")
+    # 합친 아이콘 넷을 [[?]] 넷으로 읽음 (1쪽 본문2)
+    assert same_but_icon_layout("効果\n[[?]] [[?]] [[?]] [[?]]", "効果\n[[set]]")
+    assert not same_but_icon_layout("効果を得る", "効果を得た")  # 글이 다르다
+    assert not same_but_icon_layout("A[[?]]B[[?]]", "AB[[?]]")  # 떨어진 곳에 아이콘이 하나 더 있다
+    assert not same_but_icon_layout("A[[x]]B", "A[[x]]B")  # 같으면 할 일 없음
+    assert not same_but_icon_layout("Draw 2\ncards", "Draw 2 cards")  # 아이콘이 없는 글은 줄바꿈 차이도 보인다
+    assert not same_but_icon_layout("効果\n[[?]] [[?]]", "効果\n[[set]]", human=False)  # 사람이 손대지 않은 영역
+
+
+def test_icon_only_last_line_rule():
+    from app import icons
+
+    assert icons._icon_only_line("[[?]] [[?]]") and icons._icon_only_line("2 [[?]] ")
+    assert not icons._icon_only_line("[[?]]を得る") and not icons._icon_only_line("プレイ時効果")
+
+
+def test_reread_with_only_icon_layout_difference_keeps_source(qapp, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.qt import card_viewer
+
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=1, name="lay")
+    o = v._entries[0]
+    occ = next(x for x in __import__("app.icons", fromlist=["x"]).load_scan(
+        info.game_dir / "work" / "icons").occurrences if x.id == o["occ"])
+    service.set_icon_box(info.dir, o["occ"], occ.box)  # 사람이 자리를 잡은 영역
+    v._fetch()
+    v._show_region(v.key)
+    _type_name(qapp, v, "lily", "백합")
+    before = v.edit.toPlainText()
+    monkeypatch.setattr(service, "engine_status", lambda: {"api": True, "claude-code": True, "message": ""})
+
+    def run_now(parent, title, job, on_done, on_failed=None, **_k):
+        on_done(SimpleNamespace(state="done", source="AB[[?]] [[?]]CD", uncertain=False, reason="", retry_after=None))
+    monkeypatch.setattr(card_viewer.worker, "run_with_dialog", run_now)
+    v._reread()
+    assert v.edit.toPlainText() == before and "아이콘" in v.flash_label.text()
+
+
+def test_saving_box_suggests_a_name(qapp, tmp_path, monkeypatch):
+    from app.qt import card_viewer
+
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=1, name="sug")
+    asked = []
+    monkeypatch.setattr(service, "engine_status", lambda: {"api": True, "claude-code": True, "message": ""})
+
+    def fake_suggest(project_dir, group, engine=None):  # 진짜처럼 찾기 결과 줄의 제안(suggest)만 적는다
+        from app import icons
+
+        asked.append(group)
+        work = info.game_dir / "work" / "icons"
+        res = icons.load_scan(work)
+        res.groups[group].update(suggest="lily", ko="백합")
+        icons._save_scan(work, res)
+        return {"suggest": "lily", "meaning": "", "ko": "백합"}
+    monkeypatch.setattr(service, "suggest_icon_name", fake_suggest)
+    monkeypatch.setattr(card_viewer.worker, "run_with_dialog",
+                        lambda parent, title, job, on_done, on_failed=None, **_k: on_done(job.fn(*job.args, **job.kwargs)))
+    e = v._entries[0]
+    v._cur_occ = e["occ"]
+    v.view.new = (1, 1, 60, 60)
+    v._save_box()
+    assert asked and "lily" in v.flash_label.text()
+    assert _region(info, files, 1)["icons"][0]["name"] == "lily"
+
+
+def test_paragraph_mark_button(qapp, tmp_path, monkeypatch):
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=1, name="para")
+    assert not v.para_btn.isEnabled()  # 보통 영역은 문단 나눔을 쓰지 않는다
+    reg = v._region()
+    reg["paragraph_mode"] = True
+    v._update_buttons()
+    assert v.para_btn.isEnabled()
+    v.edit.setPlainText("一行目\n二行目")
+    cur = v.edit.textCursor()
+    cur.movePosition(cur.MoveOperation.End)
+    v.edit.setTextCursor(cur)
+    v._insert_paragraph_mark()
+    assert v.edit.toPlainText() == "一行目\n" + service.PARAGRAPH_MARK + "\n二行目"
+
+
+def test_background_reread_does_not_wipe_a_drawn_box(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=2, name="bg")
+    v.show()
+    calls = []
+    v.refresh = lambda: calls.append(1)
+    v.background_done([{"file_dir": fd, "page": 2, "region": "본문"}])  # 다른 카드
+    assert calls == [] and not v._refresh_pending
+    v.view.new = (1, 1, 30, 30)  # 사람이 상자를 그리는 중
+    v.background_done([{"file_dir": fd, "page": 1, "region": "본문"}])
+    assert calls == [] and v._refresh_pending and v.view.new is not None
+    v.view.new = None
+    v._refresh_when_idle()
+    assert calls == [1]
+    v.close()

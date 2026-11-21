@@ -292,6 +292,12 @@ def _bands(ink: np.ndarray) -> list[tuple[int, int]]:
     return _bands_from(comps, rules)
 
 
+def _icon_only_line(line: str) -> bool:
+    """원문 줄에 아이콘 토큰과 숫자·기호만 있는가 (빈칸 제외. 예: ‘[[?]] [[?]]’, ‘2 [[?]]’). locate의 마지막 수단에만 쓴다
+    (_match_line의 ‘아이콘만 있는 줄’은 숫자도 없는 줄 — 줄 폭을 재는 방식이 달라 일부러 다르게 둔다)."""
+    return bool(TOKEN_RE.search(line)) and re.fullmatch(r"[\s0-9０-９+＋×xX\-－/／]*", TOKEN_RE.sub("", line)) is not None
+
+
 def _line_units(line: str) -> float:
     return sum(_units(ch) for ch in TOKEN_RE.sub("\u25a0", line)) + 0.1 * len(TOKEN_RE.findall(line))
 
@@ -375,13 +381,18 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         (((_px.max(axis=1) - _px.min(axis=1)) / np.maximum(_px.max(axis=1), 1.0)) >= 0.3).mean()) >= 0.05
     all_comps, rules = _text_components(ink)
     # 줄 띠를 두 가지로 잡아 본다: 보통 방법 -> 안 되면 글자 크기 덩어리로만 (큰 아이콘이 줄을 가리거나 붙인 경우)
-    def _try(bands):
+    def _try(bands, last_band: bool = False):
         if not bands:
             return None, "영역에서 글자를 찾지 못함"
         if len(bands) == len(lines):
             band_i = line_no
         else:  # 줄 수가 다르면(추출이 줄을 빠뜨림·장식 줄) 줄 길이가 가장 잘 맞는 짝을 고른다
             band_i = _match_line(lines, line_no, bands, all_comps)
+            if band_i is None and last_band:
+                # 마지막 수단: 마지막 줄이 아이콘(과 숫자)만 있는 줄이고 이미지 띠가 원문 줄보다 적으면, 이미지의 마지막 띠
+                # (큰 아이콘 줄)와 짝짓는다. 위쪽 줄은 라벨 띠·배경 얼룩 때문에 서로 붙어 줄 수가 달라도 맨 아래 아이콘 줄은
+                # 따로 잡힌다 (이세계 카드 ‘プレイ時効果’ 아래 아이콘). 띠가 더 많으면(카드 번호·꼬리 줄) 쓰지 않는다
+                band_i = len(bands) - 1
             if band_i is None:
                 return None, f"줄 수가 다름 (원문 {len(lines)}줄, 이미지 {len(bands)}줄)"
         y0, y1 = bands[band_i]
@@ -477,6 +488,12 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         third = _try(loose)
         if third[0] is not None:
             return third
+    if line_no == len(lines) - 1 and _icon_only_line(lines[line_no]):
+        for bands in (_bands_from(all_comps, rules), _bands_text_first(all_comps, rules)):
+            if 2 <= len(bands) < len(lines):
+                fourth = _try(bands, last_band=True)
+                if fourth[0] is not None:
+                    return fourth
     return first
 
 

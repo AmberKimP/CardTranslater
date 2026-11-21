@@ -965,6 +965,13 @@ class SourceCheckDialog(QDialog):
         self.saved = True
         if not self._closed:
             self.refresh()
+        v = self._viewer  # 열린 카드 보기도: ‘읽는 중’을 풀고 새 읽은 결과(보통·정밀)를 보인다
+        if v is not None:
+            try:
+                if v.isVisible():
+                    v.background_done(batch)
+            except RuntimeError:  # 지워진 창
+                self._viewer = None
         self._start_next()
         if not self._running and not self._queue and self.on_idle is not None:
             self.on_idle()
