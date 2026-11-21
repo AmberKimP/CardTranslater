@@ -117,6 +117,27 @@ class BackgroundEraser(QObject):
         else:
             self._idle_cbs.append(cb)
 
+    def stop_then(self, parent, title: str, fn) -> None:
+        """멈추고, 지우던 스레드가 끝나면 fn() (초기화·삭제처럼 cleared/를 옮기는 화면 작업).
+        기다리는 동안은 진행 창을 띄운다 (상태 줄 글만으로는 아무 일도 안 하는 것처럼 보였다)."""
+        self.stop()
+        if self.idle:
+            fn()
+            return
+        wait = QProgressDialog("뒤에서 지우던 쪽을 멈추는 중… (몇 초)", None, 0, 0, parent)
+        wait.setWindowTitle(title)
+        wait.setWindowModality(Qt.WindowModality.WindowModal)
+        wait.setMinimumDuration(0)
+        wait.show()
+
+        def go():
+            try:
+                wait.close()
+            except RuntimeError:
+                pass
+            fn()
+        self.when_idle(go)
+
     def hold(self) -> None:
         self.holds += 1
         self.stop()
@@ -184,8 +205,14 @@ class BackgroundEraser(QObject):
         self.queue = []
         if self.job is not None:
             self.job.cancel()
+            th = getattr(self.job, "thread", None)
+            if th is not None:  # 멈춘 스레드는 보통 우선순위로: 가장 낮은 우선순위면 멈춤 확인까지 한참 걸렸다
+                try:
+                    th.setPriority(QThread.Priority.NormalPriority)
+                except RuntimeError:
+                    pass
             if getattr(self.job, "signals", None) is not None:
-                self._draining.add(self.job)  # 다음 쪽에서 멈춘다: 끝날 때까지 새로 시작하지 않는다
+                self._draining.add(self.job)  # 다음 영역에서 멈춘다: 끝날 때까지 새로 시작하지 않는다
         self.job = None
         self.boosted = False
         self._current = None

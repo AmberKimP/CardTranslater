@@ -330,3 +330,51 @@ def test_even_bold_small_text_lines_share_one_weight():
     lines = [ln(0.155), ln(0.16), ln(0.158)]  # 고르게 굵은 글씨
     _even_bold(lines)
     assert all(x["bold"] for x in lines)
+
+
+def _label_card(band_w=260):
+    """넓은 종이 영역 안의 작은 파란 이름표 띠 + 흰 글자 (‘常時効果’ 모양: 띠 폭이 영역의 25%보다 좁다)."""
+    img = np.full((400, 1200, 3), (236, 230, 214), np.uint8)
+    x0 = 600 - band_w // 2
+    cv2.rectangle(img, (x0, 60), (x0 + band_w, 120), (131, 166, 183), -1)
+    cv2.putText(img, "ABCD", (x0 + 40, 108), cv2.FONT_HERSHEY_SIMPLEX, 1.6, (251, 252, 249), 5)
+    return img, (x0, 60, x0 + band_w, 120)
+
+
+def test_small_label_band_text_is_fully_found():
+    img, (bx0, by0, bx1, by1) = _label_card()
+    tm = erase_text.text_mask(img, (20, 20, 1180, 380))
+    white = (np.abs(img.astype(int) - (251, 252, 249)).max(axis=2) < 30)
+    white[:, :bx0] = white[:, bx1:] = False
+    assert white.sum() > 500
+    assert tm.mask[white].mean() > 0.95  # 띠 위 흰 글자가 모두 지울 자리 (앞 글자가 덜 잡히지 않게)
+
+
+def test_stroke_just_outside_top_edge_joins_glyph_on_edge():
+    img = np.full((300, 900, 3), 235, np.uint8)
+    for i in range(6):  # 위 끝(y=100)에 걸친 글자들
+        cv2.rectangle(img, (200 + i * 80, 95), (240 + i * 80, 150), (30, 30, 30), 4)
+    cv2.rectangle(img, (690, 92), (730, 96), (30, 30, 30), -1)  # 상자 위 끝 바로 밖에 떨어진 획 (‘こ’의 윗 획)
+    tm = erase_text.text_mask(img, (100, 100, 800, 250))
+    assert tm.mask[92:97, 690:731].mean() > 0.8
+    assert not tm.mask[20:60, :].any()  # 멀리 떨어진 위쪽은 그대로
+
+
+def test_label_line_fill_takes_every_text_pixel_on_band_but_keeps_diamonds():
+    from types import SimpleNamespace
+
+    from app.erase import _fill_label_lines
+
+    img, (bx0, by0, bx1, by1) = _label_card()
+    cv2.circle(img, (bx0 + 12, 90), 6, (251, 252, 249), -1)  # 띠 왼쪽 끝 ◆ 장식
+    white = (np.abs(img.astype(int) - (251, 252, 249)).max(axis=2) < 30)
+    ys, xs = np.nonzero(white[:, bx0 + 30:bx1])
+    bbox = [bx0 + 30 + int(xs.min()), int(ys.min()), bx0 + 30 + int(xs.max()) + 1, int(ys.max()) + 1]
+    tm = SimpleNamespace(mask=np.zeros(img.shape[:2], bool))  # 글자를 하나도 못 고른 경우
+    lay = {"lines": [{"bbox": bbox, "glyph_h": bbox[3] - bbox[1], "color": "#fbfcf9", "stroke_color": "#83a6b7"}]}
+    _fill_label_lines(img, tm, lay)
+    text_px = white.copy()
+    text_px[:, :bx0 + 30] = False
+    assert tm.mask[text_px].mean() > 0.99
+    assert not tm.mask[84:97, bx0 + 6:bx0 + 19].any()  # ◆는 남는다
+    assert not tm.mask[:by0 - 15].any()  # 띠 밖 종이는 그대로

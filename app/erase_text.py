@@ -47,6 +47,7 @@ WEAK = 30.0  # 글자에 붙은 테두리·그림자로 넓힐 때의 기준
 GAP_MIN = 1.2  # 원문과 맞춘 줄 안에서 잉크가 이만큼(글자 높이 배) 넘게 비면 놓친 글자일 수 있다 (연한 회색 글자)
 GAP_DIFF = 20.0  # 그 빈 곳에서 배경과 이만큼 다르면 글자로 본다 (줄 안이라 STRONG보다 낮게)
 GAP_COLOR_TOL = 45.0  # 그리고 그 줄 글자색과 이만큼 안이어야 한다
+EDGE_NEAR = 8  # 상자 위·아래 끝에서 이만큼(px) 안의 바깥 조각은 가장자리에 걸친 글자의 획일 수 있다
 TRIM_KEEP = 0.8  # 끝 조각을 빼면 줄 폭이 원문 길이(글자 수 × 글자 높이)의 이만큼보다 짧아지면 빼지 않는다
 COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
 BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자 (줄 하나만 있을 때)
@@ -209,17 +210,50 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     D = np.abs(I - med).max(axis=2)
     # 색 라벨 띠(가로로 길고 속이 찬 덩어리) 안은 띠 색을 배경으로 본다: 넓은 창의 중앙값은 종이색이라
     # 띠 위 흰 글자가 배경과 다르게 보이지 않는다
+    bands: list = []  # 찾은 색 라벨 띠 [(상자, 띠 색)] (아래에서 띠 위 글자를 빠짐없이 채운다)
     for pol in (1, -1):
         sl = ((D > STRONG) & (np.sign(_lum(I) - _lum(med)) == pol)).astype(np.uint8)
         n_, lab_, st_, _c = cv2.connectedComponentsWithStats(sl, connectivity=8)
+        means_ = None  # 덩어리 평균 색 (띠를 찾았을 때 한 번만 잰다)
         for i in range(1, n_):
             x, y, w, h, a_ = (int(v) for v in st_[i])
-            if w > 0.25 * bw and w > 3 * h and h < 0.2 * bh and a_ >= 0.45 * w * h and h >= 12:
-                comp = lab_ == i
-                fill = np.median(I[comp], axis=0)
-                inside = np.zeros((H, W), bool)
-                inside[y:y + h, x:x + w] = True
-                med[inside] = fill
+            # 폭은 영역의 15%부터: 넓은 영역 안의 작은 이름표 띠(‘常時効果’)도 띠로 본다 (25%면 띠를 못 찾아 넓은 창의
+            # 종이색을 배경으로 봐 흰 글자 앞쪽이 덜 지워졌다 — 4·5·8쪽)
+            if not (w > 0.15 * bw and w > 3 * h and h < 0.2 * bh and h >= 12 and a_ >= 0.25 * w * h):
+                continue
+            if a_ < 0.4 * w * h:
+                # 글자를 구멍으로 품은 띠(빨간 ‘プレイ時効果’): 구멍을 메우면 거의 꽉 찬다 (가는 테두리선만 있는 상자는 위에서 빠진다)
+                patch = (lab_[y:y + h, x:x + w] == i).astype(np.uint8)
+                flood = np.pad(patch, 1)
+                cv2.floodFill(flood, None, (0, 0), 1)
+                holes = flood[1:-1, 1:-1] == 0
+                if (patch.sum() + holes.sum()) < 0.75 * w * h:
+                    continue
+            comp = lab_ == i
+            fill = np.median(I[comp], axis=0)
+            bx0, by0, bx1, by1 = x, y, x + w, y + h
+            # 글자에 갈려 위·아래로 떨어진 같은 색 띠 조각을 붙인다 (띠 위 글자 줄 전체를 띠 색 배경으로).
+            # 덩어리 평균 색은 한 번에 잰다 (덩어리마다 그림 전체를 훑으면 쪽 하나에 몇 분이 걸렸다)
+            if means_ is None:
+                cnt = np.maximum(np.bincount(lab_.ravel(), minlength=n_), 1)
+                means_ = np.stack([np.bincount(lab_.ravel(), weights=I[..., c].ravel(), minlength=n_) / cnt
+                                   for c in range(3)], axis=1)
+            for j in range(1, n_):
+                if j == i:
+                    continue
+                xj, yj, wj, hj, aj = (int(v) for v in st_[j])
+                # 처음 찾은 띠 상자(x, y, w, h)를 기준으로 잰다: 커지는 상자로 재면 진한 띠 아래 본문 줄까지 줄줄이
+                # 붙어 종이를 띠 색으로 칠했다. 조각은 띠 모양(띠 폭의 30% 이상, 높이의 2배 이상 넓음)만
+                ov = min(x + w, xj + wj) - max(x, xj)
+                gap = max(yj - (y + h), y - (yj + hj))
+                if (aj >= 30 and ov >= 0.6 * wj and gap <= h and hj <= h and wj >= 0.3 * w and wj >= 2 * hj
+                        and np.abs(means_[j] - fill).max() < 40
+                        and max(by1, yj + hj) - min(by0, yj) <= 3 * h):
+                    bx0, by0, bx1, by1 = min(bx0, xj), min(by0, yj), max(bx1, xj + wj), max(by1, yj + hj)
+            inside = np.zeros((H, W), bool)
+            inside[by0:by1, bx0:bx1] = True
+            med[inside] = fill
+            bands.append(((bx0, by0, bx1, by1), fill))
     D = np.abs(I - med).max(axis=2)
     lum, lmed = _lum(I), _lum(med)
     inbox = np.zeros((H, W), bool)
@@ -232,6 +266,8 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
 
     cands = []  # (덩어리, 평균색, 넓이, 큰 변)
     edge_glyphs: set[int] = set()  # 위·아래 가장자리에 걸쳐 글자로 받아들인 덩어리 (id)
+    edge_boxes: list = []  # 그 덩어리들의 상자와 가장자리 (t|b)
+    outside_near: list = []  # 상자 바로 밖의 작은 조각 (가장자리 글자 옆이면 글자 획)
     lines = []  # 가로 구분선의 (세로 중심, 두께): 선 사이의 장식(◆)도 남긴다
     dividers = []
     for pol in (1, -1):
@@ -253,10 +289,25 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
                 # 글자로 보고 상자를 그만큼 넓힌다 (좌우로 걸친 것·큰 것은 그림·테두리로 두고 그대로 뺀다)
                 edge = (y < y0 <= y + h or y < y1 <= y + h) and x >= x0 and x + w <= x1
                 if not (edge and out_frac <= 0.6 and h <= 0.5 * bh and w <= 0.2 * bw):
+                    # 상자 바로 밖(EDGE_NEAR px 안)의 작은 조각: 가장자리에 걸친 글자 옆이면 아래에서 그 글자의 획으로 본다
+                    near_top = y + h <= y0 and y0 - (y + h) <= EDGE_NEAR
+                    near_bot = y >= y1 and y - y1 <= EDGE_NEAR
+                    if (near_top or near_bot) and x >= x0 and x + w <= x1 and h <= 0.1 * bh and w <= 0.1 * bw:
+                        outside_near.append((comp, (x, y, x + w, y + h), "t" if near_top else "b", a))
                     continue
                 inbox[max(0, y - 2):min(H, y + h + 2), max(0, x - 2):min(W, x + w + 2)] = True
                 edge_glyphs.add(id(comp))
+                edge_boxes.append(((x, y, x + w, y + h), "t" if y < y0 <= y + h else "b"))
             cands.append((comp, I[comp].mean(axis=0), a, max(w, h)))
+    # 영역을 글자 위 끝에 빠듯하게 그려 획 하나(‘こ’·‘に’의 윗 획)가 통째로 상자 밖에 떨어진 것: 같은 가장자리에 걸친
+    # 글자 바로 옆이면 그 글자의 획으로 보고 지운다 (4쪽 작은 제목에 짧은 가로줄 자국이 남던 것)
+    for comp, (cx0, cy0, cx1, cy1), side, a in outside_near:
+        ref = [b for b, s in edge_boxes if s == side and b[0] - (b[3] - b[1]) <= cx1 and cx0 <= b[2] + (b[3] - b[1])]
+        if not ref:
+            continue
+        inbox[max(0, cy0 - 2):min(H, cy1 + 2), max(0, cx0 - 2):min(W, cx1 + 2)] = True
+        edge_glyphs.add(id(comp))
+        cands.append((comp, I[comp].mean(axis=0), a, max(cx1 - cx0, cy1 - cy0)))
     # 가로로 긴 덩어리 중 글자보다 두꺼운 것은 구분선이 아니라 색 라벨(예: 빨간 ‘プレイ時効果’ 띠): 라벨은 남기고
     # 안의 글자는 글자로 본다. 진짜 구분선은 글자 획 굵기쯤으로 가늘다
     sizes0 = [c[3] for c in cands if c[2] >= 30]
@@ -414,6 +465,19 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
                     keep |= c[0]
         if best is None:
             notes.append("그림 배경에서 글자색을 찾지 못함")
+
+    # 띠 위 글자: 글자로 고른 덩어리들의 가로 범위(조금 넉넉히) 안에서 띠 색이 아닌 픽셀은 모두 글자다. 획이 조각나
+    # 몇 조각이 빠지면 ‘常’의 윗 획처럼 잔상이 남았다 (4·5·7쪽). 범위 밖의 ◆ 장식은 그대로
+    for (bx0, by0, bx1, by1), fill in bands:
+        inb = keep[by0:by1, bx0:bx1]
+        if not inb.any():
+            continue
+        ys, xs = np.nonzero(inb)
+        gh_ = int(ys.max() - ys.min() + 1)
+        ax0, ax1 = max(bx0, bx0 + int(xs.min()) - int(0.3 * gh_)), min(bx1, bx0 + int(xs.max()) + 1 + int(0.3 * gh_))
+        ay0, ay1 = max(by0, by0 + int(ys.min()) - int(0.15 * gh_)), min(by1, by0 + int(ys.max()) + 1 + int(0.15 * gh_))
+        off = np.abs(I[ay0:ay1, ax0:ax1] - fill).max(axis=2) > STRONG
+        keep[ay0:ay1, ax0:ax1] |= off & inbox[ay0:ay1, ax0:ax1]
 
     grown = keep.copy()
     weak = D > WEAK
@@ -859,7 +923,7 @@ def _trim_stray_end(tm: "TextMask", ln: dict, text: str) -> bool:
 
 
 def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None,
-                 glyph_px: float | None = None) -> list[dict]:
+                 glyph_px: float | None = None, edge_y: tuple | None = None) -> list[dict]:
     """찾은 줄이 원문보다 많을 때 원문에 없는 줄을 고른다.
     줄 폭이 원문 줄 길이(글자 수)와 가장 잘 맞게 남는 줄을 뺀다 (원문이 빠뜨린 숫자 타일·카드 번호 등).
     폭이 같게 맞으면 상자 위·아래 끝에 붙은 줄(띠 안으로 들어온 그림 조각)을 먼저 뺀다. 그다음은 영역의 대표 글자
@@ -884,6 +948,27 @@ def _extra_lines(lines: list[dict], src: list[str], box_y: tuple | None = None,
 
     def at_edge(ln) -> bool:  # 상자 위·아래 끝에 닿은 줄: 글자 줄은 보통 상자 가장자리에 붙지 않는다
         return box_y is not None and (ln["bbox"][1] <= box_y[0] + 1 or ln["bbox"][3] >= box_y[1] - 1)
+
+    # 상자 끝에 닿은 짧은 조각(글자 3개 폭 미만: 구석에 걸친 그림·테두리 조각)은 폭 맞춤보다 먼저 뺀다. 폭 맞춤이 그 조각
+    # 대신 짧은 이름표 줄(‘常時効果’)을 빼 이름표가 지워지지 않던 것 (9쪽)
+    ey = edge_y or box_y
+    # 원문의 짧은 줄(3글자 이하)과 폭이 맞는 줄은 조각으로 보지 않는다 (진짜 ‘3’·‘+1’ 줄을 빼지 않게)
+    ghs = sorted(ln["glyph_h"] for ln in lines)
+    gh_med = ghs[len(ghs) // 2] if ghs else 0
+    short_w = [_line_units(t) * gh_med for t in src
+               if 0 < _line_units(t) <= 3 and TOKEN_RE.sub("", t).strip()]  # 아이콘만 있는 줄은 지우지 않는 줄
+
+    def fits_short(ln) -> bool:
+        w = ln["bbox"][2] - ln["bbox"][0]
+        return any(abs(w - e) <= 0.4 * e for e in short_w)
+    stubs = [ln for ln in lines if ey is not None and ln["bbox"][2] - ln["bbox"][0] < 3 * ln["glyph_h"]
+             and (ln["bbox"][1] <= ey[0] + 3 or ln["bbox"][3] >= ey[1] - 3) and not fits_short(ln)]
+    if stubs:
+        stubs = sorted(stubs, key=lambda ln: ln["bbox"][2] - ln["bbox"][0])[:n_drop]
+        if len(stubs) == n_drop:
+            return stubs
+        rest = [ln for ln in lines if ln not in stubs]
+        return stubs + _extra_lines(rest, src, box_y, glyph_px)
     widths = [ln["bbox"][2] - ln["bbox"][0] for ln in lines]
     units = [_line_units(t) for t in src]
     icon_only = [bool(TOKEN_RE.findall(t)) and not TOKEN_RE.sub("", t).strip() for t in src]
@@ -946,7 +1031,7 @@ def match_source_lines(tm: TextMask, lay: dict, source: str, icon_rows: list | N
             src = src_text
         elif len(lines) == len(src_text):
             src = src_text
-    extra = _extra_lines(lines, src, lay.get("box_y"), tm.glyph_px or None)
+    extra = _extra_lines(lines, src, lay.get("box_y"), tm.glyph_px or None, lay.get("edge_y"))
     kept = [ln for ln in lines if ln not in extra]
     restore = list(extra)
     if _info is not None:

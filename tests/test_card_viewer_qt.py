@@ -22,6 +22,12 @@ def qapp():
 
 
 @pytest.fixture(autouse=True)
+def _no_claude(monkeypatch):
+    """실제 Claude를 부르지 않는다: 아이콘을 모두 정한 뒤 자동 다시 읽기도 ‘연결 안 됨’으로 (필요한 테스트만 바꿔 끼운다)."""
+    monkeypatch.setattr(service, "engine_status", lambda: {"message": "시험: 연결 안 함"})
+
+
+@pytest.fixture(autouse=True)
 def _no_modal_boxes(monkeypatch):
     for name in ("information", "warning", "critical"):
         monkeypatch.setattr(QMessageBox, name, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
@@ -114,6 +120,11 @@ def test_confirm_blocked_shows_problem_and_stays(qapp, tmp_path, monkeypatch):
     from app.qt import card_viewer
 
     info, fd, files, v = _viewer(qapp, tmp_path)
+    # 이름 없는 아이콘이 남은 영역: 확정 버튼 둘이 꺼진다 (1.30.0)
+    assert not v.confirm_btn.isEnabled() and not v.nav_btns["prev_bad"].isEnabled()
+    assert "아이콘을 모두 정한 뒤" in v.confirm_btn.toolTip()
+    _type_name(qapp, v, "lily")
+    assert v.confirm_btn.isEnabled()
     monkeypatch.setattr(service, "confirm_regions", lambda *a, **k: {
         "state": "blocked", "blocking": ["g1: 이름이 비어 있음"], "result": None, "reread": [], "still": [], "saved": 0})
     shown = []
@@ -137,7 +148,7 @@ def test_navigation_between_regions_and_cards(qapp, tmp_path):
     v.nav_btns["next"].click()
     assert v.key == (str(fd), 2, "본문") and "2쪽" in v.windowTitle()
     assert v.nav_btns["next"].isEnabled() is False and v.nav_btns["prev"].isEnabled()
-    v.nav_btns["prev_bad"].click()
+    v.nav_btns["prev"].click()
     assert v.key[1] == 1
     v.nav_btns["next_card"].click()
     assert v.key[1] == 2
@@ -240,6 +251,7 @@ def test_reading_region_is_blue_and_cannot_be_confirmed(qapp, tmp_path):
                    reading_fn=lambda: {(str(fd), 1, "본문")})
     assert w.status_badge.text() == "읽는 중" and not w.confirm_btn.isEnabled()
     assert w.edit.isReadOnly()
+    service.stage_icon_names(info.dir, [{"group": e["group"], "name": "rose"} for e in _region(info, files, 2)["icons"]])
     w2 = CardViewer(info.dir, lambda: service.source_check_rows(info.dir, files), (str(fd), 2),
                     reading_fn=lambda: {(str(fd), 1, "본문")})
     assert w2.confirm_btn.isEnabled()
@@ -568,5 +580,70 @@ def test_reread_rows_are_labelled_and_replace_the_same_reader(qapp, tmp_path):
     assert [(r["model"], r["reread"]) for r in reg["readings"]] == [("Opus", False), ("Sonnet", True)]
     v._reload()
     names = [h.text() for h, _v in v.readings._rows]
-    assert names == ["정밀 읽기", "보통 읽기 · 다시 읽음"]
+    assert names == ["정밀 읽기", "보통 읽기"]  # 같은 방식의 처음 결과는 숨김 → 이름에 ‘다시 읽음’ 붙이지 않음
+    v.close()
+
+
+def test_confirm_buttons_rename_when_no_other_problem(qapp, tmp_path):
+    from app.qt.card_viewer import CONFIRM_ONLY_TEXT, NEXT_CONFIRM_TEXT, PREV_CONFIRM_TEXT
+
+    info, fd, files, v = _viewer(qapp, tmp_path)
+    _type_name(qapp, v, "lily")  # 1쪽: 이름을 정해 확정할 수 있음, 2쪽은 아직 문제
+    assert v.confirm_btn.text() == NEXT_CONFIRM_TEXT and v.nav_btns["prev_bad"].text() == CONFIRM_ONLY_TEXT
+    v.confirm_btn.click()  # 확정 → 다음 문제(2쪽)
+    assert v.key[1] == 2
+    assert v.confirm_btn.text() == CONFIRM_ONLY_TEXT  # 다른 문제 영역이 없다
+    assert v.nav_btns["prev_bad"].text() in (PREV_CONFIRM_TEXT, CONFIRM_ONLY_TEXT)
+    v.close()
+
+
+def test_magnifier_shows_current_icon_and_follows_new_box(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path, name="mag")
+    v.show()
+    QTest.qWaitForWindowExposed(v)
+    v._update_mag()
+    first = v.mag.pixmap().toImage() if v.mag.pixmap() is not None else None
+    assert first is not None and not first.isNull()  # 지금 자리(파랑)가 크게 보인다
+    view = v.view
+    s, ox, oy = view._geom()
+    p0 = QPointF(ox + 2 * s, oy + 2 * s).toPoint()
+    p1 = QPointF(ox + 12 * s, oy + 12 * s).toPoint()
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=p0)
+    QTest.mouseMove(view, p1)
+    assert view.new is not None
+    assert v.mag.pixmap().toImage() != first  # 끄는 동안 새 자리를 따라 그린다
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=p1)
+    v.close()
+
+
+def test_after_icon_op_moves_to_next_problem_icon_then_rereads(qapp, tmp_path):
+    info, fd, files, v = _viewer(qapp, tmp_path, name="adv")
+    picked, reread = [], []
+    v._pick_icon = picked.append
+    v._reread = lambda double=False: reread.append(double)
+    v._entries = [{"occ": "a", "blocking": False}, {"occ": "b", "blocking": True}, {"occ": "c", "blocking": True}]
+    v._advance_icons("b")
+    assert picked == ["c"]  # 다음 문제 아이콘
+    v._advance_icons("c")
+    assert picked == ["c", "b"]  # 뒤에 없으면 첫 문제 아이콘
+    v._entries = [{"occ": "a", "blocking": False}]
+    v._advance_icons("a")
+    assert reread == [True]  # 모두 해결: 보통·정밀 읽기로 다시 읽는다
+    v.close()
+
+
+def test_fresh_double_reread_region_confirms_without_another_reread(qapp, tmp_path, monkeypatch):
+    info, fd, files, v = _viewer(qapp, tmp_path, name="fresh")
+    _type_name(qapp, v, "lily")
+    seen = {}
+
+    def fake_confirm(project_dir, keys, edits=None, **k):
+        seen["edits"] = edits
+        return {"state": "confirmed", "blocking": [], "result": None, "reread": [], "still": [], "saved": 1}
+    monkeypatch.setattr(service, "confirm_regions", fake_confirm)
+    from app.qt.card_viewer import _nk
+
+    v._fresh_reread.add(_nk(v.key))
+    v.confirm_btn.click()
+    assert seen["edits"] and list(seen["edits"].values())[0]["source"] == "AB[[lily]]CD"  # 원문 칸 글을 저장 (또 읽지 않음)
     v.close()

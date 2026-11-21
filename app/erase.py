@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -508,6 +509,63 @@ def _inline_icons(found: list, lay: dict, tm) -> list:
     return out
 
 
+_CANCEL = threading.local()  # 이 스레드의 작업 취소 확인 (쪽 안에서도 영역마다 멈출 수 있게)
+
+
+def set_cancel_check(fn) -> None:
+    """이 스레드에서 erase_page가 영역마다 부를 취소 확인 함수 (CancelToken.check, None이면 끔).
+    쪽 하나를 지우는 데 30초 넘게 걸려, 쪽 사이에서만 확인하면 초기화·삭제가 그만큼 기다렸다."""
+    _CANCEL.check = fn
+
+
+def _cancel_point() -> None:
+    fn = getattr(_CANCEL, "check", None)
+    if fn is not None:
+        fn()
+
+
+def _fill_label_lines(sub: np.ndarray, tm, lay: dict, allow: np.ndarray | None = None) -> None:
+    """이름표 띠 위 글자 줄(테두리 색이 띠 색인 줄: ‘常時効果’·‘プレイ時効果’)은 줄 상자 안에서 띠 색보다 글자색에 가까운
+    픽셀을 모두 지울 자리에 넣는다. 띠 위 흰 글자는 획이 조각나 몇 조각이 빠지면 잔상이 남았다 (1·3·5·7·9쪽).
+    줄 상자는 글자 끝까지라 띠 양 끝의 ◆ 장식은 남는다. 원본 그대로 둘 줄(keep)은 건드리지 않는다."""
+    def rgb(h):
+        h = (h or "").lstrip("#")
+        return np.array([int(h[i:i + 2], 16) for i in (0, 2, 4)], np.float32) if len(h) == 6 else None
+
+    H, W = tm.mask.shape
+    I = sub.astype(np.float32)
+    for ln in lay.get("lines") or []:
+        fg, ring = rgb(ln.get("color")), rgb(ln.get("stroke_color"))
+        if fg is None or ring is None or ln.get("keep") or np.abs(fg - ring).max() < 80:
+            continue
+        x0, y0, x1, y1 = (int(v) for v in ln["bbox"])
+        m = max(2, int(0.15 * float(ln.get("glyph_h") or (y1 - y0))))
+        ax0, ay0, ax1, ay1 = max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(H, y1 + m)
+        patch = I[ay0:ay1, ax0:ax1]
+        # 띠 안쪽만: 띠 색에 가까운 픽셀을 닫고 구멍(글자)을 메운 곳. 줄 상자에 걸친 띠 밖 종이(흰 글자색에 더 가깝다)는
+        # 빼야 띠 가장자리가 패이지 않는다
+        gh = max(3, int(float(ln.get("glyph_h") or (y1 - y0))))
+        band = (np.abs(patch - ring).max(axis=2) < 50).astype(np.uint8)
+        k = max(3, gh // 3) | 1
+        band = cv2.morphologyEx(band, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        flood = np.pad(band, 1)
+        cv2.floodFill(flood, None, (0, 0), 1)
+        band = band.astype(bool) | (flood[1:-1, 1:-1] == 0)  # 띠 + 띠가 둘러싼 글자 구멍
+        band = cv2.erode(band.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        if band.mean() < 0.3:  # 띠가 거의 없다: 띠 위 글자가 아니다
+            continue
+        near_fg = (np.abs(patch - fg).max(axis=2) < np.abs(patch - ring).max(axis=2)) & band
+        # 글자 둘레 번짐 1px만 (테두리 두께만큼 넓히면 지울 자리가 커져 채울 때 띠가 패였다)
+        near_fg = cv2.dilate(near_fg.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool) & band
+        # 글자 바로 둘레(2px)의 띠보다 어두운 테두리·그림자 (빨간 띠에 진한 점으로 남던 것)
+        close = cv2.dilate(near_fg.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool) & band
+        dark = (patch.mean(axis=2) < ring.mean() - 25) & close
+        add = near_fg | dark
+        if allow is not None:  # 보호 자리(지키는 그림·남길 아이콘)와 좁힌 상자 밖은 넣지 않는다
+            add &= allow[ay0:ay1, ax0:ax1]
+        tm.mask[ay0:ay1, ax0:ax1] |= add
+
+
 def _confirmed_icons(found: list, confirmed: list, src: str, to_px, origin: tuple) -> list:
     """찾은 글 속 아이콘 자리 found [(이름, sub px 상자, 아이콘만 있는 줄인가)]에 사람이 확정한 자리를 넣는다.
     confirmed [(이름, 같은 이름의 몇째, 원본 쪽 pt 상자)]: 확정한 자리가 있는 이름은 찾은 자리를 버리고 확정한 자리를 쓴다
@@ -776,6 +834,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     layout_meta: dict[str, dict] = {}
     regs_by_name = {r.name: r for r in template.regions}
     for name, mode in mask_regions.items():
+        _cancel_point()
         b = work_px[name]
         mg = 24
         ox0, oy0 = max(0, b[0] - mg), max(0, b[1] - mg)
@@ -838,6 +897,7 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         lay = erase_text.text_layout(look, tm, lb)
         if lb != lb_region:  # 좁힌 상자: 상자 위·아래 끝에 붙은 줄(띠 안의 그림 조각)을 먼저 원문에 없는 줄로 본다
             lay["box_y"] = [core[1], core[3]]
+        lay["edge_y"] = [lb[1], lb[3]]  # 영역 위·아래 끝 (끝에 닿은 짧은 조각을 원문에 없는 줄로 먼저 뺀다)
         src = (sources or {}).get(name)
         if isinstance(src, str) and "[[?]]" in src and text_only(regs_by_name.get(name)):
             # ‘글자만’ 영역: 이름 없는 [[?]]가 남아 있어도(설정 전에 읽은 원문) 아이콘 자리를 찾거나 지키지 않는다.
@@ -863,6 +923,13 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
                 tm, lay, src, icon_rows=rows or None, img=None if picture_strokes else look, allowed_px=ok_px,
                 keep_idx=kl["lines"] if kl is not None else None,
                 keep_rows=[(b_[1] - oy0, b_[3] - oy0) for b_ in keep_px.get(name) or []])
+        if pic is None and not picture_strokes and not lay.get("keep_failed"):
+            allow = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
+            if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
+                core_m = np.zeros(tm.mask.shape, bool)
+                core_m[core[1]:core[3], core[0]:core[2]] = True
+                allow &= core_m
+            _fill_label_lines(sub, tm, lay, allow)
         # 줄 배치로 찾은 아이콘 자리를 사전 그림으로 다시 확인한다 (원문 줄에 맞춘 줄 띠 안에서): 그림 조각을 줄로 봐
         # 엉뚱한 곳을 지우고 진짜 아이콘은 남기던 것 (공주 5쪽 백합 문양, 8쪽 왼쪽 아래 문장)
         # (돌린 영역은 하지 않는다: 줄 띠는 돌리기 전 좌표인데 원문 줄 순서는 거꾸로라 맞는 자리를 띠 밖으로 버린다)

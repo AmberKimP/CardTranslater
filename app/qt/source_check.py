@@ -107,8 +107,8 @@ class SourceCheckDialog(QDialog):
         self._build_ui()
         self._load_dictionary()
         self.refresh()
-        if focus:
-            self.focus_on(focus)
+        if not (focus and self.focus_on(focus)):
+            self.select_first_problem()
 
     # ================================================================ 화면 만들기
     def _build_ui(self):
@@ -444,7 +444,6 @@ class SourceCheckDialog(QDialog):
         fdir = self.file_combo.currentData()
         narrow = bool(q) or self._group_filter is not None
         only_problem = self.mode_problem.isChecked() and not narrow
-        order = {s: i for i, s in enumerate(service.STATUS_ORDER)}
         fidx = {str(f["dir"]): i for i, f in enumerate(self.files)}
         out = []
         for c in self._cards:
@@ -459,9 +458,28 @@ class SourceCheckDialog(QDialog):
             if narrow and not regs:
                 continue
             out.append({**c, "regions": regs, "status": self._worst(c)})
-        out.sort(key=lambda c: (not self._is_problem_card(c), order[c["status"]], fidx.get(c["file_dir"], 0),
-                                c["page"]))
+        # 쪽 순서만 (문제 카드를 위로 올리지 않는다: 사용자 요청). 처음 열 때 첫 문제 카드를 고른다 (select_first_problem)
+        out.sort(key=lambda c: (fidx.get(c["file_dir"], 0), c["page"]))
         return out
+
+    def select_first_problem(self) -> bool:
+        """목록에서 문제 있는 첫 카드를 골라 펼쳐 보인다. 없으면 False (첫 카드를 고른다)."""
+        first = None
+        for i in range(self.tree.topLevelItemCount()):
+            head = self.tree.topLevelItem(i)
+            kind, k = head.data(0, ROLE_ITEM)
+            if kind != "card":
+                continue
+            first = first or head
+            card = next((c for c in self._visible if _nk(c["key"]) == _nk(k)), None)
+            if card is not None and self._is_problem_card(card):
+                head.setExpanded(True)
+                self.tree.setCurrentItem(head)
+                self.tree.scrollToItem(head, QAbstractItemView.ScrollHint.PositionAtTop)
+                return True
+        if first is not None:
+            self.tree.setCurrentItem(first)
+        return False
 
     def _capture_tree_state(self) -> dict:
         cur = self.tree.currentItem()

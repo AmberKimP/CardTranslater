@@ -238,11 +238,7 @@ class HomePage(QWidget):
 
     def _when_eraser_idle(self, fn):
         """뒤에서 지우던 스레드가 완전히 끝난 뒤 fn() (지우는 중인 폴더를 옮기면 반쯤 남는다)."""
-        bg = self.win.project.bg
-        bg.stop()
-        if not bg.idle:
-            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 삭제합니다")
-        bg.when_idle(fn)
+        self.win.project.bg.stop_then(self, "삭제", fn)
 
     def _delete_project(self, p: dict):
         try:
@@ -867,10 +863,7 @@ class ProjectPage(QWidget):
             return
         what = "output" if r == 0 else "all"
         # 뒤에서 지우는 중이면 그 스레드가 끝난 뒤에 비운다 (지우던 파일이 비운 뒤에 다시 생기지 않게)
-        self.bg.stop()
-        if not self.bg.idle:
-            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 초기화합니다")
-        self.bg.when_idle(lambda: self._do_reset(label, dirs, what))
+        self.bg.stop_then(self, "초기화", lambda: self._do_reset(label, dirs, what))
 
     def _do_reset(self, label: str, dirs, what: str):
         from app.qt.dialogs import show_failure
@@ -977,10 +970,7 @@ class ProjectPage(QWidget):
         if QMessageBox.question(self, "다시 자르기", what) != QMessageBox.StandardButton.Yes:
             return
         # 뒤에서 글자를 지우는 중이면 끝난 뒤에 (지우는 중인 폴더를 옮기면 반쯤 남는다)
-        self.bg.stop()
-        if not self.bg.idle:
-            self.win.statusBar().showMessage("뒤에서 하던 글자 지우기를 멈추는 중… 끝나면 다시 자릅니다")
-        self.bg.when_idle(lambda: self._do_recut(d, chk))
+        self.bg.stop_then(self, "다시 자르기", lambda: self._do_recut(d, chk))
 
     def _do_recut(self, d: dict, chk):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)

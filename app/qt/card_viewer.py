@@ -32,8 +32,8 @@ from app.qt.dialogs import (PRIMARY_QSS, ask_choice, file_label, fit_to_screen, 
                             show_error, show_problem)
 from app.qt.icon_place import IconPlaceView, busy
 from app.qt import source_text
-from app.qt.step_common import (KEEP_LABEL, KEEP_UNDO_LABEL, REREAD_MODELS, UNKNOWN_ICON, _fail_as, as_text,
-                                diff_html, fill_icon_names, precise_index, reader_name, source_font,
+from app.qt.step_common import (ICON_TOKEN_RE, KEEP_LABEL, KEEP_UNDO_LABEL, REREAD_MODELS, UNKNOWN_ICON, _fail_as,
+                                as_text, diff_html, fill_icon_names, precise_index, reader_name, source_font,
                                 state_label)
 
 # 영역 상태 색 (상자 테두리·점·이름표). 설계안 2.2: 빨강 고칠 것, 주황 볼 것, 파랑 읽는 중, 옅은 회색 확인 안 함, 초록 확인됨, 회색 원본 그대로
@@ -43,6 +43,8 @@ STAGED_BG = "#F6F0FD"  # 확정 전 줄 (연보라)
 PINK_BG = "#FDECEC"  # 이름 없음·위치 못 찾음 줄
 ENTRY_TEXT = {"ok": "확정됨", "named": "이름 정함", "unnamed": "이름 없음", "lost": "위치 못 찾음", "not_icon": "아이콘 아님",
               "absorbed": "옆 아이콘에 포함"}
+MAG_SIZE = 200  # 고른 아이콘 확대 칸 (px)
+PREV_CONFIRM_TEXT, NEXT_CONFIRM_TEXT, CONFIRM_ONLY_TEXT = "◀◀ 확정 → 이전 문제", "이 영역 확정 → 다음 문제", "이 영역 확정"
 SENTENCE_TEXT, SENTENCE_UNDO_TEXT = "이 문장만 원본 그대로", "이 문장 원본 그대로 · 되돌리기"  # 카드 보기·아이콘 자리 잡기와 같은 말
 
 
@@ -295,6 +297,7 @@ class CardViewer(QDialog):
         self._region_mode = "cell"
         self._pending_reload = False
         self._shown_key: tuple | None = None
+        self._fresh_reread: set = set()  # 아이콘을 모두 정한 뒤 보통·정밀 읽기로 다시 읽은 영역 (확정 때 또 읽지 않음)
         self._build()
         self._fetch()
         self._show_region(self._initial_key(start))
@@ -351,8 +354,8 @@ class CardViewer(QDialog):
         self.view_hint.setStyleSheet("color: #6E6E73;")
         self.view_hint.setToolTip("빈 곳을 끌어 감싸면 새 자리 · 상자 테두리·모서리를 끌면 크기 바꾸기 · 아이콘 상자를 누르면 그 아이콘 고르기\n"
                                   "휠: 확대·축소 · 확대한 뒤 오른쪽(가운데) 단추로 끌면 옮기기")
-        self.zoom_out_btn = QPushButton("－")
-        self.zoom_in_btn = QPushButton("＋")
+        self.zoom_out_btn = QPushButton("축소")  # 전각 ‘－’·‘＋’는 좁은 버튼에서 글자가 보이지 않았다
+        self.zoom_in_btn = QPushButton("확대")
         self.fit_btn = QPushButton("화면 맞춤")
         self.zoom_label = QLabel("100%")
         self.zoom_label.setStyleSheet("color: #6E6E73;")
@@ -361,8 +364,6 @@ class CardViewer(QDialog):
         self.zoom_out_btn.setToolTip("축소 (휠을 아래로)")
         self.zoom_in_btn.setToolTip("확대 (휠을 위로: 마우스가 있는 곳을 크게)")
         self.fit_btn.setToolTip("그림 전체가 보이게 (영역을 옮기면 늘 화면 맞춤으로 엽니다)")
-        for b in (self.zoom_out_btn, self.zoom_in_btn):
-            b.setFixedWidth(30)
         self.zoom_out_btn.clicked.connect(lambda: self.view.zoom_by(0.8))
         self.zoom_in_btn.clicked.connect(lambda: self.view.zoom_by(1.25))
         self.fit_btn.clicked.connect(self.view.fit)
@@ -373,11 +374,27 @@ class CardViewer(QDialog):
         view_tools.addWidget(self.zoom_out_btn)
         view_tools.addWidget(self.zoom_in_btn)
         view_tools.addWidget(self.fit_btn)
+        # 고른 아이콘 확대 칸 (고정 크기, 그림 오른쪽): 지금 자리, 새 자리를 그리거나 크기를 바꾸면 따라 그린다
+        self.mag = QLabel()
+        self.mag.setFixedSize(MAG_SIZE, MAG_SIZE)
+        self.mag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mag.setStyleSheet("background: #FAFAFA; border: 1px solid #E5E5EA; border-radius: 6px; color: #8E8E93;")
+        self.mag.setToolTip("고른 아이콘을 크게 봅니다 (파랑 = 지금 자리, 빨강 = 새로 잡는 자리)")
+        self.view.box_moved.connect(self._update_mag)
+        mag_col = QVBoxLayout()
+        mag_col.setSpacing(4)
+        mag_col.addWidget(QLabel("<b>고른 아이콘</b>"))
+        mag_col.addWidget(self.mag)
+        mag_col.addStretch(1)
+        view_row = QHBoxLayout()
+        view_row.setSpacing(8)
+        view_row.addWidget(self.view, 1)
+        view_row.addLayout(mag_col)
         view_box = QWidget()
         vl = QVBoxLayout(view_box)
         vl.setContentsMargins(0, 0, 0, 0)
         vl.setSpacing(4)
-        vl.addWidget(self.view, 1)
+        vl.addLayout(view_row, 1)
         vl.addLayout(view_tools)
         # 아이콘 칸
         self.icon_list = QListWidget()
@@ -508,16 +525,16 @@ class CardViewer(QDialog):
         hint.setStyleSheet("color: #8E8E93")
         self.nav_btns: dict[str, QPushButton] = {}
         for kind, text, tip in (
-                ("prev_bad", "◀◀ 이전 문제", "앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
+                ("prev_bad", PREV_CONFIRM_TEXT, "이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
                 ("prev", "◀ 이전 영역", "목록 순서로 앞 영역으로 (Alt+↑)"),
                 ("next", "다음 영역 ▶", "목록 순서로 다음 영역으로 (Alt+↓)"),
                 ("next_card", "다음 카드 ▶▶", "다음 카드의 첫 문제 영역으로")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.setAutoDefault(False)
-            b.clicked.connect(lambda _c=False, k=kind: self._go(k))
+            b.clicked.connect(self._confirm_prev if kind == "prev_bad" else (lambda _c=False, k=kind: self._go(k)))
             self.nav_btns[kind] = b
-        self.confirm_btn = QPushButton("이 영역 확정 → 다음 문제")
+        self.confirm_btn = QPushButton(NEXT_CONFIRM_TEXT)
         self.confirm_btn.setStyleSheet(PRIMARY_QSS)
         self.confirm_btn.setAutoDefault(False)
         self.confirm_btn.setToolTip("확정 전 아이콘 이름을 원문에 넣고, 원문을 ‘사람이 확인’으로 저장합니다 (Ctrl+Enter)")
@@ -770,12 +787,10 @@ class CardViewer(QDialog):
 
     def _fill_source(self, reg: dict, prefill: str | None) -> None:
         c = reg
-        src = as_text(c["source"])
-        removed = c.get("icon_removed")
-        known = set(self._known)
-        # ‘이 영역 다시 읽기’ 결과는 같은 방식의 처음 결과와 이름이 겹치지 않게 ‘· 다시 읽음’을 붙인다
-        texts = [(reader_name(rd["model"]) + (" · 다시 읽음" if rd.get("reread") else ""), fill_icon_names(as_text(rd["source"]), src, known,
-                                                            None if removed is None else bool(removed)))
+        src, removed = self._icon_ref(c)
+        known = self._names_for(c)
+        # 같은 방식으로 다시 읽으면 처음 결과는 숨기므로(service.extracted_cells) 이름은 ‘보통 읽기’·‘정밀 읽기’ 그대로
+        texts = [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known, removed))
                  for rd in c["readings"]]
         pi = precise_index(c["readings"])
         differ = len({t for _n, t in texts}) >= 2
@@ -796,6 +811,39 @@ class CardViewer(QDialog):
         keep = bool(c.get("keep_original") or c.get("keep_mode"))
         self.keep_btn.setChecked(keep)
         self.keep_btn.setText(KEEP_UNDO_LABEL if keep else KEEP_LABEL)
+
+    @staticmethod
+    def _strip_boxed(text: str, c: dict) -> str:
+        """다시 읽은 글에서 아이콘 그림에 든 옆 숫자를 뺀다 (확정할 때 원문에서 빼는 숫자: 아이콘의 strip).
+        그대로 원문 칸에 넣으면 확정 때 숫자가 원문과 아이콘에 두 번 들어갔다."""
+        import re
+
+        for e in c.get("icons") or []:
+            st, name = e.get("strip"), e.get("name")
+            if not st or not name or not st.get("text"):
+                continue
+            num, tok = re.escape(str(st["text"])), re.escape(f"[[{name}]]")
+            pat = rf"{num}[ 　]*(?={tok})" if st.get("side", "before") == "before" else rf"(?<={tok})[ 　]*{num}"
+            text = re.sub(pat, "", text, count=1)
+        return text
+
+    def _names_for(self, c: dict) -> set:
+        """읽은 결과에 붙일 수 있는 아이콘 이름: 사전 이름 + 이 영역에 정해 둔 확정 전 이름."""
+        return set(self._known) | {e["name"] for e in c.get("icons") or [] if e.get("name")}
+
+    def _icon_ref(self, c: dict) -> tuple[str, bool | None]:
+        """읽은 결과의 [[?]]를 맞출 기준 원문과 ‘뺀 아이콘이 있나’. 확정 전 이름·합치기·아이콘 아님을 넣은 미리 보기를 쓴다
+        (원문 그대로 쓰면 확정 전에는 이름이 안 붙고, 넷을 하나로 합쳐도 [[?]]가 넷으로 보였다: 1쪽)."""
+        raw = as_text(c.get("source"))
+        try:
+            ref = service.preview_source(c)
+        except Exception:  # noqa: BLE001 - 미리 보기를 못 만들면 원문 그대로
+            ref = raw
+        removed = c.get("icon_removed")
+        removed = None if removed is None else bool(removed)
+        if len(ICON_TOKEN_RE.findall(ref)) < len(ICON_TOKEN_RE.findall(raw)):
+            removed = True  # 확정 전 합치기·아이콘 아님으로 줄어든 자리
+        return ref, removed
 
     def _fill_picks(self, texts: list[tuple[str, str]]) -> None:
         for b in self.pick_buttons:
@@ -852,7 +900,25 @@ class CardViewer(QDialog):
                                     "확정 전 아이콘 이름을 원문에 넣고, 원문을 ‘사람이 확인’으로 저장합니다 (Ctrl+Enter)")
         self._icon_tools()
         for kind in self.nav_btns:
-            self.nav_btns[kind].setEnabled(self._target(kind) is not None)
+            if kind != "prev_bad":
+                self.nav_btns[kind].setEnabled(self._target(kind) is not None)
+        # 확정 버튼 둘(◀◀ 확정 → 이전 문제 · 이 영역 확정 → 다음 문제): 이 영역의 아이콘이 모두 끝나야 켜진다.
+        # 이전·다음 문제 영역이 없으면 ‘이 영역 확정’ (확정하고 이 영역에 머문다)
+        blocking = reg is not None and any(e.get("blocking") for e in reg.get("icons") or [])
+        can = ok and not blocking
+        has_prev = reg is not None and self._neighbor(self.key, -1, True) is not None
+        has_next = reg is not None and self._neighbor(self.key, +1, True, wrap=True) is not None
+        pb = self.nav_btns["prev_bad"]
+        pb.setText(PREV_CONFIRM_TEXT if has_prev else CONFIRM_ONLY_TEXT)
+        pb.setEnabled(can)
+        self.confirm_btn.setText(NEXT_CONFIRM_TEXT if has_next else CONFIRM_ONLY_TEXT)
+        self.confirm_btn.setEnabled(can)
+        if blocking and ok:
+            why = "이 영역에 이름 없는·위치 못 찾은 아이콘이 있습니다. 아이콘을 모두 정한 뒤 확정하세요"
+            pb.setToolTip(why)
+            self.confirm_btn.setToolTip(why)
+        else:
+            pb.setToolTip("이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로")
 
     def _icon_tools(self) -> None:
         reg = self._region()
@@ -958,6 +1024,15 @@ class CardViewer(QDialog):
                 self.icon_list.setCurrentItem(it)
                 self.icon_list.scrollToItem(it)
                 return
+
+    def _update_mag(self) -> None:
+        pm = self.view.focus_crop(self.mag.size() - QSize(8, 8))
+        if pm.isNull():
+            self.mag.setPixmap(QPixmap())
+            self.mag.setText("아이콘을 고르면\n크게 보입니다")
+        else:
+            self.mag.setText("")
+            self.mag.setPixmap(pm)
 
     def _zoomed(self, z: float) -> None:
         self.zoom_label.setText(f"{round(z * 100)}%")
@@ -1070,12 +1145,32 @@ class CardViewer(QDialog):
         self._card_cache.clear()
         self._reload()
 
-    def _after_op(self, occ: str | None = None, msg: str = "") -> None:
+    def _after_op(self, occ: str | None = None, msg: str = "", advance: str | None = None) -> None:
+        """조작 뒤 다시 그린다. advance(조작 전 고른 자리 id)를 주면 다음 문제 아이콘으로 옮기고, 남은 문제가 없으면
+        이 영역을 보통·정밀 읽기로 다시 읽는다 (이 자리로 저장·아이콘 추가·삭제·합치기 뒤)."""
+        if self.key is not None:  # 아이콘을 바꿨다: 앞서 다시 읽은 결과는 지금 아이콘 자리와 맞지 않을 수 있다
+            self._fresh_reread.discard(_nk(self.key))
         self.changed.emit()
         self._fetch()
         self._show_region(self.key, keep_occ=occ or self._cur_occ)
         if msg:
             self._flash(msg)
+        if advance is not None:
+            self._advance_icons(advance)
+
+    def _advance_icons(self, from_occ: str) -> None:
+        """다음 문제(이름 없음·위치 못 찾음) 아이콘으로: 목록에서 from_occ 뒤의 것 → 없으면 첫 문제 아이콘.
+        문제가 하나도 없으면 새 아이콘 자리로 보통·정밀 읽기를 다시 해 ‘이것 쓰기’·원문 칸을 고친다."""
+        probs = [e for e in self._entries if e.get("blocking")]
+        if probs:
+            order = [e["occ"] for e in self._entries]
+            i = order.index(from_occ) if from_occ in order else -1
+            nxt = next((e for e in self._entries[i + 1:] if e.get("blocking")), None) or probs[0]
+            self._pick_icon(nxt["occ"])
+            return
+        reg = self._region()
+        if reg is not None and self._entries and reg.get("kind") == "text" and isinstance(reg.get("source"), str):
+            self._reread(double=True)
 
     def _open_entries(self, entries: list[dict]) -> dict[str, str]:
         """확정된 아이콘은 [[?]] 자리로 연 뒤 자리 id를 돌려준다 (그 영역 토큰 수는 그대로)."""
@@ -1093,13 +1188,16 @@ class CardViewer(QDialog):
         sel = [e for e in self._selected() if e["state"] not in ("not_icon", "absorbed")]
         if not sel or not self._guard():
             return
+        was = self._cur_occ or sel[0]["occ"]
         try:
             ids = self._open_entries(sel)
             for e in sel:
                 service.set_icon_not_icon(self.project_dir, ids[e["occ"]])
         except Exception as ex:  # noqa: BLE001
             show_error(self, "‘아이콘 아님’으로 정하지 못했습니다", ex)
-        self._after_op(msg="‘아이콘 아님’으로 했습니다 (확정하면 원문에서 빠집니다)")
+            self._after_op()  # 새로 그리기만 (다음 아이콘으로 옮기거나 다시 읽지 않는다)
+            return
+        self._after_op(msg="‘아이콘 아님’으로 했습니다 (확정하면 원문에서 빠집니다)", advance=was)
 
     def _merge_plan(self) -> tuple[str | None, list[str]]:
         sel = self._selected()
@@ -1121,7 +1219,7 @@ class CardViewer(QDialog):
         except Exception as ex:  # noqa: BLE001
             show_error(self, "아이콘을 합치지 못했습니다", ex)
             return
-        self._after_op(host, "아이콘을 합쳤습니다")
+        self._after_op(host, "아이콘을 합쳤습니다", advance=host)
 
     @busy
     def _restore(self) -> None:
@@ -1251,7 +1349,7 @@ class CardViewer(QDialog):
         (사전과 모양이 같아 이름이 정해졌거나 연결할 수 없으면 바로). 제안은 ‘확정 전’ 값이 아니라 줄의 제안으로 남는다."""
         def after(note: str = ""):
             try:
-                self._after_op(occ, msg + (f" — {note}" if note else ""))
+                self._after_op(occ, msg + (f" — {note}" if note else ""), advance=occ)
             except RuntimeError:  # 제안을 받는 동안 창이 지워짐
                 return
         # 자리를 저장한 뒤의 줄(새 줄로 옮겨졌을 수 있다)의 이름으로 정한다: 이름이 있으면(사전·확정·적어 둔 값) 묻지 않는다
@@ -1322,23 +1420,34 @@ class CardViewer(QDialog):
             return
         self._after_op(msg="이 영역은 원본 그대로 둡니다" if keep else "이 영역을 다시 한글화합니다")
 
-    def _reread(self) -> None:
+    def _reread(self, double: bool = False) -> None:
+        """이 영역 다시 읽기. double: 아이콘을 모두 정한 뒤 자동으로 — 보통·정밀 읽기 둘 다 (새 아이콘 자리로)."""
         reg = self._region()
         if reg is None or self._rereading or not self._guard():
             return
         eng = self.engine or service.get_settings().engine
         st = service.engine_status()
         if not st.get(eng):
+            if double:
+                self._flash("아이콘을 모두 정했습니다. Claude에 연결할 수 없어 다시 읽지 못했습니다 (확정하면 뒤에서 다시 읽습니다)",
+                            "warn")
+                return
             show_error(self, "Claude에 연결할 수 없습니다", st["message"],
                        "‘파일 > 로그인 방식’에서 로그인하거나 다른 방식을 고른 뒤 다시 하세요.")
             return
         key = reg["key"]
-        job = worker.Job(service.reread_region, reg["file_dir"], reg["page"], reg["region"],
-                         model=self.reread_model.currentData(), engine=eng, with_progress=False)
+        self._fresh_reread.discard(_nk(key))  # 성공한 두 번 읽기 뒤에만 다시 넣는다 (_reread_done)
+        if double:
+            job = worker.Job(service.reread_region, reg["file_dir"], reg["page"], reg["region"], double=True,
+                             engine=eng, with_progress=False)
+            title = f"아이콘을 모두 정했습니다 — {reg['page']}쪽 {reg['region']} 보통·정밀 읽기로 다시 읽는 중"
+        else:
+            job = worker.Job(service.reread_region, reg["file_dir"], reg["page"], reg["region"],
+                             model=self.reread_model.currentData(), engine=eng, with_progress=False)
+            title = f"{reg['page']}쪽 {reg['region']} 다시 읽는 중"
         self._lock(True)
-        worker.run_with_dialog(self, f"{reg['page']}쪽 {reg['region']} 다시 읽는 중", job,
-                               lambda r: self._reread_done(r, key), self._reread_failed, cancellable=False,
-                               on_cancelled=lambda: self._lock(False))
+        worker.run_with_dialog(self, title, job, lambda r: self._reread_done(r, key, double), self._reread_failed,
+                               cancellable=False, on_cancelled=lambda: self._lock(False))
 
     def _lock(self, on: bool) -> None:
         self._rereading = on
@@ -1351,21 +1460,22 @@ class CardViewer(QDialog):
         self._lock(False)
         _fail_as(self, "다시 읽지 못했습니다")(msg)
 
-    def _reread_done(self, r, key: tuple) -> None:
+    def _reread_done(self, r, key: tuple, double: bool = False) -> None:
         try:
             self._lock(False)
             if r.state != "done":
                 show_problem(self, f"다시 읽지 못했습니다 ({state_label(r.state)})", r.reason or "",
                              retry_after=r.retry_after)
                 return
+            if double:  # 확정할 때 또 읽지 않게 (원문 칸 글을 사람이 확인한 원문으로 저장한다: _confirm)
+                self._fresh_reread.add(_nk(key))
             self.changed.emit()
             self._fetch()
             reg = self._by_key.get(_nk(key), (None, None))[1]
             if reg is None or self.key is None or _nk(self.key) != _nk(key):
                 return
-            removed = reg.get("icon_removed")
-            text = fill_icon_names(as_text(r.source), as_text(reg["source"]), set(self._known),
-                                   None if removed is None else bool(removed))
+            ref, removed = self._icon_ref(reg)
+            text = fill_icon_names(as_text(r.source), ref, self._names_for(reg), removed)
             current = service.preview_source(reg)
             human = bool(reg.get("set_members")) or any(
                 e.get("manual") or e["state"] == "absorbed" or (e["state"] == "not_icon" and e.get("staged"))
@@ -1379,6 +1489,7 @@ class CardViewer(QDialog):
                             + ". 다르게 쓰려면 위 ‘이것 쓰기’"
                             + (" (다시 읽은 결과도 확실하지 않다고 했습니다)" if r.uncertain else ""), "info")
                 return
+            text = self._strip_boxed(text, reg)
             self._show_region(key, prefill=source_text.for_edit(reg, text))
             msg = "다시 읽은 결과를 원문 칸에 넣었습니다. 맞으면 확정하세요."
             if UNKNOWN_ICON in text:
@@ -1396,7 +1507,9 @@ class CardViewer(QDialog):
         if reg is None or self._eff_status(reg) == "reading" or self._rereading:
             return None
         edits = {}
-        if self._dirty():
+        if self._dirty() or _nk(reg["key"]) in self._fresh_reread:
+            # 고친 원문, 또는 아이콘을 모두 정한 뒤 이미 보통·정밀 읽기로 다시 읽은 영역: 원문 칸 글을 사람이 확인한 원문으로
+            # 저장한다 (확정 뒤 뒤에서 또 읽지 않게)
             value, breaks = self._edit_value(reg)
             edits = {tuple(reg["key"]): {"source": value, "breaks": breaks}}
         try:
@@ -1418,12 +1531,21 @@ class CardViewer(QDialog):
         return r
 
     def _confirm_next(self) -> None:
-        if self._confirm() is None:
+        if not self.confirm_btn.isEnabled() or self._confirm() is None:  # Ctrl+Enter도 버튼이 꺼져 있으면 하지 않는다
             return
         cur = self.key
         self._fetch()
         nxt = self._neighbor(cur, +1, only_problem=True, wrap=True)
         self._show_region(nxt or cur)
+
+    def _confirm_prev(self) -> None:
+        """◀◀ 확정 → 이전 문제: 이 영역을 확정하고 앞쪽 문제 영역으로 (없으면 확정만 하고 머문다)."""
+        if self._confirm() is None:
+            return
+        cur = self.key
+        self._fetch()
+        prv = self._neighbor(cur, -1, only_problem=True)
+        self._show_region(prv or cur)
 
     # ------------------------------------------------------------ 옮기기
     def _index(self, key) -> int | None:

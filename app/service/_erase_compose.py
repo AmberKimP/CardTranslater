@@ -162,7 +162,18 @@ def _restore_catalog_keys(doc, keys: dict) -> None:
 
 
 def _erase_chunk(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[list, list]:
-    """pages를 지워 run_dir/pdf_name에 저장하고 확인·비교 이미지(run_dir/compare)를 만든다. (쪽 메타, 상자 확인)."""
+    """pages를 지워 run_dir/pdf_name에 저장하고 확인·비교 이미지(run_dir/compare)를 만든다. (쪽 메타, 상자 확인).
+    취소는 쪽 사이뿐 아니라 쪽 안의 영역마다도 확인한다 (app.erase.set_cancel_check: 쪽 하나가 30초 넘게 걸린다)."""
+    from app import erase as _erase_mod
+
+    _erase_mod.set_cancel_check(cancel.check if cancel else None)
+    try:
+        return _erase_chunk_pages(project, pages, run_dir, pdf_name, progress, cancel)
+    finally:
+        _erase_mod.set_cancel_check(None)  # 스레드 풀의 스레드는 다른 작업에 다시 쓰인다
+
+
+def _erase_chunk_pages(project, pages, run_dir, pdf_name, progress, cancel) -> tuple[list, list]:
     import pymupdf
 
     src_path = project.source_pdf

@@ -62,7 +62,7 @@ def _name_kind(dlg, name="lily", ko="백합"):
     w["ko"].editingFinished.emit()
 
 
-def test_tree_lists_problem_cards_first_and_filters(qapp, tmp_path):
+def test_tree_lists_cards_in_page_order_and_filters(qapp, tmp_path):
     info, fd, dlg = _open(tmp_path, "tree", pages=3)
     heads = _heads(dlg)
     assert len(heads) == 3 and "1쪽" in heads[0].text(0)  # 모두 고칠 것: 쪽 순서
@@ -77,8 +77,8 @@ def test_tree_lists_problem_cards_first_and_filters(qapp, tmp_path):
     assert len(_heads(dlg)) == 2 and "2쪽" in _heads(dlg)[0].text(0)
     dlg.mode_all.click()
     heads = _heads(dlg)
-    assert len(heads) == 3 and "2쪽" in heads[0].text(0) and "1쪽" in heads[2].text(0)  # 문제 카드가 위
-    assert not heads[2].isExpanded() and "모두 확인됨" in heads[2].text(2)
+    assert len(heads) == 3 and "1쪽" in heads[0].text(0) and "3쪽" in heads[2].text(0)  # 쪽 순서만 (1.30.0)
+    assert not heads[0].isExpanded() and "모두 확인됨" in heads[0].text(2)
     dlg.search.setText("lily")
     dlg._rebuild_tree()
     assert len(_heads(dlg)) == 1
@@ -314,3 +314,19 @@ def test_finished_reread_refreshes_open_card_viewer(qapp, tmp_path, monkeypatch)
     assert FakeViewer.refreshed == 1 and not dlg.reading
     dlg._viewer = None
     dlg.close()
+
+
+def test_opening_selects_first_problem_card(qapp, tmp_path):
+    from app.qt.source_check import SourceCheckDialog
+
+    info, fd, dlg = _open(tmp_path, "first", pages=3)
+    service.stage_icon_names(info.dir, [{"group": _group(info, 1), "name": "lily", "ko": "백합"}])
+    assert service.confirm_regions(info.dir, [(fd, 1, "본문")])["state"] == "confirmed"
+    dlg.close()
+    dlg2 = SourceCheckDialog(info.dir, [{"dir": fd, "key": "카드/cards"}])
+    dlg2.mode_all.click()
+    dlg2.select_first_problem()
+    heads = _heads(dlg2)
+    assert "1쪽" in heads[0].text(0)  # 쪽 순서
+    assert dlg2.tree.currentItem() is heads[1] and "2쪽" in heads[1].text(0)  # 첫 문제 카드를 고름
+    dlg2.close()

@@ -8,10 +8,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from app.service import _cells_icons, _extract, _settings
+
+log = logging.getLogger("cardtranslater.icons")
 
 # 영역 상태 (나쁜 것부터). reading(읽는 중)은 화면이 다시 읽기 대기·진행 중인 영역에 덧씌운다
 STATUS_ORDER = ("fix", "check", "reading", "todo", "ok", "keep")
@@ -36,8 +39,9 @@ def _scan(project_dir):
 def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, client=None, suggest: bool = True,
                      full_if_missing: bool = True) -> dict:
     """창을 열 때: 찾기 결과가 없으면 게임 전체를 찾고(이름 제안 포함), 있으면 원문과 달라진 칸만 다시 찾는다.
+    손으로 잡은 상자가 옆 숫자를 감쌌는지도 (한 번) 본다 (icons.recheck_boxed_numbers).
     돌려줌 {"state": "none"|"ok"|"scanned"|"synced", "regions": 다시 찾은 칸 수, "note"}. 오래 걸릴 수 있다 (작업 스레드)."""
-    from app import icons, icons_stage
+    from app import icons, icons_stage, workspace
 
     info, work, res = _scan(project_dir)
     if not icons.token_count(info):
@@ -51,9 +55,18 @@ def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, clie
             return {"state": "failed", "regions": 0, "note": getattr(r, "reason", "") or getattr(r, "note", "") or ""}
         return {"state": "scanned", "regions": 0, "note": getattr(r, "note", "") or ""}
     stale = icons_stage.stale_regions(info, res)
+    if stale:
+        icons_stage.rescan_regions(info, work, stale)
+    try:  # 손으로 잡은 상자가 감싼 옆 숫자: 예전에 확정한 원문에도 남아 있으면 뺀다 (자리마다 한 번)
+        with workspace.EXTRACT_LOCK:
+            nfix = icons.recheck_boxed_numbers(info, work)
+    except Exception:  # noqa: BLE001 - 검사를 못 해도 창은 연다
+        log.warning("아이콘 속 숫자 검사 실패", exc_info=True)
+        nfix = 0
+    if nfix:
+        log.info("아이콘 그림 속 숫자를 원문에서 뺌: %d칸", nfix)
     if not stale:
         return {"state": "ok", "regions": 0, "note": ""}
-    icons_stage.rescan_regions(info, work, stale)
     return {"state": "synced", "regions": len(stale), "note": ""}
 
 

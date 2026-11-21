@@ -217,6 +217,7 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     png.parent.mkdir(parents=True, exist_ok=True)
     _ic.save_png(rgba, png)
     had_picture = bool(o.png)
+    moved = bool(o.box) and len(o.box) == 4 and _iou(o.box, [x0, y0, x1, y1]) < MOVED_IOU
     o.png, o.box, o.manual, o.reason = str(png), [x0, y0, x1, y1], True, ""
     o.number = _boxed_number(img, _text, o, (x0, y0, x1, y1)) or {k: v for k, v in (o.number or {}).items()
                                                                   if k != "boxed"}
@@ -232,6 +233,9 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
                 res.groups[x.group].pop(k, None)
     g = o.group
     gi = res.groups.setdefault(g, {"count": 1})
+    if moved:  # 전혀 다른 곳을 잡았다: 예전 그림에 대한 모델 이름 제안은 맞지 않는다 (6쪽: 사람 자리에 coin_3 제안이 남음)
+        for k in SUGGEST_KEYS:
+            gi.pop(k, None)
     for k in ("absorbed", "auto"):  # 세트 조각이었던 줄: 이제 따로 있는 아이콘
         if gi.pop(k, None) is not None:
             gi.pop("not_icon", None)
@@ -283,8 +287,13 @@ def order_conflicts(res: "ScanResult", o: "Occurrence") -> list[str]:
     return out
 
 
+SUGGEST_KEYS = ("suggest", "meaning", "ko")  # 줄(그림)에 붙은 모델 이름 제안
+MOVED_IOU = 0.3  # 다시 잡은 상자가 예전 상자와 이만큼도 안 겹치면 다른 그림으로 본다
+
+
 def swap_boxes(info, work: Path, a_id: str, b_id: str) -> dict:
-    """같은 칸의 두 자리의 상자(그림)를 서로 바꾼다. 확정 전 이름(staged)도 그림을 따라 바꾼다 (이름은 그림의 이름이다).
+    """같은 칸의 두 자리의 상자(그림)를 서로 바꾼다. 확정 전 이름(staged)과 모델 이름 제안도 그림을 따라 바꾼다
+    (이름은 그림의 이름이다: 제안을 남기면 6쪽처럼 같은 이름이 두 번 들어갔다).
     돌려줌 {"a": set_manual_box 결과, "b": 결과}."""
     work = Path(work)
     res = _ic.load_scan(work)
@@ -295,8 +304,9 @@ def swap_boxes(info, work: Path, a_id: str, b_id: str) -> dict:
     if not a.box or not b.box:
         raise ValueError("두 아이콘 모두 자리가 있어야 바꿀 수 있습니다")
     box_a, box_b = list(a.box), list(b.box)
-    st_a = (res.groups.get(a.group) or {}).get("staged")
-    st_b = (res.groups.get(b.group) or {}).get("staged")
+    keys = ("staged", *SUGGEST_KEYS)
+    st_a = {k: (res.groups.get(a.group) or {}).get(k) for k in keys}
+    st_b = {k: (res.groups.get(b.group) or {}).get(k) for k in keys}
     ra = set_manual_box(info, work, a_id, box_b)
     rb = set_manual_box(info, work, b_id, box_a)
     res = _ic.load_scan(work)
@@ -304,23 +314,32 @@ def swap_boxes(info, work: Path, a_id: str, b_id: str) -> dict:
     gb = next(x for x in res.occurrences if x.id == b_id).group
     for g, st in ((ga, st_b), (gb, st_a)):
         gi = res.groups.setdefault(g, {"count": 1})
-        if st:
-            gi["staged"] = st
-        else:
-            gi.pop("staged", None)
+        for k, v in st.items():
+            if v:
+                gi[k] = v
+            else:
+                gi.pop(k, None)
     _ic._save_scan(work, res)
     return {"a": ra, "b": rb}
+
+
+def _occ_token(text: str, o: "Occurrence"):
+    """그 자리의 원문 토큰 (re.Match | None). 이름이 정해진 자리는 ti, 이름 없는 자리는 index(몇째 [[?]])가 기준
+    (_insert_token도 index로 ti를 다시 정한다)."""
+    toks = list(_ic.TOKEN_RE.finditer(text or ""))
+    if o.named:
+        return toks[o.ti] if 0 <= o.ti < len(toks) and toks[o.ti].group(1) == o.named else None
+    ph = [m for m in toks if m.group(1) == "?"]
+    t = ph[o.index] if 0 <= o.index < len(ph) else None
+    if t is None and 0 <= o.ti < len(toks) and toks[o.ti].group(1) == "?":
+        t = toks[o.ti]
+    return t
 
 
 def _boxed_number(img: np.ndarray, text: str, o: "Occurrence", box) -> dict | None:
     """손으로 잡은 상자가 토큰 옆 숫자까지 감쌌으면 {"text", "side", "boxed": True} (확정할 때 원문에서 뺀다), 아니면 None.
     예: 원문 ‘2 [[?]]’에서 2가 아이콘 그림 안에 인쇄돼 있어 사람이 2까지 감쌈."""
-    toks = list(_ic.TOKEN_RE.finditer(text or ""))
-    # 이름 없는 자리는 index(몇째 [[?]])가 기준이다 (_insert_token도 index로 ti를 다시 정한다). 없으면 ti
-    ph = [m for m in toks if m.group(1) == "?"]
-    t = ph[o.index] if 0 <= o.index < len(ph) else None
-    if t is None and 0 <= o.ti < len(toks) and toks[o.ti].group(1) == "?":
-        t = toks[o.ti]
+    t = _occ_token(text, o)
     if t is None:
         return None
     num = _ic.number_near(text, t.start(), t.end())
@@ -331,6 +350,60 @@ def _boxed_number(img: np.ndarray, text: str, o: "Occurrence", box) -> dict | No
     except Exception:  # noqa: BLE001 - 검사를 못 하면 숫자는 원문에 남긴다
         return None
     return {"text": text[num[1]:num[2]], "side": num[0], "boxed": True} if inside else None
+
+
+def recheck_boxed_numbers(info, work: Path) -> int:
+    """손으로 잡은 상자 중 아직 검사하지 않은 것: 상자가 옆 숫자까지 감쌌으면 숫자를 아이콘 그림으로 본다.
+    이름 없는 자리는 확정할 때 원문에서 빼게 적어 두고, 이미 확정한 자리는 지금 원문에서 빼고 icon_numbers에 적는다
+    (숫자 검사가 고쳐지기 전에 확정한 3쪽 ‘5 [[coin_up]]’처럼 숫자가 원문에도 남은 것). 자리마다 한 번만 본다.
+    돌려줌: 원문을 고친 칸 수."""
+    from app import workspace
+
+    work = Path(work)
+    res = _ic.load_scan(work)
+    todo = [o for o in res.occurrences if o.manual and o.box and len(o.box) == 4 and not o.num_checked]
+    if not todo:
+        return 0
+    fixed = 0
+    for o in todo:
+        if (o.number or {}).get("boxed"):
+            o.num_checked = True
+            continue
+        try:
+            fd, img, text = _occ_region(info, o)
+        except Exception:  # noqa: BLE001 - 그림·원문을 못 읽으면 다음에 다시 본다
+            continue
+        o.num_checked = True
+        num = _boxed_number(img, text, o, tuple(o.box))
+        if num is None:
+            continue
+        o.number = num
+        if not o.named:
+            continue  # 확정할 때 뺀다 (_icon_entries의 strip)
+        t = _occ_token(text, o)
+        hit = _ic.number_near(text, t.start(), t.end()) if t is not None else None
+        if hit is None:
+            continue
+        sep = text[hit[2]:t.start()] if hit[0] == "before" else text[t.end():hit[1]]
+        new_src = _ic.strip_spans(text, [(hit[1], hit[2])])
+        entry = {"index": o.ti, "name": o.named, "text": text[hit[1]:hit[2]], "side": hit[0], "sep": sep}
+        for f in _ic._extract_files(fd, o.page):
+            rec = json.loads(f.read_text(encoding="utf-8"))
+            r = rec["regions"].get(o.region)
+            if not r or r.get("source") != text:
+                continue
+            if any(isinstance(e, dict) and e.get("index") == o.ti for e in r.get("icon_numbers") or []):
+                continue  # 그 아이콘에 이미 넣은 숫자가 있다 (반대쪽 숫자): 덮어쓰지 않는다
+            r["source"] = new_src
+            nums = [e for e in r.get("icon_numbers") or [] if isinstance(e, dict) and e.get("index") != o.ti]
+            r["icon_numbers"] = sorted(nums + [entry], key=lambda e: e["index"])
+            note = "아이콘 그림 속 숫자를 원문에서 뺌"
+            if note not in (r.get("note") or ""):
+                r["note"] = " / ".join([x for x in (r.get("note") or "").split(" / ") if x] + [note])
+            workspace._write(f, rec)
+            fixed += 1
+    _ic._save_scan(work, res)
+    return fixed
 
 
 def open_named(info, res: "ScanResult", o: "Occurrence") -> None:

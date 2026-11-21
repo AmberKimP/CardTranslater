@@ -64,6 +64,7 @@ class IconPlaceView(QWidget):
     drawn = Signal()
     picked = Signal(str)
     zoomed = Signal(float)
+    box_moved = Signal()  # 보이는 상자(새 자리·지금 자리)가 바뀜: 확대 칸이 따라 그린다 (끄는 동안에도)
 
     def __init__(self):
         super().__init__()
@@ -86,6 +87,7 @@ class IconPlaceView(QWidget):
         self._pm, self.box, self.guess, self.marks, self.new, self._drag = pm, box, guess, marks, None, None
         self._drag_btn = None
         self.update()
+        self.box_moved.emit()
         if resized:
             self.zoomed.emit(self.zoom)
 
@@ -195,6 +197,28 @@ class IconPlaceView(QWidget):
             frame(self.new, "#D62828", "새 자리", width=3, handles=True)
         p.end()
 
+    def focus_crop(self, size) -> QPixmap:
+        """확대 칸에 보일 그림: 새 자리(없으면 지금 자리)를 둘레 조금과 함께 잘라 size에 맞춘다 (상자 테두리도 그림).
+        보일 상자가 없으면 빈 QPixmap."""
+        from PySide6.QtCore import QRect
+
+        b = self.new or self.box
+        if self._pm.isNull() or not b:
+            return QPixmap()
+        x0, y0, x1, y1 = (float(v) for v in b)
+        m = 0.15 * max(x1 - x0, y1 - y0, 4.0)
+        r = QRect(int(x0 - m), int(y0 - m), int(x1 - x0 + 2 * m) + 1, int(y1 - y0 + 2 * m) + 1) & self._pm.rect()
+        if r.isEmpty():
+            return QPixmap()
+        crop = self._pm.copy(r).scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation)
+        k = crop.width() / max(1, r.width())
+        p = QPainter(crop)
+        p.setPen(QPen(QColor("#D62828" if self.new else "#1F6FEB"), 2))
+        p.drawRect(QRectF((x0 - r.x()) * k, (y0 - r.y()) * k, (x1 - x0) * k, (y1 - y0) * k))
+        p.end()
+        return crop
+
     def drawing(self) -> bool:
         """새 자리를 그리거나 상자 크기를 바꾸는 중 (실제로 끌기 시작한 뒤)."""
         return self._drag is not None and self._drag[0] in ("new", "resize") and self.new is not None
@@ -294,6 +318,7 @@ class IconPlaceView(QWidget):
                 b[3] = y
             self.new = [min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])]
         self.update()
+        self.box_moved.emit()
 
     def mouseReleaseEvent(self, e):
         if self._drag is None or e.button() != self._drag_btn:
@@ -314,6 +339,7 @@ class IconPlaceView(QWidget):
                 return
             self.new = None  # 빈 곳·다른 아이콘을 누름: 새 자리를 지운다
             self.update()
+            self.box_moved.emit()
             occ = self._mark_at(pos)
             if occ:
                 self.picked.emit(occ)
@@ -322,6 +348,7 @@ class IconPlaceView(QWidget):
         if self.new and (self.new[2] - self.new[0] < 4 or self.new[3] - self.new[1] < 4):
             self.new = None  # 너무 작음
         self.update()
+        self.box_moved.emit()
         self.drawn.emit()
 
     def wheelEvent(self, e):

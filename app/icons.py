@@ -620,7 +620,8 @@ def number_near(text: str, start: int, end: int) -> tuple[str, int, int] | None:
     return None
 
 
-def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_chars: int):
+def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_chars: int, parts: list | None = None,
+                  erode: bool = False):
     """아이콘 상자 옆(side: before=왼쪽, after=오른쪽)에 인쇄된 숫자를 상자에 넣는다. 숫자가 아이콘 위에 인쇄돼
     상자 안에 있으면 상자 그대로. 그림에서 숫자를 찾지 못하면 None (그때는 원문 숫자도 그대로 둔다)."""
     import cv2
@@ -628,6 +629,8 @@ def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_
     bx0, by0, bx1, by1 = box
     h = max(1, by1 - by0)
     ink = _ink(img, h).astype(np.uint8)
+    if erode:  # number_in_box: 숫자가 몸통에 가늘게 붙은 것을 떼어 본다
+        ink = cv2.erode(ink, np.ones((3, 3), np.uint8))
     n, _lab, st, _c = cv2.connectedComponentsWithStats(ink, connectivity=8)
     comps = []
     for i in range(1, n):
@@ -654,6 +657,8 @@ def absorb_number(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_
         got.append(nxt)
         edge = nxt[0] if side == "before" else nxt[2]
         gap = 0.35 * h
+    if parts is not None:  # 고른 숫자 글자 상자들 (number_in_box가 숫자 자체의 자리를 잰다)
+        parts.extend(got)
     if got:
         xs = [c[0] for c in got] + [c[2] for c in got]
         ys = [c[1] for c in got] + [c[3] for c in got]
@@ -672,6 +677,8 @@ def number_in_box(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_
     bx0, by0, bx1, by1 = (int(v) for v in box)
     h = max(1, by1 - by0)
     ink = _ink(img, h).astype(np.uint8)
+    # 조금 깎아 가는 잉크 연결을 끊는다: 숫자가 몸통에 가늘게 붙어 한 덩어리가 되면 몸통 옆 숫자를 못 찾았다 (6쪽 ‘2’)
+    ink = cv2.erode(ink, np.ones((3, 3), np.uint8))
     n, _lab, st, _c = cv2.connectedComponentsWithStats(ink, connectivity=8)
     best, best_a = None, 0
     for i in range(1, n):
@@ -684,19 +691,13 @@ def number_in_box(img: np.ndarray, box: tuple[int, int, int, int], side: str, n_
             best, best_a = (x, y, x + w, y + hh), w * hh
     if best is None:
         return False
-    nb = absorb_number(img, best, side, n_chars)
-    if nb is None or tuple(nb) == best:
+    got: list = []
+    nb = absorb_number(img, best, side, n_chars, parts=got, erode=True)
+    if nb is None or tuple(nb) == best or not got:
         return False
-    # 숫자 글자 자체의 폭으로 잰다 (숫자와 아이콘 사이 빈 곳은 빼고: 빈 곳만 감싸도 숫자를 감싼 것으로 보지 않게)
-    g0, g1 = (nb[0], best[0]) if side == "before" else (best[2], nb[2])
-    xs = []
-    for i in range(1, n):
-        x, y, w, hh, a = (int(v) for v in st[i])
-        if a >= 6 and x >= g0 - 1 and x + w <= g1 + 1 and y + hh > nb[1] and y < nb[3]:
-            xs.append((x, x + w))
-    if not xs:
-        return False
-    d0, d1 = min(u for u, _ in xs), max(v for _, v in xs)
+    # 숫자 글자 자체의 폭으로 잰다 (숫자와 아이콘 사이 빈 곳은 빼고: 빈 곳만 감싸도 숫자를 감싼 것으로 보지 않게).
+    # absorb_number가 고른 글자 상자를 그대로 쓴다 (잉크를 다른 높이로 다시 재면 숫자가 옆 그림 선과 이어져 빠졌다: 3쪽 5)
+    d0, d1 = min(c[0] for c in got), max(c[2] for c in got)
     if d1 <= d0:
         return False
     return (max(0, min(d1, bx1) - max(d0, bx0)) / (d1 - d0)) >= 0.5
@@ -1245,6 +1246,7 @@ class Occurrence:
     ti: int = -1  # 그 칸의 모든 [[…]] 토큰 중 몇째 (0부터)
     prev: str = ""  # 확정된 이름이 있던 자리를 [[?]]로 연 경우 그 이름 (2A가 이름 칸에 미리 채운다)
     added: bool = False  # 사람이 카드 보기에서 새로 그려 넣은 자리 (원문에 없던 아이콘)
+    num_checked: bool = False  # 손으로 잡은 상자가 옆 숫자를 감쌌는지 검사함 (recheck_boxed_numbers, 한 번만)
 
     @property
     def num_in_image(self) -> bool:

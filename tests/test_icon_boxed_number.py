@@ -93,3 +93,25 @@ def test_erase_icon_boxes_skips_cells_out_of_text_order():
     bad["본문2"]["source"] = "生活[[house]]\n" + src  # 엇갈리지 않은 house는 쓴다 (8쪽)
     bad["본문2"]["icon_boxes"].insert(0, {"name": "house", "k": 0, "box": [10, 0, 30, 5]})
     assert [n for n, _k, _b in erase_icon_boxes(bad, pymupdf.Rect(0, 0, 200, 300), [R])["본문2"]] == ["house"]
+
+
+def test_moving_a_box_far_away_drops_the_old_name_suggestion(tmp_path):
+    from app import icons, service
+    from tests.test_icons import _project
+
+    info, fd = _project(tmp_path, "mv", pages=1)
+    service.find_icons(info.dir, suggest=False)
+    work = info.game_dir / "work" / "icons"
+    res = icons.load_scan(work)
+    o = res.occurrences[0]
+    res.groups[o.group].update(suggest="coin_3", meaning="코인", ko="코인")
+    icons._save_scan(work, res)
+    service.set_icon_box(info.dir, o.id, o.box)  # 같은 자리: 제안은 그대로
+    gi = icons.load_scan(work).groups[icons.load_scan(work).occurrences[0].group]
+    assert gi.get("suggest") == "coin_3"
+    x0, y0, x1, y1 = o.box
+    w = x1 - x0
+    service.set_icon_box(info.dir, o.id, [x0 + 2 * w, y0, x1 + 2 * w, y1])  # 전혀 다른 곳
+    res2 = icons.load_scan(work)
+    gi = res2.groups[res2.occurrences[0].group]
+    assert not gi.get("suggest") and not gi.get("meaning")

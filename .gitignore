@@ -44,3 +44,6 @@ games/
 
 # 휴지통 (지운 프로젝트·파일·옛 엑셀, 사용자 데이터)
 .trash/
+
+# Send-Continue.ps1 실행 기록
+Send-Continue.log
