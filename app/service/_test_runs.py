@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.jsonio import write_json
 from app.project import load_project, parse_page_spec
 from app.service import _base
 from app.service import _erase_compose
@@ -306,16 +307,7 @@ def _record_test(group_dir: Path, entry: dict) -> dict:
             _remove_test_dir(run.get("erase_dir"))
     Path(group_dir).mkdir(parents=True, exist_ok=True)
     p = Path(group_dir) / TEST_HISTORY_FILE
-    tmp = p.with_suffix(".tmp")  # 쓰다가 멈춰도 반쪽짜리 기록이 남지 않게 임시 파일에 쓰고 바꾼다
-    tmp.write_text(json.dumps({"tests": keep}, ensure_ascii=False, indent=2), encoding="utf-8")
-    for i in range(20):  # Windows: 다른 스레드가 마침 읽는 중이면 바꿔 쓰기를 거절한다
-        try:
-            tmp.replace(p)
-            break
-        except PermissionError:
-            if i == 19:
-                raise
-            time.sleep(0.05)
+    write_json(p, {"tests": keep})  # 쓰다가 멈춰도 반쪽짜리 기록이 남지 않게
     return entry
 
 

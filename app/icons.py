@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
+from app.jsonio import write_json
 from app import workspace
 from app.regions import text_only
 
@@ -66,10 +67,7 @@ def load_dictionary(info) -> dict:
 
 def save_dictionary(info, data: dict) -> None:
     p = dictionary_path(info)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    write_json(p, data)
 
 
 def style_for_compose(file_dir: Path) -> dict:

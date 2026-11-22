@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.jsonio import write_json
+
 log = logging.getLogger("cardtranslater.translate")
 
 STATUS_TERM = "용어 불일치"
@@ -142,10 +144,7 @@ def load_cache(project_dir: Path) -> dict:
 
 def save_cache(project_dir: Path, cache: dict) -> None:
     p = cache_path(project_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    write_json(p, cache)
 
 
 def _stale(entry: dict, source: str, glossary: list[dict]) -> bool:

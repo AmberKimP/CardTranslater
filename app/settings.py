@@ -14,6 +14,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.jsonio import write_json
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENGINES = ("claude-code", "api")
 
@@ -65,10 +67,7 @@ def save(s: Settings) -> Path:
     if s.engine not in ENGINES:
         raise ValueError(f"모르는 엔진: {s.engine}")
     p = settings_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(asdict(s), ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    write_json(p, asdict(s))
     return p
 
 

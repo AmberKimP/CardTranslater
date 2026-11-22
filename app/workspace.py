@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import json
 import re
-import os
 import shutil
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from app.jsonio import write_json
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 STATUSES = ("extracting", "glossary_review", "glossary_confirmed", "translating", "translated")
@@ -48,19 +49,7 @@ def _read(p: Path) -> dict:
 EXTRACT_LOCK = threading.RLock()
 
 
-def _write(p: Path, data: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # 임시 파일 이름은 쓰는 스레드마다 다르게 (두 스레드가 같은 임시 파일을 섞어 쓰지 않게)
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    for i in range(20):  # Windows: 다른 스레드(뒤에서 글자 지우기)가 마침 읽는 중이면 바꿔 쓰기를 거절한다
-        try:
-            tmp.replace(p)
-            return
-        except PermissionError:
-            if i == 19:
-                raise
-            time.sleep(0.05)
+_write = write_json  # 예전 이름 (여러 모듈이 workspace._write로 부른다)
 
 
 def games_dir(root: Path = DEFAULT_ROOT) -> Path:

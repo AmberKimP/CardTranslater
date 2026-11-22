@@ -33,6 +33,8 @@ import re
 import cv2
 import numpy as np
 
+from app.erase_fill import _disk
+
 MODES = ("auto", "solid", "pattern", "rect_avg", "inpaint")
 MODE_LABELS = {
     "auto": "자동 (배경 보고 고름)",
@@ -53,10 +55,6 @@ COLOR_TOL = 45.0  # 같은 색으로 묶는 거리
 BOLD_WEIGHT = 0.13  # 획 두께 / 글자 높이가 이 이상이면 굵은 글자 (줄 하나만 있을 때)
 BOLD_UNIFORM = 0.15  # 굵기가 고른 여러 줄: 가운데 값이 이 이상이어야 모두 굵은 글자 (기울인 작은 보통 글씨가 0.12~0.14)
 BOLD_SPREAD = 0.2  # 줄 굵기의 (최대-최소)/가운데 값이 이보다 작으면 같은 굵기의 줄들로 본다
-
-
-def _disk(r: int) -> np.ndarray:
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
 def _lum(a: np.ndarray) -> np.ndarray:

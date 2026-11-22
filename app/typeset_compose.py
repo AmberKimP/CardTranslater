@@ -463,7 +463,7 @@ def _rgb(h: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def _hex_rgb(c) -> str:
+def _rgb_to_hex(c) -> str:
     c = [int(round(float(v))) for v in c]
     return "#%02x%02x%02x" % tuple(max(0, min(255, v)) for v in c)
 
@@ -1207,7 +1207,7 @@ def compose_layout_region(page: pymupdf.Page, rect, text: str, style_d: dict, la
             groups.append([ln])
     gid = {}
     for k, g in enumerate(groups):
-        col = _hex_rgb(np.median([_rgb(x["color"]) for x in g], axis=0))
+        col = _rgb_to_hex(np.median([_rgb(x["color"]) for x in g], axis=0))
         gh = float(np.median([x["glyph_h_pt"] for x in g]))
         for x in g:
             gid[id(x)] = (k, col, gh)

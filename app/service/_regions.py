@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.jsonio import write_json
 from app.service import _base
 from app.service import _overview
 
@@ -86,9 +87,7 @@ def save_region_template(group_dir: Path | str, data: dict) -> list[str]:
     p = Path(group_dir) / "regions.json"
     if p.exists():
         shutil.copyfile(p, p.with_suffix(".json.bak"))
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    write_json(p, data)
     return []
 
 

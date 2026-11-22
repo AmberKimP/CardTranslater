@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pymupdf
 
+from app.colors import hex_to_rgb01  # noqa: F401 - 예전처럼 app.typeset.hex_to_rgb01로도 쓴다
 from app.font_files import resolve as resolve_font  # 프로그램 폴더 → 글꼴 묶음
 from app.typeset_ink import DEFAULT_KO_SAMPLE, _font, _glyph_ink, font_ink_ratio, start_size_for_ink
 from app.typeset_layout import (
@@ -58,11 +59,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------- 스타일
-def hex_to_rgb01(color: str) -> tuple[float, float, float]:
-    c = color.lstrip("#")
-    return tuple(int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))  # type: ignore[return-value]
-
-
 @dataclass
 class TextStyle:
     font_file: str

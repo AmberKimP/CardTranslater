@@ -27,6 +27,7 @@ import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from app.jsonio import write_json
 from app.regions import text_only
 
 log = logging.getLogger("cardtranslater.extract")
@@ -103,10 +104,7 @@ class ExtractState:
         return cls()
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.__dict__, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        write_json(path, self.__dict__)
 
 
 class Paused(Exception):
@@ -250,17 +248,17 @@ def build_params(project, page_no: int, src_doc, model: str = MODEL, regions=Non
 TAG_COLOR_TOL = 45.0  # RGB 거리. 같은 종류 라벨의 실측 차이 ≈ 10, 다른 종류끼리 ≥ 60
 
 
-def _hex_rgb(h: str) -> tuple[int, int, int]:
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
     h = h.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 def match_tag_color(color: str, vocab: list[dict], tol: float = TAG_COLOR_TOL) -> str | None:
     """라벨 색과 가장 가까운 사전 항목의 글자 (tol 밖이면 None)."""
-    c = _hex_rgb(color)
+    c = _hex_to_rgb(color)
     best, bd = None, tol
     for v in vocab:
-        d = sum((a - b) ** 2 for a, b in zip(c, _hex_rgb(v["color"]))) ** 0.5
+        d = sum((a - b) ** 2 for a, b in zip(c, _hex_to_rgb(v["color"]))) ** 0.5
         if d <= bd:
             best, bd = v["text"], d
     return best
@@ -583,10 +581,7 @@ def _write_page(base: Path, page_no: int, regions: dict, msg, batch: bool) -> fl
         "extracted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     f = page_file(base, page_no)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(f)  # 쓰다가 멈춰도 반쪽짜리 결과가 남지 않게
+    write_json(f, rec)
     return c
 
 
@@ -985,10 +980,7 @@ def _run_claude_code(project, pages, client, st, spath, done, kinds, src_doc, re
             "extracted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         f = page_file(base, pno)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        write_json(f, rec)
         st.equiv_usd += reply.cost_equiv_usd
         done.add(pno)
         st.save(spath)
@@ -1063,7 +1055,7 @@ def learn_tag_colors(project, src_doc, known: dict, tol: float = TAG_COLOR_TOL) 
                 warns.append(f"p{pno} {reg.name}: 라벨 {len(labels)}개 / 글자 {len(words)}개 -> 건너뜀")
                 continue
             for lab, w in zip(labels, words):
-                acc.setdefault(reg.name, {}).setdefault(w, []).append(_hex_rgb(lab["color"]))
+                acc.setdefault(reg.name, {}).setdefault(w, []).append(_hex_to_rgb(lab["color"]))
     out: dict = {}
     for name, by_word in acc.items():
         items = []
@@ -1075,7 +1067,7 @@ def learn_tag_colors(project, src_doc, known: dict, tol: float = TAG_COLOR_TOL) 
             items.append({"color": "#%02x%02x%02x" % avg, "text": w, "samples": len(cols)})
         for i, a in enumerate(items):
             for b in items[i + 1:]:
-                d = sum((x - y) ** 2 for x, y in zip(_hex_rgb(a["color"]), _hex_rgb(b["color"]))) ** 0.5
+                d = sum((x - y) ** 2 for x, y in zip(_hex_to_rgb(a["color"]), _hex_to_rgb(b["color"]))) ** 0.5
                 if d <= tol:
                     warns.append(f"{name}: '{a['text']}'와 '{b['text']}'의 라벨 색이 비슷함 (차이 {d:.0f})")
         out[name] = sorted(items, key=lambda v: -v["samples"])
@@ -1409,9 +1401,7 @@ def flag_lookalikes(base: Path, pages: list[int] | None = None) -> int:
             pending = rec.setdefault("recheck_pending", [])
             if name not in pending:
                 pending.append(name)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        write_json(f, rec)
         n += 1
     if n:
         log.info("닮은 한자 의심 칸 %d개를 확인 필요로 표시", n)
@@ -1508,9 +1498,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         rec.pop("recheck_pending", None)
         rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),
                           "cost_equiv_usd": round(eq, 6), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(f)
+        write_json(f, rec)
 
     try:
         _pipelined(todo, prepare, finish, extract_workers(getattr(client, "engine", "api")), cancel, before)

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.jsonio import write_json
 from app.project import load_project, parse_page_spec
 from app.service import _base
 from app.service import _erase_compose
@@ -137,9 +138,7 @@ def learn_tag_colors(project_dir: Path | str, save: bool = False) -> tuple[dict,
         for r in data["regions"]:
             if r["name"] in vocab:
                 r.setdefault("extract", {})["tag_colors"] = vocab[r["name"]]
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        write_json(path, data)
     return vocab, warns
 
 

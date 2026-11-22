@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import json
 import math
-import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from app.jsonio import write_json
 
 ALIGN_FILE = "align.json"
 ALIGN_LONG_PX = 420  # 맞출 때 그리는 회색 그림의 긴 변 (카드 한 장이면 약 120dpi: 1px ≈ 카드 높이의 0.25%)
@@ -307,16 +308,7 @@ def save(file_dir: Path | str, data: dict) -> None:
         if p.exists():
             p.unlink()
         return
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    for i in range(20):  # Windows: 다른 스레드가 마침 읽는 중이면 바꿔 쓰기를 거절한다
-        try:
-            tmp.replace(p)
-            return
-        except PermissionError:
-            if i == 19:
-                raise
-            time.sleep(0.05)
+    write_json(p, data)
 
 
 def applied(entry: dict | None) -> bool:

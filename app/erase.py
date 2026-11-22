@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from app.colors import hex_to_rgb01  # noqa: F401 - 예전처럼 app.erase.hex_to_rgb01로도 쓴다
 from app.regions import (
     Box,
     Region,
@@ -75,11 +76,6 @@ PATCH_INSET_PT = 0.002  # 패치 사각형을 안쪽으로 넣는 양 (grid-fit 
 def rgb_to_hex(rgb) -> str:
     r, g, b = (int(round(float(v))) for v in rgb[:3])
     return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def hex_to_rgb01(h: str) -> tuple[float, float, float]:
-    h = h.lstrip("#")
-    return tuple(int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
 
 
 def int_color_to_hex(c: int) -> str:
