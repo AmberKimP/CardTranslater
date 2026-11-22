@@ -87,7 +87,7 @@ def save_region_template(group_dir: Path | str, data: dict) -> list[str]:
     p = Path(group_dir) / "regions.json"
     if p.exists():
         shutil.copyfile(p, p.with_suffix(".json.bak"))
-    write_json(p, data)
+    write_json(p, data, mkdir=False)
     return []
 
 

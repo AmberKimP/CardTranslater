@@ -86,7 +86,7 @@ def save(file_dir: Path | str, regions: dict, cards: dict | None = None, sentenc
                 clean_slots[name] = {"ref": ref, **({"page": int(sl["page"])} if sl.get("page") else {})}
         data["sentence_slots"] = clean_slots
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
-    write_json(p, data)
+    write_json(p, data, mkdir=False)
     log.info("글꼴 저장: %s 영역 %d개, 카드별 %d쪽", p, len(data["regions"]), len(clean))
     return p
 
@@ -104,7 +104,7 @@ def set_card_font(file_dir: Path | str, page: int, region: str, font_file: str |
     if not card:
         cards.pop(str(int(page)), None)
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
-    write_json(p, data)
+    write_json(p, data, mkdir=False)
 
 
 def slot_fonts(slots: dict | None, n: int) -> dict[int, str]:
@@ -211,7 +211,7 @@ def set_card_style(file_dir: Path | str, page: int, region: str, *, size: float 
         picks = {str(int(i)): f for i, f in paragraphs.items() if f}
         put("sentences", picks, bool(picks))
     data["updated"] = time.strftime("%Y-%m-%d %H:%M")
-    write_json(p, data)
+    write_json(p, data, mkdir=False)
 
 
 def size_scales(data: dict) -> dict:

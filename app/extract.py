@@ -1401,7 +1401,7 @@ def flag_lookalikes(base: Path, pages: list[int] | None = None) -> int:
             pending = rec.setdefault("recheck_pending", [])
             if name not in pending:
                 pending.append(name)
-        write_json(f, rec)
+        write_json(f, rec, mkdir=False)
         n += 1
     if n:
         log.info("닮은 한자 의심 칸 %d개를 확인 필요로 표시", n)
@@ -1498,7 +1498,7 @@ def run_recheck(project, pages: list[int], client, *, base: Path, check_model: s
         rec.pop("recheck_pending", None)
         rec["recheck"] = {"model": check_model, "regions": names, "cost_usd": round(c, 6),
                           "cost_equiv_usd": round(eq, 6), "at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        write_json(f, rec)
+        write_json(f, rec, mkdir=False)
 
     try:
         _pipelined(todo, prepare, finish, extract_workers(getattr(client, "engine", "api")), cancel, before)

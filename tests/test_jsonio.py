@@ -27,3 +27,11 @@ def test_write_json_threads_do_not_mix(tmp_path):
 def test_hex_to_rgb01():
     assert hex_to_rgb01("#ff0080") == (1.0, 0.0, 128 / 255)
     assert hex_to_rgb01("000000") == (0.0, 0.0, 0.0)
+
+
+def test_write_json_mkdir_false_keeps_missing_folder_an_error(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        write_json(tmp_path / "gone" / "x.json", {}, mkdir=False)
+    assert not (tmp_path / "gone").exists()

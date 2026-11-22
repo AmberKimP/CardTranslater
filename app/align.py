@@ -308,7 +308,7 @@ def save(file_dir: Path | str, data: dict) -> None:
         if p.exists():
             p.unlink()
         return
-    write_json(p, data)
+    write_json(p, data, mkdir=False)
 
 
 def applied(entry: dict | None) -> bool:
