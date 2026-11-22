@@ -24,7 +24,7 @@ from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget)
 
 from app import service
 from app.qt import worker
@@ -41,6 +41,7 @@ STATUS_COLOR = {"fix": "#D62828", "check": "#E67E22", "reading": "#1F6FEB", "tod
                 "keep": "#8A8A8A"}
 STAGED_BG = "#F6F0FD"  # 확정 전 줄 (연보라)
 PINK_BG = "#FDECEC"  # 이름 없음·위치 못 찾음 줄
+GRAY_BG = "#E9E9EC"  # 아이콘 아님·옆 아이콘에 포함 줄 (그림의 회색 상자와 같은 뜻: 확정 전이어도 회색)
 ENTRY_TEXT = {"ok": "확정됨", "named": "이름 정함", "unnamed": "이름 없음", "lost": "위치 못 찾음", "not_icon": "아이콘 아님",
               "absorbed": "옆 아이콘에 포함"}
 MAG_SIZE = 200  # 고른 아이콘 확대 칸 (px)
@@ -159,7 +160,8 @@ class IconRow(QFrame):
         self.occ = e["occ"]
         self.entry = e
         self.setObjectName("iconrow")
-        bg = PINK_BG if e["state"] in ("unnamed", "lost") else STAGED_BG if e["pending"] else "white"
+        bg = (GRAY_BG if e["state"] in ("not_icon", "absorbed") else PINK_BG if e["state"] in ("unnamed", "lost")
+              else STAGED_BG if e["pending"] else "white")
         self._bg = bg
         self.set_current(False)
         self.img = QLabel()
@@ -420,7 +422,7 @@ class CardViewer(QDialog):
         self.sentence_btn = QPushButton(SENTENCE_TEXT)
         self.absorb_btn = QPushButton("옆 아이콘에 포함됨")
         self.overlap_btn = QPushButton("겹친 아이콘 흡수")
-        self.save_btn.setToolTip("고른 아이콘을 그림에서 끌어 감싼 자리로 다시 자릅니다 (바로 저장)")
+        self.save_btn.setToolTip("고른 아이콘을 그림에서 끌어 감싼 자리로 다시 자릅니다 (바로 저장, Ctrl+S)")
         self.add_btn.setToolTip("원문에 빠진 아이콘: 그림에서 끌어 감싼 뒤 누르세요. 원문에 [[?]]가 하나 늘어납니다")
         self.del_btn.setToolTip("고른 아이콘을 ‘아이콘 아님’으로 합니다 (확정하면 원문에서 빠짐)")
         self.merge_btn.setToolTip("2개 이상 고르면 하나의 아이콘으로 합칩니다 (나머지는 원문에서 빠짐)")
@@ -525,8 +527,11 @@ class CardViewer(QDialog):
         self.close_btn = QPushButton("목록으로")
         self.close_btn.setAutoDefault(False)
         self.close_btn.clicked.connect(self.close)
-        hint = QLabel("Ctrl+Enter 확정 · Alt+↑/↓ 영역 이동")
+        hint = QLabel("Ctrl+Enter 확정 · Ctrl+S 이 자리로 저장 · Alt+↑/↓ 영역 이동")
         hint.setStyleSheet("color: #8E8E93")
+        hint.setToolTip(hint.text())
+        # 글이 길어져도 창 최소 폭을 늘리지 않는다 (좁으면 잘려 보이고, 마우스를 올리면 다 보인다)
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.nav_btns: dict[str, QPushButton] = {}
         for kind, text, tip in (
                 ("prev_bad", PREV_CONFIRM_TEXT, "이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
@@ -579,8 +584,14 @@ class CardViewer(QDialog):
                   self.absorb_btn, self.overlap_btn, self.zoom_in_btn, self.zoom_out_btn, self.fit_btn):
             b.setAutoDefault(False)
         for keys, fn in (("Ctrl+Return", self._confirm_next), ("Ctrl+Enter", self._confirm_next),
+                         ("Ctrl+S", self._save_shortcut),
                          ("Alt+Down", lambda: self._go("next")), ("Alt+Up", lambda: self._go("prev"))):
             QShortcut(QKeySequence(keys), self, activated=fn)
+
+    def _save_shortcut(self) -> None:
+        """Ctrl+S = ‘이 자리로 저장’ (버튼을 누를 수 있을 때만: 새 자리를 그리지 않았으면 아무것도 하지 않는다)."""
+        if self.save_btn.isEnabled() and self.save_btn.isVisible():
+            self._save_box()
 
     # ------------------------------------------------------------ 데이터
     def _fetch(self) -> None:
@@ -1049,7 +1060,7 @@ class CardViewer(QDialog):
     def _drawn(self) -> None:
         self._icon_tools()
         if self.view.new is not None and self.save_btn.isEnabled():
-            self._flash("새 자리를 잡았습니다. ‘이 자리로 저장’을 누르면 저장됩니다"
+            self._flash("새 자리를 잡았습니다. ‘이 자리로 저장’(Ctrl+S)을 누르면 저장됩니다"
                         + (" (원문에 빠진 아이콘이면 ‘아이콘 추가’)" if self.add_btn.isEnabled() else ""))
 
     def _pick_icon(self, occ: str) -> None:
@@ -1349,6 +1360,11 @@ class CardViewer(QDialog):
         def inside(b) -> bool:
             return bool(b) and b[0] <= cx <= b[2] and b[1] <= cy <= b[3]
         own = self._place.get("guess") or self._place.get("box")  # 예상 자리, 자리가 있던 아이콘은 지금 자리
+        if own is not None and self._place.get("guess"):
+            # 예상 자리는 짐작이다 (1.33.0부터 아이콘 크기 근처로 좁음): 조금 벗어난 진짜 자리를 옆 [[?]]의 것으로 묻지 않게
+            # 가운데 기준 1.5배로 넓혀 본다 (다른 줄의 아이콘을 잡은 경우는 여전히 밖이다)
+            mx, my = (own[2] - own[0]) * 0.25, (own[3] - own[1]) * 0.25
+            own = (own[0] - mx, own[1] - my, own[2] + mx, own[3] + my)
         if own is None or inside(own):  # 제 자리·예상 자리 안이면 그대로 (자리를 조금 고쳐 잡음)
             return None
         by_occ = {x["occ"]: x for x in self._entries}

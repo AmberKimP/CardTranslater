@@ -217,23 +217,31 @@ class IconPlaceView(QWidget):
         p.end()
 
     def focus_crop(self, size) -> QPixmap:
-        """확대 칸에 보일 그림: 새 자리(없으면 지금 자리)를 둘레 조금과 함께 잘라 size에 맞춘다 (상자 테두리도 그림).
+        """확대 칸에 보일 그림: 새 자리(없으면 지금 자리, 그것도 없으면 예상 위치)를 둘레 조금과 함께 잘라 size에 맞춘다
+        (상자 테두리도 그림).
         보일 상자가 없으면 빈 QPixmap."""
         from PySide6.QtCore import QRect
 
-        b = self.new or self.box
+        # 지금 자리가 없는 아이콘(위치 못 찾음)은 새 자리를 그리기 전에도 예상 위치를 보인다 (빈 칸이었다)
+        b = self.new or self.box or self.guess
         if self._pm.isNull() or not b:
             return QPixmap()
         x0, y0, x1, y1 = (float(v) for v in b)
-        # 보이는 자리(크기)는 고정: 고른 아이콘의 지금 자리(없으면 처음 그린 새 자리) 둘레로 한 번 정한다. 상자를 그리거나
-        # 크기를 바꿀 때마다 자리를 다시 정하면 확대 배율이 계속 바뀌어 테두리가 움직이는 것이 보이지 않았다.
-        # 새 상자가 그 자리를 벗어날 때만 넓힌다. 새 상자를 지우면 지금 자리 기준으로 되돌린다
+        # 보이는 자리(크기)는 고정: 고른 아이콘의 지금 자리(없으면 예상 위치, 그것도 없으면 처음 그린 새 자리) 둘레로 한 번
+        # 정한다. 상자를 그리거나 크기를 바꿀 때마다 자리를 다시 정하면 확대 배율이 계속 바뀌어 테두리가 움직이는 것이
+        # 보이지 않았다. 새 상자가 그 자리를 벗어날 때만 넓힌다. 새 상자를 지우면 지금 자리 기준으로 되돌린다
         if self.new is None:
             self._focus_area = None
         if self._focus_area is None:
-            a0, b0, a1, b1 = (float(v) for v in (self.box or b))
+            guess = self.guess
+            if self.box is None and guess and self.new and (self.new[2] < guess[0] or self.new[0] > guess[2]
+                                                           or self.new[3] < guess[1] or self.new[1] > guess[3]):
+                guess = None  # 예상 위치 밖에 그리기 시작함: 예상이 틀렸다. 둘을 다 담느라 확대가 줄지 않게 새 자리로
+            a0, b0, a1, b1 = (float(v) for v in (self.box or guess or b))
             side = max(a1 - a0, b1 - b0, 8.0)
-            if self.box is None:  # 지금 자리가 없는 아이콘(위치 못 찾음): 끌기 시작한 작은 상자 말고 넉넉한 크기로
+            if self.box is None and guess:  # 예상 위치는 이미 아이콘보다 넉넉하다: 그 둘레 조금만 더
+                side *= 0.75
+            elif self.box is None:  # 예상 위치도 없음: 끌기 시작한 작은 상자 말고 넉넉한 크기로
                 side = max(side, 0.25 * min(self._pm.width(), self._pm.height()))
             cx, cy, m = (a0 + a1) / 2, (b0 + b1) / 2, side
             self._focus_area = (cx - m, cy - m, cx + m, cy + m)
@@ -248,7 +256,10 @@ class IconPlaceView(QWidget):
                                        Qt.TransformationMode.SmoothTransformation)
         k = crop.width() / max(1, r.width())
         p = QPainter(crop)
-        p.setPen(QPen(QColor("#D62828" if self.new else "#1F6FEB"), 2))
+        pen = QPen(QColor("#D62828" if self.new else "#1F6FEB" if self.box else "#E67E22"), 2)  # 빨강 새 자리·파랑 지금 자리
+        if not (self.new or self.box):  # 주황 점선 = 예상 위치 (큰 그림과 같은 표시)
+            pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
         p.drawRect(QRectF((x0 - r.x()) * k, (y0 - r.y()) * k, (x1 - x0) * k, (y1 - y0) * k))
         p.end()
         return crop

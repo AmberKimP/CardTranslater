@@ -672,6 +672,23 @@ def tall_box_problem(img: np.ndarray, text: str, box) -> str:
     return ""
 
 
+def _band_share(band, bands, n_lines: int, line_no: int, H: int):
+    """여러 원문 줄이 붙은 높은 띠에서 line_no 줄의 몫 (띠를 그 띠에 드는 줄 수로 고르게 나눈다).
+    어느 줄이 그 띠에 드는지는 줄 순서 비율(원문 i째 줄의 가운데 = (i + 0.5) / 줄 수 × 높이)로 가장 가까운 띠로 정한다."""
+    if not bands or band not in bands:
+        return band
+    j = bands.index(band)
+
+    def near(i: int) -> int:
+        cy = (i + 0.5) / max(1, n_lines) * H
+        return min(range(len(bands)), key=lambda b: abs((bands[b][0] + bands[b][1]) / 2 - cy))
+    group = sorted({i for i in range(n_lines) if near(i) == j} | {line_no})
+    if len(group) < 2:
+        return band
+    k, h = group.index(line_no), (band[1] - band[0]) / len(group)
+    return (int(band[0] + k * h), int(band[0] + (k + 1) * h))
+
+
 def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int] | None:
     """locate가 못 찾은 아이콘의 대략적인 자리 (사람이 직접 잡을 때 길잡이). 줄 띠와 줄 안 글자 비율로 짐작한다.
     원문 줄 수가 그림 줄 수와 다르고 아이콘만 있는 줄을 합치면 맞으면 합친 원문으로 짐작한다 (줄마다 하나씩 적힌
@@ -707,11 +724,21 @@ def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int
         # 글이 있는 줄인데 고른 띠가 글자보다 훨씬 높으면(색 판 전체·아래 아이콘 줄) 글자 높이 띠로 다시 짝짓는다
         # (locate의 INLINE_ICON_MAX 규칙과 같게: 5쪽 ‘[[?]]を得る’의 예상 자리가 아래 포션 줄에 놓였다)
         text_h = text_height(comps)
-        if text_h and TOKEN_RE.sub("", lines[line_no]).strip() and band[1] - band[0] > INLINE_ICON_MAX * 1.1 * text_h:
+        wordy = bool(TOKEN_RE.sub("", lines[line_no]).strip())
+        too_tall = INLINE_ICON_MAX * 1.1 * text_h
+        if text_h and wordy and band[1] - band[0] > too_tall:
             tf = _bands_text_first(comps, rules)
             bi = (line_no if len(tf) == len(lines) else _match_line(lines, line_no, tf, comps)) if tf else None
-            if bi is not None:
-                band = tf[bi]
+            src = bands  # 고른 띠가 나온 목록 (띠 나누기는 그 목록 안에서 줄을 센다)
+            # 글자 높이의 절반도 안 되는 띠는 글 줄이 아니다 (라벨 띠 테두리 조각: 8쪽 ‘[[?]]を得る’의 예상 자리가
+            # ‘プレイ時効果’ 라벨 위 가는 조각에 57x14로 놓였다)
+            if bi is not None and tf[bi][1] - tf[bi][0] >= 0.5 * text_h:
+                band, src = tf[bi], tf
+            if band[1] - band[0] > too_tall and len(src) != len(lines):
+                # 그래도 글자 줄보다 훨씬 높으면 색 판(라벨 + 그 아래 얼룩)이 여러 글 줄을 한 띠로 붙인 것이다: 그 띠에 든
+                # 원문 줄 수로 나눠 이 줄 몫만 쓴다 (7쪽: 예상 자리가 판 전체 590x455였다). 띠 수가 원문 줄 수와 같으면
+                # 띠 하나가 이미 한 줄이다 (나누지 않는다)
+                band = _band_share(band, src, len(lines), line_no, H)
         y0, y1 = band
         bh = max(8, y1 - y0)
         cs = [c for c in comps if y0 - bh * 0.2 <= c[1] + c[3] / 2 <= y1 + bh * 0.2]
@@ -721,8 +748,23 @@ def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int
         units = [1.1 if t == "■" else _units(t) for t in seq] or [1.0]
         unit = (lx1 - lx0) / max(sum(units), 1e-6)
         cx = lx0 + (sum(units[:pos]) + units[pos] / 2) * unit
-        half = max(bh, unit) * 0.9  # 짐작이라 넉넉하게
-        return (int(max(0, cx - half)), int(max(0, y0 - bh * 0.2)), int(min(W, cx + half)), int(min(H, y1 + bh * 0.2)))
+        cy, half_h = (y0 + y1) / 2, 0.7 * bh
+        if wordy:
+            half = max(bh, unit) * 0.9  # 짐작이라 넉넉하게
+            # 글 줄 아이콘은 글자 높이의 2배까지 크다: 글자 높이로 잡힌 띠(5쪽 ‘[[?]]を得る’ 50px)보다 위아래로 넉넉하게
+            half_h = max(half_h, INLINE_ICON_MAX * text_h / 2)
+        else:
+            # 아이콘만 있는 줄: 한 칸 폭(unit)이 줄 전체 폭이 될 수 있다 (아이콘 하나뿐인 줄 = 영역 폭 전체였다, 7쪽).
+            # 아이콘은 줄 높이만 하다: 칸 폭 남짓, 많아야 줄 높이 정도로 (옆 아이콘 자리까지 덮지 않게)
+            half = min(max(0.66 * unit, 0.5 * bh) * 1.1, 1.1 * bh)
+            # 아이콘 하나뿐인 줄: 좁혔으니 가운데는 글자 칸 비율 말고 그 줄의 큰 덩어리 전체(숫자 포함 세트 아이콘)에 맞춘다
+            # (한쪽 끝에만 배경 조각이 있으면 비율 자리가 아이콘을 벗어났다). 아이콘이 여럿인 줄은 덩어리를 아이콘에
+            # 짝짓지 않는다: 여러 조각 아이콘(3쪽 ‘5 + 상자’)이 두 덩어리로 세어져 옆 [[?]]의 자리로 갔다
+            big = [c for c in cs if c[3] >= 0.4 * bh]
+            if seq.count("■") == 1 and big:
+                bx0, bx1 = min(c[0] for c in big), max(c[0] + c[2] for c in big)
+                cx, half = (bx0 + bx1) / 2, max(half, 0.6 * (bx1 - bx0))
+        return (int(max(0, cx - half)), int(max(0, cy - half_h)), int(min(W, cx + half)), int(min(H, cy + half_h)))
     except Exception:  # noqa: BLE001 - 짐작은 없어도 된다
         return None
 
