@@ -555,3 +555,28 @@ def test_failed_list_read_keeps_regions_instead_of_showing_nothing(qapp, tmp_pat
     assert v.flat and retries  # 예전 목록 그대로 + 조금 뒤 다시 읽기
     v.rows_fn = good
     v.close()
+
+
+def test_confirm_next_goes_to_next_problem_even_when_card_leaves_problem_only_list(qapp, tmp_path):
+    """목록 창이 ‘문제만’일 때 카드의 마지막 문제를 확정하면 그 카드가 목록에서 빠진다: 예전에는 지금 영역을 못 찾아
+    첫 카드의 첫 영역(3쪽 본문, 문제 없음)으로 갔다. 확정 전 순서로 다음 문제(3쪽 본문2)를 찾는다."""
+    from tests.test_card_viewer_qt import _viewer
+
+    from app.qt.card_viewer import _nk
+
+    info, fd, files, v = _viewer(qapp, tmp_path, name="po")
+
+    def card(page, regs):
+        rows = [{"key": (str(fd), page, name), "region": name, "status": st, "pending": False} for name, st in regs]
+        return {"key": (str(fd), page), "regions": rows}
+
+    before = [card(2, [("본문", "fix")]), card(3, [("본문", "todo"), ("본문2", "fix")])]
+    order = [r["key"] for c in before for r in c["regions"]]
+    after = [before[1]]  # 2쪽은 문제를 다 고쳐 ‘문제만’ 목록에서 빠짐
+    v.flat = [(c, r) for c in after for r in c["regions"]]
+    v._by_key = {_nk(r["key"]): (c, r) for c, r in v.flat}
+    assert v._after_confirm((str(fd), 2, "본문"), order, +1, wrap=True) == (str(fd), 3, "본문2")
+    # 남은 문제가 없으면 순서상 가까운 영역 (첫 카드 첫 영역으로 튀지 않게)
+    after[0]["regions"][1]["status"] = "ok"
+    assert v._after_confirm((str(fd), 2, "본문"), order, +1, wrap=True) == (str(fd), 3, "본문")
+    v.close()

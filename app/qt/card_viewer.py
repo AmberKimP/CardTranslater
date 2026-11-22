@@ -1699,21 +1699,45 @@ class CardViewer(QDialog):
         return r
 
     def _confirm_next(self) -> None:
-        if not self.confirm_btn.isEnabled() or self._confirm() is None:  # Ctrl+Enter도 버튼이 꺼져 있으면 하지 않는다
+        if not self.confirm_btn.isEnabled():  # Ctrl+Enter도 버튼이 꺼져 있으면 하지 않는다
             return
-        cur = self.key
+        cur, order = self.key, [r["key"] for _c, r in self.flat]  # 확정 전 순서 (확정하면 목록에서 빠질 수 있다)
+        if self._confirm() is None:
+            return
         self._fetch()
-        nxt = self._neighbor(cur, +1, only_problem=True, wrap=True)
-        self._show_region(nxt or cur)
+        self._show_region(self._after_confirm(cur, order, +1, wrap=True))
 
     def _confirm_prev(self) -> None:
         """◀◀ 확정 → 이전 문제: 이 영역을 확정하고 앞쪽 문제 영역으로 (없으면 확정만 하고 머문다)."""
+        cur, order = self.key, [r["key"] for _c, r in self.flat]
         if self._confirm() is None:
             return
-        cur = self.key
         self._fetch()
-        prv = self._neighbor(cur, -1, only_problem=True)
-        self._show_region(prv or cur)
+        self._show_region(self._after_confirm(cur, order, -1, wrap=False))
+
+    def _after_confirm(self, cur, order: list, step: int, wrap: bool):
+        """확정한 뒤 갈 영역: 확정 전 순서(order)에서 cur 다음(step 방향)의 문제 영역 중 지금 목록에 있는 첫 영역.
+        목록 창이 ‘문제만’이면 문제를 다 고친 카드는 목록에서 빠져 cur를 찾지 못했다: 그때 첫 카드의 첫 영역(3쪽 본문)으로
+        가던 문제. 문제 영역이 없으면 cur (목록에서 빠졌으면 cur 다음의 아무 영역, 그것도 없으면 첫 영역)."""
+        keys = [_nk(k) for k in order]
+        i = keys.index(_nk(cur)) if cur is not None and _nk(cur) in keys else -1
+        if i < 0:  # 예전 순서에도 없음: 지금 목록 기준
+            return self._neighbor(cur, step, only_problem=True, wrap=wrap) or cur
+        n = len(order)
+        if step > 0:
+            rng = list(range(i + 1, n)) + (list(range(0, i)) if wrap else [])
+        else:
+            rng = list(range(i - 1, -1, -1)) + (list(range(n - 1, i, -1)) if wrap else [])
+        for j in rng:
+            hit = self._by_key.get(keys[j])
+            if hit is not None and self.is_problem(hit[1]):
+                return hit[1]["key"]
+        if _nk(cur) in self._by_key:
+            return cur
+        for j in rng:  # cur가 목록에서 빠짐: 순서상 가까운, 아직 목록에 있는 영역
+            if keys[j] in self._by_key:
+                return self._by_key[keys[j]][1]["key"]
+        return cur
 
     # ------------------------------------------------------------ 옮기기
     def _index(self, key) -> int | None:
