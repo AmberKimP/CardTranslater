@@ -71,7 +71,37 @@ class TranslationReviewDialog(QDialog):
         self._first = True
         self._text_font = source_font(self.font(), 1)
 
-        # ---- 위: 거르기
+        top, guide_row = self._build_filter_bar(preset)
+        left = self._build_table_panel()
+        head, pics = self._build_edit_header()
+        base_row = self._build_source_rows()
+        btns = self._build_edit_buttons()
+        scroll = self._build_editor_scroll(head, pics, base_row, btns)
+        self._build_split(left, scroll)
+        bottom = self._build_bottom_bar()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(8)
+        lay.addLayout(top)
+        lay.addLayout(guide_row)
+        lay.addWidget(self.split, 1)
+        lay.addWidget(self.excel_hint)
+        lay.addLayout(bottom)
+
+        self._install_shortcuts()
+        self._make_timers()
+        self._last = self._snapshot()
+        self.scope.currentIndexChanged.connect(self._on_scope_changed)
+        for c in (self.view, self.status, self.region):
+            c.currentIndexChanged.connect(self._on_filter_changed)
+        self.search.textChanged.connect(lambda _t: self._search_timer.start())
+        self.search.returnPressed.connect(self._on_filter_changed)
+        self._show_empty()
+        self._sync_excel()
+        self.load()
+
+    def _build_filter_bar(self, preset: tuple | None) -> tuple[QHBoxLayout, QHBoxLayout]:
+        """위: 범위·보기·상태·영역·찾기 줄과 안내 줄."""
         self._scopes = self._build_scopes()
         self.scope = self._combo(10)
         for label, _kind, _dirs in self._scopes:
@@ -108,8 +138,10 @@ class TranslationReviewDialog(QDialog):
         guide_row = QHBoxLayout()
         guide_row.addWidget(self.guide, 1)
         guide_row.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
+        return top, guide_row
 
-        # ---- 왼쪽: 표
+    def _build_table_panel(self) -> QWidget:
+        """왼쪽: 표와 색 설명."""
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         hh = self.table.horizontalHeader()
@@ -141,8 +173,10 @@ class TranslationReviewDialog(QDialog):
         ll.setSpacing(6)
         ll.addWidget(self.table, 1)
         ll.addWidget(legend)
+        return left
 
-        # ---- 오른쪽: 편집
+    def _build_edit_header(self) -> tuple[QHBoxLayout, QHBoxLayout]:
+        """오른쪽 편집 칸 위: 제목·쪽 표시와 원문·한글 넣은 모습 그림."""
         self.head = QLabel()
         self.head.setStyleSheet("font-weight: bold; font-size: 11pt")
         self.pos = QLabel()
@@ -167,6 +201,10 @@ class TranslationReviewDialog(QDialog):
             else:
                 col.addSpacing(self.pv_note.sizeHint().height())
             pics.addLayout(col, 1)
+        return head, pics
+
+    def _build_source_rows(self) -> QHBoxLayout:
+        """원문 칸·초벌 번역 줄·엑셀과 달라진 칸 알림. 초벌 줄을 돌려준다."""
         self.source = QPlainTextEdit()
         self.source.setReadOnly(True)
         self.source.setFont(self._text_font)
@@ -199,6 +237,10 @@ class TranslationReviewDialog(QDialog):
         cb.addStretch(1)
         cl.addWidget(self.conflict_msg)
         cl.addLayout(cb)
+        return base_row
+
+    def _build_edit_buttons(self) -> QHBoxLayout:
+        """번역 입력칸·확인 표시와 단추 줄."""
         self.edit = QPlainTextEdit()
         self.edit.setFont(self._text_font)
         self.edit.setMinimumHeight(76)
@@ -231,6 +273,10 @@ class TranslationReviewDialog(QDialog):
         self.help = grey_note(HELP)
         self.help.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         btns.addWidget(self.help, 1)
+        return btns
+
+    def _build_editor_scroll(self, head, pics, base_row, btns) -> QScrollArea:
+        """오른쪽 편집 칸을 세로로 쌓아 스크롤 영역에 넣는다."""
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 0, 8, 0)
@@ -251,6 +297,10 @@ class TranslationReviewDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setMinimumWidth(560)
         scroll.setWidget(right)
+        return scroll
+
+    def _build_split(self, left: QWidget, scroll: QScrollArea) -> None:
+        """왼쪽 표와 오른쪽 편집 칸을 나누는 splitter (self.split)."""
         self.split = QSplitter()
         self.split.addWidget(left)
         self.split.addWidget(scroll)
@@ -258,7 +308,8 @@ class TranslationReviewDialog(QDialog):
         self.split.setStretchFactor(1, 3)
         self.split.setSizes([560, 840])
 
-        # ---- 아래: 엑셀 줄
+    def _build_bottom_bar(self) -> QHBoxLayout:
+        """아래: 엑셀 알림·엑셀 단추·닫기 줄."""
         self.excel_hint = hint_bar("엑셀이 열려 있습니다. 엑셀에서 저장한 칸이 앱에서 고친 것보다 우선합니다. 한쪽에서만 고치세요.", "warn")
         self.excel_label = QLabel()
         self.excel_label.setWordWrap(True)
@@ -277,19 +328,16 @@ class TranslationReviewDialog(QDialog):
         for b in (self.next_btn, self.save_btn, self.preview_btn, self.base_btn, self.keep_app, self.keep_now,
                   self.b_xl_open, self.b_xl_make, close):
             b.setAutoDefault(False)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(8)
-        lay.addLayout(top)
-        lay.addLayout(guide_row)
-        lay.addWidget(self.split, 1)
-        lay.addWidget(self.excel_hint)
-        lay.addLayout(bottom)
+        return bottom
 
+    def _install_shortcuts(self) -> None:
         for keys, fn in (("Ctrl+Return", self.confirm_next), ("Ctrl+Enter", self.confirm_next), ("Ctrl+S", self.save_here),
                          ("Ctrl+P", self.request_preview), ("Ctrl+F", self.focus_search),
                          ("Alt+Down", lambda: self.move_row(1)), ("Alt+Up", lambda: self.move_row(-1))):
             QShortcut(QKeySequence(keys), self, activated=fn)
+
+    def _make_timers(self) -> None:
+        """검사·미리 보기 지연 시간표."""
         self._check_timer = QTimer(self)
         self._check_timer.setSingleShot(True)
         self._check_timer.setInterval(CHECK_MS)
@@ -298,15 +346,6 @@ class TranslationReviewDialog(QDialog):
         self._pv_timer.setSingleShot(True)
         self._pv_timer.setInterval(PREVIEW_MS)
         self._pv_timer.timeout.connect(self.request_preview)
-        self._last = self._snapshot()
-        self.scope.currentIndexChanged.connect(self._on_scope_changed)
-        for c in (self.view, self.status, self.region):
-            c.currentIndexChanged.connect(self._on_filter_changed)
-        self.search.textChanged.connect(lambda _t: self._search_timer.start())
-        self.search.returnPressed.connect(self._on_filter_changed)
-        self._show_empty()
-        self._sync_excel()
-        self.load()
 
     # ================================================================ 만들기 도우미
     @staticmethod

@@ -103,6 +103,23 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
 
     # ------------------------------------------------------------ 화면 구성
     def _build_ui(self):
+        top = self._build_file_row()
+        tools = self._build_tools_row()
+        self._build_top_actions(top)
+        side = self._build_side_panel()
+        center = self._build_page_nav()
+        split = self._build_splitter(center, side)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.addLayout(top)
+        lay.addLayout(tools)
+        lay.addWidget(self.cards_bar)
+        lay.addWidget(split, 1)
+        self._build_status_row(lay)
+        self._finish_build()
+
+    def _build_file_row(self) -> QHBoxLayout:
+        """맨 윗줄: 그룹/파일·쪽 (오른쪽 단추는 _build_top_actions)."""
         top = QHBoxLayout()
         top.addWidget(QLabel("그룹 / 파일"))
         self.file_combo = QComboBox()
@@ -126,6 +143,10 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         top.addWidget(self.page_spin)
         self.page_total = QLabel()
         top.addWidget(self.page_total)
+        return top
+
+    def _build_tools_row(self) -> QHBoxLayout:
+        """둘째 줄(영역 추가·영역 방식)과 셋째 줄(카드마다 영역 도구) 단추. 둘째 줄 레이아웃을 돌려준다."""
         tools = QHBoxLayout()  # 둘째 줄: 영역 추가·영역 방식
         tools.setSpacing(3)
         cap = QLabel("영역 그리기")
@@ -192,6 +213,10 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.preview_btn.toggled.connect(self._toggle_preview)
         tools.addStretch(1)
         tools.addWidget(self.reset_btn)
+        return tools
+
+    def _build_top_actions(self, top: QHBoxLayout) -> None:
+        """맨 윗줄 오른쪽: 확대·축소·화면에 맞춤·저장·닫기."""
         top.addStretch(1)
         for text, f, tip in (("－", 1 / 1.25, "축소 (Ctrl+휠 아래)"), ("＋", 1.25, "확대 (Ctrl+휠 위)")):
             zb = QPushButton(text)
@@ -210,6 +235,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         close.clicked.connect(self.close)
         top.addWidget(close)
 
+    def _build_side_panel(self) -> QWidget:
+        """오른쪽 칸: 영역 목록 + 입력란 + 도움말. 안쪽 위젯을 돌려준다."""
         side = QWidget()
         sl = QVBoxLayout(side)
         sl.setContentsMargins(4, 0, 4, 0)
@@ -230,7 +257,13 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         dele.clicked.connect(self.delete_selected)
         order.addWidget(dele)
         sl.addLayout(order)
+        self._build_region_form(sl)
+        self._build_help(sl)
+        self._connect_form_signals()
+        return side
 
+    def _build_region_form(self, sl: QVBoxLayout) -> None:
+        """고른 영역의 입력란(기본·한글 넣기·글자 지우기·메모)."""
         form = QFormLayout()
         self.f_name = QLineEdit()
         self.f_kind = QComboBox()
@@ -337,6 +370,9 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         sl.addWidget(self.form_box)
         sl.addWidget(self.form_hint)
         sl.addStretch(1)
+
+    def _build_help(self, sl: QVBoxLayout) -> None:
+        """단축키 도움말 단추·글."""
         help_text = ("새 영역: T 글자 · L 태그 라벨 · P 보호 · O 읽기 제외 (누른 뒤 카드 위를 끌기) · 안쪽 끌기: 옮기기 · 가장자리 끌기: 크기\n"
                      "고른 영역: 화살표 조금씩 옮기기(Shift: 크게) · Alt+화살표 크기 · R 180도 회전 · Delete 지우기 · Esc 해제\n"
                      "Tab / Shift+Tab: 다음·이전 영역 · Ctrl+C / Ctrl+V: 영역 복사·붙여넣기(다른 카드로) · Ctrl+Shift+D: 복제 (Ctrl+D는 앱 전체 디버깅 모드)\n"
@@ -361,6 +397,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self._toggle_help(not low)
         sl.addWidget(self.help_btn)
         sl.addWidget(help_)
+
+    def _connect_form_signals(self) -> None:
         for w in (self.f_name,):
             w.textEdited.connect(self._from_form)
         self.f_name.returnPressed.connect(self.view.setFocus)  # Enter: 카드 화면으로 (화살표로 바로 옮기기)
@@ -373,6 +411,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.f_color.editingFinished.connect(self._from_form)
         self.f_notes.textChanged.connect(self._from_form)
 
+    def _build_page_nav(self) -> QWidget:
+        """카드 화면 좌우의 이전·다음 쪽 단추."""
         # 이미지 좌우의 이전·다음 쪽 버튼
         self.prev_btn, self.next_btn = QToolButton(), QToolButton()
         for b, text, tip, d in ((self.prev_btn, "◀", "이전 쪽 (←, PageUp)", -1),
@@ -390,6 +430,10 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         cl.addWidget(self.prev_btn)
         cl.addWidget(self.view, 1)
         cl.addWidget(self.next_btn)
+        return center
+
+    def _build_splitter(self, center: QWidget, side: QWidget) -> QSplitter:
+        """카드 칸 | 오른쪽 칸(스크롤) | 미리보기."""
         side.setMinimumWidth(340)
         # 낮은 화면(768)에서 폼이 찌그러지지 않게, 모자라면 오른쪽 칸 안에서 스크롤
         side_scroll = QScrollArea()
@@ -400,7 +444,7 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         side_scroll.setMinimumWidth(360)
         self.list.setMinimumHeight(90)
         self.list.setMaximumHeight(max(90, (self.list.fontMetrics().height() + 8) * 6 + 8))  # 빈 공간은 폼에게
-        help_.setWordWrap(True)
+        self.help_label.setWordWrap(True)
         split = QSplitter()
         split.addWidget(center)
         split.addWidget(side_scroll)
@@ -415,12 +459,10 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         self.split = split
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.addLayout(top)
-        lay.addLayout(tools)
-        lay.addWidget(self.cards_bar)
-        lay.addWidget(split, 1)
+        return split
+
+    def _build_status_row(self, lay: QVBoxLayout) -> None:
+        """아래 줄: 미리보기·따로 영역·정렬 단추와 안내 띠."""
         self.status = QLabel()
         self.card_info = QLabel()
         self.card_info.setStyleSheet("color: #0071E3; font-weight: bold")
@@ -436,6 +478,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         srow.addWidget(self.status)
         lay.addLayout(srow)
 
+    def _finish_build(self) -> None:
+        """처음 쪽 값을 넣고 쪽·파일 바뀜 신호를 잇는다."""
         self.page_spin.setValue(int(self.template.get("reference_page", 1) or 1))
         self.page_spin.valueChanged.connect(lambda _v: self._change_page())
         self.file_combo.currentIndexChanged.connect(self._on_file_combo)

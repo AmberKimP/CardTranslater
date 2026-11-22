@@ -63,8 +63,32 @@ class ResultViewer(QDialog):
         fit_to_screen(self, 1500, 900)  # 낮은 화면에서는 최대화
         self._img_path: Path | None = None
         self.runs = runs
+        top = self._build_top_bar()
+        left = self._build_page_list()
+        self._build_card_view()
+        self._build_edit_fields()
+        orow, srow = self._build_position_rows()
+        self._build_paragraph_box()
+        form = self._build_edit_form(orow, srow)
+        self._build_erase_box(form)
+        self._init_edit_state()
+        split = self._build_right_split(left)
+        bottom = self._build_footer()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(10)
+        lay.addLayout(top)
+        lay.addWidget(split, 1)
+        lay.addLayout(bottom)
+        self.run.currentIndexChanged.connect(lambda _i: self.reload())
+        self.only.toggled.connect(lambda _c: self.reload())
+        self.items: list[dict] = []
+        self.reload()
+
+    def _build_top_bar(self) -> QHBoxLayout:
+        """윗줄: 파일 고르기·안내·PDF/폴더 열기 단추."""
         self.run = QComboBox()
-        for name, d in runs:
+        for name, d in self.runs:
             self.run.addItem(file_label(name), str(d))
             self.run.setItemData(self.run.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
         self.run.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -100,6 +124,10 @@ class ResultViewer(QDialog):
         top.addWidget(self.import_btn)
         top.addWidget(self.edited_btn)
         top.addWidget(folder_btn)
+        return top
+
+    def _build_page_list(self) -> QWidget:
+        """왼쪽: 문제 있는 쪽만 보기 + 쪽 목록."""
         self.pages = QListWidget()
         self.pages.currentRowChanged.connect(lambda _r: self._show_page())
         left = QWidget()
@@ -108,6 +136,10 @@ class ResultViewer(QDialog):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.addWidget(self.only)
         ll.addWidget(self.pages, 1)
+        return left
+
+    def _build_card_view(self) -> None:
+        """오른쪽 위: 영역 목록과 비교 그림 (self.regions, self.image, self.scroll)."""
         self.regions = QListWidget()
         self.regions.setMaximumHeight(160)
         self.regions.currentRowChanged.connect(lambda _r: self._show_region())
@@ -124,6 +156,9 @@ class ResultViewer(QDialog):
         self.image.setMinimumSize(1, 1)
         self.scroll.viewport().installEventFilter(self)  # 창·칸 크기가 바뀌면 그림을 다시 맞춘다. 휠은 이전/다음 쪽
         self.scroll.setToolTip("마우스 휠: 위로 이전 쪽, 아래로 다음 쪽")
+
+    def _build_edit_fields(self) -> None:
+        """이 카드의 이 영역 고치기: 번역·글꼴·지우기·글자 크기·정렬 입력란."""
         # 이 카드의 이 영역 고치기: 번역·글꼴·지우기 방식 (다른 카드는 그대로)
         self.edit_text = QPlainTextEdit()
         self.edit_text.setPlaceholderText("이 칸에 넣을 한글 (줄을 바꾸면 그 자리에서 줄을 바꿉니다)")
@@ -144,6 +179,9 @@ class ResultViewer(QDialog):
                                   "한글 넣기는 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
         self.edit_align = QComboBox()
         self.edit_align.setToolTip("이 카드의 이 영역만 한글을 놓는 방법")
+
+    def _build_position_rows(self) -> tuple[QHBoxLayout, QHBoxLayout]:
+        """글자 위치(옮기기 단추)·글자 크기/정렬 줄. (위치 줄, 크기 줄)을 돌려준다."""
         # 글자 위치: 이 카드의 이 영역 한글을 통째로 옮긴다 (pt, 오른쪽·아래가 +)
         self.off_x, self.off_y = QDoubleSpinBox(), QDoubleSpinBox()
         for sb, axis in ((self.off_x, "가로 (오른쪽 +)"), (self.off_y, "세로 (아래 +)")):
@@ -185,6 +223,10 @@ class ResultViewer(QDialog):
         srow.addSpacing(16)
         srow.addWidget(QLabel("정렬"))
         srow.addWidget(self.edit_align, 1)
+        return orow, srow
+
+    def _build_paragraph_box(self) -> None:
+        """문단마다 글꼴 (‘문단마다’ 영역만): 번역을 고치면 문단 목록도 바뀐다."""
         # 문단마다 글꼴 (‘문단마다’ 영역만): 번역을 고치면 문단 목록도 바뀐다
         self.para_box = QWidget()
         self.para_form = QFormLayout(self.para_box)
@@ -196,6 +238,9 @@ class ResultViewer(QDialog):
         self._para_timer.setSingleShot(True)
         self._para_timer.setInterval(400)
         self._para_timer.timeout.connect(self._rebuild_paragraphs)
+
+    def _build_edit_form(self, orow: QHBoxLayout, srow: QHBoxLayout) -> QFormLayout:
+        """고치기 입력란을 줄마다 묶은 폼."""
         form = QFormLayout()
         form.addRow("번역", self.edit_text)
         form.addRow("글꼴", self.edit_font)
@@ -206,6 +251,10 @@ class ResultViewer(QDialog):
         form.addRow("글자 크기", srow)
         form.addRow("위치", orow)
         form.addRow("지우기", self.erase_mode)
+        return form
+
+    def _build_erase_box(self, form: QFormLayout) -> None:
+        """고치기 단추 줄과 ‘이 카드의 이 영역 고치기’ 상자."""
         self.preview_btn = QPushButton("미리 보기")
         self.preview_btn.setToolTip("저장하기 전에 이 칸을 한글 넣기와 똑같이 그려 봅니다 (지우기 방식 바꾼 것은 저장해야 보입니다)")
         self.preview_btn.clicked.connect(lambda: self.preview_edit())
@@ -238,6 +287,9 @@ class ResultViewer(QDialog):
         fl.addLayout(form)
         fl.addLayout(erow)
         egl.addWidget(self.edit_form)
+
+    def _init_edit_state(self) -> None:
+        """고치는 칸 상태와 ‘저장 안 한 고침’ 표시 신호."""
         self._edit = None  # 고치는 칸: {"page", "region", "info", "erase", "erase_ok"}
         self._sel = (-1, -1)  # 저장 안 한 고침이 있을 때 되돌릴 (쪽 줄, 영역 줄)
         self.edit_text.textChanged.connect(self._mark_dirty)
@@ -246,6 +298,9 @@ class ResultViewer(QDialog):
         self.erase_mode.currentIndexChanged.connect(lambda _i: self._mark_dirty())
         self.edit_size.valueChanged.connect(lambda _v: self._mark_dirty())
         self.edit_align.currentIndexChanged.connect(lambda _i: self._mark_dirty())
+
+    def _build_right_split(self, left: QWidget) -> QSplitter:
+        """오른쪽 칸(그림·영역·고치기 상자)과 왼쪽 쪽 목록을 나누는 splitter."""
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -260,22 +315,17 @@ class ResultViewer(QDialog):
         split.addWidget(left)
         split.addWidget(right)
         split.setStretchFactor(1, 1)
+        return split
+
+    def _build_footer(self) -> QHBoxLayout:
+        """아래: 안내 글과 닫기."""
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
         self.footer = grey_note("")
         bottom = QHBoxLayout()
         bottom.addWidget(self.footer, 1)
         bottom.addWidget(close)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
-        lay.setSpacing(10)
-        lay.addLayout(top)
-        lay.addWidget(split, 1)
-        lay.addLayout(bottom)
-        self.run.currentIndexChanged.connect(lambda _i: self.reload())
-        self.only.toggled.connect(lambda _c: self.reload())
-        self.items: list[dict] = []
-        self.reload()
+        return bottom
 
     def run_dir(self) -> Path:
         return Path(self.run.currentData())

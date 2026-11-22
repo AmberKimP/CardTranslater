@@ -311,6 +311,32 @@ class CardViewer(QDialog):
     # ------------------------------------------------------------ 화면 만들기
     def _build(self) -> None:
         self.title = page_title("카드 보기", 14)
+        left = self._build_left_panel()
+        head = self._build_region_head()
+        view_box = self._build_view_box()
+        self._build_icon_panel()
+        self._build_source_panel()
+        right = self._build_right_panel(head, view_box)
+        bottom = self._build_bottom_row()
+        body = QWidget()
+        self.body = body
+        main = QHBoxLayout()
+        main.setSpacing(12)
+        main.addWidget(left)
+        main.addWidget(right, 1)
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 10, 14, 10)
+        bl.setSpacing(8)
+        bl.addWidget(self.title)
+        bl.addLayout(main, 1)
+        bl.addLayout(bottom)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(body)
+        self._build_late_widgets(bottom)
+
+    def _build_left_panel(self) -> QWidget:
+        """왼쪽: 카드 전체 + 영역 목록."""
         # 왼쪽: 카드 전체 + 영역 목록
         self.card_map = CardMap()
         self.card_map.picked.connect(self._pick_name)
@@ -328,6 +354,10 @@ class CardViewer(QDialog):
         ll.addWidget(self.region_list, 2)
         left.setMinimumWidth(280)
         left.setMaximumWidth(380)
+        return left
+
+    def _build_region_head(self) -> QHBoxLayout:
+        """오른쪽 머리: 영역 이름·상태 표시·알림 글."""
         # 오른쪽 머리
         self.region_title = QLabel()
         self.region_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #1D1D1F;")
@@ -347,6 +377,10 @@ class CardViewer(QDialog):
         head.addWidget(self.pending_badge)
         head.addStretch(1)
         head.addWidget(self.flash_label, 1)
+        return head
+
+    def _build_view_box(self) -> QWidget:
+        """영역 그림(확대·축소 단추)과 고른 아이콘 확대 칸."""
         # 영역 그림
         self.view = IconPlaceView()
         self.view.drawn.connect(self._drawn)
@@ -402,6 +436,10 @@ class CardViewer(QDialog):
         vl.setSpacing(4)
         vl.addLayout(view_row, 1)
         vl.addLayout(view_tools)
+        return view_box
+
+    def _build_icon_panel(self) -> None:
+        """‘이 영역의 아이콘’ 칸 (self.icon_panel)."""
         # 아이콘 칸
         self.icon_list = QListWidget()
         self.icon_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -452,6 +490,9 @@ class CardViewer(QDialog):
         il.addWidget(self.absorb_btn)
         il.addWidget(self.overlap_btn)
         self.icon_panel = _panel("이 영역의 아이콘", icons_body)
+
+    def _build_source_panel(self) -> None:
+        """‘원문’ 칸 (self.source_panel)."""
         # 원문 칸
         self.info = hint_bar("", "info")
         self.info.setTextFormat(Qt.TextFormat.RichText)
@@ -501,6 +542,9 @@ class CardViewer(QDialog):
         src_scroll.setFrameShape(QFrame.Shape.NoFrame)
         src_scroll.setWidget(src_body)
         self.source_panel = _panel("원문", src_scroll)
+
+    def _build_right_panel(self, head: QHBoxLayout, view_box: QWidget) -> QWidget:
+        """오른쪽: 머리 + (영역 그림 | 아이콘·원문 칸)."""
         panels = QWidget()
         pl = QHBoxLayout(panels)
         pl.setContentsMargins(0, 0, 0, 0)
@@ -523,6 +567,10 @@ class CardViewer(QDialog):
         rl.setSpacing(6)
         rl.addLayout(head)
         rl.addWidget(split, 1)
+        return right
+
+    def _build_bottom_row(self) -> QHBoxLayout:
+        """아래 줄: 목록으로·안내·이동·확정 단추."""
         # 아래 줄
         self.close_btn = QPushButton("목록으로")
         self.close_btn.setAutoDefault(False)
@@ -557,21 +605,10 @@ class CardViewer(QDialog):
         bottom.addWidget(self.confirm_btn)
         for b in (*self.nav_btns.values(), self.confirm_btn, self.close_btn, self.reread_btn, self.keep_btn):
             b.setMinimumWidth(b.sizeHint().width())
-        body = QWidget()
-        self.body = body
-        main = QHBoxLayout()
-        main.setSpacing(12)
-        main.addWidget(left)
-        main.addWidget(right, 1)
-        bl = QVBoxLayout(body)
-        bl.setContentsMargins(14, 10, 14, 10)
-        bl.setSpacing(8)
-        bl.addWidget(self.title)
-        bl.addLayout(main, 1)
-        bl.addLayout(bottom)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(body)
+        return bottom
+
+    def _build_late_widgets(self, bottom: QHBoxLayout) -> None:
+        """맨 나중에 만드는 단추(버튼 코드가 밀리지 않게)·기본 단추 해제·단축키."""
         # 카드 단위로 영역 고치기 (영역 지정 창을 이 카드로 연다). 버튼 코드가 밀리지 않게 맨 나중에 만든다
         self.card_regions_btn = QPushButton("이 카드 영역 고치기")
         self.card_regions_btn.setAutoDefault(False)
