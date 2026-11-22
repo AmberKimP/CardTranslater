@@ -136,3 +136,34 @@ def test_debug_mode_blocks_shortcuts(ui):
     ui.toggle()
     assert ui.eventFilter(sc, ev) is False
     d.close()
+
+
+def test_late_buttons_are_numbered_after_fixed_buttons():
+    """그때그때 생기는 버튼(ui_codes.LATE)이 앞에 끼어도 고정 버튼 번호는 밀리지 않는다
+    (카드 보기의 ‘보통·정밀 읽기 결과’ 버튼 때문에 2B-21이 영역마다 다른 버튼이었다)."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QVBoxLayout, QWidget
+
+    from app.qt import ui_codes
+
+    QApplication.instance() or QApplication([])
+
+    class CardViewer(QDialog):  # 이름으로 창 번호 2B를 받는다
+        pass
+
+    dlg = CardViewer()
+    lay = QVBoxLayout(dlg)
+    inner = QWidget()
+    il = QVBoxLayout(inner)
+    a = QPushButton("고정 1")
+    il.addWidget(a)
+    late = QPushButton("읽은 결과")
+    late.setProperty(ui_codes.LATE, True)
+    il.addWidget(late)
+    lay.addWidget(inner)
+    b = QPushButton("고정 2")
+    lay.addWidget(b)
+    assert [ui_codes.button_code(x) for x in (a, b, late)] == ["2B-01", "2B-02", "2B-03"]
+    dlg.deleteLater()

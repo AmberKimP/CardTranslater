@@ -69,11 +69,18 @@ def owner_of(w: QWidget) -> QWidget | None:
     return None
 
 
+LATE = "ui_code_late"  # 이 속성이 참인 버튼(창이 그때그때 만드는 버튼)은 고정 버튼 뒤에 센다
+
+
 def button_code(b: QAbstractButton) -> str:
+    """창 번호-순번. 그때그때 생기고 없어지는 버튼(속성 LATE, 예: 카드 보기의 ‘보통 읽기 결과’)은 고정 버튼을 다 센 뒤에
+    센다: 그런 버튼이 앞에 끼면 뒤 버튼 번호가 영역마다 2씩 밀려(2B-21이 ‘확정 → 다음 문제’였다가 ‘다음 영역 ▶’이 됨)
+    같은 번호가 다른 버튼을 가리켰다."""
     own = owner_of(b)
     if own is None:
         return "??-00"
     buttons = [x for x in own.findChildren(QAbstractButton) if owner_of(x) is own]
+    buttons = [x for x in buttons if not x.property(LATE)] + [x for x in buttons if x.property(LATE)]
     n = buttons.index(b) + 1 if b in buttons else 0
     return f"{code_of(own)}-{n:02d}"
 

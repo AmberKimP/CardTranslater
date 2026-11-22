@@ -119,6 +119,23 @@ class IconPlaceView(QWidget):
         self.update()
         self.zoomed.emit(self.zoom)
 
+    def center_on(self, box, only_if_hidden: bool = True) -> bool:
+        """확대한 채로 box(그림 px)가 화면 가운데에 오게 옮긴다 (배율은 그대로). 확대하지 않았거나 box가 없으면 그대로.
+        only_if_hidden: box가 이미 화면 안에 다 보이면 옮기지 않는다 (보이는 상자를 눌러도 그림이 튀지 않게).
+        옮겼으면 True."""
+        if self._pm.isNull() or not box or self.zoom <= 1.0:
+            return False
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if only_if_hidden:
+            r = self._rect((x0, y0, x1, y1))
+            if r.left() >= 0 and r.top() >= 0 and r.right() <= self.width() and r.bottom() <= self.height():
+                return False
+        s = self._base() * self.zoom
+        w, h = self._pm.width(), self._pm.height()
+        self._pan = [(w / 2 - (x0 + x1) / 2) * s, (h / 2 - (y0 + y1) / 2) * s]
+        self.update()
+        return True
+
     def _base(self) -> float:
         w, h = self._pm.width(), self._pm.height()
         if not w or not h:

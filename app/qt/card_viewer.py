@@ -31,7 +31,7 @@ from app.qt import worker
 from app.qt.dialogs import (PRIMARY_QSS, ask_choice, file_label, fit_to_screen, hint_bar, page_title, set_hint,
                             show_error, show_problem)
 from app.qt.icon_place import IconPlaceView, busy
-from app.qt import source_text
+from app.qt import source_text, ui_codes
 from app.qt.step_common import (ICON_TOKEN_RE, KEEP_LABEL, KEEP_UNDO_LABEL, REREAD_MODELS, UNKNOWN_ICON, _fail_as,
                                 as_text, diff_html, fill_icon_names, precise_index, reader_name, source_font,
                                 state_label)
@@ -289,6 +289,8 @@ class CardViewer(QDialog):
         self._known: list[str] = []
         self.cards: list[dict] = []
         self.flat: list[tuple[dict, dict]] = []
+        self._by_key: dict = {}
+        self._reading: set = set()
         self.key: tuple | None = None
         self._entries: list[dict] = []
         self._cur_occ: str | None = None
@@ -585,15 +587,34 @@ class CardViewer(QDialog):
         self._refresh_pending = False
         try:
             self.cards = list(self.rows_fn() or [])
-        except Exception as e:  # noqa: BLE001 - 목록을 못 받으면 창은 빈 채로
-            self.cards = []
-            self._flash(f"목록을 읽지 못했습니다: {e}", "warn")
+        except Exception as e:  # noqa: BLE001
+            # 뒤에서 다시 읽는 스레드가 추출 결과 파일을 바꿔 쓰는 순간에 읽으면 잠깐 실패할 수 있다: 목록을 비우면 ‘보여 줄
+            # 영역이 없습니다’가 떠 창을 다시 열어야 했다 (8쪽). 예전 목록을 그대로 두고 조금 뒤 다시 읽는다
+            import logging
+
+            logging.getLogger("cardtranslater.ui").warning("카드 보기 목록을 읽지 못함 (예전 목록 유지)", exc_info=True)
+            if not self.cards:
+                self._flash(f"목록을 읽지 못했습니다: {e}", "warn")
+            QTimer.singleShot(1500, self, self._retry_fetch)
+            return
         self.flat = [(c, r) for c in self.cards for r in c["regions"]]
         self._by_key = {_nk(r["key"]): (c, r) for c, r in self.flat}
         try:
             self._reading = {_nk(k) for k in (self.reading_fn() if self.reading_fn else set())}
         except Exception:  # noqa: BLE001
             self._reading = set()
+
+    def _retry_fetch(self) -> None:
+        """목록을 잠깐 못 읽었을 때 조금 뒤 다시 (사람이 조작 중이면 쉴 때)."""
+        try:
+            if not self.isVisible():
+                return
+            if self._idle():
+                self.refresh()
+            else:
+                QTimer.singleShot(1500, self, self._retry_fetch)
+        except RuntimeError:  # 창이 이미 지워짐
+            pass
 
     @staticmethod
     def is_problem(r: dict) -> bool:
@@ -780,6 +801,8 @@ class CardViewer(QDialog):
                 marks.append((m["box"], label, bool(m.get("guess")), bool(m.get("settled")),
                               bool(m.get("occ")) and m["occ"] in sel, m.get("occ") or f"#ti{m.get('ti')}"))
             self.view.set_data(pm, self._place.get("box"), self._place.get("guess"), marks)
+            # 확대해 둔 채 다른 아이콘을 고르면 그 아이콘(지금 자리, 없으면 예상 위치)이 보이게 옮긴다
+            self.view.center_on(self._place.get("box") or self._place.get("guess"))
             self._run_host = (self._place.get("run_host") or [None])[0]
         else:
             try:  # 아이콘 자리를 잡는 그림과 같은 좌표 (빈 영역에 ‘아이콘 추가’할 때 감싼 상자를 그대로 넘긴다)
@@ -874,6 +897,7 @@ class CardViewer(QDialog):
             return
         for i, (name, t) in enumerate(uniq):
             b = QPushButton(f"{name} 결과")
+            b.setProperty(ui_codes.LATE, True)  # 버튼 코드는 고정 버튼 뒤에 (있다 없다 해도 다른 버튼 번호가 밀리지 않게)
             b.setAutoDefault(False)
             b.setToolTip(t)
             b.clicked.connect(lambda _c=False, tt=t: self._use_reading(tt))

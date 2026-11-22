@@ -512,3 +512,46 @@ def test_text_height_uses_upper_percentile_not_median():
     comps = [(0, 0, 10, 15, 60)] * 30 + [(0, 0, 40, 50, 900)] * 10  # 획 조각 30개 + 온전한 글자 10개
     assert icons.text_height(comps) == 50
     assert icons.text_height([]) == 0.0
+
+
+def test_zoomed_view_centers_on_selected_icon(qapp):
+    """확대해 둔 채 다른 아이콘을 고르면 그 아이콘 자리(없으면 예상 위치)가 화면 가운데로 온다. 보이는 상자면 그대로."""
+    from app.qt.icon_place import IconPlaceView
+
+    view = IconPlaceView()
+    view.resize(400, 300)
+    pm = QPixmap(800, 600)
+    pm.fill()
+    view.set_data(pm, (10, 10, 50, 50), None, [])
+    assert not view.center_on((700, 500, 760, 560))  # 확대하지 않았으면 옮기지 않는다
+    view.zoom_by(4.0)
+    assert view.center_on((700, 500, 760, 560))  # 화면 밖 상자 -> 가운데로
+    r = view._rect((700, 500, 760, 560))
+    assert abs(r.center().x() - 200) < 1 and abs(r.center().y() - 150) < 1
+    pan = list(view._pan)
+    assert not view.center_on((720, 520, 740, 540))  # 이미 다 보이는 상자: 그대로
+    assert view._pan == pan
+    view.close()
+
+
+def test_failed_list_read_keeps_regions_instead_of_showing_nothing(qapp, tmp_path, monkeypatch):
+    """뒤에서 다시 읽는 순간 목록 읽기가 잠깐 실패해도 ‘보여 줄 영역이 없습니다’가 되지 않는다 (8쪽): 예전 목록을 두고 다시 읽는다."""
+    from PySide6.QtCore import QTimer
+
+    from tests.test_card_viewer_qt import _viewer
+
+    info, fd, files, v = _viewer(qapp, tmp_path, name="keep")
+    key = v.key
+    good = v.rows_fn
+    retries = []
+    monkeypatch.setattr(QTimer, "singleShot", staticmethod(lambda ms, *a: retries.append(ms)))
+
+    def boom():
+        raise OSError("파일을 쓰는 중")
+    v.rows_fn = boom
+    v._fetch()
+    v._show_region(key)
+    assert v.key == key and "보여 줄 영역이 없습니다" not in v.region_title.text()
+    assert v.flat and retries  # 예전 목록 그대로 + 조금 뒤 다시 읽기
+    v.rows_fn = good
+    v.close()
