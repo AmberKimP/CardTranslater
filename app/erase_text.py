@@ -206,8 +206,36 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     k = int(max(31, min(81, bh * 0.6))) | 1  # 글자 획보다 넓은 창
     med = np.dstack([cv2.medianBlur(np.ascontiguousarray(img[..., c]), k) for c in range(3)]).astype(np.float32)
     D = np.abs(I - med).max(axis=2)
-    # 색 라벨 띠(가로로 길고 속이 찬 덩어리) 안은 띠 색을 배경으로 본다: 넓은 창의 중앙값은 종이색이라
-    # 띠 위 흰 글자가 배경과 다르게 보이지 않는다
+    bands = _band_backgrounds(I, med, D, bw, bh)  # med의 띠 안을 띠 색으로 바꾼다
+    D = np.abs(I - med).max(axis=2)
+    lum, lmed = _lum(I), _lum(med)
+    inbox = np.zeros((H, W), bool)
+    inbox[max(0, y0):y1, max(0, x0):x1] = True
+    strong_all = D > STRONG
+    near = cv2.dilate(strong_all.astype(np.uint8), _disk(4)).astype(bool)
+    sel = inbox & ~near
+    texture = float(np.median(_local_std(lum)[sel])) if sel.sum() > 50 else 99.0
+    busy = texture >= 8.0
+
+    # inbox는 가장자리에 걸친 글자만큼 넓어진다
+    cands, edge_glyphs, lines = _glyph_candidates(I, lum, lmed, strong_all, inbox, busy, box, bw, bh)
+    cands, glyph, dividers = _drop_divider_parts(cands, lines, box)
+
+    notes: list[str] = []
+    if not busy:
+        keep = _keep_paper_glyphs(I, cands, glyph, near, lum, lmed, texture, sel, strong_all, inbox, edge_glyphs, box)
+    else:
+        keep = _keep_picture_glyphs(I, cands, inbox, box, notes)
+    _fill_band_glyphs(keep, bands, I, inbox)
+    grown = _grow_text_mask(keep, D, inbox, busy, bw, bh, protect)
+    return TextMask(grown, keep, busy, texture, glyph, notes, dividers)
+
+
+def _band_backgrounds(I: np.ndarray, med: np.ndarray, D: np.ndarray, bw: int, bh: int) -> list:
+    """색 라벨 띠(가로로 길고 속이 찬 덩어리) 안은 띠 색을 배경으로 본다: 넓은 창의 중앙값은 종이색이라
+    띠 위 흰 글자가 배경과 다르게 보이지 않는다. med의 띠 안을 띠 색으로 바꾸고 찾은 띠 [(상자, 띠 색)]를 돌려준다
+    (text_mask가 띠 위 글자를 빠짐없이 채운다)."""
+    H, W = I.shape[:2]
     bands: list = []  # 찾은 색 라벨 띠 [(상자, 띠 색)] (아래에서 띠 위 글자를 빠짐없이 채운다)
     for pol in (1, -1):
         sl = ((D > STRONG) & (np.sign(_lum(I) - _lum(med)) == pol)).astype(np.uint8)
@@ -252,22 +280,21 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
             inside[by0:by1, bx0:bx1] = True
             med[inside] = fill
             bands.append(((bx0, by0, bx1, by1), fill))
-    D = np.abs(I - med).max(axis=2)
-    lum, lmed = _lum(I), _lum(med)
-    inbox = np.zeros((H, W), bool)
-    inbox[max(0, y0):y1, max(0, x0):x1] = True
-    strong_all = D > STRONG
-    near = cv2.dilate(strong_all.astype(np.uint8), _disk(4)).astype(bool)
-    sel = inbox & ~near
-    texture = float(np.median(_local_std(lum)[sel])) if sel.sum() > 50 else 99.0
-    busy = texture >= 8.0
+    return bands
 
+
+def _glyph_candidates(I: np.ndarray, lum: np.ndarray, lmed: np.ndarray, strong_all: np.ndarray, inbox: np.ndarray,
+                      busy: bool, box: tuple[int, int, int, int], bw: int, bh: int):
+    """배경과 크게 다른 덩어리 중 글자 후보 (cands, edge_glyphs, lines).
+    cands [(덩어리, 평균색, 넓이, 큰 변)], edge_glyphs: 위·아래 가장자리에 걸쳐 글자로 받아들인 덩어리 id,
+    lines: 가로 구분선 [(세로 중심, 두께, 상자)]. 가장자리에 걸친 글자만큼 inbox를 넓힌다."""
+    x0, y0, x1, y1 = box
+    H, W = I.shape[:2]
     cands = []  # (덩어리, 평균색, 넓이, 큰 변)
     edge_glyphs: set[int] = set()  # 위·아래 가장자리에 걸쳐 글자로 받아들인 덩어리 (id)
     edge_boxes: list = []  # 그 덩어리들의 상자와 가장자리 (t|b)
     outside_near: list = []  # 상자 바로 밖의 작은 조각 (가장자리 글자 옆이면 글자 획)
     lines = []  # 가로 구분선의 (세로 중심, 두께): 선 사이의 장식(◆)도 남긴다
-    dividers = []
     for pol in (1, -1):
         strong = (strong_all & (np.sign(lum - lmed) == pol)).astype(np.uint8)
         n, lab, st, _ = cv2.connectedComponentsWithStats(strong, connectivity=8)
@@ -306,6 +333,13 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         inbox[max(0, cy0 - 2):min(H, cy1 + 2), max(0, cx0 - 2):min(W, cx1 + 2)] = True
         edge_glyphs.add(id(comp))
         cands.append((comp, I[comp].mean(axis=0), a, max(cx1 - cx0, cy1 - cy0)))
+    return cands, edge_glyphs, lines
+
+
+def _drop_divider_parts(cands: list, lines: list, box: tuple[int, int, int, int]):
+    """구분선을 가려 남기고(dividers), 구분선 위 장식·너무 큰 덩어리를 후보에서 뺀다. (cands, glyph, dividers)"""
+    x0, y0, x1, y1 = box
+    dividers = []
     # 가로로 긴 덩어리 중 글자보다 두꺼운 것은 구분선이 아니라 색 라벨(예: 빨간 ‘プレイ時効果’ 띠): 라벨은 남기고
     # 안의 글자는 글자로 본다. 진짜 구분선은 글자 획 굵기쯤으로 가늘다
     sizes0 = [c[3] for c in cands if c[2] >= 30]
@@ -325,147 +359,169 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     glyph = float(np.percentile(sizes, 75)) if sizes else 0.0
     if glyph:
         cands = [c for c in cands if c[3] <= 3.0 * glyph]  # 테두리 곡선·큰 그림
+    return cands, glyph, dividers
 
+
+def _on_label(c, I: np.ndarray, paper0) -> bool:
+    """색 라벨 위 글자: 둘레가 한 색으로 고르고(종이색 아님) 글자와 대비가 크다."""
+    H, W = I.shape[:2]
+    ring = cv2.dilate(c[0].astype(np.uint8), _disk(5)).astype(bool) & ~cv2.dilate(
+        c[0].astype(np.uint8), _disk(1)).astype(bool)
+    if ring.sum() < 15:
+        return False
+    rp = I[ring]
+    med = np.median(rp, axis=0)
+    if paper0 is not None and float(np.abs(med - paper0).max()) < 40:
+        return False  # 둘레가 종이색이면 라벨이 아니다 (종이 위 글자는 원래 규칙대로)
+    if not (float((np.abs(rp - med).max(axis=1) < 30).mean()) >= 0.75
+            and float(np.abs(med - c[1]).max()) >= 90):
+        return False
+    # 라벨은 가로 띠다: 글자 바로 위·아래 줄을 글자 폭의 다섯 배쯤 넓게 보면 대부분 띠 색이다.
+    # 동전·배지 위 숫자 ‘5’처럼 작은 둥근 그림 위의 것은 곧 다른 색이 나와 글자가 아니다
+    ys, xs = np.nonzero(c[0])
+    d = int(max(xs.max() - xs.min(), ys.max() - ys.min()) + 1)
+    a_, b_ = max(0, int(xs.min()) - 2 * d), min(W, int(xs.max()) + 1 + 2 * d)
+    strips = [I[max(0, ys.min() - 4):max(0, ys.min() - 1), a_:b_], I[ys.max() + 2:min(H, ys.max() + 5), a_:b_]]
+    px = np.concatenate([st_.reshape(-1, 3) for st_ in strips])
+    return len(px) > 0 and float((np.abs(px - med).max(axis=1) < 30).mean()) >= 0.6
+
+
+def _thin_edge(c, _t, glyph: float, pieces: list) -> bool:
+    """글자보다 길고 속이 빈 가는 곡선(패널 테두리 조각)인가 (글자가 아니다)."""
+    ys, xs = np.nonzero(c[0])
+    w, h = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+    if not (bool(glyph) and max(w, h) > 1.5 * glyph and c[2] < 0.25 * w * h):
+        return False
+    # 큰 글자의 가는 획(‘魔’의 广)은 같은 색 글자 조각을 품고, 가는 글자(‘ド’의 ト)는 같은 줄에 비슷한 높이의
+    # 같은 색 글자가 바로 옆에 있다: 테두리 조각이 아니다 (윗첨자(루비)가 있으면 글자 크기가 작게 잡혀 이렇게 걸린다)
+    bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max(), ys.max()
+    inner = 0
+    beside = False
+    for d in pieces:
+        if d is c or np.abs(d[1] - c[1]).max() >= 35:
+            continue
+        dy, dx = np.nonzero(d[0])
+        cx_, cy_ = (dx.min() + dx.max()) / 2, (dy.min() + dy.max()) / 2
+        if bx0 <= cx_ <= bx1 and by0 <= cy_ <= by1 and d[2] >= 0.2 * c[2]:
+            inner += d[2]
+        dh = dy.max() - dy.min() + 1
+        ov = min(by1, dy.max()) - max(by0, dy.min()) + 1
+        gap = max(dx.min() - bx1, bx0 - dx.max())
+        if dh >= 0.7 * h and ov >= 0.6 * min(h, dh) and gap <= max(w, h):
+            beside = True
+    if not _t and beside and max(w, h) <= 2.5 * glyph:
+        return False
+    return inner < 0.3 * c[2]
+
+
+def _keep_paper_glyphs(I: np.ndarray, cands: list, glyph: float, near: np.ndarray, lum: np.ndarray,
+                       lmed: np.ndarray, texture: float, sel: np.ndarray, strong_all: np.ndarray, inbox: np.ndarray,
+                       edge_glyphs: set, box: tuple[int, int, int, int]) -> np.ndarray:
+    """상자 배경이 고를 때(종이·무늬): 주변이 바쁜 덩어리(상자에 걸친 그림 조각)를 빼되 주요 글자색은 되살린 글자 픽셀."""
+    x0, y0, x1, y1 = box
+    H, W = I.shape[:2]
     keep = np.zeros((H, W), bool)
-    notes: list[str] = []
-    if not busy:
-        lum2 = np.where(near, lmed, lum)  # 글자 근처는 배경값으로 바꿔 놓고 바쁜 곳을 잰다
-        busy_map = _local_std(lum2) > 2.5 * texture + 8
-        busy_map = cv2.dilate(busy_map.astype(np.uint8), _disk(10)).astype(bool)
-        def on_label(c) -> bool:
-            """색 라벨 위 글자: 둘레가 한 색으로 고르고(종이색 아님) 글자와 대비가 크다."""
-            ring = cv2.dilate(c[0].astype(np.uint8), _disk(5)).astype(bool) & ~cv2.dilate(
-                c[0].astype(np.uint8), _disk(1)).astype(bool)
-            if ring.sum() < 15:
-                return False
-            rp = I[ring]
-            med = np.median(rp, axis=0)
-            if paper0 is not None and float(np.abs(med - paper0).max()) < 40:
-                return False  # 둘레가 종이색이면 라벨이 아니다 (종이 위 글자는 원래 규칙대로)
-            if not (float((np.abs(rp - med).max(axis=1) < 30).mean()) >= 0.75
-                    and float(np.abs(med - c[1]).max()) >= 90):
-                return False
-            # 라벨은 가로 띠다: 글자 바로 위·아래 줄을 글자 폭의 다섯 배쯤 넓게 보면 대부분 띠 색이다.
-            # 동전·배지 위 숫자 ‘5’처럼 작은 둥근 그림 위의 것은 곧 다른 색이 나와 글자가 아니다
-            ys, xs = np.nonzero(c[0])
-            d = int(max(xs.max() - xs.min(), ys.max() - ys.min()) + 1)
-            a_, b_ = max(0, int(xs.min()) - 2 * d), min(W, int(xs.max()) + 1 + 2 * d)
-            strips = [I[max(0, ys.min() - 4):max(0, ys.min() - 1), a_:b_], I[ys.max() + 2:min(H, ys.max() + 5), a_:b_]]
-            px = np.concatenate([st_.reshape(-1, 3) for st_ in strips])
-            return len(px) > 0 and float((np.abs(px - med).max(axis=1) < 30).mean()) >= 0.6
+    lum2 = np.where(near, lmed, lum)  # 글자 근처는 배경값으로 바꿔 놓고 바쁜 곳을 잰다
+    busy_map = _local_std(lum2) > 2.5 * texture + 8
+    busy_map = cv2.dilate(busy_map.astype(np.uint8), _disk(10)).astype(bool)
 
-        paper0 = np.median(I[sel], axis=0) if sel.sum() > 50 else None
-        kept, dropped = [], []
-        for c in cands:
-            if on_label(c):
-                kept.append((c, False))
+    paper0 = np.median(I[sel], axis=0) if sel.sum() > 50 else None
+    kept, dropped = [], []
+    for c in cands:
+        if _on_label(c, I, paper0):
+            kept.append((c, False))
+            continue
+        ys, xs = np.nonzero(c[0])
+        # 위·아래 가장자리에 걸친 글자로 이미 받아들인 것은 그쪽 가장자리에 닿아도 그림 조각으로 보지 않는다
+        # 위·아래에만 닿은 글자 크기 덩어리는 "tb": 영역을 빠듯하게 그려 글자 밑동이 닿은 것일 수 있다
+        touch = "lr" if (xs.min() <= x0 + 2 or xs.max() >= x1 - 3) else (
+            "tb" if id(c[0]) not in edge_glyphs and (ys.min() <= y0 + 2 or ys.max() >= y1 - 3) else "")
+        ov = (c[0] & busy_map).sum() / c[2]
+        (dropped if ov > 0.3 or (touch and ov > 0.05) else kept).append((c, touch))
+    # 글자보다 길고 속이 빈 가는 곡선(패널 테두리 조각)은 글자가 아니다
+    pieces = [c for c, _t in kept] + [c for c, _t in dropped]
+    kept = [c for c, t in kept if not _thin_edge(c, t, glyph, pieces)]
+    dropped = [(c, t) for c, t in dropped if not _thin_edge(c, t, glyph, pieces)]
+    # 종이 위 글자는 둘레가 종이색이다. 둘레가 그림(유리 조각·테두리)인 조각은 빼다
+    paper = np.median(I[sel], axis=0) if sel.sum() > 50 else None
+    free = ~cv2.dilate(strong_all.astype(np.uint8), _disk(2)).astype(bool) & inbox
+
+    def on_paper(c) -> bool:
+        if paper is None:
+            return True
+        ring = cv2.dilate(c[0].astype(np.uint8), _disk(6)).astype(bool) & free
+        if ring.sum() < 15:
+            return True
+        if float((np.abs(I[ring] - paper).max(axis=1) < 45).mean()) >= 0.5:
+            return True
+        return _on_label(c, I, paper0)  # 색 라벨 위 글자 (유리 조각은 둘레가 여러 색이라 빠진다)
+
+    kept = [c for c in kept if on_paper(c)]
+    dropped = [(c, t) for c, t in dropped if on_paper(c)]
+    if kept:  # 획이 빽빽한 글자는 주변이 바빠 보인다: 주요 글자색이고 가장자리에 닿지 않으면 되살린다
+        tot = sum(c[2] for c in kept)
+        main = []
+        for c in sorted(kept, key=lambda c: -c[2]):
+            if any(np.abs(m - c[1]).max() < COLOR_TOL for m in main):
                 continue
-            ys, xs = np.nonzero(c[0])
-            # 위·아래 가장자리에 걸친 글자로 이미 받아들인 것은 그쪽 가장자리에 닿아도 그림 조각으로 보지 않는다
-            # 위·아래에만 닿은 글자 크기 덩어리는 "tb": 영역을 빠듯하게 그려 글자 밑동이 닿은 것일 수 있다
-            touch = "lr" if (xs.min() <= x0 + 2 or xs.max() >= x1 - 3) else (
-                "tb" if id(c[0]) not in edge_glyphs and (ys.min() <= y0 + 2 or ys.max() >= y1 - 3) else "")
-            ov = (c[0] & busy_map).sum() / c[2]
-            (dropped if ov > 0.3 or (touch and ov > 0.05) else kept).append((c, touch))
-        # 글자보다 길고 속이 빈 가는 곡선(패널 테두리 조각)은 글자가 아니다
-        def thin_edge(c, _t) -> bool:
-            ys, xs = np.nonzero(c[0])
-            w, h = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
-            if not (bool(glyph) and max(w, h) > 1.5 * glyph and c[2] < 0.25 * w * h):
-                return False
-            # 큰 글자의 가는 획(‘魔’의 广)은 같은 색 글자 조각을 품고, 가는 글자(‘ド’의 ト)는 같은 줄에 비슷한 높이의
-            # 같은 색 글자가 바로 옆에 있다: 테두리 조각이 아니다 (윗첨자(루비)가 있으면 글자 크기가 작게 잡혀 이렇게 걸린다)
-            bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max(), ys.max()
-            inner = 0
-            beside = False
-            for d in pieces:
-                if d is c or np.abs(d[1] - c[1]).max() >= 35:
-                    continue
-                dy, dx = np.nonzero(d[0])
-                cx_, cy_ = (dx.min() + dx.max()) / 2, (dy.min() + dy.max()) / 2
-                if bx0 <= cx_ <= bx1 and by0 <= cy_ <= by1 and d[2] >= 0.2 * c[2]:
-                    inner += d[2]
-                dh = dy.max() - dy.min() + 1
-                ov = min(by1, dy.max()) - max(by0, dy.min()) + 1
-                gap = max(dx.min() - bx1, bx0 - dx.max())
-                if dh >= 0.7 * h and ov >= 0.6 * min(h, dh) and gap <= max(w, h):
-                    beside = True
-            if not _t and beside and max(w, h) <= 2.5 * glyph:
-                return False
-            return inner < 0.3 * c[2]
+            if sum(d[2] for d in kept if np.abs(d[1] - c[1]).max() < COLOR_TOL) / tot >= 0.2:
+                main.append(c[1])
+        # 위·아래에만 닿은 것도 글자 크기면 되살린다 (빽빽한 글자 ‘殻城’의 밑동이 빠듯한 영역 끝에 닿은 경우)
+        kept += [c for c, t in dropped if (not t or (t == "tb" and glyph and c[3] <= 2.0 * glyph))
+                 and any(np.abs(m - c[1]).max() < 35 for m in main)]
+    for c in kept:
+        keep |= c[0]
+    return keep
 
-        pieces = [c for c, _t in kept] + [c for c, _t in dropped]
-        kept = [c for c, t in kept if not thin_edge(c, t)]
-        dropped = [(c, t) for c, t in dropped if not thin_edge(c, t)]
-        # 종이 위 글자는 둘레가 종이색이다. 둘레가 그림(유리 조각·테두리)인 조각은 빼다
-        paper = np.median(I[sel], axis=0) if sel.sum() > 50 else None
-        free = ~cv2.dilate(strong_all.astype(np.uint8), _disk(2)).astype(bool) & inbox
 
-        def on_paper(c) -> bool:
-            if paper is None:
-                return True
-            ring = cv2.dilate(c[0].astype(np.uint8), _disk(6)).astype(bool) & free
-            if ring.sum() < 15:
-                return True
-            if float((np.abs(I[ring] - paper).max(axis=1) < 45).mean()) >= 0.5:
-                return True
-            return on_label(c)  # 색 라벨 위 글자 (유리 조각은 둘레가 여러 색이라 빠진다)
-
-        kept = [c for c in kept if on_paper(c)]
-        dropped = [(c, t) for c, t in dropped if on_paper(c)]
-        if kept:  # 획이 빽빽한 글자는 주변이 바빠 보인다: 주요 글자색이고 가장자리에 닿지 않으면 되살린다
-            tot = sum(c[2] for c in kept)
-            main = []
-            for c in sorted(kept, key=lambda c: -c[2]):
-                if any(np.abs(m - c[1]).max() < COLOR_TOL for m in main):
-                    continue
-                if sum(d[2] for d in kept if np.abs(d[1] - c[1]).max() < COLOR_TOL) / tot >= 0.2:
-                    main.append(c[1])
-            # 위·아래에만 닿은 것도 글자 크기면 되살린다 (빽빽한 글자 ‘殻城’의 밑동이 빠듯한 영역 끝에 닿은 경우)
-            kept += [c for c, t in dropped if (not t or (t == "tb" and glyph and c[3] <= 2.0 * glyph))
-                     and any(np.abs(m - c[1]).max() < 35 for m in main)]
-        for c in kept:
-            keep |= c[0]
-    else:
-        ring_out = cv2.dilate(inbox.astype(np.uint8), _disk(14)).astype(bool) & ~inbox
-        out_cols = I[ring_out]
-        groups: list[dict] = []
-        for c in sorted(cands, key=lambda c: -c[2]):
-            for g in groups:
-                if np.abs(g["color"] - c[1]).max() < COLOR_TOL:
-                    g["items"].append(c)
-                    g["area"] += c[2]
-                    break
-            else:
-                groups.append({"color": c[1], "items": [c], "area": c[2]})
-        best, best_score = None, 0.0
+def _keep_picture_glyphs(I: np.ndarray, cands: list, inbox: np.ndarray, box: tuple[int, int, int, int],
+                         notes: list[str]) -> np.ndarray:
+    """상자 배경이 그림일 때: 덩어리를 색으로 묶어 ‘가장 넓고 상자 밖에 드문 색’(또는 테두리 두른 글자) 묶음을 글자로."""
+    x0, y0, x1, y1 = box
+    H, W = I.shape[:2]
+    keep = np.zeros((H, W), bool)
+    ring_out = cv2.dilate(inbox.astype(np.uint8), _disk(14)).astype(bool) & ~inbox
+    out_cols = I[ring_out]
+    groups: list[dict] = []
+    for c in sorted(cands, key=lambda c: -c[2]):
         for g in groups:
-            g["rare"] = float((np.abs(out_cols - g["color"]).max(axis=1) < COLOR_TOL).mean()) if len(out_cols) else 0.0
-            g["outlined"] = sum(c[2] for c in g["items"] if _outlined(I, c)) / max(1, g["area"])
-            score = g["area"] * max(0.0, 1 - g["rare"] * 8)
-            if score > best_score:
-                best, best_score = g, score
-        # 테두리 두른 글자(흰 글자 + 검은 외곽선 등): 둘레가 고르고 글자와 대비가 큰 색 묶음이 있으면 그것이 글자다.
-        # 상자 밖에 같은 색(예: 띠 위아래 흰 패널)이 많아도 놓치지 않게 ‘드묾’보다 먼저 본다.
-        lined = [g for g in groups if g["outlined"] >= 0.5 and g["area"] >= 0.3 * max(gg["area"] for gg in groups)]
-        if lined:
-            best = max(lined, key=lambda g: g["area"] * g["outlined"])
-        if not lined:
-            # 상자 바로 밖에 글자와 같은 색(띠 테두리선·카드 검은 테두리)이 많으면 ‘드묾’으로는 못 고른다 (못 고르거나
-            # 작은 장식 조각을 고른다). 그때는 한 줄 글자처럼 늘어선 색 묶음을 글자로
-            row = _text_row_group(groups, (x0, y0, x1, y1))
-            if row is not None and row is not best and (best is None or best["area"] < 0.3 * row["area"]):
-                best = row
-                notes.append("상자 밖에 글자색이 많아 한 줄로 늘어선 색을 글자로 봄")
-        for g in groups:
-            if g is best or g["rare"] < 0.005:
-                for c in g["items"]:
-                    keep |= c[0]
-        if best is None:
-            notes.append("그림 배경에서 글자색을 찾지 못함")
+            if np.abs(g["color"] - c[1]).max() < COLOR_TOL:
+                g["items"].append(c)
+                g["area"] += c[2]
+                break
+        else:
+            groups.append({"color": c[1], "items": [c], "area": c[2]})
+    best, best_score = None, 0.0
+    for g in groups:
+        g["rare"] = float((np.abs(out_cols - g["color"]).max(axis=1) < COLOR_TOL).mean()) if len(out_cols) else 0.0
+        g["outlined"] = sum(c[2] for c in g["items"] if _outlined(I, c)) / max(1, g["area"])
+        score = g["area"] * max(0.0, 1 - g["rare"] * 8)
+        if score > best_score:
+            best, best_score = g, score
+    # 테두리 두른 글자(흰 글자 + 검은 외곽선 등): 둘레가 고르고 글자와 대비가 큰 색 묶음이 있으면 그것이 글자다.
+    # 상자 밖에 같은 색(예: 띠 위아래 흰 패널)이 많아도 놓치지 않게 ‘드묾’보다 먼저 본다.
+    lined = [g for g in groups if g["outlined"] >= 0.5 and g["area"] >= 0.3 * max(gg["area"] for gg in groups)]
+    if lined:
+        best = max(lined, key=lambda g: g["area"] * g["outlined"])
+    if not lined:
+        # 상자 바로 밖에 글자와 같은 색(띠 테두리선·카드 검은 테두리)이 많으면 ‘드묾’으로는 못 고른다 (못 고르거나
+        # 작은 장식 조각을 고른다). 그때는 한 줄 글자처럼 늘어선 색 묶음을 글자로
+        row = _text_row_group(groups, (x0, y0, x1, y1))
+        if row is not None and row is not best and (best is None or best["area"] < 0.3 * row["area"]):
+            best = row
+            notes.append("상자 밖에 글자색이 많아 한 줄로 늘어선 색을 글자로 봄")
+    for g in groups:
+        if g is best or g["rare"] < 0.005:
+            for c in g["items"]:
+                keep |= c[0]
+    if best is None:
+        notes.append("그림 배경에서 글자색을 찾지 못함")
+    return keep
 
-    # 띠 위 글자: 글자로 고른 덩어리들의 가로 범위(조금 넉넉히) 안에서 띠 색이 아닌 픽셀은 모두 글자다. 획이 조각나
-    # 몇 조각이 빠지면 ‘常’의 윗 획처럼 잔상이 남았다 (4·5·7쪽). 범위 밖의 ◆ 장식은 그대로
+
+def _fill_band_glyphs(keep: np.ndarray, bands: list, I: np.ndarray, inbox: np.ndarray) -> None:
+    """띠 위 글자: 글자로 고른 덩어리들의 가로 범위(조금 넉넉히) 안에서 띠 색이 아닌 픽셀은 모두 글자다 (keep에 더한다).
+    획이 조각나 몇 조각이 빠지면 ‘常’의 윗 획처럼 잔상이 남았다 (4·5·7쪽). 범위 밖의 ◆ 장식은 그대로."""
     for (bx0, by0, bx1, by1), fill in bands:
         inb = keep[by0:by1, bx0:bx1]
         if not inb.any():
@@ -477,6 +533,11 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
         off = np.abs(I[ay0:ay1, ax0:ax1] - fill).max(axis=2) > STRONG
         keep[ay0:ay1, ax0:ax1] |= off & inbox[ay0:ay1, ax0:ax1]
 
+
+def _grow_text_mask(keep: np.ndarray, D: np.ndarray, inbox: np.ndarray, busy: bool, bw: int, bh: int,
+                    protect: np.ndarray | None) -> np.ndarray:
+    """글자 픽셀에 붙은 테두리·그림자를 넓혀 넣고 닫힌 빈칸을 채운 지울 픽셀."""
+    H, W = keep.shape
     grown = keep.copy()
     weak = D > WEAK
     for _ in range(4):  # 글자에 붙은 테두리·그림자
@@ -494,7 +555,7 @@ def text_mask(img: np.ndarray, box: tuple[int, int, int, int], protect: np.ndarr
     grown = cv2.dilate(grown.astype(np.uint8), _disk(3 if busy else 1)).astype(bool) & inbox
     if protect is not None:
         grown &= ~protect
-    return TextMask(grown, keep, busy, texture, glyph, notes, dividers)
+    return grown
 
 
 def _text_row_group(groups: list[dict], box: tuple[int, int, int, int]) -> dict | None:

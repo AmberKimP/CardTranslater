@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -589,6 +589,52 @@ def _confirmed_icons(found: list, confirmed: list, src: str, to_px, origin: tupl
     return [f_ for f_ in found if f_[0] not in names] + [(nm, bx, only, True) for (nm, _k), (bx, only) in conf.items()]
 
 
+@dataclass
+class _PageCtx:
+    """erase_page 한 쪽의 공통 상태 (단계 함수들이 함께 쓴다)."""
+    page: object
+    template: RegionTemplate
+    bg: BackgroundImage
+    raw: np.ndarray  # 원본 배경 이미지 픽셀
+    before: np.ndarray  # 원래 모양 (이미지 격자)
+    size: tuple[int, int]
+    prect: Box
+    protect_pt: list
+    warnings: list[str]
+    # ---- 1. 영역 모으기 결과
+    region_metas: list = field(default_factory=list)
+    keep_above_px: dict = field(default_factory=dict)  # 영역별 남길 덩어리(왕관 등) px 상자
+    redact_boxes: list = field(default_factory=list)
+    work_pt: dict = field(default_factory=dict)
+    forced_pt: list = field(default_factory=list)
+    span_forced_pt: list = field(default_factory=list)
+    mask_regions: dict = field(default_factory=dict)  # 글자 모양만 지울 영역 -> 방식
+
+    def to_px(self, b: Box) -> Box:
+        return self.bg.pt_to_px(b)
+
+    def to_pt(self, b: Box) -> Box:
+        return self.bg.px_to_pt(b)
+
+
+@dataclass
+class _CleanStage:
+    """3. 이미지 정리 결과 (자른 범위, 마스크, 정리한 이미지)."""
+    crop: tuple[int, int, int, int]
+    work_px: dict
+    res: CleanResult
+    new_img: np.ndarray
+    forced_m: np.ndarray
+    span_m: np.ndarray
+    protect_m: np.ndarray
+    keep_meta: dict
+    keep_px: dict
+
+    def local(self, b: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        cx0, cy0 = self.crop[0], self.crop[1]
+        return (b[0] - cx0, b[1] - cy0, b[2] - cx0, b[3] - cy0)
+
+
 def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed: int = 0,
                params: CleanParams | None = None, modes: dict | None = None,
                sources: dict | None = None, icon_templates: dict | None = None,
@@ -602,8 +648,6 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     icon_templates: 게임 아이콘 사전 그림 {이름: RGBA} (icons.templates_for). 글 속 아이콘 자리를 다시 확인한다.
     icon_boxes: ② 원문 확인에서 사람이 확정한 아이콘 자리 {영역 이름: [(이름, 같은 이름의 몇째, 원본 쪽 pt 상자)]}.
     찾기 결과보다 먼저 쓴다 (찾기가 그 아이콘을 못 찾아 지우지 않고 남기던 것: 4·6쪽 human, 8쪽 house)."""
-    import pymupdf
-
     warnings: list[str] = []
     doc = page.parent
     prect: Box = tuple(page.rect)
@@ -626,129 +670,190 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
         }
         return PageErase(meta, before, None, (0, 0, 0, 0), {}, warnings, None)
 
-    def to_px(b: Box) -> Box:
-        return bg.pt_to_px(b)
-
-    def to_pt(b: Box) -> Box:
-        return bg.px_to_pt(b)
-
     protect_pt = [ratio_to_pt(p.rect, prect) for p in template.protect]
+    ctx = _PageCtx(page, template, bg, raw, before, size, prect, protect_pt, warnings)
+    # ---- 1. 영역마다 지울 글자·라벨·작업 범위 모으기
+    _erase_collect_regions(ctx, sample, modes)
+    # ---- 2. 레드랙션 (텍스트만)
+    removed_inline = _erase_redact(ctx)
+    # ---- 3. 이미지 정리
+    cs = _erase_clean_image(ctx, params, seed, keep_lines)
+    # ---- 3b. 글자 모양만 지우기 (그림 카드): 글자 픽셀만 찾아 그 자리만 채운다 (app.erase_text)
+    text_mask_meta: dict[str, dict] = {}
+    layout_meta: dict[str, dict] = {}
+    regs_by_name = {r.name: r for r in template.regions}
+    for name, mode in ctx.mask_regions.items():
+        _cancel_point()
+        _erase_text_region(ctx, cs, name, mode, regs_by_name, seed, sources, icon_templates, keep_lines,
+                           icon_boxes, text_mask_meta, layout_meta)
+    # ---- 4. 패치 덮기
+    patches = _erase_place_patches(ctx, cs, params)
+    # ---- 5. 라벨 다시 그리기
+    _erase_redraw_labels(ctx)
+    # ---- 영역별 통계
+    _erase_region_stats(ctx, cs, removed_inline, text_mask_meta, layout_meta)
+
+    res, crop = cs.res, cs.crop
+    meta = {
+        "page_rect_pt": _r(prect),
+        "mediabox": _r(page.mediabox),
+        "cropbox": _r(page.cropbox),
+        "background_image": {
+            "xref": bg.xref,
+            "bbox_pt": _r(bg.bbox),
+            "size_px": list(size),
+            "dpi": [round(v, 2) for v in bg.dpi],
+            "stream_untouched": True,  # 원본 스트림을 바이트 그대로 둔다 (CLI가 해시로 확인)
+        },
+        "patches": patches,
+        "clean": {"threshold": round(res.threshold, 2), "paper_noise_sigma": round(res.noise_sigma, 2),
+                  "crop_px": list(crop)},
+        "removed_inline_images_pt": [_r(b) for b in removed_inline],
+        "regions": ctx.region_metas,
+        "warnings": warnings,
+    }
+    return PageErase(meta, before, res, crop, cs.work_px, warnings, cs.new_img)
+
+
+def _erase_collect_regions(ctx: _PageCtx, sample: dict | None, modes: dict | None) -> None:
+    """1. 영역마다 지울 span·태그 라벨·인라인 이미지·작업 범위를 모아 ctx(region_metas 등)에 넣는다."""
+    page, bg = ctx.page, ctx.bg
     spans = page_spans(page)
     small_images = [
         tuple(i["bbox"]) for i in page.get_image_info(xrefs=True)
         if not (i.get("xref", 0) == bg.xref) and area(tuple(i["bbox"])) < 400
     ]
-
-    region_metas = []
-    keep_above_px: dict[str, list] = {}  # 영역별 남길 덩어리(왕관 등) px 상자
-    redact_boxes: list[Box] = []
-    work_pt: dict[str, Box] = {}
-    forced_pt: list[Box] = []
-    span_forced_pt: list[Box] = []
     used_spans: set[int] = set()
-    mask_regions: dict[str, str] = {}  # 글자 모양만 지울 영역 -> 방식
+    for reg in ctx.template.regions:
+        _erase_collect_region(ctx, reg, spans, used_spans, small_images, sample, modes)
 
-    for reg in template.regions:
-        rect_pt = ratio_to_pt(reg.rect, prect)
-        assigned, partial_warn = [], []
-        for i, s in enumerate(spans):
-            r = overlap_ratio(s["bbox"], rect_pt)
-            if r <= 0:
+
+def _erase_collect_region(ctx: _PageCtx, reg: Region, spans: list[dict], used_spans: set[int],
+                          small_images: list, sample: dict | None, modes: dict | None) -> None:
+    """영역 하나: 겹치는 span을 맡기고, 라벨·인라인 이미지·이미지 글자 상자로 작업 범위를 정해 메타를 쌓는다."""
+    rect_pt = ratio_to_pt(reg.rect, ctx.prect)
+    assigned, partial_warn = [], []
+    for i, s in enumerate(spans):
+        r = overlap_ratio(s["bbox"], rect_pt)
+        if r <= 0:
+            continue
+        if r >= SPAN_ASSIGN_MIN:
+            if i in used_spans:
                 continue
-            if r >= SPAN_ASSIGN_MIN:
-                if i in used_spans:
-                    continue
-                used_spans.add(i)
-                assigned.append(s)
-                if r < SPAN_PARTIAL_WARN:
-                    partial_warn.append(f"span {_r(s['bbox'], 1)} 이 영역에 {r:.0%}만 걸침 (전부 지움)")
-            else:
-                partial_warn.append(f"span {_r(s['bbox'], 1)} 이 영역에 {r:.0%}만 걸쳐 지우지 않음")
-        boxes = [rect_pt] + [s["bbox"] for s in assigned]
-        # 쪽에 텍스트 레이어가 조금이라도 있으면(ClearScan) 예전 방식: 빠진 제목도 그 방식으로 맞춰 왔다
-        if (modes or {}).get(reg.name) or uses_text_mask(reg, bool(assigned) or bool(spans)):
-            mask_regions[reg.name] = (modes or {}).get(reg.name) or (reg.erase or {}).get("mode") or "auto"
+            used_spans.add(i)
+            assigned.append(s)
+            if r < SPAN_PARTIAL_WARN:
+                partial_warn.append(f"span {_r(s['bbox'], 1)} 이 영역에 {r:.0%}만 걸침 (전부 지움)")
+        else:
+            partial_warn.append(f"span {_r(s['bbox'], 1)} 이 영역에 {r:.0%}만 걸쳐 지우지 않음")
+    boxes = [rect_pt] + [s["bbox"] for s in assigned]
+    # 쪽에 텍스트 레이어가 조금이라도 있으면(ClearScan) 예전 방식: 빠진 제목도 그 방식으로 맞춰 왔다
+    if (modes or {}).get(reg.name) or uses_text_mask(reg, bool(assigned) or bool(spans)):
+        ctx.mask_regions[reg.name] = (modes or {}).get(reg.name) or (reg.erase or {}).get("mode") or "auto"
 
-        labels_meta = []
-        if reg.kind == "tag_pills":
-            for lab, bpx, bpt in _tag_labels_in(rect_pt, protect_pt, bg, before):
-                scale_pt = bg.pt_per_px
-                tl = [s for s in assigned if overlap_ratio(s["bbox"], bpt) > 0.3 or overlap_ratio(bpt, s["bbox"]) > 0.3]
-                labels_meta.append(
-                    {
-                        "bbox_pt": _r(bpt),
-                        "bbox_px": _r(bpx, 1),
-                        "radius_pt": round(lab.radius * scale_pt, 3),
-                        "radius_px": round(lab.radius, 2),
-                        "color": rgb_to_hex(lab.color),
-                        "color_text_layer": tl[0]["color"] if tl else None,
-                        "in_text_layer": bool(tl),
-                        "coverage": round(lab.coverage, 3),
-                    }
-                )
-                boxes.append(bpt)
-                forced_pt.append(expand(bpt, 0.5))
-            expected = None
-            if sample and reg.name in sample:
-                src = sample[reg.name].get("source")
-                expected = len(src) if isinstance(src, list) else None
-            if expected is not None and expected != len(labels_meta):
-                warnings.append(f"[{reg.name}] 찾은 라벨 {len(labels_meta)}개, samples.json 기대 {expected}개")
+    labels_meta = []
+    if reg.kind == "tag_pills":
+        labels_meta = _erase_tag_labels(ctx, reg, rect_pt, assigned, boxes, sample)
 
-        inline_here = [b for b in small_images if overlap_ratio(b, rect_pt) > 0.5]
-        boxes += inline_here
-        image_text_box = None
-        kt = (reg.erase or {}).get("keep_ink_taller_than_pt")
-        if not assigned and reg.kind != "tag_pills" and kt:
-            rpx = px_box_outer(to_px(rect_pt), size)
-            ka = (reg.erase or {}).get("keep_ink_above_text")
-            if ka:  # 180도 돌린 영역은 '글자 위'가 페이지에서 아래쪽
-                ka = "down" if int((reg.style or {}).get("rotate", 0)) % 360 == 180 else "up"
-            ib, kept_boxes = text_ink_box(raw, rpx, kt / bg.pt_per_px, keep_above=ka)
-            if kept_boxes:
-                keep_above_px[reg.name] = kept_boxes
-            if ib is not None:
-                pad = IMAGE_TEXT_PAD_PT
-                image_text_box = expand(to_pt(tuple(float(v) for v in ib)), pad)
-                image_text_box = intersect(image_text_box, rect_pt)
-                boxes = [image_text_box]
-        wpt = clip_horizontally(union(boxes), protect_pt)
-        work_pt[reg.name] = wpt
-        for s in assigned:
-            redact_boxes.append(s["bbox"])
-            span_forced_pt.append(expand(s["bbox"], 0.4))
-        forced_pt += [expand(b, 0.5) for b in inline_here]
+    inline_here = [b for b in small_images if overlap_ratio(b, rect_pt) > 0.5]
+    boxes += inline_here
+    image_text_box = None
+    kt = (reg.erase or {}).get("keep_ink_taller_than_pt")
+    if not assigned and reg.kind != "tag_pills" and kt:
+        image_text_box = _erase_image_text_box(ctx, reg, rect_pt, kt)
+        if image_text_box is not None:
+            boxes = [image_text_box]
+    wpt = clip_horizontally(union(boxes), ctx.protect_pt)
+    ctx.work_pt[reg.name] = wpt
+    for s in assigned:
+        ctx.redact_boxes.append(s["bbox"])
+        ctx.span_forced_pt.append(expand(s["bbox"], 0.4))
+    ctx.forced_pt += [expand(b, 0.5) for b in inline_here]
 
-        region_metas.append(
+    ctx.region_metas.append(
+        {
+            "name": reg.name,
+            "kind": reg.kind,
+            "rect_ratio": reg.rect.to_dict(),
+            "rect_pt": _r(rect_pt),
+            "work_rect_pt": _r(wpt),
+            "style_defaults": reg.style,
+            "text_layer": {
+                "present": bool(assigned),
+                "spans": [
+                    {"bbox_pt": _r(s["bbox"]), "size_pt": s["size"], "color": s["color"], "font": s["font"],
+                     "origin_pt": _r(s["origin"]), "chars": s["chars"]}
+                    for s in assigned
+                ],
+                "size_pt": _dominant(assigned, "size"),
+                "color": _dominant(assigned, "color"),
+                "union_bbox_pt": _r(union([s["bbox"] for s in assigned])) if assigned else None,
+            },
+            "tag_labels": labels_meta if reg.kind == "tag_pills" else None,
+            "inline_images_pt": [_r(b) for b in inline_here],
+            "image_text_box_pt": _r(image_text_box) if image_text_box else None,
+            "warnings": partial_warn,
+        }
+    )
+
+
+def _erase_tag_labels(ctx: _PageCtx, reg: Region, rect_pt: Box, assigned: list[dict], boxes: list,
+                      sample: dict | None) -> list[dict]:
+    """태그 영역의 라벨을 재서 메타 목록으로 돌려준다. 라벨 상자는 boxes(작업 범위)와 ctx.forced_pt에 더한다."""
+    bg = ctx.bg
+    labels_meta = []
+    for lab, bpx, bpt in _tag_labels_in(rect_pt, ctx.protect_pt, bg, ctx.before):
+        scale_pt = bg.pt_per_px
+        tl = [s for s in assigned if overlap_ratio(s["bbox"], bpt) > 0.3 or overlap_ratio(bpt, s["bbox"]) > 0.3]
+        labels_meta.append(
             {
-                "name": reg.name,
-                "kind": reg.kind,
-                "rect_ratio": reg.rect.to_dict(),
-                "rect_pt": _r(rect_pt),
-                "work_rect_pt": _r(wpt),
-                "style_defaults": reg.style,
-                "text_layer": {
-                    "present": bool(assigned),
-                    "spans": [
-                        {"bbox_pt": _r(s["bbox"]), "size_pt": s["size"], "color": s["color"], "font": s["font"],
-                         "origin_pt": _r(s["origin"]), "chars": s["chars"]}
-                        for s in assigned
-                    ],
-                    "size_pt": _dominant(assigned, "size"),
-                    "color": _dominant(assigned, "color"),
-                    "union_bbox_pt": _r(union([s["bbox"] for s in assigned])) if assigned else None,
-                },
-                "tag_labels": labels_meta if reg.kind == "tag_pills" else None,
-                "inline_images_pt": [_r(b) for b in inline_here],
-                "image_text_box_pt": _r(image_text_box) if image_text_box else None,
-                "warnings": partial_warn,
+                "bbox_pt": _r(bpt),
+                "bbox_px": _r(bpx, 1),
+                "radius_pt": round(lab.radius * scale_pt, 3),
+                "radius_px": round(lab.radius, 2),
+                "color": rgb_to_hex(lab.color),
+                "color_text_layer": tl[0]["color"] if tl else None,
+                "in_text_layer": bool(tl),
+                "coverage": round(lab.coverage, 3),
             }
         )
+        boxes.append(bpt)
+        ctx.forced_pt.append(expand(bpt, 0.5))
+    expected = None
+    if sample and reg.name in sample:
+        src = sample[reg.name].get("source")
+        expected = len(src) if isinstance(src, list) else None
+    if expected is not None and expected != len(labels_meta):
+        ctx.warnings.append(f"[{reg.name}] 찾은 라벨 {len(labels_meta)}개, samples.json 기대 {expected}개")
+    return labels_meta
 
-    # ---- 2. 레드랙션 (텍스트만)
-    for b in redact_boxes:
+
+def _erase_image_text_box(ctx: _PageCtx, reg: Region, rect_pt: Box, kt: float) -> Box | None:
+    """이미지에 박힌 글자(텍스트 레이어 없음, keep_ink_taller_than_pt 설정)의 잉크 상자(pt, 영역 안). 없으면 None.
+    글자 줄 위의 남길 덩어리(왕관 등)는 ctx.keep_above_px에 넣는다."""
+    bg = ctx.bg
+    rpx = px_box_outer(ctx.to_px(rect_pt), ctx.size)
+    ka = (reg.erase or {}).get("keep_ink_above_text")
+    if ka:  # 180도 돌린 영역은 '글자 위'가 페이지에서 아래쪽
+        ka = "down" if int((reg.style or {}).get("rotate", 0)) % 360 == 180 else "up"
+    ib, kept_boxes = text_ink_box(ctx.raw, rpx, kt / bg.pt_per_px, keep_above=ka)
+    if kept_boxes:
+        ctx.keep_above_px[reg.name] = kept_boxes
+    if ib is None:
+        return None
+    pad = IMAGE_TEXT_PAD_PT
+    image_text_box = expand(ctx.to_pt(tuple(float(v) for v in ib)), pad)
+    return intersect(image_text_box, rect_pt)
+
+
+def _erase_redact(ctx: _PageCtx) -> list[Box]:
+    """2. 영역 글자를 레드랙션하고(텍스트만) 영역 안 인라인 이미지를 지운다. 지운 인라인 이미지 상자를 돌려준다."""
+    import pymupdf
+
+    page, bg, region_metas = ctx.page, ctx.bg, ctx.region_metas
+    for b in ctx.redact_boxes:
         page.add_redact_annot(pymupdf.Rect(b), fill=False, cross_out=False)
-    if redact_boxes:
+    if ctx.redact_boxes:
         page.apply_redactions(
             images=pymupdf.PDF_REDACT_IMAGE_NONE,
             graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
@@ -757,13 +862,17 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
     removed_inline = remove_inline_images(page, [m_["rect_pt"] for m_ in region_metas])
     left_spans = [s for s in page_spans(page) if any(overlap_ratio(s["bbox"], m_["rect_pt"]) > 0 for m_ in region_metas)]
     if left_spans:
-        warnings.append(f"레드랙션 뒤에도 영역에 걸친 글자 {len(left_spans)}개: {[_r(s['bbox'], 1) for s in left_spans]}")
+        ctx.warnings.append(f"레드랙션 뒤에도 영역에 걸친 글자 {len(left_spans)}개: {[_r(s['bbox'], 1) for s in left_spans]}")
     bg_after = find_background_image(page)
     if bg_after.xref != bg.xref:
         raise RuntimeError("레드랙션이 배경 이미지를 바꿨습니다")
+    return removed_inline
 
-    # ---- 3. 이미지 정리
-    work_px = {k: px_box_outer(to_px(v), size) for k, v in work_pt.items()}
+
+def _erase_clean_image(ctx: _PageCtx, params: CleanParams | None, seed: int, keep_lines: dict | None) -> _CleanStage:
+    """3. 배경 이미지의 작업 범위를 정리한다 (글자 모양만 지울 영역은 뺀다: _erase_text_region)."""
+    raw, size, to_px = ctx.raw, ctx.size, ctx.to_px
+    work_px = {k: px_box_outer(to_px(v), size) for k, v in ctx.work_pt.items()}
     crop = px_box_outer(expand(union([tuple(map(float, b)) for b in work_px.values()]), 40), size)
     # 자르는 시작점을 8px 격자에 맞춘다: 질감을 JPEG 8×8 블록 결 그대로 빌려 오기 위해
     crop = (crop[0] // 8 * 8, crop[1] // 8 * 8, crop[2], crop[3])
@@ -775,34 +884,57 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
 
     work_m = np.zeros((ch, cw), bool)
     for name, b in work_px.items():
-        if name not in mask_regions:  # 글자 모양만 지울 영역은 아래에서 따로
+        if name not in ctx.mask_regions:  # 글자 모양만 지울 영역은 아래에서 따로
             fill_box(work_m, local(b))
     # 무조건 지울 픽셀: 텍스트 레이어가 실제로 칠한 픽셀(렌더 - 이미지 차이; 글자 모양 그대로)
     # + 태그 라벨 bbox + 인라인 이미지. span bbox 전체를 칠하지 않는 이유: bbox 안의 깨끗한
     # 종이 픽셀이 배경 추정에 필요하다.
-    glyph_m = np.abs(before[cy0:cy1, cx0:cx1].astype(np.int16) - raw[cy0:cy1, cx0:cx1].astype(np.int16)).max(axis=2) > 10
+    glyph_m = np.abs(ctx.before[cy0:cy1, cx0:cx1].astype(np.int16) - raw[cy0:cy1, cx0:cx1].astype(np.int16)).max(axis=2) > 10
     span_box_m = np.zeros((ch, cw), bool)
-    for b in span_forced_pt:
+    for b in ctx.span_forced_pt:
         fill_box(span_box_m, local(px_box_outer(to_px(b), size)))
     forced_m = glyph_m & span_box_m
-    for b in forced_pt:
+    for b in ctx.forced_pt:
         fill_box(forced_m, local(px_box_outer(to_px(b), size)))
     span_m = np.zeros((ch, cw), bool)
-    for b in span_forced_pt:
+    for b in ctx.span_forced_pt:
         fill_box(span_m, local(px_box_outer(to_px(b), size)))
+    protect_m, keep_meta, keep_px = _erase_protect_mask(ctx, crop, work_px, work_m, keep_lines)
+
+    if work_m.any():
+        res = clean_area(raw[cy0:cy1, cx0:cx1], work_m, forced_m, protect_m, params, seed=seed)
+    else:
+        z = np.zeros((ch, cw), bool)
+        res = CleanResult(raw[cy0:cy1, cx0:cx1].copy(), z, z.copy(), z.copy(), z.copy(), 0.0, 0.0)
+    new_img = raw.copy()
+    new_img[cy0:cy1, cx0:cx1] = res.image
+    return _CleanStage(crop, work_px, res, new_img, forced_m, span_m, protect_m, keep_meta, keep_px)
+
+
+def _erase_protect_mask(ctx: _PageCtx, crop: tuple[int, int, int, int], work_px: dict, work_m: np.ndarray,
+                        keep_lines: dict | None):
+    """지킬 픽셀 (자른 범위 좌표): 지키는 영역, 큰 잉크 덩어리, 글자 줄 위 그림, 남길 아이콘 자리.
+    (protect_m, keep_meta {영역: 지킨 큰 잉크 px 수}, keep_px {영역: 원본 그대로 둘 아이콘 px 상자})"""
+    raw, size, to_px, bg = ctx.raw, ctx.size, ctx.to_px, ctx.bg
+    cx0, cy0, cx1, cy1 = crop
+    ch, cw = cy1 - cy0, cx1 - cx0
+
+    def local(b: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        return (b[0] - cx0, b[1] - cy0, b[2] - cx0, b[3] - cy0)
+
     protect_m = np.zeros((ch, cw), bool)
-    for b in protect_pt:
+    for b in ctx.protect_pt:
         fill_box(protect_m, local(px_box_outer(to_px(b), size)))
     # 영역 안의 큰 잉크 덩어리(+2 같은 큰 숫자, 영역에 걸친 그림)는 글자가 아니므로 지키기
     keep_meta = {}
-    for reg in template.regions:
+    for reg in ctx.template.regions:
         kt = (reg.erase or {}).get("keep_ink_taller_than_pt")
         if not kt:
             continue
         kept = tall_ink_mask(raw[cy0:cy1, cx0:cx1], local(work_px[reg.name]), kt / bg.pt_per_px)
         protect_m |= kept
         keep_meta[reg.name] = int(kept.sum())
-    for name, bxs in keep_above_px.items():  # 글자 줄 위의 작은 그림(왕관): 테두리까지 넉넉히 지킨다
+    for name, bxs in ctx.keep_above_px.items():  # 글자 줄 위의 작은 그림(왕관): 테두리까지 넉넉히 지킨다
         for b in bxs:
             fill_box(protect_m, local((b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3)))
     keep_px: dict[str, list] = {}  # 아이콘 문단만 원본 그대로인 칸의 아이콘 자리 (배경 px): 지운다고 고른 픽셀이 있어도 지킨다
@@ -812,266 +944,346 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             fill_box(protect_m, local((b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2)))
     # 이미지에 박힌 글자 영역(텍스트 레이어 없음): 작업 범위 밖의 그림·색 번짐은 배경 추정에 쓰지 않는다.
     # 영역 밖이라 바뀌지도 않는다(protect). 쓰면 줄 방향 배경 평균에 그림 색이 끌려와 얼룩이 남는다.
-    if any(m_.get("image_text_box_pt") for m_ in region_metas):
+    if any(m_.get("image_text_box_pt") for m_ in ctx.region_metas):
         protect_m |= non_paper_mask(raw[cy0:cy1, cx0:cx1]) & ~work_m
+    return protect_m, keep_meta, keep_px
 
-    if work_m.any():
-        res = clean_area(raw[cy0:cy1, cx0:cx1], work_m, forced_m, protect_m, params, seed=seed)
-    else:
-        z = np.zeros((ch, cw), bool)
-        res = CleanResult(raw[cy0:cy1, cx0:cx1].copy(), z, z.copy(), z.copy(), z.copy(), 0.0, 0.0)
-    new_img = raw.copy()
-    new_img[cy0:cy1, cx0:cx1] = res.image
 
-    # ---- 3b. 글자 모양만 지우기 (그림 카드): 글자 픽셀만 찾아 그 자리만 채운다 (app.erase_text)
+@dataclass
+class _TextRegion:
+    """3b. 글자 모양만 지우는 영역 하나의 작업 상태 (좌표는 sub 안 px)."""
+    name: str
+    mode: str
+    b: tuple  # 작업 범위 (배경 px, 넓히기 전)
+    ox0: int
+    oy0: int
+    ox1: int
+    oy1: int
+    sub: np.ndarray  # 채우기 전 원문 픽셀 (줄 모양을 잴 때도 쓴다)
+    lb: tuple  # 글자를 찾는 상자
+    lb_region: tuple  # 영역 상자
+    core: tuple  # 글자 상자 몸통
+    prot: np.ndarray
+    look: np.ndarray  # 글자를 찾는 그림 (좁혔으면 상자 밖을 상자 색으로 칠한 사본)
+    tm: object  # erase_text.TextMask
+    picture_bg: bool = False
+    picture_strokes: bool = False
+    pic: object = None  # ‘복잡한 그림 배경’ 방식으로 찾은 글자 (app.erase_picture)
+    picture_tried: bool = False
+    no_text: bool = False  # 읽은 원문에 글자가 없어 일부러 지우지 않는 칸
+    inside: np.ndarray | None = None  # 좁힌 상자 몸통 (lb != lb_region일 때만)
+    lay: dict = field(default_factory=dict)
+    src: object = None
+    found: list = field(default_factory=list)
+    icons_found: list = field(default_factory=list)
+
+
+def _erase_text_region(ctx: _PageCtx, cs: _CleanStage, name: str, mode: str, regs_by_name: dict, seed: int,
+                       sources: dict | None, icon_templates: dict | None, keep_lines: dict | None,
+                       icon_boxes: dict | None, text_mask_meta: dict, layout_meta: dict) -> None:
+    """3b. 영역 하나의 글자 픽셀만 찾아 그 자리만 채운다 (app.erase_text). 결과는 cs와 두 메타 사전에 넣는다."""
+    tr = _text_region_find(ctx, cs, name, mode, sources)
+    _text_region_match(tr, regs_by_name, sources, keep_lines, cs.keep_px)
+    _text_region_icons(ctx, tr, regs_by_name, icon_templates, icon_boxes, cs.keep_px)
+    _text_region_fill(ctx, cs, tr, seed, text_mask_meta)
+    layout_meta[name] = _text_region_layout(ctx, tr, keep_lines)
+
+
+def _text_region_find(ctx: _PageCtx, cs: _CleanStage, name: str, mode: str, sources: dict | None) -> _TextRegion:
+    """글자 상자로 좁히고 글자 픽셀(TextMask)·줄 배치를 찾는다. 그림 배경이면 그림 방식·획 방식으로 다시 찾는다."""
     from app import erase_text
 
-    text_mask_meta: dict[str, dict] = {}
-    layout_meta: dict[str, dict] = {}
-    regs_by_name = {r.name: r for r in template.regions}
-    for name, mode in mask_regions.items():
-        _cancel_point()
-        b = work_px[name]
-        mg = 24
-        ox0, oy0 = max(0, b[0] - mg), max(0, b[1] - mg)
-        ox1, oy1 = min(size[0], b[2] + mg), min(size[1], b[3] + mg)
-        sub = new_img[oy0:oy1, ox0:ox1].copy()  # 채우기 전 원문 픽셀 (줄 모양을 잴 때도 쓴다)
-        lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
-        lb_region = lb
-        core = erase_text.label_panel(sub, lb)  # 영역이 글자 상자보다 크면 상자 안에서만 (위쪽 그림·띠 밖 테두리 빼기)
-        if core != lb_region:
-            # 글자가 상자 끝에 닿아 ‘가장자리 조각’으로 빠지지 않게 몇 px 넉넉히 (넓힌 곳은 상자색으로 칠한 사본에서 찾는다)
-            m_ = max(3, int(0.12 * (core[3] - core[1])))
-            lb = (max(lb_region[0], core[0] - m_), max(lb_region[1], core[1] - m_),
-                  min(lb_region[2], core[2] + m_), min(lb_region[3], core[3] + m_))
-            px_area = lambda b_: max(1, b_[2] - b_[0]) * max(1, b_[3] - b_[1])  # noqa: E731 (이름이 area면 위 area 호출이 UnboundLocalError)
-            if px_area(core) >= 0.97 * px_area(lb_region):  # 거의 영역 그대로: 좁히지 않는다
-                lb, core = lb_region, lb_region
-        else:
-            lb = lb_region
-        prot = protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
-        # 상자로 좁혔으면 상자 밖을 상자 색으로 칠한 사본에서 글자를 찾는다 (지우기는 원본 sub에)
-        look = erase_text.paint_outside(sub, core) if lb != lb_region else sub
-        tm = erase_text.text_mask(look, lb, prot, size_box=lb_region)
-        # 예외: 배경이 그림이면 색으로 고른 글자가 빗나가기 쉽다. 획 모양으로 다시 찾아, 기존 결과가 글자를 놓쳤거나
-        # 그림을 넓게 지우려 할 때만 바꾼다 (단색·무늬 배경과 기존 방식이 잘 맞은 그림 배경은 그대로)
-        picture_bg = bool(tm.busy)
-        picture_strokes = False
-        pic = None  # ‘복잡한 그림 배경’ 방식으로 찾은 글자 (app.erase_picture)
-        picture_tried = mode == "picture" or (mode == "auto" and picture_bg)
-        no_text = False  # 읽은 원문에 글자가 없어 일부러 지우지 않는 칸
-        if picture_tried:
-            # ‘복잡한 그림 배경’ (사람이 골랐거나, 자동인데 배경이 그림): 따로 만든 방식으로 찾고 채운다.
-            # 글자 줄을 못 찾으면 아래 기존 방식으로 (자동이면 획 방식, 사람이 골랐으면 색으로 고른 결과)
-            from app import erase_picture
+    size = ctx.size
+    cx0, cy0 = cs.crop[0], cs.crop[1]
+    b = cs.work_px[name]
+    mg = 24
+    ox0, oy0 = max(0, b[0] - mg), max(0, b[1] - mg)
+    ox1, oy1 = min(size[0], b[2] + mg), min(size[1], b[3] + mg)
+    sub = cs.new_img[oy0:oy1, ox0:ox1].copy()  # 채우기 전 원문 픽셀 (줄 모양을 잴 때도 쓴다)
+    lb = (b[0] - ox0, b[1] - oy0, b[2] - ox0, b[3] - oy0)
+    lb_region = lb
+    core = erase_text.label_panel(sub, lb)  # 영역이 글자 상자보다 크면 상자 안에서만 (위쪽 그림·띠 밖 테두리 빼기)
+    if core != lb_region:
+        # 글자가 상자 끝에 닿아 ‘가장자리 조각’으로 빠지지 않게 몇 px 넉넉히 (넓힌 곳은 상자색으로 칠한 사본에서 찾는다)
+        m_ = max(3, int(0.12 * (core[3] - core[1])))
+        lb = (max(lb_region[0], core[0] - m_), max(lb_region[1], core[1] - m_),
+              min(lb_region[2], core[2] + m_), min(lb_region[3], core[3] + m_))
+        px_area = lambda b_: max(1, b_[2] - b_[0]) * max(1, b_[3] - b_[1])  # noqa: E731 (이름이 area면 모듈의 area와 헷갈린다)
+        if px_area(core) >= 0.97 * px_area(lb_region):  # 거의 영역 그대로: 좁히지 않는다
+            lb, core = lb_region, lb_region
+    else:
+        lb = lb_region
+    prot = cs.protect_m[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0]
+    # 상자로 좁혔으면 상자 밖을 상자 색으로 칠한 사본에서 글자를 찾는다 (지우기는 원본 sub에)
+    look = erase_text.paint_outside(sub, core) if lb != lb_region else sub
+    tm = erase_text.text_mask(look, lb, prot, size_box=lb_region)
+    tr = _TextRegion(name, mode, b, ox0, oy0, ox1, oy1, sub, lb, lb_region, core, prot, look, tm)
+    # 예외: 배경이 그림이면 색으로 고른 글자가 빗나가기 쉽다. 획 모양으로 다시 찾아, 기존 결과가 글자를 놓쳤거나
+    # 그림을 넓게 지우려 할 때만 바꾼다 (단색·무늬 배경과 기존 방식이 잘 맞은 그림 배경은 그대로)
+    tr.picture_bg = bool(tm.busy)
+    tr.picture_tried = mode == "picture" or (mode == "auto" and tr.picture_bg)
+    if tr.picture_tried:
+        # ‘복잡한 그림 배경’ (사람이 골랐거나, 자동인데 배경이 그림): 따로 만든 방식으로 찾고 채운다.
+        # 글자 줄을 못 찾으면 아래 기존 방식으로 (자동이면 획 방식, 사람이 골랐으면 색으로 고른 결과)
+        from app import erase_picture
 
-            picture_bg = True
-            src0 = (sources or {}).get(name)
-            has_src = name in (sources or {})
-            pic, tm = erase_picture.region_text_mask(sub, lb_region, prot, tm, src0, has_src)
-            no_text = pic is None and erase_picture.source_has_no_text(src0, has_src)
-            if pic is not None:
-                lb, core, look = lb_region, lb_region, sub
-        if picture_bg and pic is None and mode == "auto" and not no_text:
-            alt = picture_text_mask(look, lb, prot, tm.texture)
-            if lb != lb_region and _box_area(lb) < PICTURE_FULL_RECHECK * _box_area(lb_region):
-                # 그림 배경에서는 '글자 상자'로 좁힌 것이 빗나갈 수 있다 (밝은 그림 띠를 상자로 봄): 영역 전체에서
-                # 글자 줄이 뚜렷이 더 잡히면 좁히지 않는다
-                full = picture_text_mask(sub, lb_region, prot, tm.texture)
-                if full is not None and full.core.sum() > PICTURE_UNNARROW * (alt.core.sum() if alt is not None else 0):
-                    alt, lb, core, look = full, lb_region, lb_region, sub
-                    tm = erase_text.text_mask(look, lb, prot, size_box=lb_region)
-            if prefer_picture_mask(tm, alt):
-                alt.texture = tm.texture  # 좁힌 상자를 풀었으면 tm을 다시 쟀으므로 그 값으로
-                tm, picture_strokes = alt, True
+        tr.picture_bg = True
+        src0 = (sources or {}).get(name)
+        has_src = name in (sources or {})
+        tr.pic, tr.tm = erase_picture.region_text_mask(sub, lb_region, prot, tr.tm, src0, has_src)
+        tr.no_text = tr.pic is None and erase_picture.source_has_no_text(src0, has_src)
+        if tr.pic is not None:
+            tr.lb, tr.core, tr.look = lb_region, lb_region, sub
+    if tr.picture_bg and tr.pic is None and mode == "auto" and not tr.no_text:
+        alt = picture_text_mask(tr.look, tr.lb, prot, tr.tm.texture)
+        if tr.lb != lb_region and _box_area(tr.lb) < PICTURE_FULL_RECHECK * _box_area(lb_region):
+            # 그림 배경에서는 '글자 상자'로 좁힌 것이 빗나갈 수 있다 (밝은 그림 띠를 상자로 봄): 영역 전체에서
+            # 글자 줄이 뚜렷이 더 잡히면 좁히지 않는다
+            full = picture_text_mask(sub, lb_region, prot, tr.tm.texture)
+            if full is not None and full.core.sum() > PICTURE_UNNARROW * (alt.core.sum() if alt is not None else 0):
+                alt, tr.lb, tr.core, tr.look = full, lb_region, lb_region, sub
+                tr.tm = erase_text.text_mask(tr.look, tr.lb, prot, size_box=lb_region)
+        if prefer_picture_mask(tr.tm, alt):
+            alt.texture = tr.tm.texture  # 좁힌 상자를 풀었으면 tm을 다시 쟀으므로 그 값으로
+            tr.tm, tr.picture_strokes = alt, True
+    tm, lb, core = tr.tm, tr.lb, tr.core
+    if lb != lb_region:
+        # 지울 픽셀은 상자 몸통 안으로만: 밖(띠 테두리·그림)까지 번지면 채울 때 그 색이 끌려와 얼룩이 생긴다
+        inside = np.zeros(tm.mask.shape, bool)
+        inside[core[1]:core[3], core[0]:core[2]] = True
+        tm.mask &= inside
+        tm.core &= inside
+        tr.inside = inside
+    lay = erase_text.text_layout(tr.look, tm, lb)
+    if lb != lb_region:  # 좁힌 상자: 상자 위·아래 끝에 붙은 줄(띠 안의 그림 조각)을 먼저 원문에 없는 줄로 본다
+        lay["box_y"] = [core[1], core[3]]
+    lay["edge_y"] = [lb[1], lb[3]]  # 영역 위·아래 끝 (끝에 닿은 짧은 조각을 원문에 없는 줄로 먼저 뺀다)
+    tr.lay = lay
+    return tr
+
+
+def _text_region_match(tr: _TextRegion, regs_by_name: dict, sources: dict | None, keep_lines: dict | None,
+                       keep_px: dict) -> None:
+    """찾은 글자 줄을 읽은 원문 줄에 맞추고, 이름표 띠 위 글자 줄을 마저 지울 자리에 넣는다."""
+    from app import erase_text
+
+    name, tm, lb, lb_region, prot = tr.name, tr.tm, tr.lb, tr.lb_region, tr.prot
+    src = (sources or {}).get(name)
+    if isinstance(src, str) and "[[?]]" in src and text_only(regs_by_name.get(name)):
+        # ‘글자만’ 영역: 이름 없는 [[?]]가 남아 있어도(설정 전에 읽은 원문) 아이콘 자리를 찾거나 지키지 않는다.
+        # 이름 붙은 [[이름]]은 사람이 정한 것이라 예전처럼 다룬다
+        from app.extract import drop_unknown_icons
+
+        src = drop_unknown_icons({"source": src})["source"]
+    if tr.picture_bg and isinstance(src, str) and not src.strip():
+        # 그림 배경인데 읽은 원문이 비어 있다(글자 없는 칸): 글자처럼 보이는 것은 그림 조각이므로 지우지 않는다
+        tm.mask[:] = False
+        tm.core[:] = False
+        tm.notes.append("그림 배경: 읽은 원문이 없어 지우지 않음")
+        tr.lay = {**tr.lay, "lines": []}
+    found = _find_icons(tr.sub, lb, src, regs_by_name.get(name))
+    if isinstance(src, str) and src.strip():
+        rows = [(b_[1], b_[3]) for _n, b_, only in found if only]
+        ok_px = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
+        if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
+            ok_px = ok_px & tr.inside
+        # 획으로 찾았으면 줄 안의 빈 곳을 색으로 다시 뒤지지 않는다 (img=None): 그림 조각·아이콘 선이 글자색과 비슷하다
+        kl = (keep_lines or {}).get(name)
+        tr.lay = erase_text.match_source_lines(
+            tm, tr.lay, src, icon_rows=rows or None, img=None if tr.picture_strokes else tr.look, allowed_px=ok_px,
+            keep_idx=kl["lines"] if kl is not None else None,
+            keep_rows=[(b_[1] - tr.oy0, b_[3] - tr.oy0) for b_ in keep_px.get(name) or []])
+    if tr.pic is None and not tr.picture_strokes and not tr.lay.get("keep_failed"):
+        allow = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
+        if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
+            core = tr.core
+            core_m = np.zeros(tm.mask.shape, bool)
+            core_m[core[1]:core[3], core[0]:core[2]] = True
+            allow &= core_m
+        _fill_label_lines(tr.sub, tm, tr.lay, allow)
+    tr.src, tr.found = src, found
+
+
+def _text_region_icons(ctx: _PageCtx, tr: _TextRegion, regs_by_name: dict, icon_templates: dict | None,
+                       icon_boxes: dict | None, keep_px: dict) -> None:
+    """글 속 아이콘 자리를 정해(사전 그림 확인, 사람이 확정한 자리, 남길 자리 빼기) 지울 자리에 넣는다."""
+    name, tm, lay, src, found = tr.name, tr.tm, tr.lay, tr.src, tr.found
+    ox0, oy0 = tr.ox0, tr.oy0
+    # 줄 배치로 찾은 아이콘 자리를 사전 그림으로 다시 확인한다 (원문 줄에 맞춘 줄 띠 안에서): 그림 조각을 줄로 봐
+    # 엉뚱한 곳을 지우고 진짜 아이콘은 남기던 것 (공주 5쪽 백합 문양, 8쪽 왼쪽 아래 문장)
+    # (돌린 영역은 하지 않는다: 줄 띠는 돌리기 전 좌표인데 원문 줄 순서는 거꾸로라 맞는 자리를 띠 밖으로 버린다)
+    reg_ = regs_by_name.get(name)
+    rot_ = int(((reg_.style if reg_ is not None else None) or {}).get("rotate", 0) or 0) % 360
+    if icon_templates and isinstance(src, str) and "[[" in src and rot_ == 0:
+        bands = [(ln["bbox"][1], ln["bbox"][3], ln["glyph_h"]) for ln in lay.get("lines") or []]
+        from app import icons as _icons
+
+        found, icon_notes = _icons.refine_icon_boxes(tr.look, src, found, bands or None, icon_templates)
+        tm.notes += icon_notes
+    # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
+    if tr.pic is not None:
+        # 글 속 아이콘이라기엔 너무 큰 상자는 아이콘 찾기가 그림에 속은 것: 통째로 지우면 큰 아이콘·그림이 망가진다
+        # 높이로 잰다: 여러 아이콘을 합친 세트 그림(문·광석·궁전 등)은 가로로 길어, 폭으로 재면 버려져 원본 크기를
+        # 잃고 한글 넣기가 사전 기본 크기(작게)로 그렸다. 폭은 사전 그림의 가로세로 비만큼 넓게 봐 준다
+        lim = INLINE_ICON_SCALE_RANGE[1] * tr.pic.glyph_px
+        found = [f_ for f_ in found
+                 if f_[2] or inline_icon_box_ok(f_[1], 1.5 * lim, (icon_templates or {}).get(f_[0]))]
+    confirmed_px: set = set()
+    if (icon_boxes or {}).get(name) and isinstance(src, str):  # 사람이 확정한 자리 (pt라 돌린 영역도 그대로)
+        found = _confirmed_icons(found, icon_boxes[name], src, ctx.to_px, (ox0, oy0))
+        confirmed_px = {tuple(f_[1]) for f_ in found if len(f_) > 3}
+        found = [f_[:3] for f_ in found]
+    if lay.get("keep_failed"):
+        found, confirmed_px = [], set()  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
+    icons_found = _inline_icons(found, lay, tm)
+    if confirmed_px:
+        # 사람이 잡은 상자는 아이콘에 딱 맞아 흐린 가장자리(그림자·번짐)가 밖에 남는다 (6쪽 human): 지울 자리만 조금 넓힌다.
+        # 다시 그릴 크기(icons_found의 상자)는 그대로
+        H_, W_ = tm.mask.shape
+        for _n, bx, _sc in icons_found:
+            if tuple(bx) not in confirmed_px:
+                continue
+            mx, my = max(3, int(0.06 * (bx[2] - bx[0]))), max(3, int(0.06 * (bx[3] - bx[1])))
+            tm.mask[max(0, bx[1] - my):min(H_, bx[3] + my), max(0, bx[0] - mx):min(W_, bx[2] + mx)] = True
+    if keep_px.get(name):  # 원본 그대로 둘 아이콘 자리는 글 속 아이콘으로 지우지도, 다시 그리지도 않는다
+        kb = [(b_[0] - ox0, b_[1] - oy0, b_[2] - ox0, b_[3] - oy0) for b_ in keep_px[name]]
+        for b_ in kb:
+            tm.mask[max(0, b_[1] - 2):b_[3] + 2, max(0, b_[0] - 2):b_[2] + 2] = False
+        icons_found = [f_ for f_ in icons_found
+                       if not any(min(f_[1][2], b_[2]) > max(f_[1][0], b_[0]) and min(f_[1][3], b_[3]) > max(f_[1][1], b_[1])
+                                  for b_ in kb)]
+    tr.found, tr.icons_found = found, icons_found
+
+
+def _text_region_fill(ctx: _PageCtx, cs: _CleanStage, tr: _TextRegion, seed: int, text_mask_meta: dict) -> None:
+    """찾은 글자 자리를 채워 cs(new_img·res·work_px)에 반영하고 text_mask_meta[영역]을 쓴다."""
+    from app import erase_text
+
+    name, mode, tm, sub, prot = tr.name, tr.mode, tr.tm, tr.sub, tr.prot
+    lb, lb_region, b = tr.lb, tr.lb_region, tr.b
+    ox0, oy0, ox1, oy1 = tr.ox0, tr.oy0, tr.ox1, tr.oy1
+    cx0, cy0 = cs.crop[0], cs.crop[1]
+    if tr.pic is not None:
+        from app import erase_picture
+
+        filled, changed = erase_picture.fill_region(sub, tm, tr.pic, prot, seed=seed)
+        used = "picture"
+    elif tr.picture_strokes and mode == "auto":
+        # 획만 좁게 잡은 마스크: 인페인팅 + 둘레 결로 채운다 (방식 이름은 그대로 inpaint)
+        m_fill = grow_halo(sub, tm.mask, prot)
         if lb != lb_region:
-            # 지울 픽셀은 상자 몸통 안으로만: 밖(띠 테두리·그림)까지 번지면 채울 때 그 색이 끌려와 얼룩이 생긴다
-            inside = np.zeros(tm.mask.shape, bool)
-            inside[core[1]:core[3], core[0]:core[2]] = True
-            tm.mask &= inside
-            tm.core &= inside
-        lay = erase_text.text_layout(look, tm, lb)
-        if lb != lb_region:  # 좁힌 상자: 상자 위·아래 끝에 붙은 줄(띠 안의 그림 조각)을 먼저 원문에 없는 줄로 본다
-            lay["box_y"] = [core[1], core[3]]
-        lay["edge_y"] = [lb[1], lb[3]]  # 영역 위·아래 끝 (끝에 닿은 짧은 조각을 원문에 없는 줄로 먼저 뺀다)
-        src = (sources or {}).get(name)
-        if isinstance(src, str) and "[[?]]" in src and text_only(regs_by_name.get(name)):
-            # ‘글자만’ 영역: 이름 없는 [[?]]가 남아 있어도(설정 전에 읽은 원문) 아이콘 자리를 찾거나 지키지 않는다.
-            # 이름 붙은 [[이름]]은 사람이 정한 것이라 예전처럼 다룬다
-            from app.extract import drop_unknown_icons
+            m_fill &= tr.inside
+        filled, used, changed = fill_picture(sub, m_fill, seed=seed), "inpaint", m_fill
+    else:
+        filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
+    cs.new_img[oy0:oy1, ox0:ox1] = filled
+    if changed.any():  # 영역 가장자리에 걸친 글자를 상자 밖까지 지웠으면 패치도 그만큼 넓힌다
+        ys_, xs_ = np.nonzero(changed)
+        cs.work_px[name] = (min(b[0], int(xs_.min()) + ox0), min(b[1], int(ys_.min()) + oy0),
+                            max(b[2], int(xs_.max()) + 1 + ox0), max(b[3], int(ys_.max()) + 1 + oy0))
+    cs.res.mask[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] |= changed
+    cs.res.image[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] = filled
+    wa = max(1, (b[3] - b[1]) * (b[2] - b[0]))
+    text_mask_meta[name] = {
+        "mode": mode, "used": used, "background": erase_text.background_kind(sub, tm),
+        "mask_ratio": round(float(changed.sum()) / wa, 4), "texture": round(tm.texture, 2),
+        "needs_choice": mode == "auto" and tm.busy, "notes": tm.notes,
+        # 상자 안에서 글자를 거의 못 찾음: 영역 위치가 카드와 안 맞을 수 있다 (예: 거꾸로 인쇄된 카드)
+        "few_text": bool(float(tm.core[lb[1]:lb[3], lb[0]:lb[2]].mean()) < 0.01),
+        # 배경이 그림인가, 글자를 획 모양으로 다시 찾았는가 (화면이 주의 표시를 할 때 쓴다)
+        "picture_bg": tr.picture_bg, "picture_strokes": tr.picture_strokes,
+    }
+    if tr.picture_tried:
+        from app import erase_picture
 
-            src = drop_unknown_icons({"source": src})["source"]
-        if picture_bg and isinstance(src, str) and not src.strip():
-            # 그림 배경인데 읽은 원문이 비어 있다(글자 없는 칸): 글자처럼 보이는 것은 그림 조각이므로 지우지 않는다
-            tm.mask[:] = False
-            tm.core[:] = False
-            tm.notes.append("그림 배경: 읽은 원문이 없어 지우지 않음")
-            lay = {**lay, "lines": []}
-        found = _find_icons(sub, lb, src, regs_by_name.get(name))
-        if isinstance(src, str) and src.strip():
-            rows = [(b_[1], b_[3]) for _n, b_, only in found if only]
-            ok_px = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
-            if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
-                ok_px = ok_px & inside
-            # 획으로 찾았으면 줄 안의 빈 곳을 색으로 다시 뒤지지 않는다 (img=None): 그림 조각·아이콘 선이 글자색과 비슷하다
-            kl = (keep_lines or {}).get(name)
-            lay = erase_text.match_source_lines(
-                tm, lay, src, icon_rows=rows or None, img=None if picture_strokes else look, allowed_px=ok_px,
-                keep_idx=kl["lines"] if kl is not None else None,
-                keep_rows=[(b_[1] - oy0, b_[3] - oy0) for b_ in keep_px.get(name) or []])
-        if pic is None and not picture_strokes and not lay.get("keep_failed"):
-            allow = ~prot if prot is not None else np.ones(tm.mask.shape, bool)
-            if lb != lb_region:  # 좁힌 상자: 상자 몸통 안으로만 (위 mask &= inside와 같은 이유)
-                core_m = np.zeros(tm.mask.shape, bool)
-                core_m[core[1]:core[3], core[0]:core[2]] = True
-                allow &= core_m
-            _fill_label_lines(sub, tm, lay, allow)
-        # 줄 배치로 찾은 아이콘 자리를 사전 그림으로 다시 확인한다 (원문 줄에 맞춘 줄 띠 안에서): 그림 조각을 줄로 봐
-        # 엉뚱한 곳을 지우고 진짜 아이콘은 남기던 것 (공주 5쪽 백합 문양, 8쪽 왼쪽 아래 문장)
-        # (돌린 영역은 하지 않는다: 줄 띠는 돌리기 전 좌표인데 원문 줄 순서는 거꾸로라 맞는 자리를 띠 밖으로 버린다)
-        reg_ = regs_by_name.get(name)
-        rot_ = int(((reg_.style if reg_ is not None else None) or {}).get("rotate", 0) or 0) % 360
-        if icon_templates and isinstance(src, str) and "[[" in src and rot_ == 0:
-            bands = [(ln["bbox"][1], ln["bbox"][3], ln["glyph_h"]) for ln in lay.get("lines") or []]
-            from app import icons as _icons
+        text_mask_meta[name]["picture"] = erase_picture.picture_meta(tr.pic)
+    if tr.picture_bg and changed.any():
+        ctx.warnings.append(f"[{name}] {PICTURE_BG_WARNING}")
+    if lb != lb_region:
+        text_mask_meta[name]["notes"] = list(tm.notes) + ["영역 안의 글자 상자에서만 찾음 (위쪽 그림·테두리 제외)"]
 
-            found, icon_notes = _icons.refine_icon_boxes(look, src, found, bands or None, icon_templates)
-            tm.notes += icon_notes
-        # 글 줄 안의 아이콘(문장 속 책·숫자 타일 등)도 지운다: 한글 넣기가 그 자리에 아이콘을 다시 그린다
-        if pic is not None:
-            # 글 속 아이콘이라기엔 너무 큰 상자는 아이콘 찾기가 그림에 속은 것: 통째로 지우면 큰 아이콘·그림이 망가진다
-            # 높이로 잰다: 여러 아이콘을 합친 세트 그림(문·광석·궁전 등)은 가로로 길어, 폭으로 재면 버려져 원본 크기를
-            # 잃고 한글 넣기가 사전 기본 크기(작게)로 그렸다. 폭은 사전 그림의 가로세로 비만큼 넓게 봐 준다
-            lim = INLINE_ICON_SCALE_RANGE[1] * pic.glyph_px
-            found = [f_ for f_ in found
-                     if f_[2] or inline_icon_box_ok(f_[1], 1.5 * lim, (icon_templates or {}).get(f_[0]))]
-        confirmed_px: set = set()
-        if (icon_boxes or {}).get(name) and isinstance(src, str):  # 사람이 확정한 자리 (pt라 돌린 영역도 그대로)
-            found = _confirmed_icons(found, icon_boxes[name], src, to_px, (ox0, oy0))
-            confirmed_px = {tuple(f_[1]) for f_ in found if len(f_) > 3}
-            found = [f_[:3] for f_ in found]
-        if lay.get("keep_failed"):
-            found, confirmed_px = [], set()  # 남길 문단을 찾지 못해 영역을 지우지 않는다: 글 속 아이콘 자리도 지우지 않는다
-        icons_found = _inline_icons(found, lay, tm)
-        if confirmed_px:
-            # 사람이 잡은 상자는 아이콘에 딱 맞아 흐린 가장자리(그림자·번짐)가 밖에 남는다 (6쪽 human): 지울 자리만 조금 넓힌다.
-            # 다시 그릴 크기(icons_found의 상자)는 그대로
-            H_, W_ = tm.mask.shape
-            for _n, bx, _sc in icons_found:
-                if tuple(bx) not in confirmed_px:
-                    continue
-                mx, my = max(3, int(0.06 * (bx[2] - bx[0]))), max(3, int(0.06 * (bx[3] - bx[1])))
-                tm.mask[max(0, bx[1] - my):min(H_, bx[3] + my), max(0, bx[0] - mx):min(W_, bx[2] + mx)] = True
-        if keep_px.get(name):  # 원본 그대로 둘 아이콘 자리는 글 속 아이콘으로 지우지도, 다시 그리지도 않는다
-            kb = [(b_[0] - ox0, b_[1] - oy0, b_[2] - ox0, b_[3] - oy0) for b_ in keep_px[name]]
-            for b_ in kb:
-                tm.mask[max(0, b_[1] - 2):b_[3] + 2, max(0, b_[0] - 2):b_[2] + 2] = False
-            icons_found = [f_ for f_ in icons_found
-                           if not any(min(f_[1][2], b_[2]) > max(f_[1][0], b_[0]) and min(f_[1][3], b_[3]) > max(f_[1][1], b_[1])
-                                      for b_ in kb)]
-        if pic is not None:
-            from app import erase_picture
 
-            filled, changed = erase_picture.fill_region(sub, tm, pic, prot, seed=seed)
-            used = "picture"
-        elif picture_strokes and mode == "auto":
-            # 획만 좁게 잡은 마스크: 인페인팅 + 둘레 결로 채운다 (방식 이름은 그대로 inpaint)
-            m_fill = grow_halo(sub, tm.mask, prot)
-            if lb != lb_region:
-                m_fill &= inside
-            filled, used, changed = fill_picture(sub, m_fill, seed=seed), "inpaint", m_fill
-        else:
-            filled, used, changed = erase_text.fill_text(sub, tm, mode, lb)
-        new_img[oy0:oy1, ox0:ox1] = filled
-        if changed.any():  # 영역 가장자리에 걸친 글자를 상자 밖까지 지웠으면 패치도 그만큼 넓힌다
-            ys_, xs_ = np.nonzero(changed)
-            work_px[name] = (min(b[0], int(xs_.min()) + ox0), min(b[1], int(ys_.min()) + oy0),
-                             max(b[2], int(xs_.max()) + 1 + ox0), max(b[3], int(ys_.max()) + 1 + oy0))
-        res.mask[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] |= changed
-        res.image[oy0 - cy0:oy1 - cy0, ox0 - cx0:ox1 - cx0] = filled
-        wa = max(1, (b[3] - b[1]) * (b[2] - b[0]))
-        text_mask_meta[name] = {
-            "mode": mode, "used": used, "background": erase_text.background_kind(sub, tm),
-            "mask_ratio": round(float(changed.sum()) / wa, 4), "texture": round(tm.texture, 2),
-            "needs_choice": mode == "auto" and tm.busy, "notes": tm.notes,
-            # 상자 안에서 글자를 거의 못 찾음: 영역 위치가 카드와 안 맞을 수 있다 (예: 거꾸로 인쇄된 카드)
-            "few_text": bool(float(tm.core[lb[1]:lb[3], lb[0]:lb[2]].mean()) < 0.01),
-            # 배경이 그림인가, 글자를 획 모양으로 다시 찾았는가 (화면이 주의 표시를 할 때 쓴다)
-            "picture_bg": picture_bg, "picture_strokes": picture_strokes,
-        }
-        if picture_tried:
-            from app import erase_picture
+def _text_region_layout(ctx: _PageCtx, tr: _TextRegion, keep_lines: dict | None) -> dict:
+    """원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt."""
+    name, lay, lb = tr.name, tr.lay, tr.lb
+    ppx = ctx.bg.pt_per_px
+    to_pt = ctx.to_pt
 
-            text_mask_meta[name]["picture"] = erase_picture.picture_meta(pic)
-        if picture_bg and changed.any():
-            warnings.append(f"[{name}] {PICTURE_BG_WARNING}")
-        if lb != lb_region:
-            text_mask_meta[name]["notes"] = list(tm.notes) + ["영역 안의 글자 상자에서만 찾음 (위쪽 그림·테두리 제외)"]
-        # 원문 줄 모양 (한글 넣기가 줄 자리·글자색·테두리·굵기·정렬·구분선을 따른다). 좌표는 pt
-        ppx = bg.pt_per_px
+    def _pt(bx, _ox=tr.ox0, _oy=tr.oy0):
+        q = to_pt((bx[0] + _ox, bx[1] + _oy, bx[2] + _ox, bx[3] + _oy))
+        return [round(v, 3) for v in q]
 
-        def _pt(bx, _ox=ox0, _oy=oy0):
-            q = to_pt((bx[0] + _ox, bx[1] + _oy, bx[2] + _ox, bx[3] + _oy))
-            return [round(v, 3) for v in q]
+    return {
+        "lines": [{**{k: v for k, v in ln.items() if k not in ("bbox", "glyph_h", "stroke_px", "accents", "cy")},
+                   "bbox_pt": _pt(ln["bbox"]), "glyph_h_pt": round(ln["glyph_h"] * ppx, 3),
+                   "cy_pt": _pt((ln["bbox"][0], ln["cy"], ln["bbox"][2], ln["cy"]))[1],
+                   "stroke_pt": round(ln["stroke_px"] * ppx, 3),
+                   "accents": [{"color": a_["color"],
+                                "x_pt": [[_pt((u, ln["bbox"][1], v, ln["bbox"][3]))[0],
+                                          _pt((u, ln["bbox"][1], v, ln["bbox"][3]))[2]] for u, v in a_["x"]]}
+                               for a_ in ln["accents"]]}
+                  for ln in lay["lines"]],
+        "dividers_pt": [_pt(d) for d in lay["dividers"]],
+        # 영역을 글자 상자로 좁혔으면 그 상자 (한글 넣기가 영역 대신 이 안에 넣는다)
+        **({"panel_pt": _pt(lb)} if lb != tr.lb_region else {}),
+        # 지운 글 속 아이콘: 이름, 자리, 그 줄 글자 높이 대비 크기 (한글 넣기가 원본 크기로 다시 그린다)
+        "icons": [{"name": n_, "bbox_pt": _pt(bx), "scale": sc} for n_, bx, sc in tr.icons_found],
+        # 아이콘 문단만 원본 그대로 둔 칸: 남긴 줄은 keep. 남길 줄을 찾지 못했으면 keep_failed (영역을 지우지 않음,
+        # 한글 넣기도 건너뛴다)
+        **({"keep_paragraphs": True} if (keep_lines or {}).get(name) is not None else {}),
+        **({"keep_failed": True} if lay.get("keep_failed") else {}),
+    }
 
-        layout_meta[name] = {
-            "lines": [{**{k: v for k, v in ln.items() if k not in ("bbox", "glyph_h", "stroke_px", "accents", "cy")},
-                       "bbox_pt": _pt(ln["bbox"]), "glyph_h_pt": round(ln["glyph_h"] * ppx, 3),
-                       "cy_pt": _pt((ln["bbox"][0], ln["cy"], ln["bbox"][2], ln["cy"]))[1],
-                       "stroke_pt": round(ln["stroke_px"] * ppx, 3),
-                       "accents": [{"color": a_["color"],
-                                    "x_pt": [[_pt((u, ln["bbox"][1], v, ln["bbox"][3]))[0],
-                                              _pt((u, ln["bbox"][1], v, ln["bbox"][3]))[2]] for u, v in a_["x"]]}
-                                   for a_ in ln["accents"]]}
-                      for ln in lay["lines"]],
-            "dividers_pt": [_pt(d) for d in lay["dividers"]],
-            # 영역을 글자 상자로 좁혔으면 그 상자 (한글 넣기가 영역 대신 이 안에 넣는다)
-            **({"panel_pt": _pt(lb)} if lb != lb_region else {}),
-            # 지운 글 속 아이콘: 이름, 자리, 그 줄 글자 높이 대비 크기 (한글 넣기가 원본 크기로 다시 그린다)
-            "icons": [{"name": n_, "bbox_pt": _pt(bx), "scale": sc} for n_, bx, sc in icons_found],
-            # 아이콘 문단만 원본 그대로 둔 칸: 남긴 줄은 keep. 남길 줄을 찾지 못했으면 keep_failed (영역을 지우지 않음,
-            # 한글 넣기도 건너뛴다)
-            **({"keep_paragraphs": True} if (keep_lines or {}).get(name) is not None else {}),
-            **({"keep_failed": True} if lay.get("keep_failed") else {}),
-        }
 
-    # ---- 4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,
-    # 영역(work_rect) 크기의 무손실 패치를 배경 이미지 픽셀 격자에 정확히 맞춰 위에 그린다.
-    # 마스크는 작업 영역보다 dilate_px까지 넓어질 수 있으므로 그만큼(+2) 넓혀 자른다.
+def _erase_place_patches(ctx: _PageCtx, cs: _CleanStage, params: CleanParams | None) -> list[dict]:
+    """4. 패치 덮기: 원본 배경 이미지(JPEG 스트림)는 바이트 그대로 두고,
+    영역(work_rect) 크기의 무손실 패치를 배경 이미지 픽셀 격자에 정확히 맞춰 위에 그린다.
+    마스크는 작업 영역보다 dilate_px까지 넓어질 수 있으므로 그만큼(+2) 넓혀 자른다."""
+    size = ctx.size
     p_ = params or CleanParams()
     patches = []
-    for m_ in region_metas:
-        x0, y0, x1, y1 = work_px[m_["name"]]
+    for m_ in ctx.region_metas:
+        x0, y0, x1, y1 = cs.work_px[m_["name"]]
         pad = p_.dilate_px + 2
         box = (max(0, x0 - pad), max(0, y0 - pad), min(size[0], x1 + pad), min(size[1], y1 + pad))
-        sub_new = new_img[box[1] : box[3], box[0] : box[2]]
-        if np.array_equal(sub_new, raw[box[1] : box[3], box[0] : box[2]]):
+        sub_new = cs.new_img[box[1] : box[3], box[0] : box[2]]
+        if np.array_equal(sub_new, ctx.raw[box[1] : box[3], box[0] : box[2]]):
             continue
-        patch = place_patch(page, sub_new, box, bg)
+        patch = place_patch(ctx.page, sub_new, box, ctx.bg)
         patch["region"] = m_["name"]
         patches.append(patch)
+    return patches
 
-    # ---- 5. 라벨 다시 그리기
-    for m_ in region_metas:
+
+def _erase_redraw_labels(ctx: _PageCtx) -> None:
+    """5. 잰 태그 라벨을 같은 모양의 벡터 둥근 사각형으로 다시 그린다 (글자 없음)."""
+    import pymupdf
+
+    for m_ in ctx.region_metas:
         for lab in m_["tag_labels"] or []:
             r = pymupdf.Rect(lab["bbox_pt"])
             rad = min(0.5, lab["radius_pt"] / max(1e-6, min(r.width, r.height)))
-            page.draw_rect(r, color=None, fill=hex_to_rgb01(lab["color"]), width=0,
-                           radius=rad if rad > 0.01 else None)
+            ctx.page.draw_rect(r, color=None, fill=hex_to_rgb01(lab["color"]), width=0,
+                               radius=rad if rad > 0.01 else None)
 
-    # ---- 영역별 통계
-    lum_before = luminance(raw[cy0:cy1, cx0:cx1])
+
+def _erase_region_stats(ctx: _PageCtx, cs: _CleanStage, removed_inline: list[Box], text_mask_meta: dict,
+                        layout_meta: dict) -> None:
+    """영역별 통계(정리 방식, 바뀐 픽셀 비율, 확인 표시)를 region_metas에 쓴다."""
+    res, crop = cs.res, cs.crop
+    cx0, cy0, cx1, cy1 = crop
+    lum_before = luminance(ctx.raw[cy0:cy1, cx0:cx1])
     lum_after = luminance(res.image)
     changed = np.abs(lum_after - lum_before) > 25
-    evidence = cv2.dilate((res.strong | forced_m).astype(np.uint8), _disk(4)).astype(bool)
-    for m_ in region_metas:
-        b = local(work_px[m_["name"]])
+    evidence = cv2.dilate((res.strong | cs.forced_m).astype(np.uint8), _disk(4)).astype(bool)
+    for m_ in ctx.region_metas:
+        b = cs.local(cs.work_px[m_["name"]])
         sl = (slice(max(0, b[1]), b[3]), slice(max(0, b[0]), b[2]))
         wa = max(1, (b[3] - b[1]) * (b[2] - b[0]))
         flat_n = int(res.flat_mask[sl].sum())
         inp_n = int(res.inpaint_mask[sl].sum())
         bg_change = float((changed[sl] & ~evidence[sl]).sum()) / wa
-        strong_outside_spans = float((res.strong[sl] & ~span_m[sl]).sum()) / wa
+        strong_outside_spans = float((res.strong[sl] & ~cs.span_m[sl]).sum()) / wa
         img_text = strong_outside_spans > 0.005
         missing = (not m_["text_layer"]["present"] and img_text) or any(
             not l_["in_text_layer"] for l_ in (m_["tag_labels"] or [])
@@ -1089,11 +1301,11 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             bg_change = 0.0  # 글자 픽셀만 바꿨다 (바뀐 픽셀 = 지울 픽셀)
         if bg_change > 0.02:
             flags.append("배경 변화 큼")
-        m_["work_rect_px"] = list(work_px[m_["name"]])
-        if m_["name"] in keep_meta:
-            m_["kept_large_ink_px"] = keep_meta[m_["name"]]
-        if m_["name"] in keep_above_px:
-            m_["kept_above_text_boxes_px"] = [list(map(int, b)) for b in keep_above_px[m_["name"]]]
+        m_["work_rect_px"] = list(cs.work_px[m_["name"]])
+        if m_["name"] in cs.keep_meta:
+            m_["kept_large_ink_px"] = cs.keep_meta[m_["name"]]
+        if m_["name"] in ctx.keep_above_px:
+            m_["kept_above_text_boxes_px"] = [list(map(int, b)) for b in ctx.keep_above_px[m_["name"]]]
         m_["missing_from_text_layer"] = bool(missing)
         m_["image_text_detected"] = bool(img_text)
         if m_["name"] in text_mask_meta:
@@ -1120,23 +1332,3 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             "strong_px_outside_text_layer_ratio": round(strong_outside_spans, 4),
             "flags": flags,
         }
-
-    meta = {
-        "page_rect_pt": _r(prect),
-        "mediabox": _r(page.mediabox),
-        "cropbox": _r(page.cropbox),
-        "background_image": {
-            "xref": bg.xref,
-            "bbox_pt": _r(bg.bbox),
-            "size_px": list(size),
-            "dpi": [round(v, 2) for v in bg.dpi],
-            "stream_untouched": True,  # 원본 스트림을 바이트 그대로 둔다 (CLI가 해시로 확인)
-        },
-        "patches": patches,
-        "clean": {"threshold": round(res.threshold, 2), "paper_noise_sigma": round(res.noise_sigma, 2),
-                  "crop_px": list(crop)},
-        "removed_inline_images_pt": [_r(b) for b in removed_inline],
-        "regions": region_metas,
-        "warnings": warnings,
-    }
-    return PageErase(meta, before, res, crop, work_px, warnings, new_img)
