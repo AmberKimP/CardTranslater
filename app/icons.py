@@ -302,14 +302,31 @@ def _line_units(line: str) -> float:
     return sum(_units(ch) for ch in TOKEN_RE.sub("\u25a0", line)) + 0.1 * len(TOKEN_RE.findall(line))
 
 
+def text_height(comps) -> float:
+    """영역의 글자 높이: 잉크 덩어리(넓이 30 이상) 높이의 90번째 백분위. 중간값은 한자·한글의 획 조각에 끌려 실제 글자보다
+    훨씬 작다 (이세길 9쪽: 중간값 17px, 글자 약 50px) — 글 줄 아이콘 높이 규칙(INLINE_ICON_MAX)이 멀쩡한 아이콘을 버렸다."""
+    hs = sorted(c[3] for c in ([c for c in comps if c[4] >= 30] or comps))
+    if not hs:
+        return 0.0
+    return float(hs[min(len(hs) - 1, int(round(0.9 * (len(hs) - 1))))])
+
+
 def _match_line(lines: list[str], line_no: int, bands, comps, max_diff: int = 2) -> int | None:
     """원문 줄과 이미지 줄의 수가 다를 때, 남는 쪽을 빼 보며 줄 길이 비율이 가장 비슷한 짝을 찾는다.
     원문 line_no 줄에 짝지어진 이미지 줄 번호 (못 정하면 None)."""
+    pairing, cost = line_pairing(lines, bands, comps, must_keep=line_no, max_diff=max_diff)
+    return pairing.get(line_no) if cost < 0.35 else None
+
+
+def line_pairing(lines: list[str], bands, comps, must_keep: int | None = None,
+                 max_diff: int = 2) -> tuple[dict[int, int], float]:
+    """원문 줄과 이미지 줄(띠)의 짝 {원문 줄: 띠} 과 그 비용 (낮을수록 잘 맞음, 0.35 이상이면 못 믿음).
+    must_keep: 이 원문 줄은 빼지 않는다 (_match_line). 못 정하면 ({}, inf)."""
     from itertools import combinations
 
     nb, nl = len(bands), len(lines)
     if abs(nb - nl) > max_diff or not nb or not nl:
-        return None
+        return {}, float("inf")
     widths = []
     for y0, y1 in bands:
         cs = [c for c in comps if y0 <= c[1] + c[3] / 2 <= y1]
@@ -335,22 +352,56 @@ def _match_line(lines: list[str], line_no: int, bands, comps, max_diff: int = 2)
             err += abs(widths[b] - exp)
         return err / max(sum(widths[b] for b, _j in pairs), 1)
 
-    best, best_cost = None, float("inf")
+    best: dict[int, int] = {}
+    best_cost = float("inf")
     if nb > nl:
         for drop in combinations(range(nb), nb - nl):
             keep = [i for i in range(nb) if i not in drop]
             cost = cost_of(list(zip(keep, range(nl))))
             if cost < best_cost:
-                best, best_cost = keep[line_no], cost
+                best, best_cost = dict(zip(range(nl), keep)), cost
     else:
         for drop in combinations(range(nl), nl - nb):
-            if line_no in drop:
+            if must_keep in drop:
                 continue
             keep = [i for i in range(nl) if i not in drop]
             cost = cost_of(list(zip(range(nb), keep)))
             if cost < best_cost:
-                best, best_cost = keep.index(line_no), cost
-    return best if best_cost < 0.35 else None
+                best, best_cost = dict(zip(keep, range(nb))), cost
+    # 양쪽에 남는 줄이 함께 있을 수도 있다: 원문에는 그림에서 글 줄로 잡히지 않는 이름표 줄(常時効果·プレイ時効果: 색 띠 위
+    # 흰 글자)이, 그림에는 원문에 없는 아이콘 줄(읽기가 빠뜨린 아래 포션)이 있다 (이세길 5쪽). 아이콘 없는 원문 줄과
+    # 이미지 줄을 함께 빼 보고, 하나 더 뺄 때마다 조금씩 비용을 더해 적게 빼는 짝을 먼저 고른다
+    droppable = [j for j in range(nl) if not n_tok[j] and j != must_keep]
+    # 줄 폭 비율만으로는 글 줄 띠를 빼고 아이콘 줄에 글 줄을 짝지어도 맞아 보인다: 글자 높이로 막는다
+    text_h = text_height(comps)
+
+    def n_glyphs(b: int) -> int:  # 그 띠의 글자 크기 덩어리 수
+        y0, y1 = bands[b]
+        return sum(1 for c in comps if y0 <= c[1] + c[3] / 2 <= y1 and c[4] >= 30
+                   and 0.6 * text_h <= c[3] <= 1.4 * text_h)
+
+    def two_sided_penalty(bkeep: list[int], lkeep: list[int], bdrop) -> float:
+        p = 0.0
+        if text_h:
+            for b, j in zip(bkeep, lkeep):
+                if not icon_only[j] and bands[b][1] - bands[b][0] > 2.2 * text_h:
+                    p += 0.3  # 글 줄을 글자보다 훨씬 높은 띠(아이콘 줄)에 짝지음
+            p += 0.3 * sum(1 for b in bdrop if n_glyphs(b) >= 4)  # 글자가 가득한 띠를 뺌
+        return p
+    for extra in range(1, max_diff + 1):
+        dl = (nl - nb) + extra if nl >= nb else extra
+        db = dl - (nl - nb)
+        if dl > len(droppable) or db < 0 or db > nb - 1:
+            continue
+        for ldrop in combinations(droppable, dl):
+            lkeep = [i for i in range(nl) if i not in ldrop]
+            for bdrop in combinations(range(nb), db):
+                bkeep = [i for i in range(nb) if i not in bdrop]
+                cost = (cost_of(list(zip(bkeep, lkeep))) + 0.04 * (dl + db)
+                        + two_sided_penalty(bkeep, lkeep, bdrop))
+                if cost < best_cost:
+                    best, best_cost = dict(zip(lkeep, bkeep)), cost
+    return best, best_cost
 
 
 def _units(ch: str) -> float:
@@ -358,8 +409,62 @@ def _units(ch: str) -> float:
         0.3 if ch.isspace() else 1.0)
 
 
+def merge_icon_lines(text: str) -> str:
+    """아이콘만 있는 줄이 둘 이상 잇달아 있으면 한 줄로 합친다 (토큰 순서는 그대로라 몇째 아이콘인지는 바뀌지 않는다).
+    읽기 모델이 한 줄에 나란히 있는 아이콘을 줄마다 하나씩 적기도 한다 (이세길 1쪽 아래 아이콘 넷):
+    그러면 원문 줄 수가 그림 줄 수와 달라 아이콘을 하나도 찾지 못했다."""
+    out: list[str] = []
+    prev_icon = False
+    for ln in text.split("\n"):
+        icon_only = bool(TOKEN_RE.search(ln)) and not TOKEN_RE.sub("", ln).strip()
+        if icon_only and prev_icon:
+            out[-1] = out[-1].rstrip() + " " + ln.strip()
+        else:
+            out.append(ln)
+        prev_icon = icon_only
+    return "\n".join(out)
+
+
 def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int, int] | None, str]:
-    """text 안 index번째 아이콘 토큰([[..]])의 위치 (x0, y0, x1, y1, 이미지 px)와 실패 이유."""
+    """text 안 index번째 아이콘 토큰([[..]])의 위치 (x0, y0, x1, y1, 이미지 px)와 실패 이유.
+    원문 줄 수가 그림 줄 수와 다르고 아이콘만 있는 줄이 잇달아 있으면, 그 줄들을 한 줄로 합친 원문으로 먼저 찾는다
+    (원래 원문으로는 줄 짝을 잘못 지어 엉뚱한 아이콘을 잡을 수 있다). 줄 수가 꼭 맞으면(아이콘이 정말 줄마다 하나)
+    원문 그대로."""
+    merged = _merged_if_mismatch(img, text)
+    if merged is not None:
+        box, why = _locate_once(img, merged, index)
+        if box is not None:
+            return box, why
+    box, why = _locate_once(img, text, index)
+    if box is None and merged is None and why.startswith("줄 수가 다름"):  # 원문으로 못 찾을 때만 합친 원문도
+        m = merge_icon_lines(text)
+        if m != text:
+            box2, why2 = _locate_once(img, m, index)
+            if box2 is not None:
+                return box2, why2
+    return box, why
+
+
+def _merged_if_mismatch(img: np.ndarray, text: str) -> str | None:
+    """아이콘만 있는 줄을 합친 원문 (merge_icon_lines)을 먼저 쓸지: 합치면 원문 줄 수가 그림 줄 띠 수에 더 가까워질 때만
+    (1쪽: 원문 8줄·합치면 5줄·그림 3줄). 줄마다 하나씩 정말 쌓인 아이콘(원문 줄 수가 이미 같거나 더 가까움)은 None."""
+    merged = merge_icon_lines(text)
+    if merged == text:
+        return None
+    try:
+        n_lines = len([ln for ln in text.split("\n") if ln.strip()])
+        n_merged = len([ln for ln in merged.split("\n") if ln.strip()])
+        ink0 = _ink(img, img.shape[0] / max(1, n_lines) * 0.6)
+        nb = len(_bands_from(*_text_components(ink0)))
+        if abs(n_merged - nb) >= abs(n_lines - nb):
+            return None
+    except Exception:  # noqa: BLE001 - 줄 띠를 못 세면 원문 먼저 (합친 원문은 원문이 줄 수 때문에 못 찾을 때만)
+        return None
+    return merged
+
+
+def _locate_once(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int, int] | None, str]:
+    """locate 본체 (text 그대로)."""
     lines = [ln for ln in text.split("\n") if ln.strip()]
     # 토큰이 들어 있는 줄과 그 줄 안에서의 순서
     k = -1
@@ -380,6 +485,8 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
     color_design = bool(len(_px)) and float(
         (((_px.max(axis=1) - _px.min(axis=1)) / np.maximum(_px.max(axis=1), 1.0)) >= 0.3).mean()) >= 0.05
     all_comps, rules = _text_components(ink)
+    # 영역 전체의 글자 높이 (덩어리 높이의 중간값, _bands_text_first와 같은 기준): 줄 띠가 커져도 변하지 않는다
+    text_h = text_height(all_comps)
     # 줄 띠를 두 가지로 잡아 본다: 보통 방법 -> 안 되면 글자 크기 덩어리로만 (큰 아이콘이 줄을 가리거나 붙인 경우)
     def _try(bands, last_band: bool = False):
         if not bands:
@@ -407,12 +514,14 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         if len(cells) > len(seq):  # 줄 양 끝에 붙은 배경 그림 조각(집 그림 선 등)을 빼면 맞는가
             _hs = sorted(c[3] for c in comps if c[4] >= 30)
             cells = _cells._trim_edge_scraps(cells, len(seq), float(_hs[len(_hs) // 2]) * 1.15 if _hs else em)
+        no_lines = False  # 긴 선을 지운 그림으로 칸을 나눔 (아이콘의 긴 테두리도 지워졌을 수 있다)
         if len(cells) != len(seq):
             # 칸 수가 안 맞으면: 띠 테두리 같은 긴 가로선이 글자 밑동에 닿아 이웃 글자·아이콘이 붙었을 수 있다.
             # 긴 선을 지우고 다시 나눠 맞으면 그것을 쓴다 (아이콘 테두리가 조금 깎일 수 있어 위아래로 2px 여유)
             alt = _cells._glyph_cells(_cells._line_components(ink, em, (y0, y1), band_h), em, (y0, y1))
             if len(alt) == len(seq):
                 cells = [(c[0], max(0, c[1] - 2), c[2], c[3] + 2) for c in alt]
+                no_lines = True
         if not cells:
             return None, "그 줄에서 글자 칸을 찾지 못함"
         k = sum(1 for t in seq[: _cells._token_cell_index(lines[line_no], before)] if t == "\u25a0")
@@ -451,6 +560,10 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
         # 칸 수가 원문과 꼭 맞아 순서로 짝지은 경우만 빼고 늘 본다 (배경 그림 조각 때문에 칸 수가 어긋나기도 한다)
         if len(cells) != len(seq) or colored is not None:
             box = _cells._set_partner(box, cells, seq, tok_pos, em_line, em, img, lum, ink)
+        if no_lines and colored is None:
+            # 긴 선을 지우면 상자 모양 아이콘(나무 상자)의 위·아래 테두리도 지워져 위가 잘렸다 (이세계 3쪽 ‘5 + 상자’).
+            # 지우기 전 그림에서 그 칸 폭 안에 들어가는 덩어리로 다시 넓힌다 (띠 테두리처럼 칸보다 넓은 선은 넣지 않는다)
+            box = _cells._regrow_erased_edges(box, ink, (y0, y1), band_h)
         bx0, by0, bx1, by1 = _cells._grow_box(box, comps)
         # 아래·위 그림 조각이 붙어 길어진 칸은 그 줄 높이 근처로 자른다
         by0, by1 = max(by0, y0 - 0.4 * band_h), min(by1, y1 + 0.4 * band_h)
@@ -464,6 +577,10 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
             return None, "찾은 덩어리 크기가 아이콘 같지 않음"
         if by1 - by0 >= TALL_ICON * em and tall_box_problem(img, text, (bx0, by0, bx1, by1)):
             return None, "찾은 덩어리가 글자 두 줄 높이 (위아래 아이콘 두 개?)"
+        if text_line and text_h and by1 - by0 > INLINE_ICON_MAX * text_h:
+            # 글 줄 안의 아이콘은 글자 높이의 2배를 넘지 않는다 (사용자 규칙). 줄 띠가 색 판 전체로 잡혀 위아래 줄의 아이콘을
+            # 한 상자로 감싸거나(5쪽 톱니+동전), 글 줄 아이콘을 아래 큰 아이콘 줄(포션)에 짝지은 경우: 다음 방법으로 다시 찾는다
+            return None, "글 줄의 아이콘인데 글자 높이의 2배보다 큼 (다른 줄까지 잡힘)"
         # 줄 띠가 아래·위 그림·줄과 붙어 커지면(em이 큼) 위 검사가 빠진다: 상자 안에 다른 글 줄의 글자가 들어 있으면
         # 위아래 줄의 아이콘·글자까지 한 상자로 잡은 것이다 (공주와기사 3쪽 1줄 문양 셋 상자가 2줄 ‘マーカーを’까지,
         # 5쪽 1줄 백합 문장 상자가 2줄 ‘加える’까지 감쌈)
@@ -498,6 +615,7 @@ def locate(img: np.ndarray, text: str, index: int) -> tuple[tuple[int, int, int,
 
 
 TALL_ICON = 2.0  # 아이콘 상자 높이가 글자 높이의 이 배 이상이면 ‘큰 아이콘’ (아래 tall_box_problem)
+INLINE_ICON_MAX = 2.0  # 글이 있는 줄의 아이콘 상자 높이는 영역 글자 높이의 이 배를 넘지 않는다 (사용자 규칙, 5쪽)
 
 
 def text_em(img: np.ndarray, text: str) -> float:
@@ -555,7 +673,10 @@ def tall_box_problem(img: np.ndarray, text: str, box) -> str:
 
 
 def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int] | None:
-    """locate가 못 찾은 아이콘의 대략적인 자리 (사람이 직접 잡을 때 길잡이). 줄 띠와 줄 안 글자 비율로 짐작한다."""
+    """locate가 못 찾은 아이콘의 대략적인 자리 (사람이 직접 잡을 때 길잡이). 줄 띠와 줄 안 글자 비율로 짐작한다.
+    원문 줄 수가 그림 줄 수와 다르고 아이콘만 있는 줄을 합치면 맞으면 합친 원문으로 짐작한다 (줄마다 하나씩 적힌
+    아래 아이콘 줄의 [[?]] 예상 자리가 위 글 줄에 놓여, 사람이 다른 [[?]]에 상자를 저장했다: 이세길 1쪽)."""
+    text = _merged_if_mismatch(img, text) or text
     try:
         lines = [ln for ln in text.split("\n") if ln.strip()]
         k = -1
@@ -583,6 +704,14 @@ def estimate(img: np.ndarray, text: str, index: int) -> tuple[int, int, int, int
             band = bands[bi]
         if band is None:
             band = (int(line_no / len(lines) * H), int((line_no + 1) / len(lines) * H))
+        # 글이 있는 줄인데 고른 띠가 글자보다 훨씬 높으면(색 판 전체·아래 아이콘 줄) 글자 높이 띠로 다시 짝짓는다
+        # (locate의 INLINE_ICON_MAX 규칙과 같게: 5쪽 ‘[[?]]を得る’의 예상 자리가 아래 포션 줄에 놓였다)
+        text_h = text_height(comps)
+        if text_h and TOKEN_RE.sub("", lines[line_no]).strip() and band[1] - band[0] > INLINE_ICON_MAX * 1.1 * text_h:
+            tf = _bands_text_first(comps, rules)
+            bi = (line_no if len(tf) == len(lines) else _match_line(lines, line_no, tf, comps)) if tf else None
+            if bi is not None:
+                band = tf[bi]
         y0, y1 = band
         bh = max(8, y1 - y0)
         cs = [c for c in comps if y0 - bh * 0.2 <= c[1] + c[3] / 2 <= y1 + bh * 0.2]
@@ -1247,6 +1376,9 @@ class Occurrence:
     prev: str = ""  # 확정된 이름이 있던 자리를 [[?]]로 연 경우 그 이름 (2A가 이름 칸에 미리 채운다)
     added: bool = False  # 사람이 카드 보기에서 새로 그려 넣은 자리 (원문에 없던 아이콘)
     num_checked: bool = False  # 손으로 잡은 상자가 옆 숫자를 감쌌는지 검사함 (recheck_boxed_numbers, 한 번만)
+    # 사전에 모양은 같고 그림 속 숫자만 다른 아이콘이 있을 때 숫자만 바꾼 이름 (2coinup이 있으면 5+상자 → 5_coinup).
+    # 이름 칸에 미리 채우기만 하고, 그림은 이 자리의 그림(숫자 포함)을 쓴다 (number_variant)
+    variant: str = ""
 
     @property
     def num_in_image(self) -> bool:
@@ -1488,6 +1620,8 @@ def scan(info, work: Path, only: set | None = None) -> ScanResult:
                             oc.match, oc.score = best_known(sh, known, oc.num)
                             if not oc.match:
                                 oc.hint = _place.legacy_hint(sh, known, oc.num)
+                            if not oc.match and not oc.hint:  # 숫자만 다른 사전 아이콘: 숫자만 바꾼 이름 (5_coinup)
+                                oc.variant = number_variant(sh, known, oc.num)
                     left.append(oc)
                 for hk in sorted(contested):
                     # 첫 자리는 찾은 그대로 보여 주되 사전 이름을 ‘모양 같음’으로 채우지 않는다 (그 상자가 아랫자리 아이콘일
@@ -1554,7 +1688,7 @@ def _drop_shared_named(cell: list[Occurrence]) -> None:
     for o in cell:
         if o.id in bad:
             o.box, o.png, o.number = [], "", {}
-            o.match, o.score, o.hint = "", 0.0, ""
+            o.match, o.score, o.hint, o.variant = "", 0.0, "", ""
             o.reason = _place.SHARED_BOX_REASON
 
 
@@ -1594,7 +1728,8 @@ def _group(res: ScanResult) -> None:
 
 def _prefill(gi: dict, o: Occurrence) -> None:
     """줄의 이름 칸에 미리 채울 사전 이름 (dict)과 그 까닭 (dict_how)."""
-    for how, name in (("named", o.named), ("same", o.match), ("legacy", o.hint), ("prev", o.prev)):
+    for how, name in (("named", o.named), ("same", o.match), ("legacy", o.hint), ("prev", o.prev),
+                      ("variant", o.variant)):
         if name:
             gi["dict"], gi["dict_how"] = name, how
             if how == "named":
@@ -1687,6 +1822,39 @@ def _known_shapes(info) -> dict:
         if p.exists():
             out[name] = (shape_pair(_cells.load_png(p)), entry_number(e))
     return out
+def variant_name(name: str, entry_num: str, occ_num: str) -> str:
+    """사전 이름에서 그림 속 숫자를 빼고 이 자리의 숫자를 앞에 ‘숫자_’로 붙인다.
+    2coinup(2) → 5_coinup, coin_crate_2(2) → 5_coin_crate, 숫자 없는 coin_crate("") → 5_coin_crate.
+    이름으로 쓸 수 없으면 ""."""
+    base = name
+    if entry_num:
+        n = re.escape(entry_num)
+        # 다른 숫자 속의 같은 숫자(12coin의 2)는 건드리지 않는다
+        base = re.sub(rf"^{n}(?![0-9])_?|_?(?<![0-9]){n}$", "", name, count=1)
+        if base == name:
+            base = re.sub(rf"_?(?<![0-9]){n}(?![0-9])_?", "_", name, count=1)
+    base = re.sub(r"_+", "_", base).strip("_")
+    if not base or base.isdigit():
+        return ""
+    out = f"{num_key(occ_num)}_{base}"
+    return out if occ_num and NAME_RE.match(out) else ""
+
+
+def number_variant(sh, known: dict, occ_num: str) -> str:
+    """사전에 모양은 같고 그림 속 숫자만 다른 아이콘이 있으면 숫자만 바꾼 이름 (variant_name), 없으면 "".
+    best_known은 숫자가 다르면 후보로 보지 않는다 (모양 비교는 숫자를 거의 보지 못해 상자+2를 상자+5로 바꿀 수 있다):
+    여기서는 이름만 제안하고 그림은 이 자리의 그림을 쓰므로 숫자가 틀린 그림이 들어가지 않는다."""
+    if not occ_num:
+        return ""
+    cand = [(nm, en, same_icon(sh, ks)) for nm, (ks, en) in known.items() if en is not None and en != occ_num]
+    cand = [c for c in cand if c[2] >= SAME_SHAPE]
+    # 그림에 숫자가 든 사전 아이콘(2coinup)을 먼저: 숫자+아이콘 모양이 같다. 없으면 숫자 없는 아이콘(coin_up)
+    nm, en, _s = max(cand, key=lambda t: (bool(t[1]), t[2]), default=("", "", 0.0))
+    out = variant_name(nm, en, occ_num) if nm else ""
+    # 사전에 이미 그 이름이 있으면(모양·숫자가 맞았으면 best_known이 골랐다) 다른 그림이다: 제안하지 않는다
+    return "" if out in known else out
+
+
 def best_known(sh, known: dict, occ_num: str) -> tuple[str, float]:
     """사전에서 모양이 같은 아이콘 (이름, 점수). 옆 숫자가 다르면 후보가 아니다 (상자+2를 상자+5로 바꾸지 않게:
     모양 비교는 숫자를 거의 보지 못한다). 없으면 ("", 0)."""

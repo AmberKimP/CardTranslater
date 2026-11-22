@@ -848,8 +848,8 @@ def erase_page(page, template: RegionTemplate, sample: dict | None = None, seed:
             m_ = max(3, int(0.12 * (core[3] - core[1])))
             lb = (max(lb_region[0], core[0] - m_), max(lb_region[1], core[1] - m_),
                   min(lb_region[2], core[2] + m_), min(lb_region[3], core[3] + m_))
-            area = lambda b_: max(1, b_[2] - b_[0]) * max(1, b_[3] - b_[1])  # noqa: E731
-            if area(core) >= 0.97 * area(lb_region):  # 거의 영역 그대로: 좁히지 않는다
+            px_area = lambda b_: max(1, b_[2] - b_[0]) * max(1, b_[3] - b_[1])  # noqa: E731 (이름이 area면 위 area 호출이 UnboundLocalError)
+            if px_area(core) >= 0.97 * px_area(lb_region):  # 거의 영역 그대로: 좁히지 않는다
                 lb, core = lb_region, lb_region
         else:
             lb = lb_region

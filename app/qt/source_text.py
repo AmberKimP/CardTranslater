@@ -77,6 +77,25 @@ def same_but_icon_layout(reading: str, current: str, human: bool = True) -> bool
         return re.sub(r"\s+", "", ICON_TOKEN_RE.sub("", t))
     if bare(reading) != bare(current):
         return False
+
+    def inline(t: str) -> dict[str, tuple[int, int]]:
+        """글이 있는 줄의 글자 -> (그 줄의 아이콘 덩어리 수, 아이콘 수)."""
+        out: dict[str, tuple[int, int]] = {}
+        for ln in t.split("\n"):
+            if bare(ln):
+                runs, toks = out.get(bare(ln), (0, 0))
+                out[bare(ln)] = (runs + _icon_runs(ln), toks + len(ICON_TOKEN_RE.findall(ln)))
+        return out
+    r_in, c_in = inline(reading), inline(current)
+    for k in r_in.keys() & c_in.keys():
+        # 두 글에 똑같이 있는 글 줄인데 그 줄의 아이콘이 다르다: 글 줄에 붙은 아이콘이 다른 줄로 갔다
+        # - 덩어리 수가 다름 (1쪽: 동전 자리를 아래 아이콘 줄 [[?]]에 저장해 원문 칸이 ‘を得る … [[coin]]’이 됐는데, 다시 읽은
+        #   ‘[[?]]を得る’를 감췄다)
+        # - 원문 칸 쪽 아이콘이 더 많음 (5쪽: 동전을 ‘아이콘 추가’하니 위 줄에 들어가 ‘ジャンク[[gear]][[coin]]タグ’)
+        # 손으로 합친 세트(원문 칸 [[set]] 하나 ↔ 읽은 [[?]] 셋)는 원문 칸 쪽이 적어 걸리지 않는다.
+        # 모델이 글 줄 둘을 한 줄로 붙여 읽은 것(5쪽 예전)은 같은 글 줄이 없어 여기 걸리지 않는다
+        if r_in[k][0] != c_in[k][0] or c_in[k][1] > r_in[k][1]:
+            return False
     n_r, n_c = len(ICON_TOKEN_RE.findall(reading)), len(ICON_TOKEN_RE.findall(current))
     return n_r == n_c or _icon_runs(reading) == _icon_runs(current) or (n_r > n_c and _icon_runs(reading) <= n_c)
 

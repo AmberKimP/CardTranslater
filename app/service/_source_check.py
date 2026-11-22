@@ -56,7 +56,14 @@ def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, clie
         return {"state": "scanned", "regions": 0, "note": getattr(r, "note", "") or ""}
     stale = icons_stage.stale_regions(info, res)
     if stale:
-        icons_stage.rescan_regions(info, work, stale)
+        res = icons_stage.rescan_regions(info, work, stale)
+    # 다시 찾은 칸의 새 줄도 처음 찾기처럼 이름 제안을 받는다 (칸만 다시 찾을 때는 묻지 않아, 사전에 없는 아이콘은
+    # 이름 칸이 비어 있었다: 다시 읽은 3쪽의 ‘5+상자’). 한 번도 묻지 않은 줄만 묻는다
+    try:  # 숫자만 다른 사전 아이콘이 있는 줄: 숫자만 바꾼 이름을 먼저 채운다 (Claude 안 부름, 채운 줄은 묻지 않는다)
+        _fill_variants(info, work, res)
+    except Exception:  # noqa: BLE001 - 못 채워도 창은 연다
+        log.warning("숫자만 다른 아이콘 이름 채우기 실패", exc_info=True)
+    note = _suggest_unasked(info, work, res, engine, client) if suggest else ""
     try:  # 손으로 잡은 상자가 감싼 옆 숫자: 예전에 확정한 원문에도 남아 있으면 뺀다 (자리마다 한 번)
         with workspace.EXTRACT_LOCK:
             nfix = icons.recheck_boxed_numbers(info, work)
@@ -66,8 +73,132 @@ def ensure_icon_scan(project_dir: Path | str, *, engine: str | None = None, clie
     if nfix:
         log.info("아이콘 그림 속 숫자를 원문에서 뺌: %d칸", nfix)
     if not stale:
-        return {"state": "ok", "regions": 0, "note": ""}
-    return {"state": "synced", "regions": len(stale), "note": ""}
+        return {"state": "ok", "regions": 0, "note": note}
+    return {"state": "synced", "regions": len(stale), "note": note}
+
+
+def card_region_rects(file_dir: Path | str, pages: list[int]) -> dict[int, dict[str, tuple]]:
+    """그 파일의 카드(쪽)마다 쓰는 영역 상자 {쪽: {이름: (x, y, w, h) 비율}} (카드별·따로 영역·자동 정렬 포함).
+    카드 보기에서 영역을 고치기 전후를 견준다 (공통 영역을 바꾸면 모든 카드가 바뀐다)."""
+    from app.project import load_project
+
+    proj = load_project(Path(file_dir))
+    # 상자 자리·크기 + 돌림·종류 (돌리면 잘라 낸 그림이 돌아가 아이콘 자리가 맞지 않는다)
+    return {int(p): {r.name: (*(round(float(v), 5) for v in (r.rect.x, r.rect.y, r.rect.w, r.rect.h)),
+                              (r.style or {}).get("rotate", 0), r.kind)
+                     for r in proj.template.regions_for(int(p))} for p in pages}
+
+
+def rescan_card_icons(project_dir: Path | str, cards: list[tuple]) -> int:
+    """카드들 [(파일 폴더, 쪽)]의 아이콘을 다시 찾는다 (그 카드의 영역 상자를 바꾼 뒤: 아이콘 자리는 영역 그림 기준이라
+    상자가 바뀌면 맞지 않는다). 그 카드들의 확정 전 값·손으로 잡은 확정 전 자리는 사라진다. 돌려줌: 다시 찾은 칸 수."""
+    from app import icons, icons_stage
+
+    info, work, res = _scan(project_dir)
+    if res is None or not cards:
+        return 0
+    want = {(_norm(fd), int(p)) for fd, p in cards}
+    keys = {(o.file, o.page, o.region) for o in res.occurrences
+            if (_norm(icons._occ_dir(info, o.file)), o.page) in want}
+    if keys:
+        icons_stage.rescan_regions(info, work, keys)
+    return len(keys)
+
+
+def _unasked_groups(res) -> set[str]:
+    """이름 제안을 한 번도 받지 않은 이름 없는 줄 (그림이 있고, 사전·확정 이름·사람이 적은 이름이 없음)."""
+    from app import icons
+
+    if res is None:
+        return set()
+    has_png = {o.id for o in res.occurrences if getattr(o, "png", "")}  # 그림 파일이 없는 자리는 물을 수 없다
+    return {g for g, gi in res.groups.items()
+            if icons.needs_suggest(gi) and gi.get("rep") in has_png and not gi.get("suggest")
+            and not gi.get("suggest_tried") and not gi.get("dict") and not _staged_name(gi)}
+
+
+def _fill_variants(info, work, res) -> int:
+    """이름 없는 줄 중 사전에 모양은 같고 그림 속 숫자만 다른 아이콘이 있는 줄: 숫자만 바꾼 이름(5_coinup)을 이름 칸에
+    미리 채운다 (dict_how="variant", Claude를 부르지 않음). 예전에 찾은 줄도 창을 열 때 채운다. 돌려줌: 채운 줄 수."""
+    from app import icons, icons_cells
+
+    if res is None:
+        return 0
+    by_id = {o.id: o for o in res.occurrences}
+    todo = []
+    for g, gi in res.groups.items():
+        o = by_id.get(gi.get("rep") or "")
+        if (o is None or o.unique or not o.num or not o.png or o.named or gi.get("dict") or _staged_name(gi)
+                or gi.get("not_icon") or gi.get("absorbed") or (gi.get("staged") or {}).get("not_icon")):
+            continue
+        todo.append((g, gi, o))
+    if not todo:
+        return 0
+    known = icons._known_shapes(info)
+    n = 0
+    for _g, gi, o in todo:
+        try:
+            sh = icons.shape_pair(icons_cells.load_png(Path(o.png)))
+        except Exception:  # noqa: BLE001 - 그림을 못 읽은 줄은 건너뛴다
+            continue
+        v = icons.number_variant(sh, known, o.num)
+        if v:
+            o.variant = v
+            gi["dict"], gi["dict_how"] = v, "variant"
+            n += 1
+    if n:
+        icons._save_scan(work, res)
+    return n
+
+
+def _staged_name(gi: dict) -> str:
+    return str((gi.get("staged") or {}).get("name") or "").strip()
+
+
+def _copy_same_shape(res, groups: set[str]) -> set[str]:
+    """모양이 같은 다른 줄에 이미 이름(사람이 적은 이름·사전·제안)이 있으면 그것을 옮겨 적고 묻지 않는다
+    (같은 아이콘에 다른 제안 이름이 붙지 않게·물음 한 번 아끼기). 돌려줌: 아직 물어야 할 줄."""
+    def firm_dict(gi: dict) -> str:  # ‘비슷함(legacy)’ 힌트는 옮기지 않는다
+        return gi.get("dict") if gi.get("dict_how") in ("named", "same") else ""
+
+    named: dict[str, dict] = {}
+    for g, gi in res.groups.items():
+        sh = gi.get("shape")
+        if gi.get("not_icon") or (gi.get("staged") or {}).get("not_icon") or gi.get("absorbed"):
+            continue  # ‘아이콘 아님’·포함으로 정한 줄의 이름은 옮기지 않는다
+        if sh and g not in groups and sh not in named and (_staged_name(gi) or firm_dict(gi) or gi.get("suggest")):
+            named[sh] = gi
+    left = set()
+    for g in groups:
+        gi = res.groups[g]
+        src = named.get(gi.get("shape") or "")
+        if src is None:
+            left.add(g)
+            continue
+        gi["suggest"] = _staged_name(src) or firm_dict(src) or src.get("suggest")
+        for k in ("meaning", "ko"):
+            v = (src.get("staged") or {}).get(k) or src.get(k)
+            if v:
+                gi[k] = v
+        gi["suggest_tried"] = True
+    return left
+
+
+def _suggest_unasked(info, work, res, engine: str | None, client=None) -> str:
+    """_unasked_groups만 이름 제안을 받는다 (모양이 같은 줄에 이름이 있으면 옮겨 적기만). 돌려줌: 못 받은 까닭 또는 ""."""
+    from app import icons
+
+    groups = _unasked_groups(res)
+    if not groups:
+        return ""
+    left = _copy_same_shape(res, groups)
+    if left != groups:
+        icons._save_scan(work, res)
+    groups = left
+    if not groups:
+        return ""
+    eng = engine or _settings.get_settings().engine
+    return _extract.suggest_missing_names(info, work, res, engine=eng, client=client, groups=groups)
 
 
 def rescan_icons(project_dir: Path | str, *, engine: str | None = None, client=None, suggest: bool = True) -> dict:
@@ -148,7 +279,10 @@ def _icon_entries(info, res, dic: dict) -> dict[tuple, list[dict]]:
             # 확정할 때 원문에서 빼는 옆 숫자 (import_rows와 같은 규칙: 숫자가 그림에 들었고 사전 그림의 숫자와 같을 때.
             # 손으로 잡은 자리는 상자가 숫자까지 감쌌을 때만)
             "strip": dict(o.number) if (o.num_in_image and state == "named"
-                                        and (name not in dic or icons.entry_number(dic[name]) == o.num)) else None})
+                                        and (name not in dic or icons.entry_number(dic[name]) == o.num)) else None,
+            # 아이콘 그림에 든 옆 숫자 (이름과 상관없이). 이름이 아직 없는 자리는 화면에서만 글에서 뺀다
+            # (strip_icon_numbers: 그림 속 숫자가 ‘5 [[?]]’처럼 글자로도 보였다)
+            "num_image": dict(o.number) if o.num_in_image else None})
     for v in out.values():
         v.sort(key=lambda x: (x["line"] or 0, x["order"]))
     return out
@@ -172,9 +306,43 @@ def _set_members(info, res) -> dict[tuple, list[dict]]:
     return out
 
 
+def strip_icon_numbers(text: str, row: dict, named_only: bool = False) -> str:
+    """읽은 결과에서 아이콘 그림에 든 옆 숫자를 뺀다 (모든 자리를 한 번에 찾아 뺀다). 이름을 정한 자리는 확정할 때 빼는
+    숫자(줄의 strip), 이름이 아직 없는 자리는 그림에 든 숫자(num_image).
+    이름 없는 자리의 숫자는 보이기만 뺀다: 저장될 글(편집 칸·‘이것 쓰기’)에는 named_only=True로 이름 정한 자리만
+    (확정 때 confirm_icons가 같은 숫자를 빼고 icon_numbers에 남긴다).
+    자리는 그 칸의 몇째 [[…]]인가(ti)로 찾으므로 아이콘 수가 원문과 다른 글은 그대로 둔다."""
+    from app import icons
+
+    raw = row.get("source")
+    raw = "\n".join(raw) if isinstance(raw, list) else (raw or "")
+    toks = list(icons.TOKEN_RE.finditer(text))
+    if not toks or len(toks) != len(icons.TOKEN_RE.findall(raw)):
+        return text
+    spans = []
+    for e in row.get("icons") or []:
+        ti = e.get("ti", -1)
+        if e["state"] == "unnamed":
+            want = None if named_only else e.get("num_image")
+        else:
+            want = e.get("strip")
+        if not want or not want.get("text") or ti is None or not 0 <= ti < len(toks):
+            continue
+        t = toks[ti]
+        hit = icons.number_near(text, t.start(), t.end())
+        if hit is None or hit[0] != want.get("side", hit[0]):
+            continue
+        if icons.num_key(text[hit[1]:hit[2]]) != icons.num_key(want["text"]):
+            continue
+        spans.append((hit[1], hit[2]))
+    return icons.strip_spans(text, spans) if spans else text
+
+
 def preview_source(row: dict) -> str:
     """편집 칸에 보일 원문: 지금 원문에 확정 전 이름을 미리 넣은 것 ([[?]] → [[이름]], 아이콘 아님은 빼거나 그 글자).
-    row = source_check_rows의 영역. 확정하면 원문이 이렇게 된다 (덜 끝난 아이콘은 [[?]] 그대로)."""
+    row = source_check_rows의 영역. 확정하면 원문이 이렇게 된다 (덜 끝난 아이콘은 [[?]] 그대로).
+    이름 없는 아이콘의 그림 속 숫자는 여기서 빼지 않는다: 편집 칸은 저장되는 글이라, 빼 두면 고쳐서 확정할 때 숫자가
+    원문에서 사라지고 icon_numbers에도 남지 않는다 (읽은 결과 표만 strip_icon_numbers로 뺀다)."""
     from app import icons
 
     src = row.get("source")

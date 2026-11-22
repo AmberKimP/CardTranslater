@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "packaging"))
 
-import license_check  # noqa: E402
+import license_check  # noqa: E402 - packaging/를 sys.path에 넣고 읽음  # pyright: ignore[reportMissingImports]
 
 
 def test_runtime_libraries_have_approved_licenses():

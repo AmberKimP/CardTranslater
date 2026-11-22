@@ -356,7 +356,9 @@ def test_dictionary_auto_match_needs_same_number(tmp_path, monkeypatch):
     assert not r.auto and r.state == "icons_review" and r.occurrences == 3 and r.prefilled == 1 and r.named == 1
     assert _cell(fd2, 2)["source"] == "AB 5[[?]]CD" and _cell(fd2, 1)["source"] == "AB 2[[?]]CD"
     rv = {(g["where"][0]["file_dir"] == fd2, g["where"][0]["page"]): g for g in service.icon_review(info2.dir)["groups"]}
-    assert rv[True, 2]["suggest"] == "crate_5" and rv[True, 2]["dict_how"] == "same" and rv[True, 1]["suggest"] == ""
+    assert rv[True, 2]["suggest"] == "crate_5" and rv[True, 2]["dict_how"] == "same"
+    # 2는 사전 그림(crate_5)을 쓰지 않는다: 1.31부터 숫자만 바꾼 새 이름 ‘2_crate’를 채운다 (그림은 그 자리의 그림)
+    assert rv[True, 1]["suggest"] == "2_crate" and rv[True, 1]["dict_how"] == "variant"
     assert rv[False, 1]["named"] == "crate_5"
     named_occ = next(o for o in icons.load_scan(info.game_dir / "work" / "icons").occurrences if o.named)
     assert named_occ.number == {"text": "5", "side": "before"}

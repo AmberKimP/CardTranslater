@@ -279,11 +279,13 @@ def group_issue_lines(items: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
-def show_error(parent, title: str, why: str, todo: str = "", detail: str | None = None,
+def show_error(parent, title: str, why: str | BaseException, todo: str = "", detail: str | None = None,
                warn: bool = True) -> QMessageBox:
-    """오류·경고 창. 제목=무엇이 안 됐는지, 본문=왜, 아래=무엇을 하면 되는지, 원문 메시지는 ‘자세히 보기’에."""
+    """오류·경고 창. 제목=무엇이 안 됐는지, 본문=왜, 아래=무엇을 하면 되는지, 원문 메시지는 ‘자세히 보기’에.
+    why에 예외를 그대로 넘겨도 된다 (글로 바꾼다: QMessageBox.setText는 str만 받아 예외를 넘기면 오류 창 대신 TypeError가 났다)."""
     import logging
 
+    why = str(why)
     logging.getLogger("cardtranslater.ui").warning("오류 창: %s | %s | %s%s", title, why, todo,
                                                    f"\n  자세히: {detail.strip()[:4000]}" if detail else "")
     box = QMessageBox(parent)

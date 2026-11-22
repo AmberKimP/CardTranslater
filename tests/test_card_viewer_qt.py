@@ -144,10 +144,15 @@ def test_edited_text_is_saved_on_confirm(qapp, tmp_path):
 
 def test_navigation_between_regions_and_cards(qapp, tmp_path):
     info, fd, files, v = _viewer(qapp, tmp_path)
-    assert v.nav_btns["prev"].isEnabled() is False and v.nav_btns["next"].isEnabled()
+    # 1.31: 끝에서 돌아간다 (첫 영역의 ◀ 이전 영역도 켜져 있다: 마지막 영역으로)
+    assert v.nav_btns["prev"].isEnabled() and v.nav_btns["next"].isEnabled()
     v.nav_btns["next"].click()
     assert v.key == (str(fd), 2, "본문") and "2쪽" in v.windowTitle()
-    assert v.nav_btns["next"].isEnabled() is False and v.nav_btns["prev"].isEnabled()
+    assert v.nav_btns["next"].isEnabled() and v.nav_btns["prev"].isEnabled()
+    v.nav_btns["next"].click()  # 마지막 영역의 다음 = 첫 영역
+    assert v.key[1] == 1
+    v.nav_btns["prev"].click()  # 첫 영역의 이전 = 마지막 영역
+    assert v.key[1] == 2
     v.nav_btns["prev"].click()
     assert v.key[1] == 1
     v.nav_btns["next_card"].click()

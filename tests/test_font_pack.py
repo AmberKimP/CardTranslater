@@ -80,7 +80,7 @@ def test_font_pack_hash_ignores_catalog_and_sees_font_changes(tmp_path):
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
-    from make_font_pack import fonts_hash
+    from make_font_pack import fonts_hash  # packaging/를 sys.path에 넣고 읽음  # pyright: ignore[reportMissingImports]
 
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "A-Regular.ttf").write_bytes(b"font")

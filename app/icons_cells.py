@@ -289,6 +289,31 @@ def _line_components(ink: np.ndarray, em: float, band: tuple[int, int], band_h: 
     return out
 
 
+def _regrow_erased_edges(box, ink: np.ndarray, band: tuple[int, int], band_h: int):
+    """긴 선을 지운 그림(_line_components)으로 찾은 칸을 지우기 전 그림으로 다시 넓힌다: 칸과 겹치는 원래 덩어리 중
+    칸 폭 안에 들어가고(양옆 10% 여유) 줄 높이의 1.6배를 넘지 않는 것만 합친다. 상자 아이콘의 위·아래 테두리는 칸 폭과
+    같아 들어오고, 띠 테두리·배경 그림 선처럼 칸보다 넓거나 높은 덩어리는 들어오지 않는다."""
+    import cv2
+
+    x0, y0, x1, y1 = (int(v) for v in box)
+    w = max(1, x1 - x0)
+    H, W = ink.shape[:2]
+    top, bot = max(0, int(band[0] - band_h * 0.6)), min(H, int(band[1] + band_h * 0.6) + 1)
+    lx0, lx1 = max(0, x0 - w), min(W, x1 + w)
+    sub = ink[top:bot, lx0:lx1].astype(np.uint8)
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(sub, connectivity=8)
+    nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+    for c in range(1, n):
+        cx, cy, cw, ch, _a = (int(v) for v in st[c])
+        cx, cy = cx + lx0, cy + top
+        if cx + cw <= x0 or cx >= x1 or cy + ch <= y0 or cy >= y1:  # 칸과 겹치지 않음
+            continue
+        if cx < x0 - 0.1 * w or cx + cw > x1 + 0.1 * w or ch > band_h * 1.6:
+            continue  # 칸보다 넓거나(띠·그림 선) 너무 높음
+        nx0, ny0, nx1, ny1 = min(nx0, cx), min(ny0, cy), max(nx1, cx + cw), max(ny1, cy + ch)
+    return (nx0, ny0, nx1, ny1)
+
+
 def _long_lines(ink: np.ndarray, em: float) -> np.ndarray:
     """글자보다 훨씬 긴 가로·세로 선(띠 테두리·구분선)만 골라낸 마스크 (조금 두껍게)."""
     import cv2

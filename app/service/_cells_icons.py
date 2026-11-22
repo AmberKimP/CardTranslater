@@ -562,7 +562,7 @@ def _page_cells(fd: Path, page: int) -> dict:
 
 # ---------------------------------------------------------------- 화면용: 아이콘 이름 확인 (2차)
 ICON_HOW_LABEL = {"named": "확정됨", "same": "사전과 모양 같음", "legacy": "사전 그림과 비슷 (확인)",
-                  "prev": "확정됨 · 다시 잡는 중"}
+                  "prev": "확정됨 · 다시 잡는 중", "variant": "사전 아이콘과 숫자만 다름"}
 
 
 def icons_pending(project_dir: Path | str) -> int:

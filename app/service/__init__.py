@@ -112,8 +112,9 @@ from app.service._test_runs import (  # noqa: F401
     remember_project, last_project,
 )
 from app.service._source_check import (  # noqa: F401
-    STATUS_ORDER, STATUS_LABEL, check_files, ensure_icon_scan, rescan_icons, region_status, preview_source, source_check_rows, icon_kinds,
-    stage_icon_names, confirm_regions, source_fix_count, erase_game_files,
+    STATUS_ORDER, STATUS_LABEL, check_files, ensure_icon_scan, rescan_icons, region_status, preview_source, strip_icon_numbers,
+    source_check_rows, icon_kinds,
+    stage_icon_names, confirm_regions, source_fix_count, erase_game_files, rescan_card_icons, card_region_rects,
 )
 from app.service._manage import (  # noqa: F401
     self_check, license_text, release_notes, _to_trash, delete_project, delete_game, RESET_WHAT, reset_files,

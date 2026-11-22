@@ -446,6 +446,19 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
     def current_file(self) -> Path:
         return Path(self.file_combo.currentData()[1])
 
+    def go_to(self, file_dir: Path | str, page: int) -> None:
+        """그 파일의 그 쪽(카드)을 연다 (카드 보기 ‘이 카드 영역 고치기’). 같은 그룹의 파일만."""
+        import os
+
+        want = os.path.normcase(os.path.abspath(str(file_dir)))
+        idx = next((i for i in range(self.file_combo.count())
+                    if os.path.normcase(os.path.abspath(self.file_combo.itemData(i)[1])) == want
+                    and Path(self.file_combo.itemData(i)[0]) == self.group_dir), None)
+        if idx is not None and idx != self.file_combo.currentIndex():
+            self.file_combo.setCurrentIndex(idx)  # currentIndexChanged -> _on_file_combo -> _change_page
+        if self.page_spin.value() != int(page):
+            self.page_spin.setValue(int(page))  # valueChanged -> _change_page
+
     def _on_file_combo(self, idx: int):
         gdir = Path(self.file_combo.itemData(idx)[0])
         if gdir == self.group_dir:

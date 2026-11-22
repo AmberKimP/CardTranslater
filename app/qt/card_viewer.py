@@ -22,9 +22,9 @@ from typing import Callable
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDialog, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget)
 
 from app import service
 from app.qt import worker
@@ -182,6 +182,8 @@ class IconRow(QFrame):
         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.name.setCompleter(comp)
         tag = ENTRY_TEXT.get(e["state"], e["state"]) + (" · 확정 전" if e["pending"] else "")
+        if e.get("where"):  # 원문 몇째 줄의 어느 [[…]]인가 (줄마다 [[?]]가 여럿이면 어느 것을 고르는지 헷갈렸다)
+            tag += f"  ({e['where']})"
         self.tag = QLabel(tag)
         self.tag.setStyleSheet("color: #6E6E73;")
         lay = QGridLayout(self)
@@ -526,8 +528,8 @@ class CardViewer(QDialog):
         self.nav_btns: dict[str, QPushButton] = {}
         for kind, text, tip in (
                 ("prev_bad", PREV_CONFIRM_TEXT, "이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
-                ("prev", "◀ 이전 영역", "목록 순서로 앞 영역으로 (Alt+↑)"),
-                ("next", "다음 영역 ▶", "목록 순서로 다음 영역으로 (Alt+↓)"),
+                ("prev", "◀ 이전 영역", "목록 순서로 앞 영역으로 (Alt+↑, 첫 영역에서는 마지막 영역으로)"),
+                ("next", "다음 영역 ▶", "목록 순서로 다음 영역으로 (Alt+↓, 마지막 영역에서는 첫 영역으로)"),
                 ("next_card", "다음 카드 ▶▶", "다음 카드의 첫 문제 영역으로")):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -563,6 +565,14 @@ class CardViewer(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(body)
+        # 카드 단위로 영역 고치기 (영역 지정 창을 이 카드로 연다). 버튼 코드가 밀리지 않게 맨 나중에 만든다
+        self.card_regions_btn = QPushButton("이 카드 영역 고치기")
+        self.card_regions_btn.setAutoDefault(False)
+        self.card_regions_btn.setToolTip("영역 지정 창을 이 카드로 엽니다. ‘이 카드만 따로 영역’으로 이 카드의 영역 상자만 "
+                                         "옮기거나 크기를 바꿀 수 있습니다.\n상자가 바뀐 카드는 아이콘을 다시 찾습니다 "
+                                         "(글은 ‘이 영역 다시 읽기’로 다시 읽으세요).")
+        self.card_regions_btn.clicked.connect(self._edit_card_regions)
+        bottom.insertWidget(1, self.card_regions_btn)
         for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn,
                   self.absorb_btn, self.overlap_btn, self.zoom_in_btn, self.zoom_out_btn, self.fit_btn):
             b.setAutoDefault(False)
@@ -718,7 +728,7 @@ class CardViewer(QDialog):
         self.icon_list.blockSignals(True)
         self.icon_list.clear()
         for e in self._entries:
-            row = IconRow(e, self._known)
+            row = IconRow({**e, "where": self._where(e)}, self._known)
             row.edited.connect(self._name_edited)
             row.focused.connect(self._row_focused)
             it = QListWidgetItem()
@@ -790,8 +800,12 @@ class CardViewer(QDialog):
         src, removed = self._icon_ref(c)
         known = self._names_for(c)
         # 같은 방식으로 다시 읽으면 처음 결과는 숨기므로(service.extracted_cells) 이름은 ‘보통 읽기’·‘정밀 읽기’ 그대로
-        texts = [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known, removed))
-                 for rd in c["readings"]]
+        filled = [(reader_name(rd["model"]), fill_icon_names(as_text(rd["source"]), src, known, removed))
+                  for rd in c["readings"]]
+        # 읽은 결과 표: 아이콘 그림에 든 옆 숫자(‘5 [[?]]’의 5)는 이름을 정하기 전에도 뺀다 (보이기만).
+        # ‘이것 쓰기’는 편집 칸(저장되는 글)에 들어가므로 이름 정한 자리의 숫자만 뺀다 (확정 때 빼는 숫자와 같게)
+        texts = [(n, service.strip_icon_numbers(t, c)) for n, t in filled]
+        picks = [(n, service.strip_icon_numbers(t, c, named_only=True)) for n, t in filled]
         pi = precise_index(c["readings"])
         differ = len({t for _n, t in texts}) >= 2
         reason, memo = source_text.reason_text(c, differ)
@@ -804,7 +818,7 @@ class CardViewer(QDialog):
         kind = "todo" if reg["status"] in ("fix", "check") else "info"
         set_hint(self.info, "<br>".join(bits), kind)
         self.readings.fill(texts, pi)
-        self._fill_picks(texts)
+        self._fill_picks(picks)
         base = source_text.for_edit(c, service.preview_source(c))
         self._orig_text = base
         self.edit.setPlainText(base if prefill is None else prefill)
@@ -1284,11 +1298,62 @@ class CardViewer(QDialog):
             return
         self._after_op(msg="그 문장을 원본 그대로 둡니다" if keep else "그 문장을 다시 한글화합니다")
 
+    def _where(self, e: dict | None) -> str:
+        """아이콘이 원문 몇째 줄의 어느 [[…]]인가: ‘3째 줄 · ■を得る’ (이 아이콘 = ■, 같은 줄의 다른 아이콘 = □)."""
+        reg = self._region() or {}
+        if not e or not isinstance(reg.get("source"), str):
+            return ""
+        lines = reg["source"].split("\n")
+        li = int(e.get("line") or 0) - 1
+        if not 0 <= li < len(lines):
+            return ""
+        before = sum(len(ICON_TOKEN_RE.findall(ln)) for ln in lines[:li])
+        k = int(e.get("ti", -1)) - before
+        n = iter(range(10_000))
+        snippet = ICON_TOKEN_RE.sub(lambda _m: "■" if next(n) == k else "□", lines[li]).strip()
+        if len(snippet) > 18:
+            snippet = snippet[:17] + "…"
+        return f"{li + 1}째 줄 · {snippet}"
+
+    def _box_owner(self, e: dict, box) -> dict | None:
+        """방금 잡은 상자가 고른 아이콘의 예상 자리 밖이고 다른 ‘위치 못 찾음·이름 없음’ 아이콘의 예상 자리 안이면 그 아이콘.
+        (1쪽: 아래 아이콘 줄의 [[?]]를 고른 채 위 글 줄의 동전을 잡아 저장해, 동전이 아래 줄 자리로 들어갔다)"""
+        if not self._place:
+            return None
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+        def inside(b) -> bool:
+            return bool(b) and b[0] <= cx <= b[2] and b[1] <= cy <= b[3]
+        own = self._place.get("guess") or self._place.get("box")  # 예상 자리, 자리가 있던 아이콘은 지금 자리
+        if own is None or inside(own):  # 제 자리·예상 자리 안이면 그대로 (자리를 조금 고쳐 잡음)
+            return None
+        by_occ = {x["occ"]: x for x in self._entries}
+        cands = [m for m in self._place.get("marks") or []
+                 if m.get("guess") and m.get("occ") and m["occ"] != e["occ"] and inside(m.get("box"))
+                 and (by_occ.get(m["occ"]) or {}).get("state") in ("lost", "unnamed")]
+        if not cands:
+            return None
+        best = min(cands, key=lambda m: abs((m["box"][0] + m["box"][2]) / 2 - cx) + abs((m["box"][1] + m["box"][3]) / 2 - cy))
+        return by_occ[best["occ"]]
+
     @busy
     def _save_box(self) -> None:
         box, e = self.view.new, self._cur_entry()
         if not box or e is None or not self._guard():
             return
+        other = self._box_owner(e, box)
+        if other is not None:
+            c = ask_choice(self, "어느 아이콘의 자리인가요",
+                           f"방금 잡은 자리는 고른 아이콘({self._where(e)})의 예상 자리 밖이고,\n"
+                           f"원문의 다른 아이콘({self._where(other)})의 예상 자리 안에 있습니다.\n"
+                           "어느 아이콘의 자리로 저장할까요?",
+                           [("그 아이콘에 저장", "accept"), ("고른 아이콘에 저장", "destructive"), ("취소", "reject")],
+                           default=0,
+                           informative="다른 [[?]]에 저장하면 한글 넣기에서 아이콘이 원문의 다른 줄·자리에 들어갑니다.")
+            if c == 0:
+                e = other  # 고른 줄(_cur_occ)은 저장에 성공한 뒤에 바꾼다 (실패하면 목록과 어긋나지 않게)
+            elif c != 1:
+                return
         try:
             prob = service.icon_box_problem(self.project_dir, e["occ"], box)
         except Exception:  # noqa: BLE001 - 검사는 없어도 된다
@@ -1305,6 +1370,7 @@ class CardViewer(QDialog):
         except Exception as ex:  # noqa: BLE001
             show_error(self, "자리를 저장하지 못했습니다", ex)
             return
+        self._cur_occ = e["occ"]
         if r.get("run_unfound"):  # 바로 옆에 붙은 [[?]]를 못 찾았음: 이 상자가 그것까지 감쌌을 수 있다
             n = len(r["run_unfound"])
             c = ask_choice(self, "붙어 있는 아이콘",
@@ -1402,6 +1468,84 @@ class CardViewer(QDialog):
             text, breaks = service.unmark_paragraphs(text)
             return text.strip("\n"), breaks
         return text, None
+
+    def _edit_card_regions(self) -> None:
+        """이 카드 영역 고치기: 영역 지정 창(그 카드의 그룹)을 이 카드로 연다. 닫은 뒤 영역 상자가 바뀐 카드는 아이콘을
+        다시 찾고(아이콘 자리는 영역 그림 기준), 카드 그림·영역 목록을 새로 그린다."""
+        def reading_now(c) -> bool:
+            if any(self._eff_status(r) == "reading" for r in c["regions"]):
+                self._flash("이 카드는 뒤에서 다시 읽는 중입니다. 다 읽은 뒤에 영역을 고치세요", "warn")
+                return True
+            return False
+
+        card = self._card()
+        if card is None or self._rereading or reading_now(card):
+            return
+        if not self._leave_ok():
+            return
+        # 고친 원문을 ‘확정’하고 왔으면 그 영역이 뒤에서 다시 읽기에 들어갔을 수 있다: 읽는 동안 상자를 바꾸면 안 된다
+        self._fetch()
+        card = self._card()
+        if card is None or reading_now(card):
+            return
+        from app.qt.region_editor import RegionEditor
+
+        fd, page = Path(card["file_dir"]), int(card["page"])
+        gdir = fd.parent.parent  # <그룹>/files/<파일>
+        try:
+            groups = service.list_groups(gdir.parent.parent)
+        except Exception:  # noqa: BLE001 - 그룹 목록을 못 읽으면 이 파일만
+            groups = []
+        g = next((x for x in groups if _nk((x["dir"],)) == _nk((gdir,))), None)
+        files = [Path(g["dir"]) / "files" / f for f in g["files"]] if g else [fd]
+        # 공통 영역을 바꾸면 그룹의 모든 카드가 바뀐다: 이 창에 보이는 그 그룹 카드를 모두 견준다
+        mine = [c for c in self.cards if _nk((Path(c["file_dir"]).parent.parent,)) == _nk((gdir,))]
+
+        def rects() -> dict:
+            out = {}
+            for f in {str(c["file_dir"]) for c in mine}:
+                try:
+                    pages = [int(c["page"]) for c in mine if str(c["file_dir"]) == f]
+                    out.update({(f, p): v for p, v in service.card_region_rects(f, pages).items()})
+                except Exception:  # noqa: BLE001 - 못 읽은 파일은 견주지 않는다
+                    pass
+            return out
+        before = rects()
+        ed = RegionEditor(gdir, files, self)
+        try:
+            ed.go_to(fd, page)
+            ed.setWindowState(ed.windowState() | Qt.WindowState.WindowMaximized)
+            ed.exec()
+        finally:
+            ed.deleteLater()  # 카드 보기의 자식으로 남아 그림·장면이 쌓이지 않게
+        after = rects()
+        changed = [k for k in after if after[k] != before.get(k)]
+        self._card_cache.clear()
+        msg = ""
+        if changed:
+            try:
+                with_busy = QApplication.overrideCursor() is None
+                if with_busy:
+                    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    service.rescan_card_icons(self.project_dir, changed)
+                finally:
+                    if with_busy:
+                        QApplication.restoreOverrideCursor()
+                msg = (f"영역이 바뀐 카드 {len(changed)}장의 아이콘을 다시 찾았습니다. "
+                       "바뀐 영역의 글은 ‘이 영역 다시 읽기’로 다시 읽으세요")
+            except Exception as ex:  # noqa: BLE001
+                show_error(self, "아이콘을 다시 찾지 못했습니다", ex)
+            self.changed.emit()
+        self._fetch()
+        key = self.key
+        if key is not None and _nk(key) not in self._by_key:  # 영역 이름이 바뀌었거나 빠짐: 같은 카드의 첫 영역
+            c = next((c for c in self.cards if _nk(c["key"]) == _nk((fd, page))), None)
+            key = c["regions"][0]["key"] if c and c["regions"] else None
+        self._shown_key = None
+        self._show_region(key)
+        if msg:
+            self._flash(msg, "warn")
 
     @busy
     def _toggle_keep(self) -> None:
@@ -1570,10 +1714,11 @@ class CardViewer(QDialog):
     def _target(self, kind: str) -> tuple | None:
         if self.key is None:
             return None
+        # 이전·다음 영역은 끝에서 돌아간다 (첫 영역의 ◀ 이전 영역 = 마지막 영역): 끝에서 버튼이 꺼져 있었다
         if kind == "prev":
-            return self._neighbor(self.key, -1, False)
+            return self._neighbor(self.key, -1, False, wrap=True)
         if kind == "next":
-            return self._neighbor(self.key, +1, False)
+            return self._neighbor(self.key, +1, False, wrap=True)
         if kind == "prev_bad":
             return self._neighbor(self.key, -1, True)
         if kind == "next_card":

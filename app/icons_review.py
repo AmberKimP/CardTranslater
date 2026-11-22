@@ -41,7 +41,7 @@ def _suggest_schema() -> dict:
 def needs_suggest(gi: dict) -> bool:
     """모델에게 이름을 물을 줄: 그림이 있고, 이미 확정된 이름·사전과 모양이 같은 이름이 없고, 아이콘 아님이 아닌 줄."""
     return bool(gi.get("rep")) and not gi.get("not_icon") and not gi.get("absorbed") \
-        and gi.get("dict_how") not in ("named", "same")
+        and gi.get("dict_how") not in ("named", "same", "variant")  # variant: 숫자만 바꾼 사전 이름이 있어 묻지 않는다
 
 
 def marked_context(o) -> str:

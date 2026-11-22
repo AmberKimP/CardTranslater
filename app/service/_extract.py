@@ -270,8 +270,6 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
     사전과 모양이 같은 [[?]]는 이름을 미리 채워 두기만 한다 (원문은 확정할 때 바꾼다). ‘아이콘_검증.xlsx’도 만든다.
     아이콘이 하나도 없으면 state="done"."""
     from app import icons, workspace
-    from app.extract import Paused, make_client
-    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
 
     info = workspace.load_project_info(project_dir)
     if not icons.token_count(info):
@@ -281,35 +279,7 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
     out = IconScanResult("done", auto=res.auto)
     if not res.occurrences:
         return out
-    note = ""
-    if suggest and any(icons.needs_suggest(g) for g in res.groups.values()):
-        try:
-            if client is None:
-                client = ClaudeCodeClient() if engine == "claude-code" else make_client()
-            icons.suggest_names(res, client, ICON_SUGGEST_MODEL, work / "suggest")
-            icons._save_scan(work, res)  # 받은 제안부터 남긴다 (아래 겹침 확인이 실패해도 제안은 쓴다)
-            # 제안이 사전 이름(crown 등)과 겹치면: 그림이 같을 때만 그 아이콘, 다르면 crown_2. 모양마다 한 줄만 보고
-            # 같은 모양 줄에 그대로 옮긴다 (줄마다 보면 그림 비교가 줄 수의 제곱만큼 든다)
-            done_shape: dict[str, str] = {}
-            for g, gi in list(res.groups.items()):
-                if not gi.get("suggest") or not icons.needs_suggest(gi):
-                    continue
-                sh = gi.get("shape") or g
-                if sh in done_shape:
-                    src_gi = res.groups[done_shape[sh]]
-                    gi["suggest"] = src_gi.get("suggest", gi["suggest"])
-                    for k in ("dict", "dict_how"):
-                        if src_gi.get(k):
-                            gi[k] = src_gi[k]
-                    continue
-                done_shape[sh] = g
-                try:
-                    icons.resolve_suggested_name(info, res, g)
-                except Exception:  # noqa: BLE001 - 그 줄만 겹침 확인 없이 둔다
-                    continue
-            icons._save_scan(work, res)
-        except (Paused, CardError, NotAvailable, Exception) as e:  # noqa: BLE001 - 제안 없이도 검증은 할 수 있다
-            note = f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
+    note = suggest_missing_names(info, work, res, engine=engine, client=client) if suggest else ""
     xlsx = icons.export_review(info, res, info.game_dir / "아이콘_검증.xlsx")  # 아이콘 검증은 게임 단위
     _translate_erase._retire_legacy(info, ["아이콘_검증.xlsx"])
     rows = [gi for gi in res.groups.values() if not (gi.get("auto") and gi.get("absorbed"))]
@@ -317,6 +287,55 @@ def find_icons(project_dir: Path | str, *, engine: str = "claude-code", client=N
                           sum(1 for o in res.occurrences if not o.png and not o.named), note,
                           prefilled=sum(1 for gi in rows if gi.get("dict_how") == "same"),
                           named=sum(1 for gi in rows if gi.get("named")))
+
+
+def suggest_missing_names(info, work: Path, res, *, engine: str = "claude-code", client=None,
+                          groups: set | None = None) -> str:
+    """이름이 없는 줄(icons.needs_suggest)에 모델 이름 제안을 받아 res에 넣고 저장한다. groups가 있으면 그 줄만
+    (칸만 다시 찾은 뒤: 새로 생긴 줄). 돌려줌: 못 받았을 때 까닭 (받았으면 "")."""
+    from app import icons
+    from app.extract import Paused, make_client
+    from app.extract_cc import CardError, ClaudeCodeClient, NotAvailable
+
+    want = {g for g, gi in res.groups.items() if icons.needs_suggest(gi) and (groups is None or g in groups)}
+    if not want:
+        return ""
+    try:
+        if client is None:
+            client = ClaudeCodeClient() if engine == "claude-code" else make_client()
+        if groups is None:
+            target = res
+        else:  # 그 줄만 묻는다 (다른 줄은 이미 물었거나 사람이 정했다)
+            reps = {res.groups[g]["rep"] for g in want}
+            target = icons.ScanResult([o for o in res.occurrences if o.id in reps],
+                                      {g: res.groups[g] for g in want})
+        icons.suggest_names(target, client, ICON_SUGGEST_MODEL, work / "suggest")
+        for g in want:  # 물어봄 (모델이 이름을 주지 않았어도 창을 열 때마다 또 묻지 않게)
+            res.groups[g]["suggest_tried"] = True
+        icons._save_scan(work, res)  # 받은 제안부터 남긴다 (아래 겹침 확인이 실패해도 제안은 쓴다)
+        # 제안이 사전 이름(crown 등)과 겹치면: 그림이 같을 때만 그 아이콘, 다르면 crown_2. 모양마다 한 줄만 보고
+        # 같은 모양 줄에 그대로 옮긴다 (줄마다 보면 그림 비교가 줄 수의 제곱만큼 든다)
+        done_shape: dict[str, str] = {}
+        for g, gi in list(res.groups.items()):
+            if g not in want or not gi.get("suggest") or not icons.needs_suggest(gi):
+                continue
+            sh = gi.get("shape") or g
+            if sh in done_shape:
+                src_gi = res.groups[done_shape[sh]]
+                gi["suggest"] = src_gi.get("suggest", gi["suggest"])
+                for k in ("dict", "dict_how"):
+                    if src_gi.get(k):
+                        gi[k] = src_gi[k]
+                continue
+            done_shape[sh] = g
+            try:
+                icons.resolve_suggested_name(info, res, g)
+            except Exception:  # noqa: BLE001 - 그 줄만 겹침 확인 없이 둔다
+                continue
+        icons._save_scan(work, res)
+    except (Paused, CardError, NotAvailable, Exception) as e:  # noqa: BLE001 - 제안 없이도 검증은 할 수 있다
+        return f"이름 제안을 받지 못함: {getattr(e, 'reason', e)}"
+    return ""
 
 
 @dataclass

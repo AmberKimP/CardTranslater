@@ -71,6 +71,7 @@ class IconPlaceView(QWidget):
         self._pm = QPixmap()
         self.marks: list[tuple] = []
         self.box = self.guess = self.new = None
+        self._focus_area = None
         self._drag = None  # ("new", 시작점) | ("resize", 잡은 변들, 처음 상자) | ("pan", 시작 화면점, 처음 이동)
         self._drag_btn = None  # 끌기를 시작한 단추 (다른 단추를 떼어도 끝나지 않게)
         self._press = None  # 누른 화면 자리 (끌지 않고 뗐는지 보려고)
@@ -86,6 +87,7 @@ class IconPlaceView(QWidget):
             self.zoom, self._pan = 1.0, [0.0, 0.0]
         self._pm, self.box, self.guess, self.marks, self.new, self._drag = pm, box, guess, marks, None, None
         self._drag_btn = None
+        self._focus_area = None  # 확대 칸이 보이는 그림 자리 (focus_crop): 아이콘을 바꿀 때만 새로 정한다
         self.update()
         self.box_moved.emit()
         if resized:
@@ -206,8 +208,23 @@ class IconPlaceView(QWidget):
         if self._pm.isNull() or not b:
             return QPixmap()
         x0, y0, x1, y1 = (float(v) for v in b)
-        m = 0.15 * max(x1 - x0, y1 - y0, 4.0)
-        r = QRect(int(x0 - m), int(y0 - m), int(x1 - x0 + 2 * m) + 1, int(y1 - y0 + 2 * m) + 1) & self._pm.rect()
+        # 보이는 자리(크기)는 고정: 고른 아이콘의 지금 자리(없으면 처음 그린 새 자리) 둘레로 한 번 정한다. 상자를 그리거나
+        # 크기를 바꿀 때마다 자리를 다시 정하면 확대 배율이 계속 바뀌어 테두리가 움직이는 것이 보이지 않았다.
+        # 새 상자가 그 자리를 벗어날 때만 넓힌다. 새 상자를 지우면 지금 자리 기준으로 되돌린다
+        if self.new is None:
+            self._focus_area = None
+        if self._focus_area is None:
+            a0, b0, a1, b1 = (float(v) for v in (self.box or b))
+            side = max(a1 - a0, b1 - b0, 8.0)
+            if self.box is None:  # 지금 자리가 없는 아이콘(위치 못 찾음): 끌기 시작한 작은 상자 말고 넉넉한 크기로
+                side = max(side, 0.25 * min(self._pm.width(), self._pm.height()))
+            cx, cy, m = (a0 + a1) / 2, (b0 + b1) / 2, side
+            self._focus_area = (cx - m, cy - m, cx + m, cy + m)
+        fa = self._focus_area
+        if x0 < fa[0] or y0 < fa[1] or x1 > fa[2] or y1 > fa[3]:
+            m = 0.15 * max(x1 - x0, y1 - y0, 4.0)
+            fa = self._focus_area = (min(fa[0], x0 - m), min(fa[1], y0 - m), max(fa[2], x1 + m), max(fa[3], y1 + m))
+        r = QRect(int(fa[0]), int(fa[1]), int(fa[2] - fa[0]) + 1, int(fa[3] - fa[1]) + 1) & self._pm.rect()
         if r.isEmpty():
             return QPixmap()
         crop = self._pm.copy(r).scaled(size, Qt.AspectRatioMode.KeepAspectRatio,

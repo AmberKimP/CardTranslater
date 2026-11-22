@@ -246,9 +246,14 @@ def set_manual_box(info, work: Path, occ_id: str, box: tuple[int, int, int, int]
     best = "" if o.unique else _ic.best_known(sh, known, o.num)[0]
     legacy = "" if (o.unique or best) else legacy_hint(sh, known, o.num)
     match = best or legacy  # 제안만 (이름 칸에 미리 채움)
+    # 숫자만 다른 사전 아이콘: 숫자만 바꾼 이름 (2coinup → 5_coinup). 그림은 이 자리의 그림
+    o.variant = "" if (o.unique or match) else _ic.number_variant(sh, known, o.num)
     if match:
         gi["dict"], gi["dict_how"] = match, ("same" if best else "legacy")
-    elif gi.get("dict_how") in ("same", "legacy"):  # 예전 자리의 사전 이름은 새 그림과 맞지 않는다
+    elif o.variant:
+        gi["dict"], gi["dict_how"] = o.variant, "variant"
+        match = o.variant
+    elif gi.get("dict_how") in ("same", "legacy", "variant"):  # 예전 자리의 사전 이름은 새 그림과 맞지 않는다
         gi.pop("dict", None)
         gi.pop("dict_how", None)
     _ic._save_scan(work, res)
@@ -825,7 +830,7 @@ def _insert_token(info, res: "ScanResult", cell_occ: "Occurrence", src: str, at:
 
 
 def insert_at(text: str, box, token_boxes: dict, size: tuple[int, int], bands: list | None = None,
-              span: tuple[float, float] | None = None) -> int:
+              span: tuple[float, float] | None = None, line_bands: dict | None = None) -> int:
     """원문에 없던 아이콘을 그림에서 새로 잡았을 때 [[?]]를 넣을 글자 위치 (카드 보기 ‘아이콘 추가’).
     1) 줄 고르기: 같은 줄(세로로 상자 높이의 절반 이상 겹침)에 자리를 아는 아이콘 토큰이 있으면 그 토큰의 줄. 없으면 상자
        가운데 높이로 고른다 (글 줄 띠 bands 수가 원문의 글 줄 수와 같으면 그 띠, 아니면 높이 비율).
@@ -859,7 +864,18 @@ def insert_at(text: str, box, token_boxes: dict, size: tuple[int, int], bands: l
             1 for ti in same if line_of(toks[ti].start()) == k))
     else:
         filled = [i for i, ln in enumerate(lines) if ln.strip()] or [0]
-        if bands and len(bands) == len(filled):
+        # line_bands {글 줄 순번(빈 줄 뺌): 그 줄의 글자 높이 띠}: 원문 줄과 그림 줄을 짝지은 결과 (icons.line_pairing).
+        # 이름표 줄(常時効果)처럼 그림 글 줄로 잡히지 않는 줄이 있어도 상자가 든 띠의 원문 줄을 고른다 (5쪽: 높이 비율로는
+        # 동전 줄 대신 위 톱니 줄에 [[?]]가 들어갔다)
+        hit = [k for k, v in (line_bands or {}).items()
+               if 0 <= k < len(filled) and v[0] - 0.3 * (v[1] - v[0]) <= cy <= v[1] + 0.3 * (v[1] - v[0])]
+        if hit:
+            k = min(hit, key=lambda k: abs(cy - (line_bands[k][0] + line_bands[k][1]) / 2))
+            li = filled[k]
+            v = line_bands[k]
+            if len(v) >= 4:  # 그 줄 글자 폭
+                span = (float(v[2]), float(v[3]))
+        elif bands and len(bands) == len(filled):
             k = min(range(len(bands)), key=lambda i: 0 if bands[i][0] <= cy <= bands[i][1]
                     else min(abs(cy - bands[i][0]), abs(cy - bands[i][1])))
         else:
@@ -946,16 +962,33 @@ def _add_icon_at(info, work: Path, res: "ScanResult", a: "Occurrence", box) -> d
             b = _ic.locate(img, src, ti)[0]
             if b is not None:
                 token_boxes[ti] = list(b)
-    bands, span = None, None
+    bands, span, line_bands = None, None, None
     try:
         ink = _ic._ink(img, _ic.text_em(img, src))
         bands = _ic._bands(ink)
         cols = np.where(ink[y0:y1].any(axis=0))[0]  # 새 상자 높이의 잉크 (그 줄의 왼쪽·오른쪽 끝)
         if len(cols):
             span = (float(cols[0]), float(cols[-1]))
+        # 원문 글 줄 ↔ 글자 높이 띠 짝 (이름표 줄·원문에 없는 아이콘 줄이 있어도): 상자가 든 띠의 원문 줄에 넣는다
+        filled_lines = [ln for ln in src.split("\n") if ln.strip()]
+        ink_l = _ic._ink(img, H / max(1, len(filled_lines)) * 0.6)  # locate와 같은 잉크 (줄 띠를 같게 잡게)
+        comps, rules = _ic._text_components(ink_l)
+        tf = _ic._bands_text_first(comps, rules)
+        pairing, cost = _ic.line_pairing(filled_lines, tf, comps)
+        if pairing and cost < 0.35:
+            line_bands = {}
+            for j, b in pairing.items():
+                b0, b1 = tf[b]
+                # 그 줄의 글자 덩어리 (새 상자와 가로로 겹치는 것은 아이콘 조각이라 뺀다)
+                xs = [(c[0], c[0] + c[2]) for c in comps if b0 <= c[1] + c[3] / 2 <= b1 and c[4] >= 30
+                      and 0.6 * (b1 - b0) <= c[3] <= 1.4 * (b1 - b0)  # 글자 높이 띠라 띠 높이 = 글자 높이
+                      and (c[0] + c[2] <= x0 or c[0] >= x1)]
+                # (띠 위, 아래, 그 줄 글자의 왼쪽 끝, 오른쪽 끝): 줄 안 자리를 그 줄 글자 폭으로 잰다 (색 판 테두리 말고).
+                # 상자가 글자들 왼쪽이면 줄 맨 앞, 오른쪽이면 줄 끝 (insert_at이 비율을 0~1로 자른다)
+                line_bands[j] = (b0, b1, min(x for x, _ in xs), max(x for _, x in xs)) if xs else (b0, b1)
     except Exception:  # noqa: BLE001 - 띠를 못 찾으면 높이 비율·그림 폭으로
         pass
-    at = insert_at(src, (x0, y0, x1, y1), token_boxes, (W, H), bands, span)
+    at = insert_at(src, (x0, y0, x1, y1), token_boxes, (W, H), bands, span, line_bands)
     new_src, new_ti, new_idx = _insert_token(info, res, a, src, at, "카드 보기에서 원문에 없던 아이콘을 넣음")
     new_id = next_occ_id(res, work)
     g = f"위치 못 찾음 {new_id}"
