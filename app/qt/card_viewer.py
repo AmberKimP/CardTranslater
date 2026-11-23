@@ -21,8 +21,8 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem,
                                QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
@@ -33,6 +33,7 @@ from app.qt.dialogs import (PRIMARY_QSS, ask_choice, file_label, fit_to_screen, 
                             show_error, show_problem)
 from app.qt.icon_place import IconPlaceView, busy
 from app.qt import source_text, ui_codes
+from app.qt.work_layout import CardMap, adopt as _adopt, make_big_primary, panel as _panel  # noqa: F401 - CardMap: 예전 import 자리
 from app.qt.step_common import (ICON_TOKEN_RE, KEEP_LABEL, KEEP_UNDO_LABEL, REREAD_MODELS, UNKNOWN_ICON, _fail_as,
                                 as_text, diff_html, fill_icon_names, precise_index, reader_name, source_font,
                                 state_label)
@@ -82,79 +83,6 @@ def _badge(text: str, color: str, solid: bool = True) -> str:
 
 
 # ================================================================ 카드 전체 그림
-class CardMap(QWidget):
-    """카드 전체 그림 위에 영역 상자를 상태 색 테두리로 그린다. 고른 영역은 굵게 + 옅은 칠. 상자를 누르면 picked(영역 이름)."""
-
-    picked = Signal(str)
-
-    def __init__(self):
-        super().__init__()
-        self._pm = QPixmap()
-        self._rects: dict[str, tuple] = {}
-        self._colors: dict[str, str] = {}
-        self._sel = ""
-        self.setMinimumSize(220, 220)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("영역 상자를 누르면 그 영역으로 갑니다")
-
-    def set_data(self, pm: QPixmap, rects: dict, colors: dict, selected: str) -> None:
-        self._pm, self._rects, self._colors, self._sel = pm, dict(rects), dict(colors), selected
-        self.update()
-
-    def select(self, name: str, colors: dict | None = None) -> None:
-        self._sel = name
-        if colors is not None:
-            self._colors = dict(colors)
-        self.update()
-
-    def _geom(self) -> tuple[float, float, float]:
-        w, h = self._pm.width(), self._pm.height()
-        if not w or not h:
-            return 1.0, 0.0, 0.0
-        s = min((self.width() - 8) / w, (self.height() - 8) / h)
-        return s, (self.width() - w * s) / 2, (self.height() - h * s) / 2
-
-    def _rect(self, r) -> QRectF:
-        s, ox, oy = self._geom()
-        return QRectF(ox + r[0] * s, oy + r[1] * s, (r[2] - r[0]) * s, (r[3] - r[1]) * s)
-
-    def hit(self, pos) -> str:
-        """누른 자리의 영역 이름 (겹치면 가장 작은 상자)."""
-        best, area = "", 0.0
-        for name, r in self._rects.items():
-            qr = self._rect(r)
-            if qr.contains(pos) and (not best or qr.width() * qr.height() < area):
-                best, area = name, qr.width() * qr.height()
-        return best
-
-    def paintEvent(self, _e):
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#FAFAFA"))
-        if self._pm.isNull():
-            return
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        s, ox, oy = self._geom()
-        p.drawPixmap(QRectF(ox, oy, self._pm.width() * s, self._pm.height() * s), self._pm, QRectF(self._pm.rect()))
-        for name, r in self._rects.items():
-            color = QColor(self._colors.get(name, STATUS_COLOR["todo"]))
-            mine = name == self._sel
-            qr = self._rect(r)
-            if mine:
-                fill = QColor(color)
-                fill.setAlpha(45)
-                p.fillRect(qr, fill)
-            p.setPen(QPen(color, 4 if mine else 2))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(qr)
-        p.end()
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            name = self.hit(e.position())
-            if name:
-                self.picked.emit(name)
-
-
 # ================================================================ 아이콘 목록의 한 줄
 class IconRow(QFrame):
     """아이콘 한 줄: 그림 · 이름 칸 · 상태. 이름은 Enter·포커스를 옮길 때 edited(자리 id, 이름, 한국어 이름).
@@ -270,27 +198,6 @@ class ReadingsTable(QWidget):
             self.grid.addWidget(h, i, 0)
             self.grid.addWidget(v, i, 1)
             self._rows.append((h, v))
-
-
-def _adopt(parent: QWidget, widgets) -> None:
-    """위젯들을 이 순서로 parent의 자식으로 붙인다 (배치에 넣기 전에). 버튼 코드(ui_codes)는 위젯 나무의 순서라
-    화면 자리를 옮겨도 예전 번호가 그대로이게 한다. 배치에 넣을 때는 부모가 같아 순서가 바뀌지 않는다."""
-    for w in widgets:
-        w.setParent(parent)
-
-
-def _panel(title: str, body: QWidget) -> QFrame:
-    fr = QFrame()
-    fr.setObjectName("panel")
-    fr.setStyleSheet("QFrame#panel { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }")
-    lay = QVBoxLayout(fr)
-    lay.setContentsMargins(10, 8, 10, 8)
-    lay.setSpacing(6)
-    t = QLabel(title)
-    t.setStyleSheet("font-weight: 600; color: #3A3A3C; border: none;")
-    lay.addWidget(t)
-    lay.addWidget(body, 1)
-    return fr
 
 
 # ================================================================ 카드 보기 창
@@ -651,7 +558,7 @@ class CardViewer(QDialog):
         mr.addLayout(mt, 1)
         self.source_panel.setMinimumWidth(RIGHT_MIN_W)
         self.source_panel.setMaximumWidth(RIGHT_W)
-        self.confirm_btn.setStyleSheet(PRIMARY_QSS.replace("min-height: 22px;", "min-height: 30px;"))
+        make_big_primary(self.confirm_btn)
         hint = QLabel("Ctrl+Enter 확정 · Ctrl+S 이 자리로 저장 · " + NAV_HINT)
         hint.setStyleSheet("color: #8E8E93")
         hint.setToolTip(hint.text())

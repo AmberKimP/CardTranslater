@@ -140,6 +140,44 @@ def import_glossary(project_dir: Path | str, xlsx: Path | str, *, accept_issues:
     return _confirm_review(info, glossary.import_review(info, Path(xlsx)), accept_issues)
 
 
+def glossary_example_places(project_dir: Path | str, examples: str) -> list[dict]:
+    """③ 용어집 화면의 ‘나온 곳’: 예문 칸(줄마다 ‘프로젝트/그룹/파일#p쪽#영역 (카드 이름): 원문’)을 그림을 그릴 자리로.
+    [{"file_dir", "page", "region", "card", "text"}] (같은 게임에서 찾지 못한 줄은 뺀다). 읽기만 한다."""
+    import re
+
+    from app import workspace
+
+    info = workspace.load_project_info(project_dir)
+    dirs = {workspace.game_file_key(fd): fd for fd in workspace.game_file_dirs(info)}
+    names: dict[str, list[str]] = {}
+    out = []
+    for line in str(examples or "").split("\n"):
+        m = re.match(r"^(?P<f>.+?)#p(?P<p>\d+)#(?P<rest>.+)$", line.strip())
+        if not m or m["f"] not in dirs:
+            continue
+        fd = dirs[m["f"]]
+        if m["f"] not in names:  # 영역 이름에 괄호·쌍점이 있어도 틀리지 않게 템플릿의 영역 이름으로 맞춘다 (긴 이름부터)
+            try:
+                names[m["f"]] = sorted({r.name for r in load_project(fd).template.regions}, key=len, reverse=True)
+            except Exception:  # noqa: BLE001 - 영역 템플릿이 없는 파일
+                names[m["f"]] = []
+        rest = m["rest"]
+        region = next((n for n in names[m["f"]] if rest.startswith(n + ": ") or rest.startswith(n + " (")), None)
+        if region is None:
+            continue
+        tail = rest[len(region):]
+        card = ""
+        if tail.startswith(" ("):  # ‘ (카드 이름): 원문’ (카드 이름에 괄호가 있어도 마지막 ‘): ’ 앞까지 — 아래 첫 ‘): ’)
+            end = tail.find("): ")
+            if end < 0:
+                continue
+            card, tail = tail[2:end], tail[end + 1:]
+        if not tail.startswith(": "):
+            continue
+        out.append({"file_dir": fd, "page": int(m["p"]), "region": region, "card": card, "text": tail[2:]})
+    return out
+
+
 def glossary_review_rows(project_dir: Path | str) -> list[dict] | None:
     """③ 용어집의 후보 만들기로 만든 용어 후보 (화면 표용). 없으면 None. 행마다 엑셀과 같은 열 이름:
     {"원문 용어", "번역", "추천 번역", "원문 상태", "번역 확인", "다른 후보", "분류", "등장 횟수", "예문", "변형", "메모",

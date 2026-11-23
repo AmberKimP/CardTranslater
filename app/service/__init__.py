@@ -61,7 +61,7 @@ from app.service._extract import (  # noqa: F401
 )
 from app.service._glossary import (  # noqa: F401
     GlossaryReviewResult, GLOSSARY_MODEL, finish_extraction, GlossaryConfirmResult, import_glossary,
-    glossary_review_rows, save_glossary_rows, confirm_glossary_rows, _confirm_review, _changed_terms, _TERM_JOSA,
+    glossary_review_rows, glossary_example_places, save_glossary_rows, confirm_glossary_rows, _confirm_review, _changed_terms, _TERM_JOSA,
     _JOSA_PAIRS, _is_hangul, _fit_josa, _swap_text, _term_source_counts, _term_plan, _swap_terms, _term_cells,
     term_change_candidates, TermApplyResult, apply_term_changes,
 )

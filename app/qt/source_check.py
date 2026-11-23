@@ -12,18 +12,20 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTabWidget,
+    QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from app import service
-from app.qt import worker
+from app.qt import ui_codes, worker
 from app.qt.dialogs import (
     PRIMARY_QSS, ask_choice, file_label, fit_to_screen, grey_note, hint_bar, page_title, show_problem,
 )
 from app.qt.icon_review import IconDictionaryPanel, NoWheelSpinBox
+from app.qt.step_common import source_font
+from app.qt.work_layout import CardMap, load_card_map, panel
 
 log = logging.getLogger("cardtranslater.source_check")
 
@@ -224,8 +226,14 @@ class SourceCheckDialog(QDialog):
         cl.setContentsMargins(8, 10, 8, 8)
         cl.setSpacing(8)
         cl.addLayout(flt)
-        cl.addWidget(self.tree, 1)
-        cl.addWidget(self.empty_label)
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        tl = QVBoxLayout()
+        tl.addWidget(self.tree, 1)
+        tl.addWidget(self.empty_label)
+        body.addLayout(tl, 1)
+        body.addWidget(self._build_preview())
+        cl.addLayout(body, 1)
 
         # ---- 아이콘 종류 탭
         self.kind_cols = ["그림", "이름", "한국어 이름", "표시 크기", "쓰인 곳", "상태", "아이콘 아님"]
@@ -299,6 +307,97 @@ class SourceCheckDialog(QDialog):
         lay.addLayout(top)
         lay.addWidget(self.tabs, 1)
         lay.addLayout(bottom)
+
+    # ================================================================ 미리 보기 칸 (카드 보기 배치의 일부: 고른 카드·영역을 오른쪽에)
+    PREVIEW_W = 320
+
+    def _build_preview(self) -> QWidget:
+        """오른쪽 미리 보기: 고른 카드 그림(영역 상자 상태 색) · 영역 이름 · 원문 · ‘카드 보기 열기’ (Enter, 더블클릭과 같음)."""
+        self._map_cache: dict[tuple, dict] = {}
+        self.preview_title = QLabel()
+        self.preview_title.setStyleSheet("font-weight: 600; color: #1D1D1F;")
+        self.preview_title.setWordWrap(True)
+        self.preview_map = CardMap()
+        self.preview_map.setMinimumSize(200, 180)
+        self.preview_map.picked.connect(self._preview_pick)
+        self.preview_src = QPlainTextEdit()
+        self.preview_src.setReadOnly(True)
+        self.preview_src.setFont(source_font(self.preview_src.font(), 2))
+        self.preview_src.setStyleSheet("QPlainTextEdit { background: #F0F5FD; }")
+        self.preview_src.setMaximumHeight(150)
+        self.preview_open = QPushButton("카드 보기 열기 (Enter)")
+        self.preview_open.setProperty(ui_codes.LATE, True)  # 버튼 코드가 밀리지 않게 맨 뒤에 센다
+        self.preview_open.setAutoDefault(False)
+        self.preview_open.setToolTip("고른 영역(카드면 첫 문제 영역)으로 카드 보기를 엽니다 (Enter · 더블클릭)")
+        self.preview_open.clicked.connect(self._open_current)
+        QShortcut(QKeySequence(Qt.Key.Key_Return), self.tree, activated=self._open_current,
+                  context=Qt.ShortcutContext.WidgetShortcut)
+        QShortcut(QKeySequence(Qt.Key.Key_Enter), self.tree, activated=self._open_current,
+                  context=Qt.ShortcutContext.WidgetShortcut)
+        self.tree.currentItemChanged.connect(lambda *_a: self._update_preview())
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        il.setContentsMargins(0, 0, 0, 0)
+        il.setSpacing(6)
+        il.addWidget(self.preview_title)
+        il.addWidget(self.preview_map, 1)
+        il.addWidget(QLabel("<b>원문</b>"))
+        il.addWidget(self.preview_src)
+        il.addWidget(self.preview_open)
+        box = panel("미리 보기", inner)
+        box.setFixedWidth(self.PREVIEW_W)
+        return box
+
+    def _current_target(self) -> tuple[dict | None, dict | None]:
+        """지금 고른 줄의 (카드, 영역|None)."""
+        it = self.tree.currentItem()
+        data = it.data(0, ROLE_ITEM) if it is not None else None
+        if not data:
+            return None, None
+        kind, key = data
+        ck = _nk(key)[:2]
+        card = next((c for c in self._cards if _nk(c["key"])[:2] == ck), None)
+        if card is None or kind == "card":
+            return card, None
+        return card, next((r for r in card["regions"] if _nk(r["key"]) == _nk(key)), None)
+
+    def _update_preview(self) -> None:
+        card, reg = self._current_target()
+        self.preview_open.setEnabled(card is not None)
+        if card is None:
+            self.preview_title.setText("목록에서 카드나 영역을 고르세요")
+            self.preview_map.set_data(QPixmap(), {}, {}, "")
+            self.preview_src.setPlainText("")
+            return
+        k = (str(card["file_dir"]), int(card["page"]))
+        if k not in self._map_cache:
+            self._map_cache[k] = load_card_map(card["file_dir"], card["page"])
+        info = self._map_cache[k]
+        colors = {r["region"]: DOT[self._status(r)] for r in card["regions"]}
+        self.preview_map.set_data(info["pm"], info["rects"], colors, reg["region"] if reg else "")
+        title = f"{file_label(card['file_key'])} · {card['page']}쪽"
+        if reg is None:
+            self.preview_title.setText(title)
+            self.preview_src.setPlainText("영역을 고르면 그 영역의 원문을 봅니다 (카드 그림의 상자를 눌러도 됩니다)")
+            return
+        self.preview_title.setText(f"{title} · {reg['region']} — {service.STATUS_LABEL[self._status(reg)]}")
+        try:
+            src = service.preview_source(reg) if reg["pending"] else reg.get("source")
+        except Exception:  # noqa: BLE001
+            src = reg.get("source")
+        self.preview_src.setPlainText("\n".join(src) if isinstance(src, list) else (src or "(읽지 않음)"))
+
+    def _preview_pick(self, name: str) -> None:
+        """미리 보기 카드 그림에서 상자를 누름: 목록에서 그 영역 줄을 고른다."""
+        card, _reg = self._current_target()
+        r = next((x for x in card["regions"] if x["region"] == name), None) if card else None
+        if r is not None:
+            self.focus_on(tuple(r["key"]))
+
+    def _open_current(self) -> None:
+        it = self.tree.currentItem()
+        if it is not None:
+            self._on_double(it, 0)
 
     # ================================================================ 사전 탭
     def _load_dictionary(self):

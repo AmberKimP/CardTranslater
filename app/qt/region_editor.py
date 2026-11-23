@@ -111,6 +111,8 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         split = self._build_splitter(center, side)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
+        for w in self._top_order:  # 맨 윗줄 위젯을 예전 순서로 먼저 붙인다 (저장 단추는 아래 줄에 놓여도 번호 그대로)
+            w.setParent(self)
         lay.addLayout(top)
         lay.addLayout(tools)
         lay.addWidget(self.cards_bar)
@@ -230,10 +232,15 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         top.addWidget(fit)
         self.save_btn = QPushButton("저장 (Ctrl+S)")  # 저장 안 한 변경이 있을 때만 파랗게 (_update_title)
         self.save_btn.clicked.connect(self.save)
-        top.addWidget(self.save_btn)
+        # 주 버튼 자리(창 오른쪽 아래, 카드 보기와 같은 배치)에 크게 둔다: _build_status_row가 아래 줄 끝에 붙인다
+        self.save_btn.setMinimumHeight(36)
+        self.save_btn.setMinimumWidth(150)
         close = QPushButton("닫기")
         close.clicked.connect(self.close)
         top.addWidget(close)
+        # 버튼 코드는 위젯 나무 순서: 저장 단추가 아래 줄로 옮겨도 예전처럼 화면에 맞춤(0F-03) 다음 · 닫기 앞이게
+        self._top_order = [top.itemAt(i).widget() for i in range(top.count()) if top.itemAt(i).widget() is not None]
+        self._top_order.insert(self._top_order.index(close), self.save_btn)
 
     def _build_side_panel(self) -> QWidget:
         """오른쪽 칸: 영역 목록 + 입력란 + 도움말. 안쪽 위젯을 돌려준다."""
@@ -476,6 +483,7 @@ class RegionEditor(RegionFormMixin, RegionAlignPreviewMixin, QDialog):
         srow.addWidget(self.card_info)
         srow.addWidget(self.guide, 1)
         srow.addWidget(self.status)
+        srow.addWidget(self.save_btn)  # 오른쪽 아래 = 주 버튼 자리
         lay.addLayout(srow)
 
     def _finish_build(self) -> None:

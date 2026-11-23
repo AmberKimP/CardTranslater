@@ -973,11 +973,12 @@ def test_result_viewer_refits_image_and_has_whole_card_row(qapp, tmp_path):
     v.show()
     qapp.processEvents()
     small = v.image.pixmap().width()
+    vp = v.scroll.viewport()
+    assert small <= vp.width() and v.image.pixmap().height() <= vp.height()  # 작은 창에서도 칸에 맞춤
     v.resize(min(1400, g.width()), min(900, g.height()))
     qapp.processEvents()
     qapp.processEvents()
-    assert v.image.pixmap().width() > small
-    vp = v.scroll.viewport()
+    assert v.image.pixmap().width() >= small  # 세 칸 배치라 창 최소 폭이 넓어 작은 그림은 이미 원래 크기일 수 있다
     assert v.image.pixmap().width() <= vp.width() and v.image.pixmap().height() <= vp.height()
     assert not any("600" in w.text() for w in v.findChildren(QLabel))
     # 영역을 고르면 그 영역, ‘카드 전체’를 고르면 다시 카드
@@ -1831,7 +1832,8 @@ def test_result_viewer_colors_and_footer(qapp, tmp_path):
     service.erase_project(info.dir)
     service.compose_project(info.dir)
     v = ResultViewer([("카드/cards", fd / "translated")])
-    assert v.info.property("hint_kind") == "done" and "번역·글꼴·크기·정렬·지우기 방식을 고치고 저장" in v.footer.text()
+    assert "문제 있는 쪽 0" in v.info.text() and "번역·글꼴·크기·정렬·지우기 방식을 고치고 저장" in v.footer.text()
+    assert v.state_chip.text() in ("문제 없음", "알림 있음") and "1쪽" in v.title.text()
     assert v.only.text() == "문제 있는 쪽만 보기"
     assert v.regions.count() >= 1
     r = service.test_run(fd, "2", out_root=tmp_path / "runs")
@@ -2605,7 +2607,9 @@ def test_review_dialog_defaults_edit_and_confirm_next(qapp, tmp_path, monkeypatc
     assert len(dlg.view_ids) == 2 and dlg.table.rowCount() == 2 and dlg.table.currentRow() == 0
     assert dlg.same_box.text() == "같은 원문 칸 1개에도 똑같이 넣기" and not dlg.same_box.isHidden()
     assert dlg.pill.text().startswith("확인 0/2")
-    assert dlg.table.item(0, 3).text() == "안녕" and dlg.table.item(0, 1).text() == "1쪽"  # 파일이 하나라 쪽만
+    assert dlg.table.columnCount() == 3 and dlg.table.item(0, 1).text() == "1쪽"  # 짧은 줄. 파일이 하나라 쪽만
+    assert dlg.table.item(0, 2).toolTip() == "안녕"  # 번역은 마우스를 올리면
+    assert dlg.state_chip.text() == "확인 안 함" and "1쪽" in dlg.head.text()
     dlg.show()
     dlg.activateWindow()
     QTest.qWaitForWindowActive(dlg)
@@ -2617,7 +2621,7 @@ def test_review_dialog_defaults_edit_and_confirm_next(qapp, tmp_path, monkeypatc
     assert rows[1]["checked"] and rows[2]["checked"] and rows[1]["edited"]  # 같은 원문 칸도 함께
     assert dlg.counts["checked"] == 2 and dlg.pill.text().startswith("확인 2/2")
     assert dlg.current_row()["page"] == 2 and dlg.table.currentRow() == 1  # 지금 목록의 다음 줄
-    assert dlg.table.item(0, 3).background().color().name().upper() == "#CFE2F3"  # 고친 번역은 하늘색
+    assert dlg.table.item(0, 2).background().color().name().upper() == "#CFE2F3"  # 고친 번역은 하늘색
     assert "2개" in dlg.closing_message() and "다음 ⑥" in dlg.closing_message()
     dlg.done(0)
 
@@ -2782,9 +2786,37 @@ def test_review_excel_row_and_export(qapp, tmp_path, monkeypatch):
 
 def test_review_layout_fits_small_screen(qapp, tmp_path, monkeypatch):
     info, fd, dlg = _review(tmp_path, monkeypatch)
-    assert dlg.minimumSizeHint().width() <= 1366 and dlg.table.parentWidget().minimumWidth() >= 420
+    assert dlg.minimumSizeHint().width() <= 1366
     for c in (dlg.scope, dlg.view, dlg.status, dlg.region):
         assert c.sizeAdjustPolicy() == c.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    # 카드 보기와 같은 틀: 왼쪽 목록 · 가운데 그림 · 오른쪽 글과 큰 ‘확인 → 다음 칸’
+    dlg.resize(1400, 880)
+    dlg.show()
+    qapp.processEvents()
+
+    def x(w):
+        return w.mapTo(dlg, w.rect().topLeft()).x()
+
+    assert x(dlg.table) < x(dlg.crop) < x(dlg.edit) and x(dlg.next_btn) > x(dlg.crop)
+    assert dlg.crop.mapTo(dlg, dlg.crop.rect().topLeft()).y() < dlg.preview.mapTo(dlg, dlg.preview.rect().topLeft()).y()
+    assert dlg.next_btn.text() == "확인 → 다음 칸" and dlg.b_xl_make.mapTo(dlg, dlg.b_xl_make.rect().topLeft()).y() < 60
+    dlg.done(0)
+
+
+def test_review_nav_buttons_and_no_target_notice(qapp, tmp_path, monkeypatch):
+    """◀ 이전 칸 · 다음 칸 ▶ · 고칠 칸 이동. 갈 곳이 없으면 알리고 소리 (카드 보기와 같음)."""
+    from app.qt import work_layout
+
+    beeps = []
+    monkeypatch.setattr(work_layout.QApplication, "beep", staticmethod(lambda: beeps.append(1)))
+    info, fd, dlg = _review(tmp_path, monkeypatch)
+    assert dlg.table.currentRow() == 0
+    dlg.nav.buttons["prev"].click()
+    assert dlg.table.currentRow() == 0 and beeps and "앞에 다른 칸" in dlg.flash_label.text()
+    dlg.nav.buttons["next"].click()
+    assert dlg.table.currentRow() == 1
+    dlg.nav.buttons["next_bad"].click()  # 꼭 고칠·확인해 볼 칸이 없다
+    assert len(beeps) == 2 and "고칠 칸이 없습니다" in dlg.flash_label.text()
     dlg.done(0)
 
 
@@ -3167,3 +3199,43 @@ def test_region_override_after_editing_keeps_other_cards(qapp, tmp_path):
     assert data["regions"][0]["rect"]["h"] == 0.1
     assert abs(data["page_regions"][f"{fd.name}/2"]["regions"][0]["rect"]["h"] - tall) < 1e-3
 
+
+
+def test_result_viewer_nav_buttons_and_page_problems_panel(qapp, tmp_path, monkeypatch):
+    """결과 보기 (카드 보기 배치): 쪽 이동 단추·갈 곳 없으면 알림과 소리, 영역을 안 고르면 오른쪽에 이 쪽의 문제,
+    영역을 고르면 고치기 칸과 가운데 제목."""
+    from app.qt import work_layout
+    from app.qt.results import ResultViewer
+
+    beeps = []
+    monkeypatch.setattr(work_layout.QApplication, "beep", staticmethod(lambda: beeps.append(1)))
+    info, fd = _translated_project(tmp_path)
+    service.erase_project(info.dir)
+    service.compose_project(info.dir)
+    v = ResultViewer([("카드/cards", fd / "translated")])
+    assert v.pages.currentRow() == 0 and "이 쪽의 문제" in v.erase_hint.text()
+    v.nav.buttons["prev"].click()
+    assert beeps and "앞에 다른 쪽" in v.flash_label.text()
+    v.nav.buttons["next"].click()
+    assert v.pages.currentRow() == 1 and "2쪽" in v.title.text()
+    v.regions.setCurrentRow(1)
+    assert v.region_head.text().startswith("영역:") and not v.edit_form.isHidden()
+    v.close()
+
+
+def test_region_editor_save_button_bottom_right_keeps_code(qapp, tmp_path):
+    """영역 지정: ‘저장’은 창 오른쪽 아래(주 버튼 자리)에 있지만 버튼 코드는 예전처럼 0F-04."""
+    from app.qt import ui_codes
+    from app.qt.region_editor import RegionEditor
+
+    info = _project(tmp_path)
+    g = service.project_overview(info.dir)["groups"][0]
+    ed = RegionEditor(Path(g["dir"]), [Path(f["dir"]) for f in g["files"]])
+    ed.resize(1200, 800)
+    ed.show()
+    qapp.processEvents()
+    pos = ed.save_btn.mapTo(ed, ed.save_btn.rect().bottomRight())
+    assert pos.y() > ed.height() - 60 and pos.x() > ed.width() - 60
+    assert ui_codes.button_code(ed.save_btn) == "0F-04"
+    ed.dirty = False
+    ed.close()

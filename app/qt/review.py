@@ -12,14 +12,17 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu,
-    QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMenu, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app import service
 from app.qt import worker
-from app.qt.dialogs import ask_choice, file_label, fit_to_screen, grey_note, hint_bar, make_primary, set_hint, show_error, show_failure
+from app.qt.dialogs import (ask_choice, file_label, fit_to_screen, grey_note, hint_bar, page_title, show_error,
+                            show_failure)
 from app.qt.step_common import KEEP_LABEL, FitImage, source_font
+from app.qt.work_layout import (LEFT_W, CardMap, FlashLabel, NavBox, adopt, chip_qss, load_card_map, make_big_primary,
+                                panel, shortcut_hint)
 
 MUST_BG, LOOK_BG, OK_BG, EDIT_BG = "#F4B183", "#FFE066", "#D9EAD3", "#CFE2F3"
 MUST_STATUS = {"번역 없음", "일본어 남음", "아이콘 불일치", "원문 결론 못 냄"}  # 나머지(용어 불일치·원문 불확실)는 ‘확인해 볼 칸’
@@ -27,8 +30,18 @@ VIEWS = [("todo", "확인할 칸"), ("unchecked", "확인 안 한 칸"), ("all",
          ("edited", "사람이 고친 칸"), ("checked", "확인한 칸")]
 STATUSES = ["번역 없음", "일본어 남음", "아이콘 불일치", "원문 결론 못 냄", "용어 불일치", "원문 불확실", "엑셀과 앱이 다름"]
 CONFLICT = "엑셀과 앱이 다름"
-HELP = "Ctrl+S 저장 · Alt+↑/↓ 칸 이동 · Ctrl+F 찾기"
-GUIDE = "주황 칸부터 고치세요. 번역이 맞으면 고치지 않고 Ctrl+Enter = 확인하고 다음 칸."
+NAV_HINT = "Alt+←/→ 칸 · Alt+Shift+←/→ 고칠 칸"
+HELP = "Ctrl+Enter 확인 · Ctrl+S 저장 · Ctrl+P 미리 보기 · Ctrl+F 찾기"
+NEXT_TEXT = "확인 → 다음 칸"
+RIGHT_W = 420  # 오른쪽(글·확인) 칸 폭 (px)
+NAV_SPEC = [("prev", "◀ 이전 칸", "목록의 앞 칸으로", "Alt+Left"),
+            ("next", "다음 칸 ▶", "목록의 다음 칸으로", "Alt+Right"),
+            ("prev_bad", "◀◀ 고칠 칸", "앞쪽의 확인하지 않은 꼭 고칠 칸·확인해 볼 칸으로", "Alt+Shift+Left"),
+            ("next_bad", "고칠 칸 ▶▶", "뒤쪽의 확인하지 않은 꼭 고칠 칸·확인해 볼 칸으로", "Alt+Shift+Right")]
+NO_TARGET = {"prev": "앞에 다른 칸이 없습니다", "next": "뒤에 다른 칸이 없습니다",
+             "prev_bad": "앞쪽에 고칠 칸이 없습니다", "next_bad": "뒤쪽에 고칠 칸이 없습니다"}
+LEVEL_COLOR = {"must": "#E67E22", "look": "#E0B000", "ok": "#2E8B57", "todo": "#5A5A60"}  # 카드 전체 그림의 칸 상자 (카드 바탕에서 보이게)
+GUIDE = "주황 칸부터 고치세요. 번역이 맞으면 고치지 않고 ‘확인 → 다음 칸’(Ctrl+Enter)."
 NO_PREVIEW_ERASED = "글자를 지운 뒤에 한글 넣은 모습을 볼 수 있습니다 (뒤에서 지우는 중이거나 ⑥ 한글 넣기가 지웁니다)"
 CHECK_MS, PREVIEW_MS, SEARCH_MS = 150, 600, 250
 
@@ -46,7 +59,7 @@ def _chk_of(r: dict) -> dict:
 class TranslationReviewDialog(QDialog):
     """preset: ("all",) | ("group", 그룹 폴더) | ("file", 파일 폴더) — 처음 고를 범위."""
 
-    COLS = ["", "카드", "영역", "번역"]
+    COLS = ["", "카드", "영역"]
 
     def __init__(self, project_dir: Path | str, parent=None, preset: tuple | None = None):
         super().__init__(parent)
@@ -71,22 +84,8 @@ class TranslationReviewDialog(QDialog):
         self._first = True
         self._text_font = source_font(self.font(), 1)
 
-        top, guide_row = self._build_filter_bar(preset)
-        left = self._build_table_panel()
-        head, pics = self._build_edit_header()
-        base_row = self._build_source_rows()
-        btns = self._build_edit_buttons()
-        scroll = self._build_editor_scroll(head, pics, base_row, btns)
-        self._build_split(left, scroll)
-        bottom = self._build_bottom_bar()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(8)
-        lay.addLayout(top)
-        lay.addLayout(guide_row)
-        lay.addWidget(self.split, 1)
-        lay.addWidget(self.excel_hint)
-        lay.addLayout(bottom)
+        self._card_cache: dict[tuple, dict] = {}
+        self._build(preset)
 
         self._install_shortcuts()
         self._make_timers()
@@ -100,8 +99,99 @@ class TranslationReviewDialog(QDialog):
         self._sync_excel()
         self.load()
 
-    def _build_filter_bar(self, preset: tuple | None) -> tuple[QHBoxLayout, QHBoxLayout]:
-        """위: 범위·보기·상태·영역·찾기 줄과 안내 줄."""
+    # ================================================================ 화면 만들기
+    # 배치 (카드 보기와 같은 틀, work_layout):
+    #   머리: 칸 제목 · 상태 칩 · 진행 · 알림 · (엑셀 열기 · 엑셀 다시 만들기 · 닫기)
+    #   왼쪽(어디): 거르기 · 카드 전체(지금 칸 틀) · 칸 목록(짧은 줄) · 이동 단추
+    #   가운데(무엇): 원문 그림 위 · 한글 넣은 모습 아래 · 색 설명
+    #   오른쪽(어떻게): 안내 · 원문 · 초벌 · 번역 · 점검 · [저장 · 미리 보기 · 원본 그대로] · 큰 ‘확인 → 다음 칸’
+    # 버튼 코드(ui_codes)는 위젯 나무 순서라 예전 순서(초벌 번역으로 · 앱/바뀐 번역 쓰기 · 같은 원문 · 확인하고 다음 칸 ·
+    # 저장 · 미리 보기 · 원본 그대로 · 엑셀 열기 · 엑셀 만들기 · 닫기)대로 붙이고, 이동 단추는 맨 뒤에 붙인다.
+    def _build(self, preset: tuple | None) -> None:
+        filters = self._build_filter_bar(preset)
+        self._build_table_panel()
+        self._build_edit_header()
+        self._build_source_rows()
+        self._build_edit_buttons()
+        right_scroll = self._build_editor_scroll()
+        header_btns = self._build_bottom_bar()
+        self.card_map = CardMap()
+        self.card_map.setMinimumSize(200, 130)
+        self.card_map.picked.connect(self._pick_region)
+        self.flash_label = FlashLabel()
+        crop_panel, pv_panel = self._build_pictures()
+        tools = QWidget()
+        tl = QHBoxLayout(tools)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(4)
+        adopt(tools, (self.save_btn, self.preview_btn, self.keep_btn))
+        for b in (self.save_btn, self.preview_btn, self.keep_btn):
+            tl.addWidget(b)
+        tl.addStretch(1)
+        body = QWidget()
+        # 찾기 칸의 지우기 단추도 버튼으로 세므로 예전처럼 원본 그대로(5A-09) 뒤 · 엑셀 열기 앞에 둔다
+        adopt(body, (self.card_map, self.table, self.legend, crop_panel, pv_panel, right_scroll, self.next_btn, tools,
+                     filters, self.help, self.head, self.state_chip, self.pill, self.pos, self.flash_label, *header_btns))
+        self.nav = NavBox(self, NAV_SPEC, self._nav_go, self.flash_label, NO_TARGET)
+        nav_w = QWidget()
+        nav_w.setLayout(self.nav.grid)
+        nav_w.setFixedWidth(LEFT_W + 40)
+        self.nav_hint = shortcut_hint(NAV_HINT)
+        adopt(body, (nav_w, self.nav_hint))
+        # 머리
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(self.head)
+        header.addWidget(self.state_chip)
+        header.addWidget(self.pill)
+        header.addWidget(self.flash_label, 1)
+        for b in header_btns:
+            header.addWidget(b)
+        # 왼쪽
+        for w in (filters, self.card_map, self.table, self.nav_hint):
+            w.setFixedWidth(LEFT_W + 40)
+        ll = QVBoxLayout()
+        ll.setSpacing(6)
+        ll.addWidget(filters)
+        ll.addWidget(self.card_map, 2)
+        lt = QHBoxLayout()
+        lt.addWidget(QLabel("<b>칸 목록</b>"))
+        lt.addStretch(1)
+        lt.addWidget(self.pos)
+        ll.addLayout(lt)
+        ll.addWidget(self.table, 3)
+        ll.addWidget(nav_w)
+        ll.addWidget(self.nav_hint)
+        # 가운데
+        cl = QVBoxLayout()
+        cl.setSpacing(6)
+        cl.addWidget(crop_panel, 1)
+        cl.addWidget(pv_panel, 1)
+        cl.addWidget(self.legend)
+        # 오른쪽
+        right_scroll.setFixedWidth(RIGHT_W)
+        rl = QVBoxLayout()
+        rl.setSpacing(6)
+        rl.addWidget(right_scroll, 1)
+        rl.addWidget(tools)
+        rl.addWidget(self.next_btn)
+        rl.addWidget(self.help)
+        main = QHBoxLayout()
+        main.setSpacing(12)
+        main.addLayout(ll)
+        main.addLayout(cl, 1)
+        main.addLayout(rl)
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 10, 14, 10)
+        bl.setSpacing(8)
+        bl.addLayout(header)
+        bl.addLayout(main, 1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(body)
+
+    def _build_filter_bar(self, preset: tuple | None) -> QWidget:
+        """왼쪽 맨 위: 범위·보기·상태·영역(두 줄) + 찾기."""
         self._scopes = self._build_scopes()
         self.scope = self._combo(10)
         for label, _kind, _dirs in self._scopes:
@@ -119,37 +209,33 @@ class TranslationReviewDialog(QDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText("원문·번역 찾기 (Ctrl+F)")
         self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(120)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(SEARCH_MS)
         self._search_timer.timeout.connect(self._on_filter_changed)
-        top = QHBoxLayout()
-        top.setSpacing(6)
-        for text, w in (("범위", self.scope), ("보기", self.view), ("상태", self.status), ("영역", self.region)):
-            top.addWidget(QLabel(text))
-            top.addWidget(w)
-            top.addSpacing(4)
-        top.addWidget(self.search, 1)
-        self.guide = hint_bar(GUIDE, "info")
-        self.pill = QLabel()
-        self.pill.setStyleSheet("color: #3A3A3C; background: white; border: 1px solid #E5E5EA;"
-                                " border-radius: 10px; padding: 3px 10px;")
-        guide_row = QHBoxLayout()
-        guide_row.addWidget(self.guide, 1)
-        guide_row.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
-        return top, guide_row
+        box = QWidget()
+        g = QGridLayout(box)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(6)
+        g.setVerticalSpacing(4)
+        for i, (text, w) in enumerate((("범위", self.scope), ("보기", self.view), ("상태", self.status),
+                                       ("영역", self.region))):
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # 왼쪽 칸 폭을 넘지 않게
+            g.addWidget(QLabel(text), i, 0)
+            g.addWidget(w, i, 1)
+        g.addWidget(self.search, 4, 0, 1, 2)
+        g.setColumnStretch(1, 1)
+        return box
 
-    def _build_table_panel(self) -> QWidget:
-        """왼쪽: 표와 색 설명."""
+    def _build_table_panel(self) -> None:
+        """왼쪽: 칸 목록 (짧은 줄: 상태 · 쪽 · 영역. 번역은 마우스를 올리면) 과 색 설명."""
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(0, 30)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -159,57 +245,48 @@ class TranslationReviewDialog(QDialog):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.currentCellChanged.connect(self._on_cell_changed)
-        legend = QLabel(
+        self.legend = QLabel(
             f'<span style="background:{MUST_BG}">&nbsp;●&nbsp;</span> 꼭 고칠 칸 &nbsp;'
             f'<span style="background:{LOOK_BG}">&nbsp;●&nbsp;</span> 확인해 볼 칸 &nbsp;'
             f'<span style="background:{OK_BG}">&nbsp;✓&nbsp;</span> 확인함 &nbsp;'
             f'<span style="background:{EDIT_BG}">&nbsp;&nbsp;&nbsp;</span> 사람이 고친 번역')
-        legend.setWordWrap(True)
-        legend.setStyleSheet("color: #6E6E73")
-        left = QWidget()
-        left.setMinimumWidth(420)
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(6)
-        ll.addWidget(self.table, 1)
-        ll.addWidget(legend)
-        return left
+        self.legend.setWordWrap(True)
+        self.legend.setStyleSheet("color: #6E6E73")
 
-    def _build_edit_header(self) -> tuple[QHBoxLayout, QHBoxLayout]:
-        """오른쪽 편집 칸 위: 제목·쪽 표시와 원문·한글 넣은 모습 그림."""
-        self.head = QLabel()
-        self.head.setStyleSheet("font-weight: bold; font-size: 11pt")
+    def _build_edit_header(self) -> None:
+        """머리: 칸 제목·상태 칩·진행 (pill), 목록 위 ‘몇 번째 / 몇 개’ (pos)."""
+        self.head = page_title("⑤ 번역 검수", 14)
+        self.state_chip = QLabel()
+        self.state_chip.hide()
+        self.pill = QLabel()
+        self.pill.setStyleSheet("color: #6E6E73;")
+        self.pill.setToolTip("이 범위의 확인한 칸 / 전체 칸 · 아직 확인하지 않은 꼭 고칠 칸·확인해 볼 칸")
         self.pos = QLabel()
         self.pos.setStyleSheet("color: #6E6E73")
-        head = QHBoxLayout()
-        head.addWidget(self.head, 1)
-        head.addWidget(self.pos)
+
+    def _build_pictures(self) -> tuple[QFrame, QFrame]:
+        """가운데: 원문 그림(위)과 한글 넣은 모습(아래)을 각각 흰 칸에 크게."""
         self.crop = FitImage(120)
         self.preview = FitImage(120)
         self.pv_note = grey_note("")
         self.pv_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pics = QHBoxLayout()
-        for title, img, note in (("원문", self.crop, None), ("한글 넣은 모습", self.preview, self.pv_note)):
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            cap = QLabel(title)
-            cap.setStyleSheet("color: #3A3A3C; font-weight: bold")
-            col.addWidget(cap)
-            col.addWidget(img, 1)
-            if note is not None:
-                col.addWidget(note)
-            else:
-                col.addSpacing(self.pv_note.sizeHint().height())
-            pics.addLayout(col, 1)
-        return head, pics
+        pv_body = QWidget()
+        pl = QVBoxLayout(pv_body)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(2)
+        pl.addWidget(self.preview, 1)
+        pl.addWidget(self.pv_note)
+        return panel("원문", self.crop), panel("한글 넣은 모습", pv_body)
 
-    def _build_source_rows(self) -> QHBoxLayout:
-        """원문 칸·초벌 번역 줄·엑셀과 달라진 칸 알림. 초벌 줄을 돌려준다."""
+    def _build_source_rows(self) -> None:
+        """원문 칸·초벌 번역 줄·엑셀과 달라진 칸 알림."""
         self.source = QPlainTextEdit()
         self.source.setReadOnly(True)
         self.source.setFont(self._text_font)
-        self.source.setFixedHeight(54)
+        self.source.setFixedHeight(64)
+        self.source.setStyleSheet("QPlainTextEdit { background: #F0F5FD; }")
         self.source_note = grey_note("원문이 틀렸으면 ② 원문 확인에서 고치세요 (고치면 그 칸은 다시 번역해야 합니다)")
+        self.source_note.setWordWrap(True)
         self.base_name = self._line_title("초벌")
         self.base_text = QLabel()
         self.base_text.setWordWrap(True)
@@ -217,10 +294,6 @@ class TranslationReviewDialog(QDialog):
         self.base_text.setFont(self._text_font)
         self.base_btn = QPushButton("초벌 번역으로")
         self.base_btn.clicked.connect(self.use_base)
-        base_row = QHBoxLayout()
-        base_row.addWidget(self.base_name, 0, Qt.AlignmentFlag.AlignTop)
-        base_row.addWidget(self.base_text, 1)
-        base_row.addWidget(self.base_btn, 0, Qt.AlignmentFlag.AlignTop)
         self.conflict = QFrame()
         cl = QVBoxLayout(self.conflict)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -237,14 +310,12 @@ class TranslationReviewDialog(QDialog):
         cb.addStretch(1)
         cl.addWidget(self.conflict_msg)
         cl.addLayout(cb)
-        return base_row
 
-    def _build_edit_buttons(self) -> QHBoxLayout:
-        """번역 입력칸·확인 표시와 단추 줄."""
+    def _build_edit_buttons(self) -> None:
+        """번역 입력칸·점검·같은 원문 칸과 단추 (확인하고 다음 칸 · 저장 · 미리 보기 · 원본 그대로)."""
         self.edit = QPlainTextEdit()
         self.edit.setFont(self._text_font)
-        self.edit.setMinimumHeight(76)
-        self.edit.setMaximumHeight(130)
+        self.edit.setMinimumHeight(96)
         self.edit.setTabChangesFocus(True)
         self.edit.textChanged.connect(self._on_text_changed)
         self.check_label = QLabel()
@@ -252,8 +323,9 @@ class TranslationReviewDialog(QDialog):
         self.check_label.setWordWrap(True)
         self.same_box = QCheckBox()
         self.same_box.setChecked(True)
-        self.next_btn = QPushButton("확인하고 다음 칸 (Ctrl+Enter)")
-        make_primary(self.next_btn)
+        self.next_btn = QPushButton(NEXT_TEXT)
+        make_big_primary(self.next_btn)
+        self.next_btn.setToolTip("고친 번역을 저장하고 확인 표시를 남긴 뒤 목록의 다음 칸으로 (Ctrl+Enter)")
         self.save_btn = QPushButton("저장")
         self.save_btn.setToolTip("Ctrl+S — 저장하고 확인 표시를 남기며, 이 칸에 머뭅니다")
         self.preview_btn = QPushButton("미리 보기")
@@ -265,70 +337,60 @@ class TranslationReviewDialog(QDialog):
         self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
                                  "이 목록에서 빠지며, 되돌리려면 ② 원문 확인이나 결과 보기의 같은 버튼을 누르세요.")
         self.keep_btn.clicked.connect(self.keep_original)
-        btns = QHBoxLayout()
-        btns.addWidget(self.next_btn)
-        btns.addWidget(self.save_btn)
-        btns.addWidget(self.preview_btn)
-        btns.addWidget(self.keep_btn)
-        self.help = grey_note(HELP)
-        self.help.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        btns.addWidget(self.help, 1)
-        return btns
+        self.help = shortcut_hint(HELP)
 
-    def _build_editor_scroll(self, head, pics, base_row, btns) -> QScrollArea:
-        """오른쪽 편집 칸을 세로로 쌓아 스크롤 영역에 넣는다."""
+    def _build_editor_scroll(self) -> QScrollArea:
+        """오른쪽 글 칸 (넘치면 스크롤): 안내 · 엑셀 알림 · 원문 · 초벌 · 엑셀과 다름 · 번역 · 점검 · 같은 원문 칸 · 엑셀 안내."""
+        self.guide = hint_bar(GUIDE, "info")
+        self.guide.setWordWrap(True)
+        self.excel_hint = hint_bar("엑셀이 열려 있습니다. 엑셀에서 저장한 칸이 앱에서 고친 것보다 우선합니다. 한쪽에서만 고치세요.", "warn")
+        self.excel_hint.setWordWrap(True)
+        self.excel_label = grey_note("")
+        self.excel_label.setWordWrap(True)
         right = QWidget()
+        # 버튼 순서: 초벌 번역으로 → 앱/바뀐 번역 쓰기(conflict 안) → 같은 원문 칸
+        adopt(right, (self.guide, self.excel_hint, self.source, self.source_note, self.base_name, self.base_text,
+                      self.base_btn, self.conflict, self.edit, self.check_label, self.same_box, self.excel_label))
+        base_row = QHBoxLayout()
+        base_row.addWidget(self.base_name, 0, Qt.AlignmentFlag.AlignTop)
+        base_row.addWidget(self.base_text, 1)
+        base_row.addWidget(self.base_btn, 0, Qt.AlignmentFlag.AlignTop)
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(8, 0, 8, 0)
+        rl.setContentsMargins(10, 8, 10, 8)
         rl.setSpacing(6)
-        rl.addLayout(head)
-        rl.addLayout(pics, 1)
-        rl.addLayout(self._labeled("원문", self.source))
+        rl.addWidget(self.guide)
+        rl.addWidget(self.excel_hint)
+        rl.addWidget(self._title("원문 (읽기만)"))
+        rl.addWidget(self.source)
         rl.addWidget(self.source_note)
         rl.addLayout(base_row)
         rl.addWidget(self.conflict)
-        rl.addLayout(self._labeled("번역", self.edit))
+        rl.addWidget(self._title("번역"))
+        rl.addWidget(self.edit, 1)
         rl.addWidget(self.check_label)
         rl.addWidget(self.same_box)
-        rl.addLayout(btns)
+        rl.addWidget(self.excel_label)
         scroll = QScrollArea()
+        scroll.setObjectName("panel")
+        scroll.setStyleSheet("QScrollArea#panel { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }"
+                             "QScrollArea#panel > QWidget > QWidget { background: white; }")
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(560)
         scroll.setWidget(right)
         return scroll
 
-    def _build_split(self, left: QWidget, scroll: QScrollArea) -> None:
-        """왼쪽 표와 오른쪽 편집 칸을 나누는 splitter (self.split)."""
-        self.split = QSplitter()
-        self.split.addWidget(left)
-        self.split.addWidget(scroll)
-        self.split.setStretchFactor(0, 2)
-        self.split.setStretchFactor(1, 3)
-        self.split.setSizes([560, 840])
-
-    def _build_bottom_bar(self) -> QHBoxLayout:
-        """아래: 엑셀 알림·엑셀 단추·닫기 줄."""
-        self.excel_hint = hint_bar("엑셀이 열려 있습니다. 엑셀에서 저장한 칸이 앱에서 고친 것보다 우선합니다. 한쪽에서만 고치세요.", "warn")
-        self.excel_label = QLabel()
-        self.excel_label.setWordWrap(True)
+    def _build_bottom_bar(self) -> tuple[QPushButton, ...]:
+        """머리 오른쪽 끝 단추: 엑셀 열기 · 엑셀로 내보내기(다시 만들기) · 닫기."""
         self.b_xl_open = QPushButton("엑셀 열기")
         self.b_xl_make = QPushButton("엑셀로 내보내기…")
         self.b_xl_open.clicked.connect(self.open_excel)
         self.b_xl_make.clicked.connect(self.export_excel)
         close = QPushButton("닫기")
         close.clicked.connect(self.accept)
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.excel_label, 1)
-        bottom.addWidget(self.b_xl_open)
-        bottom.addWidget(self.b_xl_make)
-        bottom.addSpacing(12)
-        bottom.addWidget(close)
         for b in (self.next_btn, self.save_btn, self.preview_btn, self.base_btn, self.keep_app, self.keep_now,
                   self.b_xl_open, self.b_xl_make, close):
             b.setAutoDefault(False)
-        return bottom
+        return self.b_xl_open, self.b_xl_make, close
 
     def _install_shortcuts(self) -> None:
         for keys, fn in (("Ctrl+Return", self.confirm_next), ("Ctrl+Enter", self.confirm_next), ("Ctrl+S", self.save_here),
@@ -363,12 +425,11 @@ class TranslationReviewDialog(QDialog):
         lb.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         return lb
 
-    @classmethod
-    def _labeled(cls, text: str, w: QWidget) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(cls._line_title(text), 0, Qt.AlignmentFlag.AlignTop)
-        row.addWidget(w, 1)
-        return row
+    @staticmethod
+    def _title(text: str) -> QLabel:
+        lb = QLabel(text)
+        lb.setStyleSheet("color: #3A3A3C; font-weight: bold")
+        return lb
 
     def _build_scopes(self) -> list[tuple[str, str, list | None]]:
         """범위 콤보 항목 [(글자, 종류, 파일 폴더 목록)]. 번역한 파일만. 모든 그룹은 번역한 파일 전부."""
@@ -552,7 +613,8 @@ class TranslationReviewDialog(QDialog):
 
     def _fill_row(self, i: int, r: dict):
         mark = "✓" if r["checked"] else "●" if r["level"] in ("must", "look") else ""
-        vals = [mark, self._card_text(r), r["region"], r["ko"].replace("\n", " / ")]
+        vals = [mark, self._card_text(r), r["region"]]
+        tip = r["ko"] or "(번역 없음)"
         for j, v in enumerate(vals):
             it = QTableWidgetItem(v)
             if j == 0:
@@ -566,13 +628,12 @@ class TranslationReviewDialog(QDialog):
                 elif not r["checked"] and r["status"]:
                     it.setToolTip(", ".join(r["status"]))
             else:
-                it.setToolTip(r["source"])
-            if j == 3:
-                it.setFont(self._text_font)
+                it.setToolTip(tip)
+            if j == 2:
                 if r["edited"] or r["excel_changed"]:
                     it.setBackground(QColor(EDIT_BG))
                 if r["checked_stale"]:
-                    it.setToolTip("확인한 뒤 바뀜\n" + r["source"])
+                    it.setToolTip("확인한 뒤 바뀜\n" + tip)
             self.table.setItem(i, j, it)
 
     def _row_index(self, rid: str | None) -> int:
@@ -635,6 +696,10 @@ class TranslationReviewDialog(QDialog):
                     self._fill_row(i, r)
         finally:
             self._busy = False
+        cur = self.current_row()
+        if cur is not None:
+            self._show_state(cur)
+            self._fill_card_map(cur)
         self._sync_pill()
 
     def _recount(self):
@@ -670,6 +735,8 @@ class TranslationReviewDialog(QDialog):
         self.preview.clear()
         self.pv_note.setText("")
         self.head.setText("검수할 칸이 없습니다" if not self.rows else "이 거르기 조건에 맞는 칸이 없습니다")
+        self.state_chip.hide()
+        self.card_map.set_data(QPixmap(), {}, {}, "")
         self.base_name.setText("초벌")
         self.base_text.setText("")
         self.base_btn.setEnabled(False)
@@ -689,6 +756,8 @@ class TranslationReviewDialog(QDialog):
         for b in (self.next_btn, self.save_btn, self.preview_btn, self.keep_btn):
             b.setEnabled(True)
         self.head.setText(f"{file_label(r['file_key'])} {r['page']}쪽 · {r['region']}")
+        self._show_state(r)
+        self._fill_card_map(r)
         self.source.setPlainText(r["source"])
         if not same or not keep_text:
             try:
@@ -724,6 +793,64 @@ class TranslationReviewDialog(QDialog):
         self._sync_pill()
         if not keep_text:
             self.request_preview()
+
+    # ---- 머리 칩 · 카드 전체 그림
+    @staticmethod
+    def _level(r: dict) -> str:
+        return "ok" if r["checked"] else r["level"] if r["level"] in ("must", "look") else "todo"
+
+    def _show_state(self, r: dict):
+        """머리의 상태 칩: 꼭 고칠 칸(주황) · 확인해 볼 칸(노랑) · 확인함(연두) · 확인 안 함(회색)."""
+        lv = self._level(r)
+        text, bg = {"must": ("꼭 고칠 칸", MUST_BG), "look": ("확인해 볼 칸", LOOK_BG), "ok": ("확인함", OK_BG),
+                    "todo": ("확인 안 함", "#E5E5EA")}[lv]
+        if r["edited"] or r["excel_changed"]:
+            text += " · 고친 번역"
+        self.state_chip.setText(text)
+        self.state_chip.setStyleSheet(chip_qss(bg))
+        self.state_chip.setToolTip(", ".join(r["status"]) if r["status"] and not r["checked"] else "")
+        self.state_chip.show()
+
+    def _fill_card_map(self, r: dict):
+        """왼쪽 카드 전체 그림: 이 쪽의 칸 상자를 상태 색으로, 지금 칸은 굵게."""
+        k = (str(r["file_dir"]), int(r["page"]))
+        if k not in self._card_cache:
+            self._card_cache[k] = load_card_map(r["file_dir"], r["page"])
+        info = self._card_cache[k]
+        colors = {x["region"]: LEVEL_COLOR[self._level(x)] for x in self.rows
+                  if str(x["file_dir"]) == k[0] and int(x["page"]) == k[1]}
+        self.card_map.set_data(info["pm"], info["rects"], colors, r["region"])
+
+    def _pick_region(self, name: str):
+        """카드 전체 그림에서 상자를 누름: 같은 쪽의 그 칸으로 (지금 목록에 없으면 알린다)."""
+        r = self.current_row()
+        if r is None or name == r["region"]:
+            return
+        rid = next((i for i in self.view_ids if self.by_id[i]["region"] == name
+                    and str(self.by_id[i]["file_dir"]) == str(r["file_dir"]) and self.by_id[i]["page"] == r["page"]), None)
+        if rid is None:
+            self.flash_label.flash(f"‘{name}’ 칸은 지금 목록(거르기)에 없습니다", "warn")
+            return
+        self._go(rid)
+
+    # ---- 이동 (단추·단축키)
+    def _nav_go(self, kind: str) -> bool:
+        """이동. 갈 곳이 없으면 False (NavBox가 알리고 소리를 낸다)."""
+        i = self._row_index(self._shown_id)
+        ids = self.view_ids
+        if kind in ("prev", "next"):
+            j = i + (1 if kind == "next" else -1)
+            if not (0 <= j < len(ids)) or i < 0:
+                return False
+            self.table.setCurrentCell(j, 0)
+            return True
+        order = range(i + 1, len(ids)) if kind == "next_bad" else range(i - 1, -1, -1)
+        for j in order:
+            x = self.by_id[ids[j]]
+            if not x["checked"] and x["level"] in ("must", "look"):
+                self.table.setCurrentCell(j, 0)
+                return True
+        return False
 
     # ---- 검사
     def _fresh_check(self, r: dict) -> dict:

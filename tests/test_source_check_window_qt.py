@@ -332,3 +332,18 @@ def test_opening_selects_first_problem_card(qapp, tmp_path):
     assert "1쪽" in heads[0].text(0)  # 쪽 순서
     assert dlg2.tree.currentItem() is heads[1] and "2쪽" in heads[1].text(0)  # 첫 문제 카드를 고름
     dlg2.close()
+
+
+def test_preview_panel_follows_selection_and_opens_card_view(qapp, tmp_path, monkeypatch):
+    """오른쪽 미리 보기 (카드 보기 배치의 일부): 고른 영역의 카드 그림·원문, ‘카드 보기 열기’(Enter)는 더블클릭과 같다."""
+    info, fd, dlg = _open(tmp_path, "preview", pages=2)
+    opened = []
+    monkeypatch.setattr(dlg, "open_viewer", lambda key: opened.append(key))
+    head = _heads(dlg)[0]
+    dlg.tree.setCurrentItem(head.child(0))
+    assert "1쪽" in dlg.preview_title.text() and "AB" in dlg.preview_src.toPlainText()
+    assert not dlg.preview_map._pm.isNull() and dlg.preview_map._sel
+    dlg.preview_open.click()
+    assert opened and opened[0][1] == 1
+    assert dlg.preview_open.property("ui_code_late")  # 버튼 코드는 맨 뒤에 센다 (예전 번호 그대로)
+    dlg.done(0)

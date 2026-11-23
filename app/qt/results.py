@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import html as _html
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QVBoxLayout,
+    QWidget,
 )
 
 from app import service
@@ -21,6 +23,17 @@ from app.qt.dialogs import (
 )
 
 from app.qt.fonts_dialog import ALIGN_CHOICES  # noqa: E402 (글꼴 창과 같은 정렬 이름)
+from app.qt.work_layout import (LEFT_W, FlashLabel, NavBox, adopt, chip_qss, fit_list_rows, make_big_primary,
+                                shortcut_hint)
+
+RIGHT_W = 510  # 오른쪽(고치기) 칸 폭 (px). 위치 줄(칸 2개 + 화살표 4개 + 원래 자리)이 들어가게
+NAV_HINT = "Alt+←/→ 쪽 · Alt+Shift+←/→ 문제 쪽"
+NAV_SPEC = [("prev", "◀ 이전 쪽", "목록의 앞 쪽으로", "Alt+Left"),
+            ("next", "다음 쪽 ▶", "목록의 다음 쪽으로", "Alt+Right"),
+            ("prev_bad", "◀◀ 문제 쪽", "앞쪽에서 문제 있는 쪽으로", "Alt+Shift+Left"),
+            ("next_bad", "문제 쪽 ▶▶", "뒤쪽에서 문제 있는 쪽으로", "Alt+Shift+Right")]
+NO_TARGET = {"prev": "앞에 다른 쪽이 없습니다", "next": "뒤에 다른 쪽이 없습니다",
+             "prev_bad": "앞쪽에 문제 있는 쪽이 없습니다", "next_bad": "뒤쪽에 문제 있는 쪽이 없습니다"}
 
 ALIGN_TEXT = [(k, t) for k, t in ALIGN_CHOICES if k]
 OK_STATUS = {"글자 축소", "모두 아이콘이라 건너뜀"}  # 알려 주기만 하는 상태 (문제로 보지 않음)
@@ -63,8 +76,8 @@ class ResultViewer(QDialog):
         fit_to_screen(self, 1500, 900)  # 낮은 화면에서는 최대화
         self._img_path: Path | None = None
         self.runs = runs
-        top = self._build_top_bar()
-        left = self._build_page_list()
+        header_btns = self._build_top_bar()
+        self._build_page_list()
         self._build_card_view()
         self._build_edit_fields()
         orow, srow = self._build_position_rows()
@@ -72,36 +85,31 @@ class ResultViewer(QDialog):
         form = self._build_edit_form(orow, srow)
         self._build_erase_box(form)
         self._init_edit_state()
-        split = self._build_right_split(left)
-        bottom = self._build_footer()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
-        lay.setSpacing(10)
-        lay.addLayout(top)
-        lay.addWidget(split, 1)
-        lay.addLayout(bottom)
+        self._build_footer()
+        self._build_layout(header_btns)
         self.run.currentIndexChanged.connect(lambda _i: self.reload())
         self.only.toggled.connect(lambda _c: self.reload())
         self.items: list[dict] = []
         self.reload()
 
-    def _build_top_bar(self) -> QHBoxLayout:
-        """윗줄: 파일 고르기·안내·PDF/폴더 열기 단추."""
+    def _build_top_bar(self) -> tuple[QPushButton, ...]:
+        """머리 오른쪽 끝 단추 (PDF 열기 · 원래 배열 이미지 · 고친 PDF 넣기 · 고친 배열 이미지 · 폴더 열기)와 파일 고르기."""
         self.run = QComboBox()
         for name, d in self.runs:
             self.run.addItem(file_label(name), str(d))
             self.run.setItemData(self.run.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
         self.run.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.run.setMinimumContentsLength(18)
+        self.run.setMinimumContentsLength(12)
+        self.run.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.only = QCheckBox("문제 있는 쪽만 보기")
         self.only.setToolTip("넘침·아이콘 오류·글꼴에 없는 글자 등")
-        self.info = hint_bar("", "done")
-        pdf_btn = QPushButton("PDF 열기")
-        make_primary(pdf_btn)
-        pdf_btn.setDefault(False)
+        self.info = QLabel()  # 머리의 진행: ‘9쪽 · 문제 있는 쪽 0’
+        self.info.setStyleSheet("color: #6E6E73;")
+        self.pdf_btn = pdf_btn = QPushButton("PDF 열기")
         pdf_btn.setAutoDefault(False)
         pdf_btn.clicked.connect(self.open_pdf)
         folder_btn = QPushButton("폴더 열기")
+        folder_btn.setAutoDefault(False)
         folder_btn.clicked.connect(lambda: _open(self.run_dir()))
         self.sheet_btn = QPushButton("원래 배열 이미지")
         self.sheet_btn.setToolTip("배열 이미지로 넣은 카드를 원래 시트 크기·배열로 다시 합친 이미지 (원본 해상도)")
@@ -114,34 +122,16 @@ class ResultViewer(QDialog):
         self.edited_btn = QPushButton("고친 배열 이미지")
         self.edited_btn.setToolTip("넣은 고친 PDF로 합친 원래 배열 이미지를 엽니다")
         self.edited_btn.clicked.connect(self.open_edited)
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        top.addWidget(QLabel("파일"))
-        top.addWidget(self.run)
-        top.addWidget(self.info, 1)
-        top.addWidget(pdf_btn)
-        top.addWidget(self.sheet_btn)
-        top.addWidget(self.import_btn)
-        top.addWidget(self.edited_btn)
-        top.addWidget(folder_btn)
-        return top
+        return pdf_btn, self.sheet_btn, self.import_btn, self.edited_btn, folder_btn
 
-    def _build_page_list(self) -> QWidget:
-        """왼쪽: 문제 있는 쪽만 보기 + 쪽 목록."""
+    def _build_page_list(self) -> None:
+        """왼쪽: 쪽 목록 (self.pages)."""
         self.pages = QListWidget()
         self.pages.currentRowChanged.connect(lambda _r: self._show_page())
-        left = QWidget()
-        left.setMaximumWidth(230)
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.addWidget(self.only)
-        ll.addWidget(self.pages, 1)
-        return left
 
     def _build_card_view(self) -> None:
         """오른쪽 위: 영역 목록과 비교 그림 (self.regions, self.image, self.scroll)."""
         self.regions = QListWidget()
-        self.regions.setMaximumHeight(160)
         self.regions.currentRowChanged.connect(lambda _r: self._show_region())
         self.image = QLabel()
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -174,11 +164,15 @@ class ResultViewer(QDialog):
         self.edit_size.setRange(45, 200)  # 맨 아래(45) = 영역 설정대로, 올리면 50·55·…
         self.edit_size.setSingleStep(5)
         self.edit_size.setSuffix(" %")
-        self.edit_size.setMinimumWidth(240)  # ‘영역 설정대로 (100 %)’가 잘리지 않게
+        self.edit_size.setMinimumWidth(190)  # ‘영역 설정대로 (100 %)’가 잘리지 않게
         self.edit_size.setToolTip("원본 글자 크기 대비 배율 (이 카드의 이 영역만). 맨 아래로 내리면 글꼴 창의 영역 설정대로입니다.\n"
                                   "한글 넣기는 이 크기로 시작해, 칸에 넘치면 조금씩 줄입니다.")
         self.edit_align = QComboBox()
         self.edit_align.setToolTip("이 카드의 이 영역만 한글을 놓는 방법")
+        # 긴 항목(‘영역 설정대로 (…)’)이 오른쪽 칸 폭을 넘지 않게 (잘린 글은 펼치면 다 보인다)
+        for c in (self.edit_font, self.erase_mode, self.edit_align):
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(8)
 
     def _build_position_rows(self) -> tuple[QHBoxLayout, QHBoxLayout]:
         """글자 위치(옮기기 단추)·글자 크기/정렬 줄. (위치 줄, 크기 줄)을 돌려준다."""
@@ -262,8 +256,8 @@ class ResultViewer(QDialog):
         self.reset_btn.setToolTip("번역은 검수 엑셀(없으면 초벌 번역) 그대로, 글꼴·문단 글꼴·크기·정렬·지우기는 영역 설정대로 돌려 놓습니다 (저장해야 반영)")
         self.reset_btn.clicked.connect(self.reset_edit)
         self.redo_btn = QPushButton("저장하고 다시 넣기")
-        make_primary(self.redo_btn)
-        self.redo_btn.setAutoDefault(False)
+        make_big_primary(self.redo_btn)
+        self.redo_btn.setToolTip("고친 번역·글꼴·크기·정렬·위치·지우기 방식을 저장하고 이 파일에 한글을 다시 넣습니다 (Ctrl+Enter)")
         self.redo_btn.clicked.connect(self.save_edit)
         self.keep_btn = QPushButton(KEEP_LABEL)
         self.keep_btn.setToolTip("이 칸은 글자 없이 아이콘만 있다: 번역하지 않고 글자 지우기·한글 넣기도 하지 않아 원본 그대로 둡니다.\n"
@@ -271,22 +265,31 @@ class ResultViewer(QDialog):
         self.keep_btn.setAutoDefault(False)
         self.keep_btn.clicked.connect(self.toggle_keep_original)
         erow = QHBoxLayout()
-        self.edit_note = grey_note("")
-        erow.addWidget(self.edit_note, 1)
+        erow.setSpacing(4)
         erow.addWidget(self.keep_btn)
         erow.addWidget(self.reset_btn)
         erow.addWidget(self.preview_btn)
-        erow.addWidget(self.redo_btn)
+        erow.addStretch(1)
+        self.edit_note = grey_note("")
+        self.edit_note.setWordWrap(True)
         self.erase_hint = grey_note("")
-        self.erase_box = QGroupBox("이 카드의 이 영역 고치기")
+        self.erase_hint.setWordWrap(True)
+        self.erase_hint.setTextFormat(Qt.TextFormat.RichText)
+        self.erase_box = QWidget()
         egl = QVBoxLayout(self.erase_box)
+        egl.setContentsMargins(10, 8, 10, 8)
+        egl.setSpacing(6)
+        self.erase_title = QLabel("<b>이 카드의 이 영역 고치기</b>")
+        egl.addWidget(self.erase_title)
         egl.addWidget(self.erase_hint)
         self.edit_form = QWidget()
         fl = QVBoxLayout(self.edit_form)
         fl.setContentsMargins(0, 0, 0, 0)
         fl.addLayout(form)
         fl.addLayout(erow)
+        fl.addWidget(self.edit_note)
         egl.addWidget(self.edit_form)
+        egl.addStretch(1)
 
     def _init_edit_state(self) -> None:
         """고치는 칸 상태와 ‘저장 안 한 고침’ 표시 신호."""
@@ -299,33 +302,140 @@ class ResultViewer(QDialog):
         self.edit_size.valueChanged.connect(lambda _v: self._mark_dirty())
         self.edit_align.currentIndexChanged.connect(lambda _i: self._mark_dirty())
 
-    def _build_right_split(self, left: QWidget) -> QSplitter:
-        """오른쪽 칸(그림·영역·고치기 상자)과 왼쪽 쪽 목록을 나누는 splitter."""
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(self.scroll, 1)
-        rrow = QHBoxLayout()
-        rrow.addWidget(section_title("영역"))
-        rrow.addWidget(grey_note("고르면 그 부분을 크게 비교합니다"), 1)
-        rl.addLayout(rrow)
-        rl.addWidget(self.regions)
-        rl.addWidget(self.erase_box)
-        split = QSplitter()
-        split.addWidget(left)
-        split.addWidget(right)
-        split.setStretchFactor(1, 1)
-        return split
-
-    def _build_footer(self) -> QHBoxLayout:
-        """아래: 안내 글과 닫기."""
+    # 배치 (카드 보기와 같은 틀, work_layout):
+    #   머리: 파일·쪽 제목 · 상태 칩 · 진행 · 알림 · (PDF 열기 · 배열 이미지 · 고친 PDF · 폴더 열기 · 닫기)
+    #   왼쪽(어디): 파일 · 문제 있는 쪽만 · 쪽 목록 · 이 쪽 영역 · 이동 단추
+    #   가운데(무엇): 고른 영역 이름 · 원본 | 결과 그림 (크게) · 안내
+    #   오른쪽(어떻게): 이 카드의 이 영역 고치기 (영역을 안 고르면 이 쪽의 문제) · 큰 ‘저장하고 다시 넣기’
+    # 버튼 코드는 예전 순서(PDF 열기 · 배열 이미지 · 고친 PDF · 고친 이미지 · 폴더 열기 · 위치 ←→↑↓ · 원래 자리 · 원본 그대로 ·
+    # 원래대로 · 미리 보기 · 저장하고 다시 넣기 · 문제 있는 쪽만 · 닫기)대로 붙이고, 이동 단추는 맨 뒤에 붙인다.
+    def _build_layout(self, header_btns: tuple) -> None:
         close = QPushButton("닫기")
+        close.setAutoDefault(False)
         close.clicked.connect(self.accept)
+        self.title = page_title("결과 보기", 14)
+        self.state_chip = QLabel()
+        self.state_chip.hide()
+        self.flash_label = FlashLabel()
+        self.region_head = QLabel()
+        self.region_head.setStyleSheet("font-size: 15px; font-weight: 600; color: #1D1D1F;")
+        right = QScrollArea()
+        right.setObjectName("panel")
+        right.setStyleSheet("QScrollArea#panel { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }"
+                            "QScrollArea#panel > QWidget > QWidget { background: white; }")
+        right.setWidgetResizable(True)
+        right.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right.setWidget(self.erase_box)
+        right.setFixedWidth(RIGHT_W)
+        self.redo_hint = shortcut_hint("Ctrl+Enter 저장하고 다시 넣기 · " + NAV_HINT)
+        pages_title, regions_title = QLabel("<b>쪽</b>"), QLabel("<b>이 쪽 영역</b>")
+        body = QWidget()
+        adopt(body, (self.run, self.info, *header_btns, self.region_head, self.scroll, self.footer, right, self.redo_btn,
+                     self.redo_hint, self.only, pages_title, self.pages, regions_title, self.regions, close, self.title,
+                     self.state_chip, self.flash_label))
+        self.nav = NavBox(self, NAV_SPEC, self._nav_go, self.flash_label, NO_TARGET)
+        nav_w = QWidget()
+        nav_w.setLayout(self.nav.grid)
+        adopt(body, (nav_w,))
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(self.title)
+        header.addWidget(self.state_chip)
+        header.addWidget(self.info)
+        header.addWidget(self.flash_label, 1)
+        for b in (*header_btns, close):
+            header.addWidget(b)
+        for w in (self.run, self.only, self.pages, self.regions, nav_w):
+            w.setFixedWidth(LEFT_W)
+        ll = QVBoxLayout()
+        ll.setSpacing(6)
+        ll.addWidget(self.run)
+        ll.addWidget(self.only)
+        ll.addWidget(pages_title)
+        ll.addWidget(self.pages, 1)
+        ll.addWidget(regions_title)
+        ll.addWidget(self.regions)
+        ll.addWidget(nav_w)
+        cl = QVBoxLayout()
+        cl.setSpacing(6)
+        cl.addWidget(self.region_head)
+        cl.addWidget(self.scroll, 1)
+        cl.addWidget(self.footer)
+        rl = QVBoxLayout()
+        rl.setSpacing(6)
+        rl.addWidget(right, 1)
+        rl.addWidget(self.redo_btn)
+        rl.addWidget(self.redo_hint)
+        main = QHBoxLayout()
+        main.setSpacing(12)
+        main.addLayout(ll)
+        main.addLayout(cl, 1)
+        main.addLayout(rl)
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 10, 14, 10)
+        bl.setSpacing(8)
+        bl.addLayout(header)
+        bl.addLayout(main, 1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(body)
+        for keys in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(keys), self, activated=self.save_edit)
+
+    def _build_footer(self) -> None:
+        """그림 밑 안내 글 (self.footer)."""
         self.footer = grey_note("")
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.footer, 1)
-        bottom.addWidget(close)
-        return bottom
+        self.footer.setWordWrap(True)
+
+    # ---- 이동 (단추·단축키)
+    def _nav_go(self, kind: str) -> bool:
+        """이전·다음 쪽, 이전·다음 문제 쪽. 갈 곳이 없으면 False (NavBox가 알리고 소리를 낸다)."""
+        i, n = self.pages.currentRow(), len(self.items)
+        if kind in ("prev", "next"):
+            j = i + (1 if kind == "next" else -1)
+            if i < 0 or not 0 <= j < n:
+                return False
+            self.pages.setCurrentRow(j)
+            return True
+        order = range(i + 1, n) if kind == "next_bad" else range(i - 1, -1, -1)
+        j = next((k for k in order if self.problems(self.items[k]["status"])), None)
+        if j is None:
+            return False
+        self.pages.setCurrentRow(j)
+        return True
+
+    def _show_state(self, p: dict | None) -> None:
+        """머리: ‘파일 · n쪽’과 상태 칩 (문제 있음 = 주황, 알림만 = 회색, 없음 = 연두)."""
+        if p is None:
+            self.title.setText("결과 보기")
+            self.state_chip.hide()
+            return
+        self.title.setText(f"{self.run.currentText()} · {p['page']}쪽")
+        bad = self.problems(p["status"])
+        text, bg = (("문제 있음", "#F4B183") if bad else ("알림 있음", "#E5E5EA") if p["status"] else ("문제 없음", "#D9EAD3"))
+        self.state_chip.setText(text)
+        self.state_chip.setStyleSheet(chip_qss(bg))
+        self.state_chip.setToolTip(status_text(p["status"]))
+        self.state_chip.show()
+
+    def _page_problems_html(self, p: dict) -> str:
+        """영역을 고르지 않았을 때 오른쪽 칸: 이 쪽의 영역별 문제 목록."""
+        rows = []
+        for r in p["regions"]:
+            bits = [status_text(r["status"])] if r["status"] else []
+            if r.get("overflow"):
+                bits.append(f"빠진 글자 «{r['overflow'][:60]}{'…' if len(r['overflow']) > 60 else ''}»")
+            if r["errors"]:
+                bits.append("; ".join(r["errors"])[:100])
+            if bits:
+                color = "#B35C00" if self.problems(r["status"]) or r.get("overflow") else "#6E6E73"
+                rows.append(f'<li><b>{_html.escape(r["name"])}</b> — <span style="color:{color}">'
+                            f'{_html.escape(" · ".join(bits))}</span></li>')
+        head = "<b>이 쪽의 문제</b>"
+        body = f"<ul style='margin-left:-20px'>{''.join(rows)}</ul>" if rows else "<p>이 쪽에는 문제가 없습니다.</p>"
+        tail = ("<p>왼쪽 ‘이 쪽 영역’에서 영역을 고르면 그 칸의 번역·글꼴·크기·정렬·위치·지우기 방식을 여기서 고칩니다.</p>"
+                if self.file_dir() is not None else "<p>시험 결과에서는 바꿀 수 없습니다.</p>")
+        return head + body + tail
 
     def run_dir(self) -> Path:
         return Path(self.run.currentData())
@@ -346,11 +456,9 @@ class ResultViewer(QDialog):
         self.edited_btn.setVisible(fd is not None and bool(service.edited_sheet_images(fd)))
         allp = service.result_pages(self.run_dir())
         n_bad = sum(1 for p in allp if self.problems(p["status"]))
-        if n_bad:
-            set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 {n_bad} — 주황 쪽을 먼저 보세요", "warn")
-        else:
-            set_hint(self.info, f"{len(allp)}쪽, 문제 있는 쪽 0", "done")
-        self.footer.setText("영역을 고르면 아래에서 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고치고 저장할 수 있습니다."
+        self.info.setText(f"{len(allp)}쪽 · 문제 있는 쪽 {n_bad}" + (" — 주황 쪽을 먼저 보세요" if n_bad else ""))
+        self.info.setStyleSheet("color: #B35C00; font-weight: 600;" if n_bad else "color: #6E6E73;")
+        self.footer.setText("영역을 고르면 오른쪽에서 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고치고 저장할 수 있습니다."
                             if self.file_dir() is not None
                             else "시험 결과입니다. 프로젝트의 지운 카드·한글 카드는 바뀌지 않았습니다."
                             + (f" {self._note}" if self._note else ""))
@@ -368,6 +476,8 @@ class ResultViewer(QDialog):
         else:
             self.image.setText("보여 줄 쪽이 없습니다")
             self.regions.clear()
+            self._show_state(None)
+            self.region_head.setText("")
 
     def current(self) -> dict | None:
         r = self.pages.currentRow()
@@ -473,6 +583,9 @@ class ResultViewer(QDialog):
             self.regions.addItem(it)
         self.regions.setCurrentRow(0)
         self.regions.blockSignals(False)
+        fit_list_rows(self.regions, 2, 8)
+        self._show_state(p)
+        self.region_head.setText("카드 전체")
         self._sync_erase()
 
     def _region_name(self) -> str | None:
@@ -504,9 +617,11 @@ class ResultViewer(QDialog):
         self._sel = (self.pages.currentRow(), self.regions.currentRow())
         if not ok:
             if not (p and name and fd):
-                self.erase_hint.setText("위 목록에서 영역(카드 전체 말고)을 고르면 그 칸의 번역·글꼴·크기·정렬·지우기 방식을 고칠 수 있습니다."
-                                        if fd else "시험 결과에서는 바꿀 수 없습니다.")
+                self.erase_hint.setText(self._page_problems_html(p) if p else "")
+            self.erase_title.setVisible(bool(name and fd))
+            self.redo_btn.setEnabled(False)
             return
+        self.erase_title.setVisible(True)
         for w in (self.edit_text, self.edit_font, self.erase_mode, self.edit_size, self.edit_align):
             w.blockSignals(True)
         # 문단마다 다른 글꼴 영역: 문단이 시작하는 줄 앞에 [====] (한글 넣기가 쓰는 나눔 그대로, 고칠 수 있다)
@@ -834,8 +949,10 @@ class ResultViewer(QDialog):
             return
         if r < 0:
             self._set_image(p["card_png"])
+            self.region_head.setText("카드 전체")
         elif r < len(p["regions"]):
             self._set_image(p["regions"][r]["png"])
+            self.region_head.setText(f"영역: {p['regions'][r]['name']} — 원본 | 결과 크게 비교")
 
     def sheet_images(self) -> list[Path]:
         d = self.run_dir()
