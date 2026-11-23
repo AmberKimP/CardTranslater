@@ -260,8 +260,16 @@ def test_glossary_review_dialog_edit_sort_add_and_confirm(tmp_path, monkeypatch)
     info = _review_ready(tmp_path)
     dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
     assert dlg.table.rowCount() == 3
-    assert dlg.table.item(0, C["원문 용어"]).text() == "炎"  # 번역 확인(보라)이 위
     from PySide6.QtCore import Qt
+
+    # 처음: 표로 보기 · 볼 것이 있으니 ‘볼 것만’ 켬 · 등장 횟수 많은 순 (같으면 번역 확인(보라)이 위)
+    assert not dlg._split and dlg.mid.isHidden() and dlg.only_check.isChecked()
+    hh = dlg.table.horizontalHeader()
+    assert hh.sortIndicatorSection() == C["등장 횟수"] and hh.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    assert dlg.table.item(0, C["원문 용어"]).text() == "炎"
+    # 확정 단추는 아래 줄 ‘번역 시작’ (머리 줄이 아니라)
+    assert dlg.ok_btn.text() == "번역 시작" and dlg.ok_btn.y() == dlg.rebuild_btn.y()
+    dlg.only_check.setChecked(False)
 
     dlg.table.sortItems(C["원문 용어"])  # 머리글 정렬 (다시 누르면 반대)
     asc = [dlg.table.item(i, C["원문 용어"]).text() for i in range(3)]
@@ -281,8 +289,8 @@ def test_glossary_review_dialog_edit_sort_add_and_confirm(tmp_path, monkeypatch)
     assert sum(not dlg.table.isRowHidden(i) for i in range(dlg.table.rowCount())) == 1
     dlg.search.clear()
     monkeypatch.setattr("app.qt.step_common._ask_list", lambda *a, **k: True)
-    dlg.confirm()
-    assert dlg.result is not None and dlg.result.state == "confirmed"
+    dlg.ok_btn.click()  # ‘번역 시작’ = 확정 + 부른 쪽이 번역을 이어서
+    assert dlg.result is not None and dlg.result.state == "confirmed" and dlg.translate_next
     saved = json.loads((tmp_path / "games" / "G" / "glossary.json").read_text(encoding="utf-8"))
     assert {t["source"]: t["ko"] for t in saved["terms"]} == {"炎": "불꽃", "毒": "독", "判定": "판정", "闇": "어둠"}
 
@@ -310,6 +318,7 @@ def test_glossary_review_dialog_remove_sorted_and_close_rules(tmp_path, monkeypa
     assert saves == []
 
     dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
+    dlg.only_check.setChecked(False)  # 모든 줄
     for i in range(3):
         dlg.table.item(i, C["번역"]).setText(f"번역{i}")
     dlg.table.sortItems(C["번역"], Qt.SortOrder.DescendingOrder)
@@ -353,7 +362,7 @@ def test_rebuild_candidates_keeps_human_edited_translations(tmp_path):
 
 
 def test_glossary_split_view_edits_table_uses_candidates_and_confirm_next(tmp_path):
-    """③ 용어집 나눠 보기 (카드 보기 배치): 왼쪽 목록은 원문·번역만, 오른쪽에서 고치면 표에 바로 쓰고,
+    """③ 용어집 나눠 보기 (카드 보기 배치): 나온 곳 그림이 왼쪽, 가운데 목록은 원문·번역·등장 횟수, 오른쪽에서 고치면 표에 바로 쓰고,
     후보 ‘이것 쓰기’, ‘확인 → 다음 볼 것’은 보라 ‘번역 확인’을 지우고 다음 볼 것으로. ‘표로 보기’는 모든 열."""
     import os
 
@@ -365,8 +374,13 @@ def test_glossary_split_view_edits_table_uses_candidates_and_confirm_next(tmp_pa
     QApplication.instance() or QApplication([])
     info = _review_ready(tmp_path)
     dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
+    dlg.toggle_btn.click()  # 처음은 표로 보기
     shown = [h for i, h in enumerate(COLS) if not dlg.table.isColumnHidden(i)]
-    assert shown == ["원문 용어", "번역"] and not dlg.mid.isHidden() and not dlg.right.isHidden()
+    assert shown == ["원문 용어", "번역", "등장 횟수"] and not dlg.mid.isHidden() and not dlg.right.isHidden()
+    dlg.resize(1400, 760)
+    dlg.show()
+    QApplication.processEvents()
+    assert dlg.mid.geometry().x() < dlg.table.geometry().x() < dlg.right.geometry().x()  # 나온 곳 · 목록 · 고치기
     assert dlg.f_src.text() == "炎"  # 처음 = 첫 볼 것 (번역 확인)
     places = service.glossary_example_places(info.dir, dlg.table.item(dlg._cur_row(), C["원문 용어"])
                                               .data(256)["예문"])
@@ -406,6 +420,8 @@ def test_glossary_filter_moves_off_hidden_term_and_empty_translation_keeps_check
     info = _review_ready(tmp_path)
     dlg = GlossaryReviewDialog(info.dir, service.glossary_review_rows(info.dir))
     assert dlg.f_src.text() == "炎"
+    dlg.toggle_btn.click()  # 나눠 보기 (확인 → 다음 볼 것)
+    dlg.only_check.setChecked(False)
     dlg.search.setText("判")
     assert dlg.f_src.text() == "判定" and not dlg.table.isRowHidden(dlg._cur_row())
     dlg.search.clear()
@@ -416,4 +432,21 @@ def test_glossary_filter_moves_off_hidden_term_and_empty_translation_keeps_check
     dlg._dirty = False
     dlg.confirm_next()
     assert dlg.table.item(i, C["번역 확인"]).text() == "확인 필요" and not dlg._dirty
+    dlg.reject()
+
+
+def test_glossary_window_without_problems_starts_with_all_terms(tmp_path):
+    """볼 것이 하나도 없으면 ‘볼 것만’을 끈 채 연다."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from app.qt.glossary_review import GlossaryReviewDialog
+
+    QApplication.instance() or QApplication([])
+    dlg = GlossaryReviewDialog(tmp_path, [{"원문 용어": "Gold", "번역": "금", "원문 상태": "확실", "등장 횟수": 3},
+                                          {"원문 용어": "Sword", "번역": "검", "원문 상태": "확실", "등장 횟수": 1}])
+    assert not dlg.only_check.isChecked() and not dlg._split
+    assert sum(not dlg.table.isRowHidden(i) for i in range(dlg.table.rowCount())) == 2
     dlg.reject()

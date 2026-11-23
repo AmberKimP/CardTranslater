@@ -326,8 +326,8 @@ class StepActions:
         dlg = GlossaryReviewDialog(self.pdir, rows, self.page)
         dlg.exec()
         self.page.refresh()
-        if dlg.result is not None:
-            self._glossary_confirmed(dlg.result)
+        if dlg.result is not None:  # ‘번역 시작’: 확정한 뒤 ④ 전체 번역(0B-09)과 같은 동작을 이어서
+            self._glossary_confirmed(dlg.result, then=self.translate if getattr(dlg, "translate_next", False) else None)
         elif getattr(dlg, "rebuild", False):  # ‘용어 후보 다시 만들기…’
             self.finish()
 
@@ -350,21 +350,25 @@ class StepActions:
         self.page.refresh()
         self._glossary_confirmed(r)
 
-    def _glossary_confirmed(self, r):
-        """확정한 뒤: 번역이 바뀐 용어가 있으면 그 용어가 든 칸을 찾아 바뀜 후보로 (F20), 없으면 알린다."""
+    def _glossary_confirmed(self, r, then=None):
+        """확정한 뒤: 번역이 바뀐 용어가 있으면 그 용어가 든 칸을 찾아 바뀜 후보로 (F20), 없으면 알린다.
+        then: 다 끝나면 이어서 할 일 (‘번역 시작’이면 번역). 바뀐 용어가 없으면 확정 알림 없이 바로 한다."""
         if getattr(r, "changed_detail", None):  # 번역이 바뀐 용어: 그 용어가 든 칸을 찾아 바뀜 후보로 (F20)
             job = worker.Job(service.term_change_candidates, self.pdir, r.changed_detail, with_progress=False)
             worker.run_with_dialog(self.page, "바뀐 용어가 든 칸을 찾는 중", job,
-                                   lambda rows: self._term_changes(r, rows),
+                                   lambda rows: self._term_changes(r, rows, then),
                                    _fail_as(self.page, "바뀐 용어가 든 칸을 찾지 못했습니다"), cancellable=False)
+            return
+        if then is not None:
+            then()
             return
         QMessageBox.information(self.page, "용어집 확정",
                                 f"게임 용어집 버전 {r.version}, 용어 {r.terms}개."
                                 + (f"\n번역이 바뀐 용어: {', '.join(r.changed)}\n‘번역’을 다시 하면 이 용어가 든 칸만 다시 번역합니다."
                                    if r.changed else "\n번역을 시작하거나 이어 할 수 있습니다."))
 
-    def _term_changes(self, r, rows: list[dict]):
-        """바뀐 용어가 든 칸을 보여 주고, 고른 칸을 한꺼번에 바꾼 뒤 요약을 알린다."""
+    def _term_changes(self, r, rows: list[dict], then=None):
+        """바뀐 용어가 든 칸을 보여 주고, 고른 칸을 한꺼번에 바꾼 뒤 요약을 알린다. then: 끝나면 이어서 할 일."""
         from app.qt.term_changes import TermChangesDialog
 
         head = f"게임 용어집 버전 {r.version}, 용어 {r.terms}개.\n번역이 바뀐 용어: {', '.join(r.changed)}"
@@ -375,6 +379,8 @@ class StepActions:
                 self.page.refresh()
                 QMessageBox.information(self.page, "용어집 확정", head + "\n옛 번역을 쓰는 칸이 없습니다."
                                         + ("\n다시 번역할 필요가 없습니다." if res.status_restored else redo))
+                if then is not None:
+                    then()
             job = worker.Job(service.apply_term_changes, self.pdir, [], r.changed_detail, prev_status=prev,
                              with_progress=False)
             worker.run_with_dialog(self.page, "초벌 번역을 새 용어로 맞추는 중", job, done,
@@ -383,6 +389,8 @@ class StepActions:
         dlg = TermChangesDialog(self.pdir, r.changed_detail, rows, prev, self.page)
         if not dlg.exec() or dlg.result is None:
             QMessageBox.information(self.page, "용어집 확정", head + redo)
+            if then is not None:
+                then()
             return
         res = dlg.result
         self.page.refresh()
@@ -390,6 +398,8 @@ class StepActions:
             self.page, "바뀐 용어 반영",
             f"{res.applied}칸을 바꿨습니다. 검수 엑셀은 그대로이고, 바꾼 번역은 한글 넣기·검수 엑셀 다시 만들기에 반영됩니다."
             + ("\n다시 번역할 필요가 없습니다." if res.status_restored else redo))
+        if then is not None:
+            then()
 
     # ---- 번역
     def translate(self):

@@ -43,7 +43,7 @@ class LoginDialog(QDialog):
 
     def __init__(self, parent=None, first_run: bool = True):
         super().__init__(parent)
-        self.setWindowTitle("CardTranslater — 로그인")
+        self.setWindowTitle(f"CardTranslater {service.VERSION} — 로그인")
         self.setMinimumWidth(620)
         self.group = QButtonGroup(self)
         self.r_claude = QRadioButton("Claude로 로그인 (Claude 구독 · Claude Code)")

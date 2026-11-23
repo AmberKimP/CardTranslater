@@ -6,6 +6,7 @@ import ast
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -834,6 +835,7 @@ def test_login_dialog_sets_engine(qapp, tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("app.settings.REPO_ROOT", tmp_path / "repo")
     dlg = LoginDialog()
+    assert service.VERSION in dlg.windowTitle()  # 창 이름 옆에 버전
     assert dlg.r_claude.isChecked()  # 기본: Claude 구독
     dlg.r_api.setChecked(True)
     assert dlg.key.isEnabled() and not dlg.b_check.isEnabled()
@@ -2115,10 +2117,12 @@ def test_glossary_button_builds_or_opens_and_rebuilds(qapp, tmp_path, monkeypatc
 
     class Dlg:
         rebuild_on = False
+        result_on = None
 
         def __init__(self, *_a):
-            self.result = None
+            self.result = Dlg.result_on
             self.rebuild = Dlg.rebuild_on
+            self.translate_next = Dlg.result_on is not None
 
         def exec(self):
             calls.append("window")
@@ -2128,6 +2132,14 @@ def test_glossary_button_builds_or_opens_and_rebuilds(qapp, tmp_path, monkeypatc
     Dlg.rebuild_on = True
     act.glossary()  # 창에서 ‘다시 만들기’
     assert calls[-2:] == ["window", "finish"]
+    # ‘번역 시작’으로 확정: 확정 알림 없이 ④ 전체 번역(0B-09)과 같은 동작으로
+    Dlg.rebuild_on = False
+    Dlg.result_on = SimpleNamespace(changed_detail=None, changed=[], version=1, terms=1)
+    monkeypatch.setattr(act, "translate", lambda: calls.append("translate"))
+    win.project.ov["status"] = "glossary_review"  # 창을 닫으면 화면을 새로 읽는다
+    act.glossary()
+    assert calls[-2:] == ["window", "translate"]
+    Dlg.result_on = None
     # 실제 창: 다시 만들기 버튼은 닫으면서 rebuild를 남긴다
     dlg = real_dialog(info.dir, [{"원문 용어": "Gold", "번역": "금"}])
     assert dlg.windowTitle().endswith("③ 용어집") and dlg.rebuild_btn.text() == "용어 후보 다시 만들기…"

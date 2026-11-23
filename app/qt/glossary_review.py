@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from app import service
 from app.qt import ui_codes
-from app.qt.dialogs import fit_to_screen, grey_note, hint_bar, page_title, set_hint, show_error
+from app.qt.dialogs import PRIMARY_QSS, fit_to_screen, grey_note, hint_bar, page_title, set_hint, show_error
 from app.qt.step_common import FitImage, source_font
 from app.qt.work_layout import FlashLabel, NavBox, adopt, chip_qss, make_big_primary, panel, shortcut_hint
 
@@ -23,8 +23,9 @@ COLS = ["원문 용어", "번역", "추천 번역", "원문 상태", "번역 확
 EDITABLE = {"원문 용어", "번역", "분류", "변형", "메모"}
 C = {h: i for i, h in enumerate(COLS)}
 FILL = {"edit": "#FFF8DC", "done": "#D9EAD3", "no_verdict": "#FF7C80", "unsure": "#FFE066", "check": "#D9D2E9"}
-LIST_COLS = ("원문 용어", "번역")  # 나눠 보기(기본)에서 왼쪽 목록에 보이는 열. ‘표로 보기’는 모든 열
-LIST_W, RIGHT_W = 340, 420  # 나눠 보기의 왼쪽 목록·오른쪽 고치기 칸 폭 (px)
+LIST_COLS = ("원문 용어", "번역", "등장 횟수")  # 나눠 보기에서 가운데 목록에 보이는 열. ‘표로 보기’(기본)는 모든 열
+LIST_W, RIGHT_W = 520, 420  # 나눠 보기의 가운데 목록·오른쪽 고치기 칸 폭 (px)
+START_TEXT = "번역 시작"  # 용어집을 확정하고 바로 ④ 전체 번역으로
 NEXT_TEXT = "확인 → 다음 볼 것"
 NAV_HINT = "Alt+←/→ 용어 · Alt+Shift+←/→ 볼 것"
 NAV_SPEC = [("prev", "◀ 이전 용어", "목록의 앞 용어로", "Alt+Left"),
@@ -52,14 +53,15 @@ class _NumItem(QTableWidgetItem):
 
 
 class GlossaryReviewDialog(QDialog):
-    """용어 후보 표. 머리글을 누르면 그 열로 정렬, ‘번역’을 고치고 ‘용어집 확정’을 누른다.
-    result: 확정하면 service.GlossaryConfirmResult."""
+    """용어 후보 표. 머리글을 누르면 그 열로 정렬, ‘번역’을 고치고 ‘번역 시작’을 누른다 (용어집을 확정하고 번역으로).
+    result: 확정하면 service.GlossaryConfirmResult. translate_next: ‘번역 시작’으로 확정했나 (부른 쪽이 이어서 번역)."""
 
     def __init__(self, project_dir, rows: list[dict], parent=None):
         super().__init__(parent)
         self.project_dir = project_dir
         self.result = None
         self.rebuild = False  # ‘용어 후보 다시 만들기…’를 눌러 닫았나 (부른 쪽이 후보를 다시 만든다)
+        self.translate_next = False  # ‘번역 시작’으로 확정했나 (부른 쪽이 ④ 전체 번역을 이어서 한다)
         self._dirty = False  # 표를 고쳤는가 (고친 것이 있을 때만 닫으면서 검증 엑셀에 쓴다)
         self._from_excel = False  # 엑셀에서 가져오기를 해 봤는가 (그 뒤에는 표로 엑셀을 덮어쓰지 않는다)
         self.setWindowTitle("③ 용어집")
@@ -74,16 +76,19 @@ class GlossaryReviewDialog(QDialog):
         self.table.itemChanged.connect(self._mark_dirty)
         self.table.itemChanged.connect(self._table_changed)
         self.table.currentCellChanged.connect(lambda *_a: self._row_picked())
-        self._set_split(True)
+        self._set_split(False)  # 처음은 표로 보기
+        # 볼 것이 하나라도 있으면 ‘볼 것만’을 켜고(등장 횟수 많은 순), 없으면 끈 채 모든 용어
+        self.only_check.setChecked(any(self._is_look(i) for i in range(self.table.rowCount())))
         self._go_first()
 
     # ================================================================ 화면 만들기
     # 배치 (카드 보기와 같은 틀, work_layout). 나눠 보기(기본):
-    #   머리: 제목 · 개수 칩 · 알림 · (표로 보기 · 엑셀로 내보내기 · 엑셀에서 가져오기 · 후보 다시 만들기 · 용어집 확정 · 닫기)
-    #   왼쪽(어디): 찾기 · 볼 것만 · 용어 목록(원문 · 번역) · 이동 단추 · 용어 더하기 · 고른 줄 빼기
-    #   가운데(무엇): 이 용어가 나온 카드 영역 그림 (◀ 1 / 2 ▶) · 그 원문
+    #   머리: 제목 · 개수 칩 · 알림 · (엑셀로 내보내기 · 엑셀에서 가져오기)
+    #   왼쪽(무엇): 이 용어가 나온 카드 영역 그림 (◀ 1 / 2 ▶) · 그 원문
+    #   가운데(어디): 찾기 · 볼 것만 · 표로 보기 · 용어 목록(원문 · 번역 · 등장 횟수) · 이동 단추 · 용어 더하기 · 고른 줄 빼기
     #   오른쪽(어떻게): 원문 용어 · 번역 · 후보 ‘이것 쓰기’ · 분류 · 변형 · 메모 · 큰 ‘확인 → 다음 볼 것’
-    # ‘표로 보기’: 지금처럼 모든 열이 있는 넓은 표 하나 (한꺼번에 고치기). 데이터는 늘 표에 있다.
+    #   아래: (후보 다시 만들기 · 닫기 · 번역 시작) — 다른 창처럼 확정 단추는 아래 오른쪽
+    # ‘표로 보기’(처음): 모든 열이 있는 넓은 표 하나 (한꺼번에 고치기). 데이터는 늘 표에 있다.
     # 버튼 코드는 예전 순서(찾기 지우기 · 볼 것만 · 표 · 용어 더하기 · 고른 줄 빼기 · 엑셀로 내보내기 · 엑셀에서 가져오기 ·
     # 후보 다시 만들기 · 용어집 확정 · 닫기)대로 붙이고, 새 단추(이동·표로 보기·확인·나온 곳 넘기기)는 맨 뒤에 붙인다.
     def _build(self) -> None:
@@ -94,7 +99,7 @@ class GlossaryReviewDialog(QDialog):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         self.only_check = QCheckBox("볼 것만 (번역 확인·불확실한 원문·번역 빈 칸)")
-        self.only_check.toggled.connect(lambda _c: self._filter())
+        self.only_check.toggled.connect(self._only_toggled)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -118,10 +123,10 @@ class GlossaryReviewDialog(QDialog):
                                     "표에서 고친 번역은 저장하고 닫은 뒤 만들고, 새 후보에도 같은 원문 용어면 그대로 옮깁니다.\n"
                                     "확정된 용어는 그대로 남습니다 (원문에서 사라진 용어의 고친 번역은 옮기지 않습니다)")
         self.rebuild_btn.clicked.connect(self._rebuild)
-        self.ok_btn = QPushButton("용어집 확정")
-        self.ok_btn.setStyleSheet("QPushButton { color: #0071E3; font-weight: 600; }")
-        self.ok_btn.setToolTip("표의 모든 용어로 용어집을 확정합니다 (번역이 빈 용어는 넣지 않음)")
-        self.ok_btn.clicked.connect(self.confirm)
+        self.ok_btn = QPushButton(START_TEXT)
+        self.ok_btn.setStyleSheet(PRIMARY_QSS)
+        self.ok_btn.setToolTip("표의 모든 용어로 용어집을 확정하고(번역이 빈 용어는 넣지 않음) 이어서 ④ 전체 번역을 합니다")
+        self.ok_btn.clicked.connect(self.start_translate)
         close = QPushButton("닫기 (고친 것 저장)")
         close.clicked.connect(self.reject)
         for b in (self.add_btn, self.del_btn, self.export_btn, self.import_btn, self.rebuild_btn, self.ok_btn, close):
@@ -163,16 +168,21 @@ class GlossaryReviewDialog(QDialog):
         for c in self.chips.values():
             header.addWidget(c)
         header.addWidget(self.flash_label, 1)
-        for b in (self.export_btn, self.import_btn, self.rebuild_btn, self.ok_btn, close):
+        for b in (self.export_btn, self.import_btn):
             header.addWidget(b)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(10)
+        bottom.addStretch(1)
+        for b in (self.rebuild_btn, close, self.ok_btn):
+            bottom.addWidget(b)
         self._only_row.addWidget(self.toggle_btn)
         main = QHBoxLayout()
         main.setSpacing(12)
         self.only_check.setText("볼 것만")
         self.only_check.setToolTip("번역 확인 · 불확실한 원문 · 번역 빈 칸인 용어만")
         self._left_ws = (self.search, self.table, self.nav_w)  # 나눠 보기에서 폭을 LIST_W로
+        main.addWidget(self.mid, 1)
         main.addLayout(ll, 1)
-        main.addWidget(self.mid, 3)
         main.addWidget(self.right)
         bl = QVBoxLayout(body)
         bl.setContentsMargins(14, 10, 14, 10)
@@ -180,6 +190,7 @@ class GlossaryReviewDialog(QDialog):
         bl.addLayout(header)
         bl.addWidget(self.guide)
         bl.addLayout(main, 1)
+        bl.addLayout(bottom)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(body)
@@ -190,6 +201,8 @@ class GlossaryReviewDialog(QDialog):
         """가운데(나온 곳 그림)와 오른쪽(고치기) 칸: self.mid, self.right."""
         self.place_head = QLabel()
         self.place_head.setStyleSheet("font-size: 15px; font-weight: 600; color: #1D1D1F;")
+        # 긴 카드 이름이 창 폭을 늘리지 않게 (왼쪽 칸이 좁아도 목록·고치기 칸 폭은 그대로)
+        self.place_head.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.place_prev = QPushButton("◀")
         self.place_next = QPushButton("▶")
         self.place_pos = QLabel()
@@ -365,6 +378,12 @@ class GlossaryReviewDialog(QDialog):
                  "색: 빨강 = 결론 못 낸 원문에서만 나온 용어 · 노랑 = 불확실한 원문 · 보라 = 번역이 갈릴 수 있음 · "
                  "연두 = 이미 확정", "todo" if n_check else "info")
 
+    def _only_toggled(self, on: bool) -> None:
+        """‘볼 것만’을 켜면 등장 횟수 많은 순으로 (자주 나오는 용어부터 본다)."""
+        if on:
+            self.table.sortItems(C["등장 횟수"], Qt.SortOrder.DescendingOrder)
+        self._filter()
+
     def _filter(self):
         q = self.search.text().strip().lower()
         only = self.only_check.isChecked()
@@ -415,6 +434,7 @@ class GlossaryReviewDialog(QDialog):
         if on:
             for h in LIST_COLS:
                 hh.setSectionResizeMode(C[h], QHeaderView.ResizeMode.Stretch)
+            hh.setSectionResizeMode(C["등장 횟수"], QHeaderView.ResizeMode.ResizeToContents)
             hh.setSectionResizeMode(C["예문"], QHeaderView.ResizeMode.Interactive)
             for w in self._left_ws:
                 w.setFixedWidth(LIST_W)
@@ -577,6 +597,7 @@ class GlossaryReviewDialog(QDialog):
         self._place_i = k
         pl = self._places[k]
         self.place_head.setText(f"나온 곳 · {pl['page']}쪽 {pl['region']}" + (f" ({pl['card']})" if pl["card"] else ""))
+        self.place_head.setToolTip(self.place_head.text())  # 좁으면 잘리므로 전체는 툴팁으로
         self.place_pos.setText(f"{k + 1} / {n}")
         key = (str(pl["file_dir"]), pl["page"], pl["region"])
         if key not in self._crop_cache:
@@ -655,7 +676,7 @@ class GlossaryReviewDialog(QDialog):
         self._update_guide()
         if not self._nav_go("next_bad") and not self._nav_go("prev_bad"):
             self._show_term(i)
-            self.flash_label.flash("볼 것을 모두 확인했습니다. ‘용어집 확정’을 누르세요", "ok")
+            self.flash_label.flash("볼 것을 모두 확인했습니다. ‘번역 시작’을 누르세요", "ok")
 
     def add_row(self):
         hh = self.table.horizontalHeader()
@@ -715,6 +736,13 @@ class GlossaryReviewDialog(QDialog):
                            fix_where="엑셀")
 
     # ---- 확정
+    def start_translate(self):
+        """‘번역 시작’: 용어집을 확정하고, 확정되면 부른 쪽이 ④ 전체 번역을 이어서 한다."""
+        self.translate_next = True
+        self.confirm()
+        if self.result is None:  # 확정하지 못했거나 취소: 창에 남는다
+            self.translate_next = False
+
     def confirm(self):
         rows = self.rows()
         self.done_with(lambda accept: service.confirm_glossary_rows(self.project_dir, rows, accept_issues=accept))
@@ -728,7 +756,7 @@ class GlossaryReviewDialog(QDialog):
         if r.state == "blocked":
             show_problem(self, "용어집을 확정하지 못했습니다", "", items=r.blocking + r.issues,
                          todo=("엑셀에서 이 내용을 고치고 저장한 뒤 ‘엑셀에서 가져오기’를 다시 누르세요." if fix_where == "엑셀"
-                               else "표에서 이 내용을 고친 뒤 ‘용어집 확정’을 다시 누르세요."))
+                               else "표에서 이 내용을 고친 뒤 ‘번역 시작’을 다시 누르세요."))
             return
         if r.state == "needs_confirmation":
             if not _ask_list(self, "용어집 확인", "아래 항목을 확인하세요.", r.issues, "이대로 확정할까요?"):
