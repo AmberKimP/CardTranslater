@@ -1,7 +1,8 @@
 """② 원문 확인: 카드 보기 (카드 한 장을 보고 영역 하나씩 고친다).
 
-왼쪽에 카드 전체(영역 상자는 상태 색 테두리)와 영역 목록, 오른쪽에 그 영역의 그림(아이콘 상자·끌어 감싸기), 아래에
-아이콘 목록(이름 칸)과 원문(읽은 결과·편집 칸)이 있다. 아이콘 이름·아이콘 아님은 ‘확정 전’으로 적어 두었다가
+한 영역을 왼쪽 → 오른쪽으로 한 번에 처리하게 놓는다: 왼쪽에 카드 전체(영역 상자는 상태 색 테두리)·영역 목록·이동 단추,
+가운데에 그 영역의 그림(아이콘 상자·끌어 감싸기, 가장 크게)과 그 아래 아이콘 띠(이름 칸)·고른 아이콘 조작,
+오른쪽에 고른 아이콘 확대·원문(읽은 결과·편집 칸)·확정 단추가 있다. 아이콘 이름·아이콘 아님은 ‘확정 전’으로 적어 두었다가
 ‘이 영역 확정’에서 원문에 넣는다 (service.confirm_regions). 자리 잡기·합치기 같은 아이콘 조작은 바로 저장한다.
 
 목록 창(source_check)이 modeless로 띄우거나 exec()로 쓴다:
@@ -23,8 +24,8 @@ from typing import Callable
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QFrame,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget)
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from app import service
 from app.qt import worker
@@ -44,7 +45,9 @@ PINK_BG = "#FDECEC"  # 이름 없음·위치 못 찾음 줄
 GRAY_BG = "#E9E9EC"  # 아이콘 아님·옆 아이콘에 포함 줄 (그림의 회색 상자와 같은 뜻: 확정 전이어도 회색)
 ENTRY_TEXT = {"ok": "확정됨", "named": "이름 정함", "unnamed": "이름 없음", "lost": "위치 못 찾음", "not_icon": "아이콘 아님",
               "absorbed": "옆 아이콘에 포함"}
-MAG_SIZE = 200  # 고른 아이콘 확대 칸 (px)
+MAG_SIZE = 110  # 고른 아이콘 확대 칸 (px, 오른쪽 칸 위)
+LEFT_W, RIGHT_W, RIGHT_MIN_W = 240, 400, 380  # 왼쪽(이동) 칸 폭, 오른쪽(글·확정) 칸 폭·최소 폭 (px)
+ICON_CARD_W, ICON_ROW_H = 250, 72  # 아이콘 띠의 아이콘 한 칸 폭·높이 (px)
 PREV_CONFIRM_TEXT, NEXT_CONFIRM_TEXT, CONFIRM_ONLY_TEXT = "◀◀ 확정 → 이전 문제", "이 영역 확정 → 다음 문제", "이 영역 확정"
 SENTENCE_TEXT, SENTENCE_UNDO_TEXT = "이 문장만 원본 그대로", "이 문장 원본 그대로 · 되돌리기"  # 카드 보기·아이콘 자리 잡기와 같은 말
 
@@ -188,6 +191,7 @@ class IconRow(QFrame):
             tag += f"  ({e['where']})"
         self.tag = QLabel(tag)
         self.tag.setStyleSheet("color: #6E6E73;")
+        self.tag.setWordWrap(True)  # 아이콘 띠의 칸 폭이 정해져 있다: 긴 상태 글은 줄을 바꾼다
         lay = QGridLayout(self)
         lay.setContentsMargins(6, 4, 6, 4)
         lay.setHorizontalSpacing(8)
@@ -255,6 +259,13 @@ class ReadingsTable(QWidget):
             self._rows.append((h, v))
 
 
+def _adopt(parent: QWidget, widgets) -> None:
+    """위젯들을 이 순서로 parent의 자식으로 붙인다 (배치에 넣기 전에). 버튼 코드(ui_codes)는 위젯 나무의 순서라
+    화면 자리를 옮겨도 예전 번호가 그대로이게 한다. 배치에 넣을 때는 부모가 같아 순서가 바뀌지 않는다."""
+    for w in widgets:
+        w.setParent(parent)
+
+
 def _panel(title: str, body: QWidget) -> QFrame:
     fr = QFrame()
     fr.setObjectName("panel")
@@ -309,56 +320,74 @@ class CardViewer(QDialog):
         self._show_region(self._initial_key(start))
 
     # ------------------------------------------------------------ 화면 만들기
+    # 배치(시안 A): 한 영역을 왼쪽 → 오른쪽, 위 → 아래로 한 번에 처리한다.
+    #   머리: 쪽 제목 · 이 카드 진행 · (이 카드 영역 고치기 · 목록으로)
+    #   왼쪽(이동): 카드 전체 · 영역 목록 · 이전/다음 영역 · 다음 카드
+    #   가운데(그림): 영역 머리 · 영역 그림(가장 크게, 오른쪽 위 확대·축소) · 색 설명 · 아이콘 띠 · 고른 아이콘 조작 한 줄
+    #   오른쪽(글·확정): 고른 아이콘 확대 · 원문(읽은 결과·이것 쓰기·편집 칸·도구) · 확정 단추
+    # 버튼 코드(ui_codes)는 창 안 위젯 나무의 순서다: 위치가 바뀌어도 예전 번호가 그대로이게 부모를 정해 둔 순서로 붙인다
+    # (_adopt). 새 버튼은 맨 뒤에 붙인다.
     def _build(self) -> None:
         self.title = page_title("카드 보기", 14)
+        self.progress_label = QLabel()
+        self.progress_label.setStyleSheet("color: #6E6E73;")
+        self.progress_label.setToolTip("이 카드의 영역 중 확인됨·원본 그대로인 영역 수 / 전체 영역 수")
         left = self._build_left_panel()
         head = self._build_region_head()
-        view_box = self._build_view_box()
+        view_frame = self._build_view_box()
         self._build_icon_panel()
         self._build_source_panel()
-        right = self._build_right_panel(head, view_box)
-        bottom = self._build_bottom_row()
+        self._build_bottom_row()
         body = QWidget()
         self.body = body
+        # 버튼 코드 순서: 아이콘 칸(01~09) → 원문 칸(10~12) → 확대·축소(13~15) → 목록으로(16) → 이동·확정(17~21)
+        _adopt(body, (self.icon_panel, self.source_panel, view_frame, self.close_btn,
+                      *(self.nav_btns[k] for k in ("prev_bad", "prev", "next", "next_card")), self.confirm_btn))
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(self.title)
+        header.addWidget(self.progress_label)
+        header.addStretch(1)
+        header.addWidget(self.close_btn)
+        center = self._build_center(head, view_frame)
+        right = self._build_right_panel()
         main = QHBoxLayout()
         main.setSpacing(12)
-        main.addWidget(left)
-        main.addWidget(right, 1)
+        main.addLayout(left)
+        main.addLayout(center, 1)
+        main.addLayout(right)
         bl = QVBoxLayout(body)
         bl.setContentsMargins(14, 10, 14, 10)
         bl.setSpacing(8)
-        bl.addWidget(self.title)
+        bl.addLayout(header)
         bl.addLayout(main, 1)
-        bl.addLayout(bottom)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(body)
-        self._build_late_widgets(bottom)
+        self._build_late_widgets(header)
 
-    def _build_left_panel(self) -> QWidget:
-        """왼쪽: 카드 전체 + 영역 목록."""
-        # 왼쪽: 카드 전체 + 영역 목록
+    def _build_left_panel(self) -> QVBoxLayout:
+        """왼쪽(이동): 카드 전체 + 영역 목록 (이전·다음 단추는 _build_right_panel 앞에서 만든 뒤 _left에 붙인다)."""
         self.card_map = CardMap()
+        self.card_map.setMinimumSize(200, 150)
         self.card_map.picked.connect(self._pick_name)
         self.region_list = QListWidget()
-        self.region_list.setMinimumHeight(110)
+        self.region_list.setMinimumHeight(90)
         self.region_list.setToolTip("영역 목록 (↑/↓로 고르고, Alt+↑/↓로도 옮깁니다)")
         self.region_list.currentRowChanged.connect(self._region_row_changed)
-        left = QWidget()
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
+        for w in (self.card_map, self.region_list):
+            w.setFixedWidth(LEFT_W)
+        ll = QVBoxLayout()
         ll.setSpacing(6)
         ll.addWidget(QLabel("<b>카드 전체</b>"))
         ll.addWidget(self.card_map, 3)
         ll.addWidget(QLabel("<b>영역 목록</b>"))
         ll.addWidget(self.region_list, 2)
-        left.setMinimumWidth(280)
-        left.setMaximumWidth(380)
-        return left
+        self._left = ll
+        return ll
 
     def _build_region_head(self) -> QHBoxLayout:
-        """오른쪽 머리: 영역 이름·상태 표시·알림 글."""
-        # 오른쪽 머리
+        """가운데 머리: 영역 이름·상태 표시·알림 글."""
         self.region_title = QLabel()
         self.region_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #1D1D1F;")
         self.status_badge = QLabel()
@@ -367,6 +396,8 @@ class CardViewer(QDialog):
         self.flash_label = QLabel()
         self.flash_label.setTextFormat(Qt.TextFormat.RichText)
         self.flash_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.flash_label.setWordWrap(True)  # 긴 알림이 가운데 칸(과 창 최소 폭)을 넓히지 않게 줄을 바꾼다
+        self.flash_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.flash_timer = QTimer(self)
         self.flash_timer.setSingleShot(True)
         self.flash_timer.timeout.connect(lambda: self.flash_label.setText(""))
@@ -375,13 +406,11 @@ class CardViewer(QDialog):
         head.addWidget(self.region_title)
         head.addWidget(self.status_badge)
         head.addWidget(self.pending_badge)
-        head.addStretch(1)
         head.addWidget(self.flash_label, 1)
         return head
 
-    def _build_view_box(self) -> QWidget:
-        """영역 그림(확대·축소 단추)과 고른 아이콘 확대 칸."""
-        # 영역 그림
+    def _build_view_box(self) -> QFrame:
+        """영역 그림 틀: 오른쪽 위 얇은 줄에 확대·축소, 그 아래 그림. 색 설명(view_hint)·고른 아이콘 확대 칸(mag)도 만든다."""
         self.view = IconPlaceView()
         self.view.drawn.connect(self._drawn)
         self.view.picked.connect(self._pick_icon)
@@ -394,13 +423,15 @@ class CardViewer(QDialog):
         self.view_hint.setStyleSheet("color: #6E6E73;")
         self.view_hint.setToolTip("빈 곳을 끌어 감싸면 새 자리 · 상자 테두리·모서리를 끌면 크기 바꾸기 · 아이콘 상자를 누르면 그 아이콘 고르기\n"
                                   "휠: 확대·축소 · 확대한 뒤 오른쪽(가운데) 단추로 끌면 옮기기")
+        # 좁은 창에서 한 줄 설명이 창 최소 폭을 늘리지 않게 (잘리면 마우스를 올려 봄)
+        self.view_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.zoom_out_btn = QPushButton("축소")  # 전각 ‘－’·‘＋’는 좁은 버튼에서 글자가 보이지 않았다
         self.zoom_in_btn = QPushButton("확대")
         self.fit_btn = QPushButton("화면 맞춤")
         self.zoom_label = QLabel("100%")
-        self.zoom_label.setStyleSheet("color: #6E6E73;")
+        self.zoom_label.setStyleSheet("color: #6E6E73; border: none;")
         self.zoom_label.setMinimumWidth(44)
-        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.zoom_out_btn.setToolTip("축소 (휠을 아래로)")
         self.zoom_in_btn.setToolTip("확대 (휠을 위로: 마우스가 있는 곳을 크게)")
         self.fit_btn.setToolTip("그림 전체가 보이게 (영역을 옮기면 늘 화면 맞춤으로 엽니다)")
@@ -408,43 +439,43 @@ class CardViewer(QDialog):
         self.zoom_in_btn.clicked.connect(lambda: self.view.zoom_by(1.25))
         self.fit_btn.clicked.connect(self.view.fit)
         view_tools = QHBoxLayout()
+        view_tools.setContentsMargins(0, 0, 0, 0)
         view_tools.setSpacing(4)
-        view_tools.addWidget(self.view_hint, 1)
-        view_tools.addWidget(self.zoom_label)
+        view_tools.addStretch(1)
         view_tools.addWidget(self.zoom_out_btn)
+        view_tools.addWidget(self.zoom_label)
         view_tools.addWidget(self.zoom_in_btn)
         view_tools.addWidget(self.fit_btn)
-        # 고른 아이콘 확대 칸 (고정 크기, 그림 오른쪽): 지금 자리, 새 자리를 그리거나 크기를 바꾸면 따라 그린다
+        # 고른 아이콘 확대 칸 (고정 크기, 오른쪽 칸 위): 지금 자리, 새 자리를 그리거나 크기를 바꾸면 따라 그린다
         self.mag = QLabel()
         self.mag.setFixedSize(MAG_SIZE, MAG_SIZE)
         self.mag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mag.setWordWrap(True)
         self.mag.setStyleSheet("background: #FAFAFA; border: 1px solid #E5E5EA; border-radius: 6px; color: #8E8E93;")
         self.mag.setToolTip("고른 아이콘을 크게 봅니다 (파랑 = 지금 자리, 빨강 = 새로 잡는 자리)")
         self.view.box_moved.connect(self._update_mag)
-        mag_col = QVBoxLayout()
-        mag_col.setSpacing(4)
-        mag_col.addWidget(QLabel("<b>고른 아이콘</b>"))
-        mag_col.addWidget(self.mag)
-        mag_col.addStretch(1)
-        view_row = QHBoxLayout()
-        view_row.setSpacing(8)
-        view_row.addWidget(self.view, 1)
-        view_row.addLayout(mag_col)
-        view_box = QWidget()
-        vl = QVBoxLayout(view_box)
-        vl.setContentsMargins(0, 0, 0, 0)
-        vl.setSpacing(4)
-        vl.addLayout(view_row, 1)
+        frame = QFrame()
+        frame.setObjectName("viewframe")
+        frame.setStyleSheet("QFrame#viewframe { background: white; border: 1px solid #E5E5EA; border-radius: 10px; }")
+        vl = QVBoxLayout(frame)
+        vl.setContentsMargins(6, 4, 6, 6)
+        vl.setSpacing(2)
+        _adopt(frame, (self.view, self.zoom_out_btn, self.zoom_label, self.zoom_in_btn, self.fit_btn))
         vl.addLayout(view_tools)
-        return view_box
+        vl.addWidget(self.view, 1)
+        self.view_frame = frame
+        return frame
 
     def _build_icon_panel(self) -> None:
-        """‘이 영역의 아이콘’ 칸 (self.icon_panel)."""
-        # 아이콘 칸
+        """‘이 영역의 아이콘’ 칸 (self.icon_panel): 아이콘 띠(가로로 놓고 넘치면 다음 줄) + 고른 아이콘 조작 한 줄."""
         self.icon_list = QListWidget()
         self.icon_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.icon_list.setFlow(QListView.Flow.LeftToRight)
+        self.icon_list.setWrapping(True)
+        self.icon_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.icon_list.setSpacing(2)
-        self.icon_list.setMinimumHeight(110)
+        self.icon_list.setMinimumHeight(ICON_ROW_H + 8)
+        self.icon_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.icon_list.setStyleSheet("QListWidget { border: none; background: white; }"
                                      "QListWidget::item { background: transparent; }"
                                      "QListWidget::item:selected { background: transparent; }")
@@ -475,30 +506,43 @@ class CardViewer(QDialog):
         self.overlap_btn.clicked.connect(self._absorb_overlaps)
         for b in (self.absorb_btn, self.overlap_btn):
             b.hide()
-        btn_grid = QGridLayout()
-        btn_grid.setSpacing(4)
-        for k, b in enumerate((self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn,
-                               self.sentence_btn)):
-            btn_grid.addWidget(b, k // 2, k % 2)
         icons_body = QWidget()
+        # 버튼 코드 순서 (01~09): 같은 모양 · 저장 · 추가 · 삭제 · 합치기 · 되돌리기 · 문장 · 포함 · 흡수
+        _adopt(icons_body, (self.icon_list, self.same_shape, self.save_btn, self.add_btn, self.del_btn, self.merge_btn,
+                            self.restore_btn, self.sentence_btn, self.absorb_btn, self.overlap_btn))
+        # 띠 오른쪽: 같은 모양에 모두 적용 · 아이콘 추가 (고른 아이콘이 아니라 새 아이콘을 넣는 일. 조작 줄에 두면
+        # 작은 노트북에서 창 최소 폭이 화면보다 넓어졌다)
+        side = QVBoxLayout()
+        side.setSpacing(4)
+        side.addWidget(self.same_shape)
+        side.addWidget(self.add_btn)
+        side.addStretch(1)
+        strip = QHBoxLayout()
+        strip.setSpacing(8)
+        strip.addWidget(self.icon_list, 1)
+        strip.addLayout(side)
+        acts = QHBoxLayout()
+        acts.setSpacing(4)
+        for b in (self.save_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn,
+                  self.absorb_btn, self.overlap_btn):
+            acts.addWidget(b)
+        acts.addStretch(1)
         il = QVBoxLayout(icons_body)
         il.setContentsMargins(0, 0, 0, 0)
         il.setSpacing(4)
-        il.addWidget(self.icon_list, 1)
-        il.addWidget(self.same_shape)
-        il.addLayout(btn_grid)
-        il.addWidget(self.absorb_btn)
-        il.addWidget(self.overlap_btn)
+        il.addLayout(strip)
+        il.addLayout(acts)
         self.icon_panel = _panel("이 영역의 아이콘", icons_body)
 
     def _build_source_panel(self) -> None:
-        """‘원문’ 칸 (self.source_panel)."""
-        # 원문 칸
+        """‘원문’ 칸 (self.source_panel): 안내 · 읽은 결과(줄마다 ‘이것 쓰기’) · 편집 칸 · 도구."""
         self.info = hint_bar("", "info")
         self.info.setTextFormat(Qt.TextFormat.RichText)
         self.readings = ReadingsTable()
+        # ‘이것 쓰기’ 단추는 읽은 결과 표의 각 줄 왼쪽 칸(읽은 방식 이름 아래)에 붙는다 (_fill_picks). 이 줄은 그 안내
         self.pick_row = QHBoxLayout()
         self.pick_label = QLabel("이것 쓰기:")
+        self.pick_label.setStyleSheet("color: #6E6E73;")
         self.pick_row.addWidget(self.pick_label)
         self.pick_row.addStretch(1)
         self.pick_buttons: list[QPushButton] = []
@@ -513,6 +557,7 @@ class CardViewer(QDialog):
         for k, t in REREAD_MODELS:
             self.reread_model.addItem(t, k)
         self.reread_model.setToolTip("다시 읽을 방식 (정밀 읽기가 더 정확하지만 느리고 사용량이 많음)")
+        self.reread_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.keep_btn = QPushButton(KEEP_LABEL)
         self.keep_btn.setCheckable(True)
         self.keep_btn.setToolTip("이 영역은 글자 없이 아이콘(그림)만 있습니다.\n번역·글자 지우기·한글 넣기를 하지 않고 원본 그대로 둡니다 "
@@ -521,65 +566,98 @@ class CardViewer(QDialog):
         # 문단 나눔 [====]: ‘문단마다 다른 글꼴’ 영역에서 커서가 있는 줄 위에 나눔 줄을 넣는다 (지우려면 그 줄을 지움)
         self.para_btn = QPushButton("[====] 문단 나눔 넣기")
         self.para_btn.clicked.connect(self._insert_paragraph_mark)
-        tools = QHBoxLayout()
-        tools.setSpacing(8)
-        tools.addWidget(self.reread_btn)
-        tools.addWidget(self.reread_model, 1)
-        tools.addStretch(1)
-        tools.addWidget(self.para_btn)
+        # 도구: 좁은 오른쪽 칸에 맞게 두 줄 (다시 읽기 + 방식 / 문단 나눔 · 원본 그대로)
+        tools = QGridLayout()
+        tools.setHorizontalSpacing(6)
+        tools.setVerticalSpacing(4)
+        tools.addWidget(self.reread_btn, 0, 0)
+        tools.addWidget(self.reread_model, 0, 1)
+        tools.addWidget(self.para_btn, 1, 0)
+        tools.addWidget(self.keep_btn, 1, 1)
+        tools.setColumnStretch(1, 1)
         src_body = QWidget()
+        # 버튼 코드 순서 (10~12): 다시 읽기 · 문단 나눔 · 원본 그대로
+        _adopt(src_body, (self.info, self.readings, self.pick_label, self.edit, self.reread_btn, self.reread_model,
+                          self.para_btn, self.keep_btn))
         sl = QVBoxLayout(src_body)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(6)
         sl.addWidget(self.info)
-        sl.addWidget(self.readings)
         sl.addLayout(self.pick_row)
+        sl.addWidget(self.readings)
         sl.addWidget(self.edit, 1)
         sl.addLayout(tools)
-        sl.addWidget(self.keep_btn)
         src_scroll = QScrollArea()
         src_scroll.setWidgetResizable(True)
         src_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        src_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         src_scroll.setWidget(src_body)
         self.source_panel = _panel("원문", src_scroll)
 
-    def _build_right_panel(self, head: QHBoxLayout, view_box: QWidget) -> QWidget:
-        """오른쪽: 머리 + (영역 그림 | 아이콘·원문 칸)."""
-        panels = QWidget()
-        pl = QHBoxLayout(panels)
-        pl.setContentsMargins(0, 0, 0, 0)
-        pl.setSpacing(8)
-        pl.addWidget(self.icon_panel, 1)
-        pl.addWidget(self.source_panel, 1)
-        self.icon_panel.setMinimumWidth(320)
-        self.source_panel.setMinimumWidth(340)
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setChildrenCollapsible(False)
-        split.addWidget(view_box)
-        split.addWidget(panels)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 1)
-        split.setSizes([250, 480])
-        self.split = split
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(6)
-        rl.addLayout(head)
-        rl.addWidget(split, 1)
-        return right
+    def _build_center(self, head: QHBoxLayout, view_frame: QFrame) -> QVBoxLayout:
+        """가운데(그림 작업): 영역 머리 · 영역 그림(가장 크게) · 색 설명 · 아이콘 칸."""
+        cl = QVBoxLayout()
+        cl.setSpacing(6)
+        cl.addLayout(head)
+        cl.addWidget(view_frame, 1)
+        cl.addWidget(self.view_hint)
+        cl.addWidget(self.icon_panel)
+        return cl
 
-    def _build_bottom_row(self) -> QHBoxLayout:
-        """아래 줄: 목록으로·안내·이동·확정 단추."""
-        # 아래 줄
-        self.close_btn = QPushButton("목록으로")
-        self.close_btn.setAutoDefault(False)
-        self.close_btn.clicked.connect(self.close)
+    def _build_right_panel(self) -> QVBoxLayout:
+        """오른쪽(글·확정): 고른 아이콘 확대 + 어느 [[…]]인지 · 원문 칸 · 큰 확정 단추 · ◀◀ 확정 → 이전 문제 · 단축키 안내.
+        왼쪽 칸 아래에 이전·다음 영역·다음 카드 단추와 안내도 붙인다."""
+        # 왼쪽 칸 아래: ◀ 이전 영역 | 다음 영역 ▶, 다음 카드 ▶▶, 안내
+        pn = QHBoxLayout()
+        pn.setSpacing(4)
+        pn.addWidget(self.nav_btns["prev"])
+        pn.addWidget(self.nav_btns["next"])
+        self._left.addLayout(pn)
+        self._left.addWidget(self.nav_btns["next_card"])
+        nav_hint = QLabel("Alt+↑/↓ 영역 이동")
+        nav_hint.setStyleSheet("color: #8E8E93;")
+        nav_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._left.addWidget(nav_hint)
+        # 오른쪽 위: 고른 아이콘 확대 + 원문의 어느 [[…]]인가
+        self.mag_title = QLabel("<b>고른 아이콘</b>")
+        self.mag_where = QLabel()
+        self.mag_where.setWordWrap(True)
+        self.mag_where.setStyleSheet("color: #3A3A3C;")
+        self.mag_where.setFont(source_font(self.mag_where.font(), 1))
+        self.mag_where.setToolTip("고른 아이콘이 원문 몇째 줄의 어느 [[…]]인가 (■ = 이 아이콘, □ = 같은 줄의 다른 아이콘)")
+        mt = QVBoxLayout()
+        mt.setSpacing(4)
+        mt.addWidget(self.mag_title)
+        mt.addWidget(self.mag_where)
+        mt.addStretch(1)
+        mr = QHBoxLayout()
+        mr.setSpacing(10)
+        mr.addWidget(self.mag)
+        mr.addLayout(mt, 1)
+        self.source_panel.setMinimumWidth(RIGHT_MIN_W)
+        self.source_panel.setMaximumWidth(RIGHT_W)
+        self.confirm_btn.setStyleSheet(PRIMARY_QSS.replace("min-height: 22px;", "min-height: 30px;"))
         hint = QLabel("Ctrl+Enter 확정 · Ctrl+S 이 자리로 저장 · Alt+↑/↓ 영역 이동")
         hint.setStyleSheet("color: #8E8E93")
         hint.setToolTip(hint.text())
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setWordWrap(True)
         # 글이 길어져도 창 최소 폭을 늘리지 않는다 (좁으면 잘려 보이고, 마우스를 올리면 다 보인다)
         hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        rl = QVBoxLayout()
+        rl.setSpacing(6)
+        rl.addLayout(mr)
+        rl.addWidget(self.source_panel, 1)
+        rl.addWidget(self.confirm_btn)
+        rl.addWidget(self.nav_btns["prev_bad"])
+        rl.addWidget(hint)
+        return rl
+
+    def _build_bottom_row(self) -> None:
+        """이동·확정·목록으로 단추 (예전 아래 줄에 있던 것. 자리는 머리·왼쪽·오른쪽 칸으로 나뉘었다)."""
+        self.close_btn = QPushButton("목록으로")
+        self.close_btn.setAutoDefault(False)
+        self.close_btn.clicked.connect(self.close)
         self.nav_btns: dict[str, QPushButton] = {}
         for kind, text, tip in (
                 ("prev_bad", PREV_CONFIRM_TEXT, "이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
@@ -596,18 +674,10 @@ class CardViewer(QDialog):
         self.confirm_btn.setAutoDefault(False)
         self.confirm_btn.setToolTip("확정 전 아이콘 이름을 원문에 넣고, 원문을 ‘사람이 확인’으로 저장합니다 (Ctrl+Enter)")
         self.confirm_btn.clicked.connect(self._confirm_next)
-        bottom = QHBoxLayout()
-        bottom.setSpacing(8)
-        bottom.addWidget(self.close_btn)
-        bottom.addWidget(hint, 1)
-        for k in ("prev_bad", "prev", "next", "next_card"):
-            bottom.addWidget(self.nav_btns[k])
-        bottom.addWidget(self.confirm_btn)
         for b in (*self.nav_btns.values(), self.confirm_btn, self.close_btn, self.reread_btn, self.keep_btn):
             b.setMinimumWidth(b.sizeHint().width())
-        return bottom
 
-    def _build_late_widgets(self, bottom: QHBoxLayout) -> None:
+    def _build_late_widgets(self, header: QHBoxLayout) -> None:
         """맨 나중에 만드는 단추(버튼 코드가 밀리지 않게)·기본 단추 해제·단축키."""
         # 카드 단위로 영역 고치기 (영역 지정 창을 이 카드로 연다). 버튼 코드가 밀리지 않게 맨 나중에 만든다
         self.card_regions_btn = QPushButton("이 카드 영역 고치기")
@@ -616,7 +686,7 @@ class CardViewer(QDialog):
                                          "옮기거나 크기를 바꿀 수 있습니다.\n상자가 바뀐 카드는 아이콘을 다시 찾습니다 "
                                          "(글은 ‘이 영역 다시 읽기’로 다시 읽으세요).")
         self.card_regions_btn.clicked.connect(self._edit_card_regions)
-        bottom.insertWidget(1, self.card_regions_btn)
+        header.insertWidget(header.indexOf(self.close_btn), self.card_regions_btn)
         for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn,
                   self.absorb_btn, self.overlap_btn, self.zoom_in_btn, self.zoom_out_btn, self.fit_btn):
             b.setAutoDefault(False)
@@ -624,6 +694,18 @@ class CardViewer(QDialog):
                          ("Ctrl+S", self._save_shortcut),
                          ("Alt+Down", lambda: self._go("next")), ("Alt+Up", lambda: self._go("prev"))):
             QShortcut(QKeySequence(keys), self, activated=fn)
+
+    def resizeEvent(self, e):  # noqa: N802 - Qt 이름
+        super().resizeEvent(e)
+        if hasattr(self, "icon_list"):
+            self._fit_icon_strip()
+
+    def _fit_icon_strip(self) -> None:
+        """아이콘 띠 높이: 한 줄에 다 들어가면 한 줄, 아니면 두 줄 (넘치면 띠 안에서 스크롤). 남는 높이는 그림에 준다."""
+        n = self.icon_list.count()
+        per = max(1, (self.icon_list.viewport().width() - 4) // (ICON_CARD_W + 4))
+        rows = 1 if n <= per else 2
+        self.icon_list.setFixedHeight(rows * (ICON_ROW_H + 4) + 8)
 
     def _save_shortcut(self) -> None:
         """Ctrl+S = ‘이 자리로 저장’ (버튼을 누를 수 있을 때만: 새 자리를 그리지 않았으면 아무것도 하지 않는다)."""
@@ -711,6 +793,7 @@ class CardViewer(QDialog):
         reg, card = self._region(), self._card()
         if reg is None or card is None:
             self.title.setText("카드 보기")
+            self.progress_label.setText("")
             self.region_title.setText("보여 줄 영역이 없습니다")
             self.status_badge.hide()
             self.pending_badge.hide()
@@ -730,6 +813,7 @@ class CardViewer(QDialog):
         self.title.setText(f"{file_label(card['file_key'])} · {page}쪽")
         self._known = self._known_names(fd)
         self._fill_header(reg)
+        self._fill_progress(card)
         self._fill_card(card, reg)
         self._fill_icons(reg, keep_occ)
         self._fill_view(reg)
@@ -749,6 +833,12 @@ class CardViewer(QDialog):
         self.status_badge.setStyleSheet(_badge(st, STATUS_COLOR[st]))
         self.status_badge.show()
         self.pending_badge.setVisible(bool(reg.get("pending")))
+
+    def _fill_progress(self, card: dict) -> None:
+        """머리의 ‘이 카드 1 / 3 영역 확인’ (확인됨·원본 그대로인 영역 / 이 카드의 영역)."""
+        regs = card["regions"]
+        done = sum(1 for r in regs if r["status"] in ("ok", "keep"))
+        self.progress_label.setText(f"이 카드 {done} / {len(regs)} 영역 확인")
 
     def _card_info(self, card: dict) -> dict:
         k = _nk(card["key"])
@@ -802,8 +892,9 @@ class CardViewer(QDialog):
             row.focused.connect(self._row_focused)
             it = QListWidgetItem()
             it.setData(Qt.ItemDataRole.UserRole, e["occ"])
-            hint = row.sizeHint().expandedTo(row.minimumSizeHint())
-            it.setSizeHint(hint.expandedTo(QSize(0, 72)))
+            row.setFixedWidth(ICON_CARD_W)  # 띠에 가로로 놓으므로 칸 폭을 같게 (긴 상태 글은 줄을 바꾼다)
+            h = row.heightForWidth(ICON_CARD_W) if row.hasHeightForWidth() else row.sizeHint().height()
+            it.setSizeHint(QSize(ICON_CARD_W, max(ICON_ROW_H, h)))
             self.icon_list.addItem(it)
             self.icon_list.setItemWidget(it, row)
             if e["occ"] == self._cur_occ:
@@ -811,6 +902,7 @@ class CardViewer(QDialog):
                 self.icon_list.setCurrentItem(it)
         self.icon_list.blockSignals(False)
         self._mark_rows()
+        self._fit_icon_strip()
 
     def _mark_rows(self) -> None:
         for i in range(self.icon_list.count()):
@@ -932,24 +1024,28 @@ class CardViewer(QDialog):
 
     def _fill_picks(self, texts: list[tuple[str, str]]) -> None:
         for b in self.pick_buttons:
-            self.pick_row.removeWidget(b)
+            self.readings.grid.removeWidget(b)
             b.hide()
             b.deleteLater()
         self.pick_buttons = []
-        uniq: list[tuple[str, str]] = []
-        for name, t in texts:
-            if t not in [x for _n, x in uniq]:
-                uniq.append((name, t))
+        uniq: list[tuple[int, str, str]] = []  # (읽은 결과 표의 줄, 이름, 글): 같은 글은 처음 줄에만 단추
+        for row, (name, t) in enumerate(texts):
+            if t not in [x for _r, _n, x in uniq]:
+                uniq.append((row, name, t))
         self.pick_label.setVisible(len(uniq) >= 2)
         if len(uniq) < 2:
             return
-        for i, (name, t) in enumerate(uniq):
+        for row, name, t in uniq:
             b = QPushButton(f"{name} 결과")
             b.setProperty(ui_codes.LATE, True)  # 버튼 코드는 고정 버튼 뒤에 (있다 없다 해도 다른 버튼 번호가 밀리지 않게)
             b.setAutoDefault(False)
             b.setToolTip(t)
             b.clicked.connect(lambda _c=False, tt=t: self._use_reading(tt))
-            self.pick_row.insertWidget(1 + i, b)
+            # 그 줄의 왼쪽 칸(‘보통 읽기’ 이름 아래)에 놓는다: 오른쪽에 열을 더 두면 좁은 오른쪽 칸에서 표가 잘렸다
+            b.setStyleSheet("margin: 0 6px 6px 6px;")
+            h = self.readings._rows[row][0]
+            h.setMinimumHeight(h.sizeHint().height() + b.sizeHint().height() + 4)
+            self.readings.grid.addWidget(b, row, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
             self.pick_buttons.append(b)
 
     def _insert_paragraph_mark(self) -> None:
@@ -999,6 +1095,8 @@ class CardViewer(QDialog):
         pb.setEnabled(can)
         self.confirm_btn.setText(NEXT_CONFIRM_TEXT if has_next else CONFIRM_ONLY_TEXT)
         self.confirm_btn.setEnabled(can)
+        # 앞·뒤 문제가 모두 없으면 두 단추가 모두 ‘이 영역 확정’이 된다: 같은 일을 하는 아래 단추는 숨긴다
+        pb.setVisible(pb.text() != self.confirm_btn.text())
         if blocking and ok:
             why = "이 영역에 이름 없는·위치 못 찾은 아이콘이 있습니다. 아이콘을 모두 정한 뒤 확정하세요"
             pb.setToolTip(why)
@@ -1007,6 +1105,7 @@ class CardViewer(QDialog):
             pb.setToolTip("이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로")
 
     def _icon_tools(self) -> None:
+        self.mag_where.setText(self._where(self._cur_entry()) or ("아이콘이 없습니다" if not self._entries else ""))
         reg = self._region()
         if reg is not None and self._eff_status(reg) == "reading":  # 뒤에서 다시 읽는 중: 같은 파일을 쓰므로 잠근다
             for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn):

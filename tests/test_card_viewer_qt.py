@@ -652,3 +652,56 @@ def test_fresh_double_reread_region_confirms_without_another_reread(qapp, tmp_pa
     v.confirm_btn.click()
     assert seen["edits"] and list(seen["edits"].values())[0]["source"] == "AB[[lily]]CD"  # 원문 칸 글을 저장 (또 읽지 않음)
     v.close()
+
+
+def test_button_codes_keep_order_after_layout_change(qapp, tmp_path):
+    """버튼 코드(2B-NN)는 사용자가 버튼을 가리키는 번호다: 배치(시안 A)를 바꿔도 예전 번호 그대로."""
+    from PySide6.QtWidgets import QAbstractButton
+
+    from app.qt import ui_codes
+
+    info, fd, files, v = _viewer(qapp, tmp_path, name="codes")
+    fixed = [b for b in v.findChildren(QAbstractButton) if not b.property(ui_codes.LATE)]
+    by_code = {ui_codes.button_code(b): b for b in fixed}
+    want = [v.same_shape, v.save_btn, v.add_btn, v.del_btn, v.merge_btn, v.restore_btn, v.sentence_btn,
+            v.absorb_btn, v.overlap_btn, v.reread_btn, v.para_btn, v.keep_btn, v.zoom_out_btn, v.zoom_in_btn,
+            v.fit_btn, v.close_btn, v.nav_btns["prev_bad"], v.nav_btns["prev"], v.nav_btns["next"],
+            v.nav_btns["next_card"], v.confirm_btn, v.card_regions_btn]
+    assert [by_code.get(f"2B-{i:02d}") for i in range(1, len(want) + 1)] == want
+    assert len(fixed) == len(want)
+    v.close()
+
+
+def test_layout_navigation_left_text_and_confirm_right(qapp, tmp_path):
+    """시안 A: 이동 단추는 왼쪽 칸(영역 목록 아래), 확정 단추는 원문 칸 바로 아래, 머리에 이 카드 진행·목록으로."""
+    info, fd, files, v = _viewer(qapp, tmp_path, name="layout")
+    v.resize(1400, 880)
+    v.show()
+    QTest.qWait(30)
+
+    def rect(w):
+        return w.rect().translated(w.mapTo(v, w.rect().topLeft()))
+    lst, src, conf = rect(v.region_list), rect(v.source_panel), rect(v.confirm_btn)
+    for k in ("prev", "next", "next_card"):
+        b = rect(v.nav_btns[k])
+        assert b.top() >= lst.bottom() and b.right() <= lst.right() + 1
+    assert conf.top() >= src.bottom() and conf.left() >= src.left() - 1 and conf.height() >= 40
+    assert rect(v.view).height() > rect(v.icon_panel).height()  # 그림이 가장 크다
+    assert rect(v.close_btn).bottom() < rect(v.view).top() and rect(v.card_regions_btn).bottom() < rect(v.view).top()
+    assert v.progress_label.text() == "이 카드 0 / 1 영역 확인"
+    # (창 최소 폭은 글꼴에 따라 달라 offscreen에서는 재지 않는다: 실제 창 Malgun Gothic 10pt에서 1248px)
+    v.close()
+
+
+def test_second_confirm_button_hidden_when_same_text(qapp, tmp_path):
+    """앞·뒤 문제 영역이 없어 두 확정 단추가 모두 ‘이 영역 확정’이면 아래 단추는 숨긴다."""
+    from app.qt.card_viewer import CONFIRM_ONLY_TEXT
+
+    info, fd, files, v = _viewer(qapp, tmp_path, name="dup")
+    pb = v.nav_btns["prev_bad"]
+    _type_name(qapp, v, "lily")
+    assert pb.text() == CONFIRM_ONLY_TEXT and v.confirm_btn.text() != CONFIRM_ONLY_TEXT and not pb.isHidden()
+    v.confirm_btn.click()  # 1쪽 확정 → 2쪽 (다른 문제 영역 없음)
+    assert v.key[1] == 2 and v.confirm_btn.text() == CONFIRM_ONLY_TEXT
+    assert pb.isHidden() == (pb.text() == v.confirm_btn.text())
+    v.close()
