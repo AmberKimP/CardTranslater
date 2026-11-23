@@ -1350,7 +1350,7 @@ def _join_two(ctx: _LayoutCtx, src: list[dict], sec: dict, kos: list[str]):
 def _grow_for_big_icons(ctx: _LayoutCtx, ko: str, r: pymupdf.Rect, top: float, gh: float):
     """원본 크기로 넣을 큰 아이콘이 있는 줄: 아이콘은 글자 위아래로 나온다. 자리를 그만큼 위·아래로 넓혀
     글자가 줄지 않고 원래 높이에 오게 한다. (자리, 위)."""
-    s_ = max([ctx.icon_fit.get(n_, 0.0) for n_ in re.findall(r"\[\[([a-z0-9_]+)\]\]", ko)] + [0.0])
+    s_ = max([ctx.icon_fit.get(n_, 0.0) for n_ in re.findall(r"\[\[([A-Za-z0-9_]+)\]\]", ko)] + [0.0])
     if s_ > 1.0:
         extra = (s_ - 1.0) / 2 * gh
         top -= extra

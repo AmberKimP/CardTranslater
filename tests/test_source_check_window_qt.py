@@ -114,6 +114,8 @@ def test_kinds_tab_stage_name_makes_regions_pending_and_confirm_all_writes(qapp,
     _name_kind(dlg)
     assert dlg.confirm_btn.text() == "모두 확정 (2)" and dlg.confirm_btn.isEnabled()
     assert dlg.pending_label.text() == "확정 전 2개 영역"
+    assert _heads(dlg) == []  # 사람이 고른 이름의 확정 전은 문제가 아니다 (문제 있는 카드만에서 빠짐)
+    dlg.mode_all.click()
     row = _heads(dlg)[0].child(0)
     assert "확정 전" in row.text(0) and "AB[[lily]]CD" in row.text(2)
     assert _source(fd, 1) == "AB[[?]]CD"  # 확정 전: 원문은 그대로

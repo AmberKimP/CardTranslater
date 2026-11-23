@@ -388,7 +388,8 @@ class SourceCheckDialog(QDialog):
         return "reading" if _nk(r["key"]) in self.reading else r["status"]
 
     def _is_problem_card(self, card: dict) -> bool:
-        return any(self._status(r) in PROBLEM or r["pending"] for r in card["regions"])
+        # 확정 전만으로는 문제가 아니다 (모두 확정으로 넣는다). 추측한 이름은 region_status가 ‘볼 것’으로 만든다
+        return any(self._status(r) in PROBLEM for r in card["regions"])
 
     def _worst(self, card: dict) -> str:
         order = {s: i for i, s in enumerate(service.STATUS_ORDER)}
@@ -703,7 +704,7 @@ class SourceCheckDialog(QDialog):
         card = next((c for c in self._cards if _nk(c["key"]) == _nk(card_key)), None)
         if card is None:
             return
-        pick = next((r for r in card["regions"] if self._status(r) in PROBLEM or r["pending"]),
+        pick = next((r for r in card["regions"] if self._status(r) in PROBLEM),
                     card["regions"][0] if card["regions"] else None)
         self.open_viewer(pick["key"] if pick else tuple(card["key"]))
 
@@ -771,7 +772,7 @@ class SourceCheckDialog(QDialog):
                 img.setText("그림 없음")
             t.setItem(i, 0, img)
             name, ko = QLineEdit(), QLineEdit()
-            name.setPlaceholderText("영문 소문자·숫자·_")
+            name.setPlaceholderText("영문·숫자·_")
             name.setCompleter(self._completer)
             ko.setPlaceholderText("한국어 이름")
             scale = NoWheelSpinBox()
@@ -879,6 +880,16 @@ class SourceCheckDialog(QDialog):
             val = w["not_icon"].isChecked()
             if val == bool(k["not_icon"]):
                 return
+        note = ""
+        if field == "name" and val and k["groups"]:
+            # 다른 아이콘의 이름과 같으면 그림을 견준다: 같은 아이콘이면 그 이름, 다르면 숫자를 붙인 이름 (카드 보기와 같음)
+            try:
+                rn = service.resolve_icon_name(self.project_dir, k["groups"][0], val, exclude_groups=k["groups"])
+            except Exception:  # noqa: BLE001
+                rn = {"name": val, "renamed": False}
+            if rn["renamed"]:
+                note = f"‘{val}’은(는) 그림이 다른 아이콘의 이름이라 ‘{rn['name']}’(으)로 적었습니다."
+            val = rn["name"]
         try:
             service.stage_icon_names(self.project_dir, [{"group": g, field: val} for g in k["groups"]])
         except Exception as e:  # noqa: BLE001
@@ -886,6 +897,8 @@ class SourceCheckDialog(QDialog):
             return
         self.saved = True
         self._reload_after_stage()
+        if note:
+            QMessageBox.information(self, "다른 이름으로 적었습니다", note)
 
     def _reload_after_stage(self):
         self._cards = service.source_check_rows(self.project_dir, self.files)

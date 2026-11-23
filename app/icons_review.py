@@ -166,7 +166,7 @@ def export_review(info, res: ScanResult, out: Path) -> Path:
     wl.freeze_panes = "A2"
     ws2 = wb.create_sheet("안내")
     for line in [
-        "한 줄 = 카드의 아이콘 하나. 이름: 영문 소문자·숫자·_ 만. 같은 이름을 쓴 줄은 하나의 아이콘입니다.",
+        "한 줄 = 카드의 아이콘 하나. 이름: 영문(대소문자)·숫자·_ 만. 같은 이름을 쓴 줄은 하나의 아이콘입니다.",
         f"처리: 아이콘이 아니면 ‘{_ic.NOT_ICON}’ (원문에서 뺍니다).",
         "사전에 이미 있는 이름을 쓰면 그 아이콘으로 바꿉니다 (그림은 사전 것을 씀).",
         "표시 크기: 한글 글자 높이 대비 (기본 1.1).",
@@ -263,7 +263,8 @@ def import_rows(info, rows: list[dict], work: Path, partial: bool = False) -> Ic
     meta: dict[str, dict] = {}
     seen_vals: dict[str, dict[str, list[str]]] = {}  # 이름 -> 뜻·한국어 이름 -> 적힌 값들 (행 순서)
     first_rep: dict[str, str] = {}  # 새 이름 -> 그림이 있는 첫 행
-    pictured = {str(r.get("이름") or "").strip() for r in rows  # ‘아이콘 아님’ 행의 그림은 사전 그림이 되지 않는다
+    case_of = {n.casefold(): n for n in d["icons"]}  # 대소문자를 뺀 이름 -> 쓸 철자
+    pictured = {str(r.get("이름") or "").strip().casefold() for r in rows  # ‘아이콘 아님’ 행의 그림은 사전 그림이 되지 않는다
                 if res.groups.get(str(r.get("묶음") or ""), {}).get("rep")
                 and str(r.get("처리") or "").strip() != _ic.NOT_ICON}
     for row in rows:
@@ -284,10 +285,13 @@ def import_rows(info, rows: list[dict], work: Path, partial: bool = False) -> Ic
             out.blocking.append(f"{g}: 이름이 비어 있음 (아이콘이 아니면 처리 열에 ‘{_ic.NOT_ICON}’)")
             continue
         if not _ic.NAME_RE.match(name):
-            out.blocking.append(f"{g}: 이름은 영문 소문자·숫자·_ 만 ({name})")
+            out.blocking.append(f"{g}: 이름은 영문·숫자·_ 만 ({name})")
             continue
+        # 대소문자만 다른 이름은 같은 이름이다 (Windows에서 Coin.png와 coin.png는 같은 파일: 사전 그림을 덮어썼다).
+        # 사전에 있는 이름, 없으면 이 엑셀에서 먼저 나온 철자를 따른다
+        name = case_of.setdefault(name.casefold(), name)
         unchanged = named_of.get(g) == name  # 이미 확정된 아이콘을 그대로 둠: 원문을 바꾸지 않는다
-        if not unchanged and not res.groups[g].get("rep") and name not in d["icons"] and name not in pictured:
+        if not unchanged and not res.groups[g].get("rep") and name not in d["icons"] and name.casefold() not in pictured:
             out.blocking.append(f"{g}: 그림이 없어 새 아이콘으로 만들 수 없음 (사전에 있는 이름을 쓰거나 ‘{_ic.NOT_ICON}’)")
             continue
         decision[g] = name

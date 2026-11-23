@@ -258,6 +258,16 @@ def _icon_entries(info, res, dic: dict) -> dict[tuple, list[dict]]:
             state = "unnamed"
         else:
             state = "named"  # 이름이 정해짐 (확정하면 원문에 들어감)
+        pending = state in ("named", "not_icon", "absorbed") and not (o.named and name == o.named and not not_icon)
+        # 확정 전 이름을 아무도 보지 않았고 틀릴 수 있다: Claude가 그림만 보고 지은 이름(suggest), 사전과 모양이 비슷하거나
+        # 숫자만 다른 이름(similar). 사람이 고른 이름(staged)·사전과 모양 같은 이름·확정했던 이름은 아니다
+        guess = ""
+        if pending and state == "named" and "name" not in st:
+            how = gi.get("dict_how", "") if gi.get("dict") == name else ""
+            if how in ("legacy", "variant"):
+                guess = "similar"
+            elif not how and name == gi.get("suggest"):
+                guess = "suggest"
         dimg = None
         if e.get("file"):
             p = icons.icons_dir(info) / e["file"]
@@ -271,7 +281,7 @@ def _icon_entries(info, res, dic: dict) -> dict[tuple, list[dict]]:
             "manual": bool(o.manual or o.added),  # 사람이 카드 보기에서 잡거나 넣은 자리
             "image": (rep.png if rep is not None and rep.png else None) or dimg,
             "state": state, "staged": bool(st),
-            "pending": state in ("named", "not_icon", "absorbed") and not (o.named and name == o.named and not not_icon),
+            "pending": pending, "guess": guess,
             "blocking": state in ("lost", "unnamed"), "reason": o.reason if rep is None else "",
             "line": o.line, "order": order[o.id], "index": o.index, "ti": o.ti,
             # 같은 영역의 다른 아이콘과 상자 순서가 원문 순서와 반대 (위아래 아이콘을 엇갈려 잡음: 그림이 엇갈려 들어간다)
@@ -371,6 +381,29 @@ def preview_source(row: dict) -> str:
     return icons.apply_icons(src, mapping, strip or None, row.get("icon_numbers"))[0]
 
 
+def _same_but_icon_numbers(cell: dict, icons_: list[dict]) -> bool:
+    """두 번 읽은 결과가 아이콘 그림에 든 옆 숫자(‘4[[?]]’과 ‘[[?]]’)만 다르다: 카드 보기의 읽은 결과 표는 그 숫자를 빼고
+    보여 주므로 다른 글자(빨강)가 없는데 ‘두 번 읽기 다름’이 되었다 (3·4쪽). 그 숫자는 확정할 때 원문에서 빠진다."""
+    from app.extract import _agree_norm
+
+    # 확정한 아이콘도 그림 속 숫자(num_image)로 견준다 (줄의 strip은 확정 전 이름에만 있다)
+    row = {**cell, "icons": [{**e, "state": "unnamed"} for e in icons_]}
+    texts = []
+    for rd in cell.get("readings") or []:
+        src = rd.get("source")
+        if src is None:
+            continue
+        t = "\n".join(src) if isinstance(src, list) else str(src)
+        texts.append(_agree_norm(strip_icon_numbers(t, row)))  # 빈칸·문장 부호 차이는 두 번 읽기의 같다 규칙대로
+    if not (len(texts) >= 2 and len(set(texts)) == 1 and texts[0] != ""):
+        return False
+    # 확정한 아이콘은 확정 때 숫자를 빼지 않는다(줄의 strip 없음): 원문에 그 숫자가 아직 있으면 두 번 인쇄된다 — 다른 것으로 둔다
+    src = cell.get("source")
+    src = "\n".join(src) if isinstance(src, list) else (src or "")
+    done = {**cell, "icons": [{**e, "state": "unnamed"} for e in icons_ if e.get("state") == "ok"]}
+    return strip_icon_numbers(src, done) == src
+
+
 def region_status(cell: dict, icons_: list[dict]) -> tuple[str, list[str]]:
     """영역 한 줄의 상태와 까닭 (짧은 말). cell = extracted_cells의 칸 하나."""
     from app.extract import ICON_REVIEW_LABEL
@@ -394,7 +427,7 @@ def region_status(cell: dict, icons_: list[dict]) -> tuple[str, list[str]]:
     if not icons_ and PLACEHOLDER_RE.search(text) and cell.get("keep_mode") != "whole":
         reasons.append("이름 없는 아이콘 (찾기 전)")
         fix = True
-    if cell.get("label") == "결론 못 냄":
+    if cell.get("label") == "결론 못 냄" and not _same_but_icon_numbers(cell, icons_):
         reasons.append("두 번 읽기 다름")
         fix = True
     if cell.get("keep_mode") == "broken":
@@ -414,6 +447,16 @@ def region_status(cell: dict, icons_: list[dict]) -> tuple[str, list[str]]:
         check = True
     elif cell.get("uncertain"):
         reasons.append("확실하지 않음")
+        check = True
+    # 아무도 보지 않은 확정 전 이름 (원본 그대로 칸은 위에서 끝남: 그 칸의 아이콘 이름은 쓰이지 않는다).
+    # 확정하면 이 이름이 원문에 들어가 번역(뜻)과 한글 넣기(그림)에 쓰인다: 확정 전에 한 번 본다
+    n_suggest = sum(1 for i in icons_ if i.get("guess") == "suggest")
+    n_similar = sum(1 for i in icons_ if i.get("guess") == "similar")
+    if n_suggest:
+        reasons.append(f"이름 추측 {n_suggest}개")
+        check = True
+    if n_similar:
+        reasons.append(f"사전과 비슷한 모양 이름 {n_similar}개")
         check = True
     if check:
         return "check", reasons
@@ -496,6 +539,68 @@ def icon_kinds(project_dir: Path | str) -> list[dict]:
     rank = {"lost": 0, "unnamed": 1, "no_ko": 2, "pending": 3, "ok": 4}
     out.sort(key=lambda x: (rank[x["state"]], -x["uses"]))
     return out
+
+
+def resolve_icon_name(project_dir: Path | str, group: str, name: str, exclude_groups=()) -> dict:
+    """사람이 줄(group)에 적은 이름이 다른 아이콘의 이름(사전 이름, 다른 줄에 적었거나 확정한 이름)과 같으면 (대소문자는
+    보지 않는다: Windows에서 Coin.png와 coin.png는 같은 파일이다) 그림을 견준다.
+    - 같은 아이콘(모양이 같고 그림 속 숫자도 같음)이면 그 이름 그대로 (대소문자는 그 이름을 따른다).
+    - 다른 아이콘이면 겹치지 않는 숫자를 붙인 이름 (coin → coin_2, 이미 있으면 coin_3 …).
+    이 줄에 그림이 없으면(위치 못 찾음) 견줄 수 없어 그 이름을 그대로 쓴다 (사전 그림을 쓰려고 고른 이름).
+    exclude_groups: 같은 이름으로 함께 적을 줄 (같은 모양 모두 적용·아이콘 종류 한 줄): 견줄 상대가 아니다
+    (대소문자만 바꿀 때 그 줄들의 예전 이름으로 되돌아가지 않게).
+    돌려줌 {"name": 쓸 이름, "renamed": 숫자를 붙였나, "same_as": 같은 아이콘으로 본 이름 | ""}."""
+    from app import icons
+
+    out = {"name": name, "renamed": False, "same_as": ""}
+    info, _work, res = _scan(project_dir)
+    if res is None or not name or not icons.NAME_RE.match(name):
+        return out
+    gi = res.groups.get(group) or {}
+    by_id = {o.id: o for o in res.occurrences}
+    dic = icons.load_dictionary(info)["icons"]
+    low = name.casefold()
+
+    skip = {group, *exclude_groups}
+
+    def owner_name(g: str, x: dict) -> str:
+        """그 줄의 지금 이름: 적은 이름, 없으면 화면에 미리 채운 이름 (확정된 이름·사전 이름·Claude 제안)."""
+        st = x.get("staged") or {}
+        return str(st["name"] if "name" in st else icons.prefill_name(x)).strip()
+
+    cands: list[tuple[str, str, object]] = []  # (이름, "dict"|"group", 사전 항목 | 줄)
+    cands += [(n, "dict", e) for n, e in dic.items() if n.casefold() == low]
+    for g, x in res.groups.items():
+        n = owner_name(g, x)
+        if g not in skip and n and n.casefold() == low and not x.get("absorbed"):
+            cands.append((n, "group", x))
+    if not cands:
+        return out
+    rep = by_id.get(gi.get("rep") or "")
+    if rep is None or not rep.png or not Path(rep.png).exists():
+        return {**out, "name": cands[0][0], "same_as": cands[0][0]}
+    mine = icons.shape_pair(icons._cells.load_png(Path(rep.png)))
+    for n, kind, x in cands:
+        if kind == "dict":
+            p = icons.icons_dir(info) / x.get("file", f"{n}.png")
+            en = icons.entry_number(x)
+            if not p.exists() or (en is not None and en != rep.num):
+                continue
+            other = icons.shape_pair(icons._cells.load_png(p))
+        else:
+            o2 = by_id.get(x.get("rep") or "")
+            if gi.get("shape") and x.get("shape") == gi.get("shape") and (o2 is None or o2.num == rep.num):
+                return {**out, "name": n, "same_as": n}  # 찾기가 같은 모양으로 묶은 줄
+            if o2 is None or not o2.png or not Path(o2.png).exists() or o2.num != rep.num:
+                continue
+            other = icons.shape_pair(icons._cells.load_png(Path(o2.png)))
+        if icons.same_icon(mine, other) >= icons.SAME_SHAPE:
+            return {**out, "name": n, "same_as": n}
+    used = {n.casefold() for n in dic} | {owner_name(g, x).casefold() for g, x in res.groups.items() if g not in skip}
+    k = 2
+    while f"{name}_{k}".casefold() in used:
+        k += 1
+    return {**out, "name": f"{name}_{k}", "renamed": True}
 
 
 def stage_icon_names(project_dir: Path | str, entries: list[dict]) -> None:

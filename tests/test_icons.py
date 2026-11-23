@@ -105,7 +105,7 @@ def test_find_review_import_and_reuse_in_next_project(tmp_path):
     ws.cell(2, head.index("이름") + 1).value = "Coin!"
     _save(ws, r.review_xlsx)
     bad = service.import_icons(info.dir, r.review_xlsx)
-    assert bad.state == "blocked" and "영문 소문자" in bad.blocking[0] and _source(fd, 1) == "AB[[?]]CD"
+    assert bad.state == "blocked" and "영문·숫자·_ 만" in bad.blocking[0] and _source(fd, 1) == "AB[[?]]CD"
 
     for k in (2, 3):
         ws.cell(k, head.index("이름") + 1).value = "coin"

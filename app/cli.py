@@ -319,7 +319,7 @@ def cmd_find_icons(args: argparse.Namespace) -> int:
     if r.reason:
         print(f"  [확인] {r.reason}")
     print(f"[find-icons] 아이콘 검증 엑셀: {r.review_xlsx}")
-    print("  이름(영문 소문자)·뜻·한국어 이름을 확인한 뒤 import-icons 로 가져오세요.")
+    print("  이름(영문·숫자·_)·뜻·한국어 이름을 확인한 뒤 import-icons 로 가져오세요.")
     return 2
 
 

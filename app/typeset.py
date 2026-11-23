@@ -48,7 +48,7 @@ from app.typeset_layout import (
 )
 
 _ANY_ICON = re.compile(r"\[\[([^\[\]]*)\]\]")
-_ICON_NAME = re.compile(r"^[a-z0-9_]+$")
+_ICON_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 __all__ = [
     "TextStyle", "TypesetResult", "FontMeasurer", "typeset_region", "typeset_tag", "typeset_tags",

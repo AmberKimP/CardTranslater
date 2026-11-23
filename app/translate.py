@@ -28,7 +28,7 @@ STATUS_ICON = "아이콘 불일치"
 STATUS_LEFTOVER = "원문 글자 남음"  # 번역문에 일본어(한자·가나)가 그대로 남음
 _JA_CHARS = re.compile("[぀-ヿ㐀-䶿一-鿿]")
 BATCH_CELLS = 30
-_ICON = re.compile(r"\[\[([a-z0-9_]+)\]\]")
+_ICON = re.compile(r"\[\[([A-Za-z0-9_]+)\]\]")
 
 SYSTEM_PROMPT = """You translate board-game card text into natural Korean for a published Korean edition.
 

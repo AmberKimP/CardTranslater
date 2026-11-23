@@ -630,7 +630,9 @@ def test_confirm_buttons_rename_when_no_other_problem(qapp, tmp_path):
     from app.qt.card_viewer import CONFIRM_ONLY_TEXT, NEXT_CONFIRM_TEXT, PREV_CONFIRM_TEXT
 
     info, fd, files, v = _viewer(qapp, tmp_path)
-    _type_name(qapp, v, "lily")  # 1쪽: 이름을 정해 확정할 수 있음, 2쪽은 아직 문제
+    # 1쪽만 이름을 정한다 (같은 모양에 적용하면 2쪽도 사람이 고른 이름이 되어 문제가 아니다): 2쪽은 아직 문제
+    v.same_shape.setChecked(False)
+    _type_name(qapp, v, "lily")
     assert v.confirm_btn.text() == NEXT_CONFIRM_TEXT and v.nav_btns["prev_bad"].text() == CONFIRM_ONLY_TEXT
     v.confirm_btn.click()  # 확정 → 다음 문제(2쪽)
     assert v.key[1] == 2
@@ -737,6 +739,7 @@ def test_second_confirm_button_hidden_when_same_text(qapp, tmp_path):
 
     info, fd, files, v = _viewer(qapp, tmp_path, name="dup")
     pb = v.nav_btns["prev_bad"]
+    v.same_shape.setChecked(False)  # 2쪽은 이름 없는 채로 (문제 영역) 남긴다
     _type_name(qapp, v, "lily")
     assert pb.text() == CONFIRM_ONLY_TEXT and v.confirm_btn.text() != CONFIRM_ONLY_TEXT and not pb.isHidden()
     v.confirm_btn.click()  # 1쪽 확정 → 2쪽 (다른 문제 영역 없음)

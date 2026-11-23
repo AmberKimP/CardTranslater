@@ -428,7 +428,9 @@ def test_icon_rows_show_which_line_and_token(qapp, tmp_path):
 
     info, fd, files, v = _viewer(qapp, tmp_path, name="where")
     row = v.icon_list.itemWidget(v.icon_list.item(0))
-    assert "째 줄 · AB■CD" in row.tag.text()  # 원문 ‘AB[[?]]CD’의 그 아이콘
+    # 상태·줄 번호 한 줄, 그 줄의 모양은 다음 줄 (원문 ‘AB[[?]]CD’의 그 아이콘)
+    assert row.tag.text().endswith("(1번 줄)") and row.where.text() == "AB■CD"
+    assert v._where(v._entries[0]) == "1번 줄 · AB■CD"  # 확대 칸·묻는 창의 한 줄 표시
     v.close()
 
 

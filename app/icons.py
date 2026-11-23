@@ -36,7 +36,7 @@ from app.regions import text_only
 PLACEHOLDER = "[[?]]"
 PLACEHOLDER_RE = re.compile(r"\[\[\?\]\]")
 TOKEN_RE = re.compile(r"\[\[([^\[\]]*)\]\]")
-NAME_RE = re.compile(r"^[a-z0-9_]+$")
+NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 CROP_DPI = 600
 SAME_SHAPE = 0.80  # 알파 모양 상관계수가 이 이상이면 같은 아이콘 후보
 SAME_GRAY = 0.82  # 밝기 무늬 상관이 이 이상이면 같은 아이콘 (같은 타일 2: 0.83~0.91, 타일 1·2: 0.78 이하)
