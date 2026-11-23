@@ -49,7 +49,11 @@ MAG_SIZE = 110  # 고른 아이콘 확대 칸 (px, 오른쪽 칸 위)
 LEFT_W, RIGHT_W, RIGHT_MIN_W = 240, 400, 380  # 왼쪽(이동) 칸 폭, 오른쪽(글·확정) 칸 폭·최소 폭 (px)
 ICON_CARD_W, ICON_ROW_H = 250, 72  # 아이콘 띠의 아이콘 한 칸 폭·높이 (px)
 PREV_CONFIRM_TEXT, NEXT_CONFIRM_TEXT, CONFIRM_ONLY_TEXT = "◀◀ 확정 → 이전 문제", "이 영역 확정 → 다음 문제", "이 영역 확정"
-SENTENCE_TEXT, SENTENCE_UNDO_TEXT = "이 문장만 원본 그대로", "이 문장 원본 그대로 · 되돌리기"  # 카드 보기·아이콘 자리 잡기와 같은 말
+NAV_HINT = "Alt+←/→ 영역 · Alt+Shift+←/→ 문제 카드"
+NO_TARGET = {"prev": "다른 영역이 없습니다", "next": "다른 영역이 없습니다",
+             "next_card": "다음 카드가 없습니다", "prev_card_bad": "앞쪽에 문제 카드가 없습니다",
+             "next_card_bad": "뒤쪽에 문제 카드가 없습니다"}
+SENTENCE_TEXT, SENTENCE_UNDO_TEXT ="이 문장만 원본 그대로", "이 문장 원본 그대로 · 되돌리기"  # 카드 보기·아이콘 자리 잡기와 같은 말
 
 
 def _nk(key) -> tuple:
@@ -372,17 +376,17 @@ class CardViewer(QDialog):
         self.card_map.setMinimumSize(200, 150)
         self.card_map.picked.connect(self._pick_name)
         self.region_list = QListWidget()
-        self.region_list.setMinimumHeight(90)
-        self.region_list.setToolTip("영역 목록 (↑/↓로 고르고, Alt+↑/↓로도 옮깁니다)")
+        self.region_list.setFixedHeight(90)  # 영역 수에 맞춰 _fit_region_list가 줄인다 (남는 높이는 카드 전체로)
+        self.region_list.setToolTip("영역 목록 (↑/↓로 고르고, Alt+←/→·Alt+↑/↓로도 옮깁니다)")
         self.region_list.currentRowChanged.connect(self._region_row_changed)
         for w in (self.card_map, self.region_list):
             w.setFixedWidth(LEFT_W)
         ll = QVBoxLayout()
         ll.setSpacing(6)
         ll.addWidget(QLabel("<b>카드 전체</b>"))
-        ll.addWidget(self.card_map, 3)
+        ll.addWidget(self.card_map, 1)
         ll.addWidget(QLabel("<b>영역 목록</b>"))
-        ll.addWidget(self.region_list, 2)
+        ll.addWidget(self.region_list)
         self._left = ll
         return ll
 
@@ -614,7 +618,8 @@ class CardViewer(QDialog):
         pn.addWidget(self.nav_btns["next"])
         self._left.addLayout(pn)
         self._left.addWidget(self.nav_btns["next_card"])
-        nav_hint = QLabel("Alt+↑/↓ 영역 이동")
+        nav_hint = QLabel(NAV_HINT)
+        nav_hint.setWordWrap(True)
         nav_hint.setStyleSheet("color: #8E8E93;")
         nav_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._left.addWidget(nav_hint)
@@ -637,7 +642,7 @@ class CardViewer(QDialog):
         self.source_panel.setMinimumWidth(RIGHT_MIN_W)
         self.source_panel.setMaximumWidth(RIGHT_W)
         self.confirm_btn.setStyleSheet(PRIMARY_QSS.replace("min-height: 22px;", "min-height: 30px;"))
-        hint = QLabel("Ctrl+Enter 확정 · Ctrl+S 이 자리로 저장 · Alt+↑/↓ 영역 이동")
+        hint = QLabel("Ctrl+Enter 확정 · Ctrl+S 이 자리로 저장 · " + NAV_HINT)
         hint.setStyleSheet("color: #8E8E93")
         hint.setToolTip(hint.text())
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -661,8 +666,8 @@ class CardViewer(QDialog):
         self.nav_btns: dict[str, QPushButton] = {}
         for kind, text, tip in (
                 ("prev_bad", PREV_CONFIRM_TEXT, "이 영역을 확정하고 앞쪽에서 고칠 것·볼 것·확정 전이 있는 영역으로"),
-                ("prev", "◀ 이전 영역", "목록 순서로 앞 영역으로 (Alt+↑, 첫 영역에서는 마지막 영역으로)"),
-                ("next", "다음 영역 ▶", "목록 순서로 다음 영역으로 (Alt+↓, 마지막 영역에서는 첫 영역으로)"),
+                ("prev", "◀ 이전 영역", "목록 순서로 앞 영역으로 (Alt+← 또는 Alt+↑, 첫 영역에서는 마지막 영역으로)"),
+                ("next", "다음 영역 ▶", "목록 순서로 다음 영역으로 (Alt+→ 또는 Alt+↓, 마지막 영역에서는 첫 영역으로)"),
                 ("next_card", "다음 카드 ▶▶", "다음 카드의 첫 문제 영역으로")):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -687,12 +692,31 @@ class CardViewer(QDialog):
                                          "(글은 ‘이 영역 다시 읽기’로 다시 읽으세요).")
         self.card_regions_btn.clicked.connect(self._edit_card_regions)
         header.insertWidget(header.indexOf(self.close_btn), self.card_regions_btn)
+        # 이전·다음 문제 카드 (고칠 것·볼 것·확정 전 영역이 있는 카드의 첫 문제 영역). 버튼 코드가 밀리지 않게 맨 뒤(2B-23·24)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        for kind, text, tip in (("prev_card_bad", "◀◀ 문제 카드", "이전 문제 카드: 앞쪽에서 고칠 것·볼 것·확정 전 영역이 있는 "
+                                                              "가장 가까운 카드의 첫 문제 영역으로 (Alt+Shift+←)"),
+                                ("next_card_bad", "문제 카드 ▶▶", "다음 문제 카드: 뒤쪽에서 고칠 것·볼 것·확정 전 영역이 있는 "
+                                                              "가장 가까운 카드의 첫 문제 영역으로 (Alt+Shift+→)")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setAutoDefault(False)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # 왼쪽 칸(LEFT_W)을 넓히지 않게
+            b.setMinimumWidth(0)
+            b.clicked.connect(lambda _c=False, k=kind: self._go(k))
+            self.nav_btns[kind] = b
+            row.addWidget(b)
+        self._left.insertLayout(self._left.indexOf(self.nav_btns["next_card"]), row)
         for b in (self.save_btn, self.add_btn, self.del_btn, self.merge_btn, self.restore_btn, self.sentence_btn,
                   self.absorb_btn, self.overlap_btn, self.zoom_in_btn, self.zoom_out_btn, self.fit_btn):
             b.setAutoDefault(False)
         for keys, fn in (("Ctrl+Return", self._confirm_next), ("Ctrl+Enter", self._confirm_next),
                          ("Ctrl+S", self._save_shortcut),
-                         ("Alt+Down", lambda: self._go("next")), ("Alt+Up", lambda: self._go("prev"))):
+                         ("Alt+Down", lambda: self._go("next")), ("Alt+Up", lambda: self._go("prev")),
+                         ("Alt+Right", lambda: self._go("next")), ("Alt+Left", lambda: self._go("prev")),
+                         ("Alt+Shift+Right", lambda: self._go("next_card_bad")),
+                         ("Alt+Shift+Left", lambda: self._go("prev_card_bad"))):
             QShortcut(QKeySequence(keys), self, activated=fn)
 
     def resizeEvent(self, e):  # noqa: N802 - Qt 이름
@@ -875,6 +899,15 @@ class CardViewer(QDialog):
             if r["region"] == reg["region"]:
                 self.region_list.setCurrentItem(it)
         self.region_list.blockSignals(False)
+        self._fit_region_list()
+
+    def _fit_region_list(self) -> None:
+        """영역 목록 높이를 영역 수에 맞춘다 (2~8줄, 넘으면 스크롤). 남는 높이는 카드 전체 그림이 쓴다."""
+        lst = self.region_list
+        row = lst.sizeHintForRow(0) if lst.count() else 0
+        row = max(row, lst.fontMetrics().height() + 8)
+        n = min(max(lst.count(), 2), 8)
+        lst.setFixedHeight(n * row + 2 * lst.frameWidth() + 4)
 
     def _fill_icons(self, reg: dict, keep_occ: str | None) -> None:
         self._entries = list(reg.get("icons") or [])
@@ -1931,12 +1964,27 @@ class CardViewer(QDialog):
                     first = next((x for x in next(c for c in self.cards if _nk(c["key"]) == _nk(r["key"])[:2])
                                   ["regions"] if self.is_problem(x)), None)
                     return (first or r)["key"]
+        if kind in ("prev_card_bad", "next_card_bad"):
+            card = self._card()
+            idx = next((i for i, c in enumerate(self.cards) if card is not None and _nk(c["key"]) == _nk(card["key"])),
+                       None)
+            if idx is None:
+                return None
+            order = self.cards[idx + 1:] if kind == "next_card_bad" else self.cards[idx - 1::-1] if idx else []
+            for c in order:
+                first = next((x for x in c["regions"] if self.is_problem(x)), None)
+                if first is not None:
+                    return first["key"]
         return None
 
     def _go(self, kind: str) -> None:
+        """이동 (단추·단축키). 갈 곳이 없으면 알린다 (단축키는 꺼진 단추와 달리 눌러도 아무 표시가 없었다)."""
         t = self._target(kind)
-        if t is not None:
-            self._select(t)
+        if t is None:
+            self._flash(NO_TARGET.get(kind, "갈 곳이 없습니다"), "warn")
+            QApplication.beep()
+            return
+        self._select(t)
 
     def _select(self, key: tuple) -> bool:
         """다른 영역으로. 고친 원문이 있으면 묻는다 (확정 / 버리기 / 취소)."""

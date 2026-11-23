@@ -171,6 +171,43 @@ def test_alt_arrow_shortcuts_move_region(qapp, tmp_path):
     v.close()
 
 
+def test_alt_left_right_regions_and_alt_shift_problem_cards(qapp, tmp_path):
+    """Alt+←/→ = 이전·다음 영역, Alt+Shift+←/→ = 이전·다음 문제 카드. 갈 곳이 없으면 알린다."""
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=3)
+    v.show()
+    v.activateWindow()
+    QApplication.processEvents()
+    alt, shift = Qt.KeyboardModifier.AltModifier, Qt.KeyboardModifier.ShiftModifier
+    QTest.keyClick(v, Qt.Key.Key_Right, alt)
+    assert v.key[1] == 2
+    QTest.keyClick(v, Qt.Key.Key_Left, alt)
+    assert v.key[1] == 1
+    QTest.keyClick(v, Qt.Key.Key_Left, alt | shift)  # 첫 카드: 앞쪽 문제 카드 없음 -> 머물고 알림
+    assert v.key[1] == 1 and "앞쪽에 문제 카드가 없습니다" in v.flash_label.text()
+    QTest.keyClick(v, Qt.Key.Key_Right, alt | shift)
+    assert v.key == (str(fd), 2, "본문")
+    v.nav_btns["next_card_bad"].click()
+    assert v.key[1] == 3
+    QTest.keyClick(v, Qt.Key.Key_Right, alt | shift)  # 마지막 카드
+    assert v.key[1] == 3 and "뒤쪽에 문제 카드가 없습니다" in v.flash_label.text()
+    v.nav_btns["prev_card_bad"].click()
+    assert v.key[1] == 2
+    v.close()
+
+
+def test_problem_card_skips_cards_without_problems(qapp, tmp_path, monkeypatch):
+    from app.qt.card_viewer import CardViewer
+
+    info, fd, files, v = _viewer(qapp, tmp_path, pages=3)
+    # 2쪽 카드에는 문제 영역이 없는 것으로: 다음 문제 카드는 3쪽
+    monkeypatch.setattr(CardViewer, "is_problem", staticmethod(lambda r: r["key"][1] != 2))
+    v._fetch()
+    assert v._target("next_card_bad")[1] == 3
+    v._select(v._target("next_card_bad"))
+    assert v._target("prev_card_bad")[1] == 1
+    v.close()
+
+
 def test_leaving_with_edits_asks_and_cancel_stays(qapp, tmp_path, monkeypatch):
     from app.qt import card_viewer
 
@@ -666,7 +703,8 @@ def test_button_codes_keep_order_after_layout_change(qapp, tmp_path):
     want = [v.same_shape, v.save_btn, v.add_btn, v.del_btn, v.merge_btn, v.restore_btn, v.sentence_btn,
             v.absorb_btn, v.overlap_btn, v.reread_btn, v.para_btn, v.keep_btn, v.zoom_out_btn, v.zoom_in_btn,
             v.fit_btn, v.close_btn, v.nav_btns["prev_bad"], v.nav_btns["prev"], v.nav_btns["next"],
-            v.nav_btns["next_card"], v.confirm_btn, v.card_regions_btn]
+            v.nav_btns["next_card"], v.confirm_btn, v.card_regions_btn,
+            v.nav_btns["prev_card_bad"], v.nav_btns["next_card_bad"]]  # 1.34.1: 새 단추는 맨 뒤 (2B-23·24)
     assert [by_code.get(f"2B-{i:02d}") for i in range(1, len(want) + 1)] == want
     assert len(fixed) == len(want)
     v.close()
@@ -682,7 +720,7 @@ def test_layout_navigation_left_text_and_confirm_right(qapp, tmp_path):
     def rect(w):
         return w.rect().translated(w.mapTo(v, w.rect().topLeft()))
     lst, src, conf = rect(v.region_list), rect(v.source_panel), rect(v.confirm_btn)
-    for k in ("prev", "next", "next_card"):
+    for k in ("prev", "next", "next_card", "prev_card_bad", "next_card_bad"):
         b = rect(v.nav_btns[k])
         assert b.top() >= lst.bottom() and b.right() <= lst.right() + 1
     assert conf.top() >= src.bottom() and conf.left() >= src.left() - 1 and conf.height() >= 40
